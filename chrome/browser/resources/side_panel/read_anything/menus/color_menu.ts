@@ -41,13 +41,14 @@ export class ColorMenuElement extends ColorMenuElementBase implements
     return {
       settingsPrefs: {type: Object},
       nonModal: {type: Boolean},
+      options_: {type: Array},
     };
   }
 
   accessor settingsPrefs: SettingsPrefs = DEFAULT_SETTINGS;
   accessor nonModal: boolean = false;
 
-  protected options_: Array<MenuStateItem<number>> = [
+  protected accessor options_: Array<MenuStateItem<number>> = [
     {
       title: loadTimeData.getString('defaultColorTitle'),
       icon: 'read-anything-20:default-theme',
@@ -79,19 +80,14 @@ export class ColorMenuElement extends ColorMenuElementBase implements
       data: chrome.readingMode.highContrastTheme,
     },
     {
-      title: loadTimeData.getString('lowContrastColorTitle'),
-      icon: 'read-anything-20:low-contrast-theme',
-      data: chrome.readingMode.lowContrastTheme,
+      title: loadTimeData.getString('lowContrastLightColorTitle'),
+      icon: 'read-anything-20:low-contrast-light-theme',
+      data: chrome.readingMode.lowContrastLightTheme,
     },
     {
-      title: loadTimeData.getString('sepiaLightColorTitle'),
-      icon: 'read-anything-20:sepia-light-theme',
-      data: chrome.readingMode.sepiaLightTheme,
-    },
-    {
-      title: loadTimeData.getString('sepiaDarkColorTitle'),
-      icon: 'read-anything-20:sepia-dark-theme',
-      data: chrome.readingMode.sepiaDarkTheme,
+      title: loadTimeData.getString('lowContrastDarkColorTitle'),
+      icon: 'read-anything-20:low-contrast-dark-theme',
+      data: chrome.readingMode.lowContrastDarkTheme,
     },
   ];
   private logger_: ReadAnythingLogger = ReadAnythingLogger.getInstance();

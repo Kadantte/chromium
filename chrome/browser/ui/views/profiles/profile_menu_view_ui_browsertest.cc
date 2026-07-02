@@ -20,16 +20,18 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
-#include "chrome/browser/ui/views/profiles/avatar_toolbar_button.h"
 #include "chrome/browser/ui/views/profiles/profile_menu_coordinator.h"
 #include "chrome/browser/ui/views/profiles/profile_menu_view.h"
 #include "chrome/browser/ui/views/profiles/profiles_pixel_test_utils.h"
+#include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
+#include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/policy/core/common/management/scoped_management_service_override_for_testing.h"
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/subscription_eligibility/subscription_eligibility_prefs.h"
 #include "components/supervised_user/test_support/supervised_user_signin_test_utils.h"
 #include "components/sync/base/features.h"
 #include "components/sync/service/sync_user_settings.h"
@@ -88,6 +90,7 @@ struct ProfileMenuViewPixelTestParam {
   bool use_multiple_profiles = false;
   bool account_image_available = true;
   bool sync_disabled = false;
+  bool with_ai_avatar_ring = false;
   WithLocalData with_local_data = WithLocalData::kNoLocalData;
 
   // Features and parameters that are enabled in addition to the features
@@ -162,13 +165,17 @@ const ProfileMenuViewPixelTestParam kPixelTestParams[] = {
     {
         .pixel_test_param = {.test_suffix = "SignedIn_Sync"},
         .signin_status = SigninStatusPixelTestParam::kSignedInWithSync,
-        .disabled_features = {syncer::kReplaceSyncPromosWithSignInPromos},
+        .disabled_features =
+            {syncer::kReplaceSyncPromosWithSignInPromos,
+             syncer::kReplaceSyncPromosWithSigninPromosNewSignin},
     },
     {
         .pixel_test_param = {.test_suffix = "SignedIn_SyncPaused",
                              .use_dark_theme = true},
         .signin_status = SigninStatusPixelTestParam::kSignedInSyncPaused,
-        .disabled_features = {syncer::kReplaceSyncPromosWithSignInPromos},
+        .disabled_features =
+            {syncer::kReplaceSyncPromosWithSignInPromos,
+             syncer::kReplaceSyncPromosWithSigninPromosNewSignin},
     },
     {
         .pixel_test_param = {.test_suffix = "SignInPending"},
@@ -202,7 +209,9 @@ const ProfileMenuViewPixelTestParam kPixelTestParams[] = {
                              .use_dark_theme = true},
         .signin_status = SigninStatusPixelTestParam::kSignedInWithSync,
         .management_status = ManagementStatus::kSupervisedUser,
-        .disabled_features = {syncer::kReplaceSyncPromosWithSignInPromos},
+        .disabled_features =
+            {syncer::kReplaceSyncPromosWithSignInPromos,
+             syncer::kReplaceSyncPromosWithSigninPromosNewSignin},
     },
     {
         .pixel_test_param =
@@ -228,7 +237,9 @@ const ProfileMenuViewPixelTestParam kPixelTestParams[] = {
             },
         .signin_status = SigninStatusPixelTestParam::kSignedInWithSync,
         .management_status = ManagementStatus::kSupervisedUser,
-        .disabled_features = {syncer::kReplaceSyncPromosWithSignInPromos},
+        .disabled_features =
+            {syncer::kReplaceSyncPromosWithSignInPromos,
+             syncer::kReplaceSyncPromosWithSigninPromosNewSignin},
     },
     {
         .pixel_test_param =
@@ -306,7 +317,9 @@ const ProfileMenuViewPixelTestParam kPixelTestParams[] = {
         // behavior. Explicitly disable in this case.
         .extra_features_and_params =
             {{switches::kAvatarButtonSyncPromoForTesting, {}}},
-        .disabled_features = {syncer::kReplaceSyncPromosWithSignInPromos},
+        .disabled_features =
+            {syncer::kReplaceSyncPromosWithSignInPromos,
+             syncer::kReplaceSyncPromosWithSigninPromosNewSignin},
     },
     {
         .pixel_test_param = {.test_suffix = "SignedIn_HistorySyncEnabled"},
@@ -318,6 +331,13 @@ const ProfileMenuViewPixelTestParam kPixelTestParams[] = {
         .management_status = ManagementStatus::kAccountManaged,
         .sync_disabled = true,
     },
+    {.pixel_test_param = {.test_suffix = "AiSubscriptionAvatarRing_Light"},
+     .signin_status = SigninStatusPixelTestParam::kSignedInNoSync,
+     .with_ai_avatar_ring = true},
+    {.pixel_test_param = {.test_suffix = "AiSubscriptionAvatarRing_Dark",
+                          .use_dark_theme = true},
+     .signin_status = SigninStatusPixelTestParam::kSignedInNoSync,
+     .with_ai_avatar_ring = true},
 };
 
 }  // namespace
@@ -331,13 +351,6 @@ class ProfileMenuViewPixelTest
     // 1. Get default-disabled features.
     // Disabled by default but may be overridden by `extra_features_and_params`.
     base::flat_set<base::test::FeatureRef> disabled_features_set = {
-#if BUILDFLAG(IS_WIN)
-        // The real flag is always disabled for simplicity, it is actually being
-        // replaced by `switches::kAvatarButtonSyncPromoForTesting` in tests to
-        // ensure that all platforms runs the test. When the feature is launched
-        // those tests should remain (with the testing flag).
-        switches::kAvatarButtonSyncPromo,
-#endif
         // This feature is disabled by default as it is not compatible with
         // `syncer::kReplaceSyncPromosWithSignInPromos` (enabled by default in
         // the test suite). If this feature needs to be enabled, then
@@ -354,6 +367,11 @@ class ProfileMenuViewPixelTest
     std::vector<base::test::FeatureRefAndParams> enabled_features_and_params = {
         {features::kEnterpriseProfileBadgingForMenu, {}},
         {syncer::kReplaceSyncPromosWithSignInPromos, {}}};
+
+    if (GetParam().with_ai_avatar_ring) {
+      enabled_features_and_params.push_back(
+          {features::kEnableAiSubscriptionAvatarRing, {}});
+    }
 
     // 4. Get default-enabled features without params-disabled.
     std::vector<base::test::FeatureRefAndParams>
@@ -536,8 +554,7 @@ class ProfileMenuViewPixelTest
         account_info = SignInWithAccount(GetAccountManagementStatus(),
                                          signin::ConsentLevel::kSync);
         // Enable sync.
-        sync_service()->GetUserSettings()->SetInitialSyncFeatureSetupComplete(
-            syncer::SyncFirstSetupCompleteSource::BASIC_FLOW);
+        sync_service()->GetUserSettings()->SetInitialSyncFeatureSetupComplete();
 
         break;
       }
@@ -553,8 +570,7 @@ class ProfileMenuViewPixelTest
                                          signin::ConsentLevel::kSync);
 
         // Enable sync.
-        sync_service()->GetUserSettings()->SetInitialSyncFeatureSetupComplete(
-            syncer::SyncFirstSetupCompleteSource::BASIC_FLOW);
+        sync_service()->GetUserSettings()->SetInitialSyncFeatureSetupComplete();
 
         sync_service()->SetPersistentAuthError();
         identity_test_env()->SetInvalidRefreshTokenForPrimaryAccount();
@@ -655,6 +671,11 @@ class ProfileMenuViewPixelTest
           prefs::kGoogleServicesLastSyncingGaiaId,
           account_info.gaia.ToString());
     }
+
+    if (GetParam().with_ai_avatar_ring) {
+      browser()->profile()->GetPrefs()->SetInteger(
+          subscription_eligibility::prefs::kAiSubscriptionTier, 1);
+    }
   }
 
   // DialogBrowserTest:
@@ -680,16 +701,10 @@ class ProfileMenuViewPixelTest
 
  private:
   void OpenProfileMenu() {
-    BrowserView* browser_view =
-        BrowserView::GetBrowserViewForBrowser(browser());
-    OpenProfileMenuFromToolbar(browser_view->toolbar_button_provider());
-  }
-
-  void OpenProfileMenuFromToolbar(ToolbarButtonProvider* toolbar) {
     // Click the avatar button to open the menu.
-    views::View* avatar_button = toolbar->GetAvatarToolbarButton();
-    ASSERT_TRUE(avatar_button);
-    Click(avatar_button);
+    AvatarToolbarButtonTestAccessor avatar_accessor(browser());
+    ASSERT_TRUE(avatar_accessor.GetEnabled());
+    avatar_accessor.Click();
 
     ASSERT_TRUE(profile_menu_view());
     profile_menu_view()->set_close_on_deactivate(false);

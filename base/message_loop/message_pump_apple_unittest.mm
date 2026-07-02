@@ -4,15 +4,22 @@
 
 #include "base/message_loop/message_pump_apple.h"
 
-#include "base/apple/scoped_cftyperef.h"
-#include "base/callback_list.h"
+#import <AppKit/AppKit.h>
+
+#include <utility>
+
 #include "base/cancelable_callback.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback.h"
+#include "base/location.h"
 #include "base/memory/raw_ptr.h"
+#include "base/run_loop.h"
 #include "base/task/current_thread.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
+#include "base/test/scoped_run_loop_timeout.h"
 #include "base/test/task_environment.h"
+#include "base/time/time.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 @interface TestModalAlertCloser : NSObject

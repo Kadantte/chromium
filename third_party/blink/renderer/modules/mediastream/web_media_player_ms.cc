@@ -12,7 +12,6 @@
 #include <string>
 #include <utility>
 
-#include "base/debug/alias.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
@@ -64,19 +63,6 @@
 #include "third_party/blink/renderer/platform/wtf/cross_thread_copier_media.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
-
-// Put this macro in a scope to prevent `client_` from being GC'd.
-// This is important for any method that might be called from anywhere
-// where GC of the element is not prevented.  GC is prevented if the
-// call into `this` came from the element itself (directly or indirectly,
-// as long as the element's `this` is on the stack), or HasPendingActivation()
-// returns true.  In other cases, especially callbacks from the "outside
-// world", one should PREVENT_CLIENT_GC to keep the element from being
-// garbage collected.  Failure to do this can cause `this` to be destroyed
-// when the player is finalized.
-#define PREVENT_CLIENT_GC      \
-  auto client_copy_ = client_; \
-  base::debug::Alias(&client_copy_)
 
 namespace blink {
 
@@ -410,6 +396,12 @@ WebMediaPlayerMS::WebMediaPlayerMS(
 
 WebMediaPlayerMS::~WebMediaPlayerMS() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  // Ensure Shutdown() has been called.
+  CHECK(!client_);
+}
+
+void WebMediaPlayerMS::Shutdown() {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   SendLogMessage(
       String::Format("%s() [delegate_id=%d]", __func__, delegate_id_));
 
@@ -431,6 +423,8 @@ WebMediaPlayerMS::~WebMediaPlayerMS() {
   if (video_frame_provider_) {
     video_frame_provider_->Stop();
   }
+
+  stop_force_begin_frames_timer_.reset();
 
   // This must be destroyed before `compositor_` since it will grab a couple of
   // final metrics during destruction.
@@ -454,15 +448,18 @@ WebMediaPlayerMS::~WebMediaPlayerMS() {
     audio_renderer_->Stop();
   }
 
-  media_log_->AddEvent<media::MediaLogEvent::kWebMediaPlayerDestroyed>();
+  media_log_->OnWebMediaPlayerDestroyed();
 
   delegate_->PlayerGone(delegate_id_);
   delegate_->RemoveObserver(delegate_id_);
+  delegate_ = nullptr;
+  client_ = nullptr;
+  gpu_factories_ = nullptr;
+  weak_factory_.InvalidateWeakPtrsAndDoom();
 }
 
 void WebMediaPlayerMS::OnAudioRenderErrorCallback() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  PREVENT_CLIENT_GC;
 
   if (watch_time_reporter_)
     watch_time_reporter_->OnError(media::AUDIO_RENDERER_ERROR);
@@ -1085,7 +1082,7 @@ WebMediaPlayer::ReadyState WebMediaPlayerMS::GetReadyState() const {
 }
 
 WebString WebMediaPlayerMS::GetErrorMessage() const {
-  return WebString::FromUTF8(media_log_->GetErrorMessage());
+  return WebString::FromUtf8(media_log_->GetErrorMessage());
 }
 
 WebTimeRanges WebMediaPlayerMS::Buffered() const {
@@ -1110,22 +1107,25 @@ bool WebMediaPlayerMS::DidLoadingProgress() {
 
 void WebMediaPlayerMS::Paint(cc::PaintCanvas* canvas,
                              const gfx::Rect& rect,
-                             const cc::PaintFlags& flags) {
+                             const cc::PaintFlags& flags,
+                             bool acquire_texture_backing) {
   DVLOG(3) << __func__;
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
-  const scoped_refptr<media::VideoFrame> frame = compositor_->GetCurrentFrame();
+  scoped_refptr<media::VideoFrame> frame = compositor_->GetCurrentFrame();
 
   scoped_refptr<viz::RasterContextProvider> provider;
   if (frame && frame->HasSharedImage()) {
     provider = Platform::Current()->SharedMainThreadContextProvider();
     // GPU Process crashed.
-    if (!provider)
+    if (!provider) {
       return;
+    }
   }
   media::PaintCanvasVideoRenderer::PaintParams paint_params;
   paint_params.dest_rect = gfx::RectF(rect);
   paint_params.transformation = GetFrameTransformation(frame);
+  paint_params.acquire_texture_backing = acquire_texture_backing;
   video_renderer_.Paint(frame, canvas, flags, paint_params, provider.get());
 }
 
@@ -1322,7 +1322,6 @@ void WebMediaPlayerMS::OnFirstFrameReceived(
     bool is_opaque) {
   DVLOG(1) << __func__;
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  PREVENT_CLIENT_GC;
 
   has_first_frame_ = true;
   OnTransformChanged(video_transform);
@@ -1341,7 +1340,6 @@ void WebMediaPlayerMS::OnFirstFrameReceived(
 void WebMediaPlayerMS::OnOpacityChanged(bool is_opaque) {
   DVLOG(1) << __func__;
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  PREVENT_CLIENT_GC;
 
   opaque_ = is_opaque;
   if (!bridge_) {
@@ -1358,7 +1356,6 @@ void WebMediaPlayerMS::OnTransformChanged(
     media::VideoTransformation video_transform) {
   DVLOG(1) << __func__;
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  PREVENT_CLIENT_GC;
 
   if (!bridge_) {
     // Keep the old |video_layer_| alive until SetCcLayer() is called with a new
@@ -1406,9 +1403,29 @@ WebMediaPlayerMS::GetPaintCanvasVideoRenderer() {
   return &video_renderer_;
 }
 
+media::VideoFrameSharedImageCache* WebMediaPlayerMS::GetRGBSharedImageCache() {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  if (!rgb_shared_image_cache_) {
+    rgb_shared_image_cache_ =
+        std::make_unique<media::VideoFrameSharedImageCache>();
+  }
+  return rgb_shared_image_cache_.get();
+}
+
+media::VideoFrameSharedImageCache* WebMediaPlayerMS::GetYUVSharedImageCache() {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  if (!yuv_shared_image_cache_) {
+    yuv_shared_image_cache_ =
+        std::make_unique<media::VideoFrameSharedImageCache>();
+  }
+  return yuv_shared_image_cache_.get();
+}
+
 void WebMediaPlayerMS::ResetCanvasCache() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   video_renderer_.ResetCache();
+  rgb_shared_image_cache_.reset();
+  yuv_shared_image_cache_.reset();
 }
 
 void WebMediaPlayerMS::TriggerResize() {
@@ -1697,6 +1714,13 @@ void WebMediaPlayerMS::RegisterFrameSinkHierarchy() {
 void WebMediaPlayerMS::UnregisterFrameSinkHierarchy() {
   if (bridge_)
     bridge_->UnregisterFrameSinkHierarchy();
+}
+
+void WebMediaPlayerMS::ReparentFrameSinkHierarchy(
+    const viz::FrameSinkId& new_parent_frame_sink_id) {
+  if (bridge_) {
+    bridge_->ReparentFrameSinkHierarchy(new_parent_frame_sink_id);
+  }
 }
 
 }  // namespace blink

@@ -2,8 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
+
 #include "base/test/bind.h"
 #include "base/test/gtest_util.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
@@ -12,20 +15,22 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
+#include "chrome/browser/ui/side_panel/side_panel_entry.h"
+#include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
+#include "chrome/browser/ui/side_panel/side_panel_entry_key.h"
+#include "chrome/browser/ui/side_panel/side_panel_registry.h"
+#include "chrome/browser/ui/side_panel/side_panel_ui.h"
+#include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_prefs.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
 #include "chrome/browser/ui/toolbar/bookmark_sub_menu_model.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/side_panel/side_panel.h"
 #include "chrome/browser/ui/views/side_panel/side_panel_coordinator.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_entry.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_entry_id.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_entry_key.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_registry.h"
 #include "chrome/browser/ui/views/side_panel/side_panel_resize_area.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/views/toolbar/pinned_action_toolbar_button.h"
 #include "chrome/browser/ui/views/toolbar/pinned_toolbar_actions_container.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
@@ -78,16 +83,18 @@ class SidePanelInteractiveTest : public InteractiveBrowserTest {
 
   // Helper to register and show a lightweight side panel
   // that includes a ready indicator for synchronization.
-  auto RegisterAndShowBasicSidePanel(ui::ElementIdentifier ready_indicator_id) {
+  auto RegisterAndShowBasicSidePanel(
+      ui::ElementIdentifier ready_indicator_id,
+      SidePanelType panel_type = SidePanelType::kContent) {
     return Steps(
-        ActivateSurface(kBrowserViewElementId), Do([&, ready_indicator_id]() {
-          auto* registry = browser()
-                               ->GetActiveTabInterface()
-                               ->GetTabFeatures()
-                               ->side_panel_registry();
+        ActivateSurface(kBrowserViewElementId),
+        Do([&, ready_indicator_id, panel_type]() {
+          auto* registry =
+              SidePanelRegistry::From(browser()->GetActiveTabInterface());
           registry->Deregister(
               SidePanelEntry::Key(SidePanelEntry::Id::kCustomizeChrome));
           registry->Register(std::make_unique<SidePanelEntry>(
+              panel_type,
               SidePanelEntry::Key(SidePanelEntry::Id::kCustomizeChrome),
               base::BindRepeating(
                   [](ui::ElementIdentifier indicator_id, SidePanelEntryScope&) {
@@ -138,7 +145,7 @@ class SidePanelInteractiveTest : public InteractiveBrowserTest {
 };
 
 // This test is specifically to guard against this regression
-// (crbug.com/1428606).
+// (crbug.com/40900604).
 IN_PROC_BROWSER_TEST_F(SidePanelInteractiveTest, SidePanelNotShownOnPwa) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kSecondTabElementId);
   GURL second_tab_url("https://test.com");
@@ -160,10 +167,8 @@ IN_PROC_BROWSER_TEST_F(SidePanelInteractiveTest, SidePanelNotShownOnPwa) {
                   }),
                   second_tab_url),
       Do(([&]() {
-        auto* registry = browser()
-                             ->GetActiveTabInterface()
-                             ->GetTabFeatures()
-                             ->side_panel_registry();
+        auto* registry =
+            SidePanelRegistry::From(browser()->GetActiveTabInterface());
         registry->Register(std::make_unique<SidePanelEntry>(
             SidePanelEntry::Key(SidePanelEntry::Id::kCustomizeChrome),
             base::BindRepeating([](SidePanelEntryScope&) {
@@ -193,7 +198,7 @@ IN_PROC_BROWSER_TEST_F(SidePanelInteractiveTest, SidePanelNotShownOnPwa) {
   // App does not show side panel.
   EXPECT_FALSE(BrowserView::GetBrowserViewForBrowser(
                    app_browser->GetBrowserForMigrationOnly())
-                   ->contents_height_side_panel()
+                   ->side_panel()
                    ->GetVisible());
 }
 
@@ -270,8 +275,8 @@ class PinnedSidePanelInteractiveTest : public InteractiveFeaturePromoTest {
   PinnedSidePanelInteractiveTest()
       : InteractiveFeaturePromoTest(UseDefaultTrackerAllowingPromos(
             {feature_engagement::kIPHSidePanelGenericPinnableFeature})) {
-    scoped_feature_list_.InitAndDisableFeature(
-        features::kImmersiveReadAnything);
+    scoped_feature_list_.InitWithFeatures({},
+                                          {features::kImmersiveReadAnything});
   }
   ~PinnedSidePanelInteractiveTest() override = default;
 
@@ -285,14 +290,9 @@ class PinnedSidePanelInteractiveTest : public InteractiveFeaturePromoTest {
     PinnedToolbarActionsModel* const actions_model =
         PinnedToolbarActionsModel::Get(browser()->profile());
     actions_model->UpdatePinnedState(kActionShowChromeLabs, false);
-    if (tabs::GetTabSearchPosition(browser()->profile()) ==
-        tabs::TabSearchPosition::kToolbarButton) {
-      actions_model->UpdatePinnedState(kActionTabSearch, false);
-    }
+    actions_model->UpdatePinnedState(kActionTabSearch, false);
     views::test::WaitForAnimatingLayoutManager(
-        BrowserView::GetBrowserViewForBrowser(browser())
-            ->toolbar()
-            ->pinned_toolbar_actions_container());
+        GetPinnedToolbarActionsContainer());
   }
 
   auto OpenBookmarksSidePanel() {
@@ -313,9 +313,7 @@ class PinnedSidePanelInteractiveTest : public InteractiveFeaturePromoTest {
         [&]() {
           PinnedToolbarActionsContainer* const
               pinned_toolbar_actions_container =
-                  BrowserView::GetBrowserViewForBrowser(browser())
-                      ->toolbar()
-                      ->pinned_toolbar_actions_container();
+                  GetPinnedToolbarActionsContainer();
           return pinned_toolbar_actions_container->GetPinnedButtonFor(id) !=
                  nullptr;
         },
@@ -329,9 +327,12 @@ class PinnedSidePanelInteractiveTest : public InteractiveFeaturePromoTest {
   }
 
   PinnedToolbarActionsContainer* GetPinnedToolbarActionsContainer() {
-    return BrowserView::GetBrowserViewForBrowser(browser())
-        ->toolbar()
-        ->pinned_toolbar_actions_container();
+    CHECK(!features::IsWebUIPinnedToolbarActionsEnabled())
+        << "Test needs modification to support WebUIPinnedToolbarActions";
+    return static_cast<PinnedToolbarActionsContainer*>(
+        BrowserView::GetBrowserViewForBrowser(browser())
+            ->toolbar_button_provider()
+            ->GetPinnedToolbarActions());
   }
 
   auto OpenReadingModeSidePanel() {
@@ -403,10 +404,7 @@ IN_PROC_BROWSER_TEST_F(PinnedSidePanelInteractiveTest,
                        OpenCustomizeChromeSidePanel) {
   // Replace the contents of the CustomizeChrome side panel with an empty view
   // so it loads faster.
-  auto* registry = browser()
-                       ->GetActiveTabInterface()
-                       ->GetTabFeatures()
-                       ->side_panel_registry();
+  auto* registry = SidePanelRegistry::From(browser()->GetActiveTabInterface());
   registry->Deregister(
       SidePanelEntry::Key(SidePanelEntry::Id::kCustomizeChrome));
   registry->Register(std::make_unique<SidePanelEntry>(
@@ -518,7 +516,7 @@ IN_PROC_BROWSER_TEST_F(
       Check(([&]() {
         return actions_model->Contains(kActionSidePanelShowBookmarks);
       })),
-      WaitForShow(kPinnedActionToolbarButtonElementId),
+      WaitForShow(kPinnedToolbarActionShowSidePanelBookmarksElementId),
       CheckView(
           kPinnedToolbarActionsContainerElementId,
           [](views::View* view) { return view->children().size() == 2u; }),
@@ -542,7 +540,7 @@ IN_PROC_BROWSER_TEST_F(PinnedSidePanelInteractiveTest,
   RunTestSequence(
       // Ensure the side panel isn't open
       EnsureNotPresent(kSidePanelElementId),
-      EnsureNotPresent(kPinnedActionToolbarButtonElementId),
+      EnsureNotPresent(kPinnedToolbarActionShowSidePanelBookmarksElementId),
       // Open bookmarks sidepanel
       OpenBookmarksSidePanel(), WaitForShow(kSidePanelElementId),
       WaitForShow(kPinnedToolbarActionsContainerElementId),
@@ -551,9 +549,9 @@ IN_PROC_BROWSER_TEST_F(PinnedSidePanelInteractiveTest,
       PressButton(kSidePanelPinButtonElementId),
       CheckActionPinnedToToolbar(kActionSidePanelShowBookmarks, true),
       EnsurePresent(kPinnedToolbarActionsContainerElementId),
-      WaitForShow(kPinnedActionToolbarButtonElementId),
+      WaitForShow(kPinnedToolbarActionShowSidePanelBookmarksElementId),
       // Toggle side panel
-      PressButton(kPinnedActionToolbarButtonElementId),
+      PressButton(kPinnedToolbarActionShowSidePanelBookmarksElementId),
       WaitForHide(kSidePanelElementId));
 }
 
@@ -621,11 +619,11 @@ IN_PROC_BROWSER_TEST_F(PinnedSidePanelInteractiveTest,
   RunTestSequence(
       // Ensure the side panel isn't open
       EnsureNotPresent(kSidePanelElementId),
-      EnsureNotPresent(kPinnedActionToolbarButtonElementId),
+      EnsureNotPresent(kPinnedToolbarActionShowSidePanelBookmarksElementId),
       // Open bookmarks sidepanel
       OpenBookmarksSidePanel(), WaitForShow(kSidePanelElementId),
       WaitForShow(kPinnedToolbarActionsContainerElementId),
-      WaitForShow(kPinnedActionToolbarButtonElementId),
+      WaitForShow(kPinnedToolbarActionShowSidePanelBookmarksElementId),
       NameChildViewByType<PinnedActionToolbarButton>(
           kPinnedToolbarActionsContainerElementId, kBookmarksButton),
       WaitForShow(kBookmarksButton),
@@ -649,12 +647,198 @@ IN_PROC_BROWSER_TEST_F(PinnedSidePanelInteractiveTest, CloseSidePanel) {
   RunTestSequence(
       // Ensure the side panel isn't open
       EnsureNotPresent(kSidePanelElementId),
-      EnsureNotPresent(kPinnedActionToolbarButtonElementId),
+      EnsureNotPresent(kPinnedToolbarActionShowSidePanelBookmarksElementId),
       // Open bookmarks sidepanel
       OpenBookmarksSidePanel(), WaitForShow(kSidePanelElementId),
       WaitForShow(kPinnedToolbarActionsContainerElementId),
-      WaitForShow(kPinnedActionToolbarButtonElementId),
+      WaitForShow(kPinnedToolbarActionShowSidePanelBookmarksElementId),
       WaitForPromo(feature_engagement::kIPHSidePanelGenericPinnableFeature),
       PressButton(kSidePanelCloseButtonElementId),
       WaitForHide(kSidePanelElementId));
+}
+
+class SidePanelAnimationPerfUiTest : public SidePanelInteractiveTest {
+ public:
+  SidePanelAnimationPerfUiTest() = default;
+  ~SidePanelAnimationPerfUiTest() override = default;
+
+  auto StartCollectingSamples() {
+    return Do([this]() {
+      histogram_tester_ = std::make_unique<base::HistogramTester>();
+    });
+  }
+
+  auto OpenBookmarksSidePanel() {
+    return Steps(
+        PressButton(kToolbarAppMenuButtonElementId),
+        SelectMenuItem(AppMenuModel::kBookmarksMenuItem),
+        SelectMenuItem(BookmarkSubMenuModel::kShowBookmarkSidePanelItem),
+        WaitForEvent(kSidePanelElementId,
+                     SidePanel::kOpenAnimationCompletedEvent)
+            .SetMustBeVisibleAtStart(false));
+  }
+
+  auto OpenToolbarHeightSidePanel() {
+    DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTestSidePanelId);
+    return InParallel(
+        RunSubsequence(RegisterAndShowBasicSidePanel(kTestSidePanelId,
+                                                     SidePanelType::kToolbar)),
+        RunSubsequence(WaitForEvent(kSidePanelElementId,
+                                    SidePanel::kOpenAnimationCompletedEvent)
+                           .SetMustBeVisibleAtStart(false)));
+  }
+
+  auto CloseSidePanel() {
+    return Steps(PressButton(kSidePanelCloseButtonElementId),
+                 WaitForEvent(kSidePanelElementId,
+                              SidePanel::kCloseAnimationCompletedEvent),
+                 WaitForHide(kSidePanelElementId));
+  }
+
+ protected:
+  std::unique_ptr<base::HistogramTester> histogram_tester_;
+};
+
+IN_PROC_BROWSER_TEST_F(SidePanelAnimationPerfUiTest, OpenSidePanel) {
+  bool has_fps = false;
+  RunTestSequence(StartCollectingSamples(), OpenBookmarksSidePanel(),
+                  Do([this, &has_fps]() {
+                    histogram_tester_->ExpectTotalCount(
+                        "SidePanel.Open.TimeOfLongestAnimationStep", 1);
+                    has_fps = histogram_tester_->GetTotalCountForPrefix(
+                                  "SidePanel.Open.AnimationFPS") > 0;
+                  }),
+                  CheckResult(
+                      [this]() {
+                        return histogram_tester_->GetTotalSum(
+                            "SidePanel.Open.TimeOfLongestAnimationStep");
+                      },
+                      testing::Gt(0), "Check longest step is nonzero."),
+                  If([&] { return has_fps; },
+                     Then(CheckResult(
+                         [this]() {
+                           return histogram_tester_->GetTotalSum(
+                               "SidePanel.Open.AnimationFPS");
+                         },
+                         testing::Gt(0), "Check fps is nonzero.")),
+                     Else(Log("Compositor failed to render during test."))));
+}
+
+IN_PROC_BROWSER_TEST_F(SidePanelAnimationPerfUiTest, CloseSidePanel) {
+  bool has_fps = false;
+  RunTestSequence(OpenBookmarksSidePanel(), StartCollectingSamples(),
+                  CloseSidePanel(), Do([this, &has_fps]() {
+                    histogram_tester_->ExpectTotalCount(
+                        "SidePanel.Close.TimeOfLongestAnimationStep", 1);
+                    has_fps = histogram_tester_->GetTotalCountForPrefix(
+                                  "SidePanel.Close.AnimationFPS") > 0;
+                  }),
+                  CheckResult(
+                      [this]() {
+                        return histogram_tester_->GetTotalSum(
+                            "SidePanel.Close.TimeOfLongestAnimationStep");
+                      },
+                      testing::Gt(0), "Check longest step is nonzero."),
+                  If([&] { return has_fps; },
+                     Then(CheckResult(
+                         [this]() {
+                           return histogram_tester_->GetTotalSum(
+                               "SidePanel.Close.AnimationFPS");
+                         },
+                         testing::Gt(0), "Check fps is nonzero.")),
+                     Else(Log("Compositor failed to render during test."))));
+}
+
+IN_PROC_BROWSER_TEST_F(SidePanelAnimationPerfUiTest,
+                       OpenToolbarHeightSidePanel) {
+  bool has_fps = false;
+  RunTestSequence(
+      StartCollectingSamples(), OpenToolbarHeightSidePanel(),
+      Do([this, &has_fps]() {
+        histogram_tester_->ExpectTotalCount(
+            "SidePanelToolbarHeight.Open.TimeOfLongestAnimationStep", 1);
+        has_fps = histogram_tester_->GetTotalCountForPrefix(
+                      "SidePanelToolbarHeight.Open.AnimationFPS") > 0;
+      }),
+      CheckResult(
+          [this]() {
+            return histogram_tester_->GetTotalSum(
+                "SidePanelToolbarHeight.Open.TimeOfLongestAnimationStep");
+          },
+          testing::Gt(0), "Check longest step is nonzero."),
+      If([&] { return has_fps; },
+         Then(CheckResult(
+             [this]() {
+               return histogram_tester_->GetTotalSum(
+                   "SidePanelToolbarHeight.Open.AnimationFPS");
+             },
+             testing::Gt(0), "Check fps is nonzero.")),
+         Else(Log("Compositor failed to render during test."))));
+}
+
+IN_PROC_BROWSER_TEST_F(SidePanelAnimationPerfUiTest,
+                       CloseToolbarHeightSidePanel) {
+  bool has_fps = false;
+  RunTestSequence(
+      OpenToolbarHeightSidePanel(), StartCollectingSamples(), CloseSidePanel(),
+      Do([this, &has_fps]() {
+        histogram_tester_->ExpectTotalCount(
+            "SidePanelToolbarHeight.Close.TimeOfLongestAnimationStep", 1);
+        has_fps = histogram_tester_->GetTotalCountForPrefix(
+                      "SidePanelToolbarHeight.Close.AnimationFPS") > 0;
+      }),
+      CheckResult(
+          [this]() {
+            return histogram_tester_->GetTotalSum(
+                "SidePanelToolbarHeight.Close.TimeOfLongestAnimationStep");
+          },
+          testing::Gt(0), "Check longest step is nonzero."),
+      If([&] { return has_fps; },
+         Then(CheckResult(
+             [this]() {
+               return histogram_tester_->GetTotalSum(
+                   "SidePanelToolbarHeight.Close.AnimationFPS");
+             },
+             testing::Gt(0), "Check fps is nonzero.")),
+         Else(Log("Compositor failed to render during test."))));
+}
+
+IN_PROC_BROWSER_TEST_F(PinnedSidePanelInteractiveTest,
+                       PinActiveItemHighlightsButton) {
+  auto* registry = SidePanelRegistry::From(browser());
+  auto* entry = registry->GetEntryForKey(SidePanelEntry::Key(SidePanelEntryId::kReadingList));
+  ASSERT_TRUE(entry);
+  entry->set_should_show_ephemerally_in_toolbar(false);
+
+  RunTestSequence(
+      // Ensure the side panel isn't open and action is not pinned.
+      EnsureNotPresent(kSidePanelElementId),
+      CheckActionPinnedToToolbar(kActionSidePanelShowReadingList, false),
+
+      // Open reading list side panel.
+      ShowSidePanelForKey(SidePanelEntryKey(SidePanelEntry::Id::kReadingList)),
+      WaitForShow(kSidePanelElementId),
+
+      // Since ephemeral is disabled, no button for reading list should be added yet.
+      CheckActionPinnedToToolbar(kActionSidePanelShowReadingList, false),
+
+      // Pin reading list action.
+      Do(([&]() {
+        PinnedToolbarActionsModel::Get(browser()->profile())
+            ->UpdatePinnedState(kActionSidePanelShowReadingList, true);
+      })),
+
+      // Verify it is pinned and highlighted immediately.
+      CheckActionPinnedToToolbar(kActionSidePanelShowReadingList, true),
+      CheckPinnedToolbarActionsContainerChildInkDropState(0, true),
+
+      // Unpin reading list action while open.
+      Do(([&]() {
+        PinnedToolbarActionsModel::Get(browser()->profile())
+            ->UpdatePinnedState(kActionSidePanelShowReadingList, false);
+      })),
+
+      // Verify it is no longer pinned and is removed from the toolbar.
+      CheckActionPinnedToToolbar(kActionSidePanelShowReadingList, false)
+  );
 }

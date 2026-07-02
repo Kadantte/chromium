@@ -34,13 +34,10 @@
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/html/html_area_element.h"
 #include "third_party/blink/renderer/core/html/html_image_element.h"
-#include "third_party/blink/renderer/core/html/media/html_video_element.h"
-#include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/inspector/identifiers_factory.h"
 #include "third_party/blink/renderer/core/inspector/inspector_trace_events.h"
 #include "third_party/blink/renderer/core/layout/hit_test_result.h"
 #include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
-#include "third_party/blink/renderer/core/layout/layout_video.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/loader/resource/image_resource_content.h"
 #include "third_party/blink/renderer/core/paint/image_painter.h"
@@ -117,9 +114,9 @@ void LayoutImage::StyleDidChange(
     bool is_unsized = this->IsUnsizedImage();
     if (is_unsized) {
       Node* node = GetNode();
-      TRACE_EVENT_INSTANT_WITH_TIMESTAMP1(
-          "devtools.timeline", "LayoutImageUnsized", TRACE_EVENT_SCOPE_THREAD,
-          base::TimeTicks::Now(), "data", [&](perfetto::TracedValue ctx) {
+      TRACE_EVENT_INSTANT(
+          "devtools.timeline", "LayoutImageUnsized", base::TimeTicks::Now(),
+          "data", [&](perfetto::TracedValue ctx) {
             GetImageSizeChangeTracingData(std::move(ctx), node, GetFrame());
           });
     }
@@ -138,8 +135,6 @@ void LayoutImage::ImageChanged(WrappedImagePtr new_image,
   NOT_DESTROYED();
   DCHECK(View());
   DCHECK(View()->GetFrameView());
-  if (DocumentBeingDestroyed())
-    return;
 
   if (HasBoxDecorationBackground() || HasMask() || HasShapeOutside() ||
       HasReflection())
@@ -204,24 +199,12 @@ void LayoutImage::ImageChanged(WrappedImagePtr new_image,
   }
 }
 
-namespace {
-
-bool CanQueryNaturalSize(const LayoutImageResource& image_resource) {
-  if (RuntimeEnabledFeatures::
-          LayoutImageEmptyNaturalSizeBeforeSizeAvailableEnabled()) {
-    return image_resource.IsSizeAvailable();
-  }
-  return image_resource.HasImage();
-}
-
-}  // namespace
-
 bool LayoutImage::UpdateNaturalSizeIfNeeded() {
   NOT_DESTROYED();
   PhysicalNaturalSizingInfo new_natural_dimensions;
-  // If the image resource is not associated with an image then we set natural
+  // If the image resource has no image or image dimensions then we set natural
   // dimensions of 0x0 ("represents nothing" per HTML spec).
-  if (CanQueryNaturalSize(*image_resource_)) {
+  if (image_resource_->IsSizeAvailable()) {
     new_natural_dimensions = PhysicalNaturalSizingInfo::FromSizingInfo(
         image_resource_->GetNaturalDimensions(StyleRef().EffectiveZoom()));
   }
@@ -383,14 +366,6 @@ bool LayoutImage::ComputeBackgroundIsKnownToBeObscured() const {
     return false;
 
   return ForegroundIsKnownToBeOpaqueInRect(BackgroundPaintedExtent(), 0);
-}
-
-HTMLMapElement* LayoutImage::ImageMap() const {
-  NOT_DESTROYED();
-  auto* i = DynamicTo<HTMLImageElement>(GetNode());
-  return i ? i->GetTreeScope().GetImageMap(
-                 i->FastGetAttribute(html_names::kUsemapAttr))
-           : nullptr;
 }
 
 bool LayoutImage::NodeAtPoint(HitTestResult& result,

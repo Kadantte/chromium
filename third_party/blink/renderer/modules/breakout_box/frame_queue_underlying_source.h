@@ -13,6 +13,7 @@
 #include "media/base/audio_buffer.h"
 #include "media/base/video_frame.h"
 #include "third_party/blink/renderer/core/streams/underlying_source_base.h"
+#include "third_party/blink/renderer/core/timing/time_clamper.h"
 #include "third_party/blink/renderer/modules/breakout_box/frame_queue.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/heap/cross_thread_persistent.h"
@@ -73,6 +74,9 @@ class FrameQueueUnderlyingSource : public UnderlyingSourceBase {
 
   int NumPendingPullsForTesting() const;
   double DesiredSizeForTesting() const;
+  uint64_t TotalFrames() const;
+  uint64_t DiscardedFrames() const;
+  uint64_t DiscardedAndQueuedFrames() const;
 
   void Trace(Visitor*) const override;
 
@@ -159,6 +163,8 @@ class FrameQueueUnderlyingSource : public UnderlyingSourceBase {
   CrossThreadPersistent<FrameQueueUnderlyingSource<NativeFrameType>>
       transferred_source_ GUARDED_BY(lock_);
   int num_pending_pulls_ GUARDED_BY(lock_) = 0;
+  uint64_t total_frames_ GUARDED_BY(lock_) = 0;
+  uint64_t discarded_frames_ GUARDED_BY(lock_) = 0;
   // When nonempty, |device_id_| is used to monitor all frames queued by this
   // source or exposed to JS via the stream connected to this source.
   // Frame monitoring applies only to video. Audio is never monitored.
@@ -175,6 +181,7 @@ class FrameQueueUnderlyingSource : public UnderlyingSourceBase {
   bool realm_is_boostable_context_;
 
   std::optional<base::TimeTicks> first_frame_ticks_;
+  TimeClamper time_clamper_;
 };
 
 template <>

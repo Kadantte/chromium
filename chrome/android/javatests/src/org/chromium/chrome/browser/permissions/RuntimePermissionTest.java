@@ -18,13 +18,13 @@ import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.permissions.RuntimePermissionTestUtils.RuntimePromptResponse;
 import org.chromium.chrome.browser.permissions.RuntimePermissionTestUtils.TestAndroidPermissionDelegate;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.R;
 import org.chromium.components.permissions.DismissalType;
 import org.chromium.content_public.common.ContentSwitches;
 import org.chromium.ui.base.DeviceFormFactor;
@@ -42,7 +42,7 @@ public class RuntimePermissionTest {
     private static final String DOWNLOAD_TEST = "/chrome/test/data/android/download/get.html";
 
     private static final String DISMISS_TYPE_HISTOGRAM =
-            "Permissions.Prompt.Geolocation.ModalDialog.Dismissed.Method";
+            "Permissions.Prompt.GeolocationApproximateOrPrecise.ModalDialog.Dismissed.Method";
 
     private TestAndroidPermissionDelegate mTestAndroidPermissionDelegate;
 
@@ -175,7 +175,7 @@ public class RuntimePermissionTest {
                 /* waitForMissingPermissionPrompt= */ true,
                 /* waitForUpdater= */ true,
                 /* javascriptToExecute= */ null,
-                R.string.infobar_missing_location_permission_text);
+                R.string.message_missing_location_permission_text);
 
         histogramExpectation.assertExpected(
                 "Should record permission prompt dismissal due to OS deny in UMA");
@@ -200,7 +200,7 @@ public class RuntimePermissionTest {
                 /* waitForMissingPermissionPrompt= */ true,
                 /* waitForUpdater= */ true,
                 "getUserMediaAndStopLegacy({video: true, audio: false});",
-                R.string.infobar_missing_camera_permission_text);
+                R.string.message_missing_camera_permission_text);
     }
 
     @Test
@@ -222,7 +222,7 @@ public class RuntimePermissionTest {
                 /* waitForMissingPermissionPrompt= */ true,
                 /* waitForUpdater= */ true,
                 "getUserMediaAndStopLegacy({video: false, audio: true});",
-                R.string.infobar_missing_microphone_permission_text);
+                R.string.message_missing_microphone_permission_text);
     }
 
     // Disabled on android.emulator_12l_landscape - crbug.com/442769979.
@@ -249,7 +249,7 @@ public class RuntimePermissionTest {
                 /* waitForMissingPermissionPrompt= */ false,
                 /* waitForUpdater= */ true,
                 /* javascriptToExecute= */ null,
-                R.string.infobar_missing_location_permission_text);
+                R.string.message_missing_location_permission_text);
     }
 
     @Test
@@ -524,7 +524,7 @@ public class RuntimePermissionTest {
                 /* waitForMissingPermissionPrompt= */ true,
                 /* waitForUpdater= */ true,
                 "getUserMediaAndStopLegacy({video: true, audio: false});",
-                R.string.infobar_missing_camera_permission_text);
+                R.string.message_missing_camera_permission_text);
         histogramWatcher.assertExpected();
     }
 
@@ -550,7 +550,7 @@ public class RuntimePermissionTest {
                 /* waitForMissingPermissionPrompt= */ false,
                 /* waitForUpdater= */ true,
                 "getUserMediaAndStopLegacy({video: true, audio: false});",
-                R.string.infobar_missing_camera_permission_text);
+                R.string.message_missing_camera_permission_text);
         histogramWatcher.assertExpected();
     }
 }

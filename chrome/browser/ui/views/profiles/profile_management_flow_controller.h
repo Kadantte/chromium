@@ -12,7 +12,9 @@
 #include "base/timer/elapsed_timer.h"
 #include "chrome/browser/ui/profiles/profile_picker.h"
 #include "chrome/browser/ui/views/profiles/profile_management_types.h"
+#include "chrome/browser/ui/views/profiles/profile_picker_toolbar.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_web_contents_host.h"
+#include "components/web_modal/web_contents_modal_dialog_manager_delegate.h"
 #include "content/public/browser/web_contents.h"
 
 class Profile;
@@ -28,7 +30,8 @@ class ProfilePickerWebContentsHost;
 // will register and switch to the first step. Then as the user interacts with
 // the flow, this controller will handle instantiating and navigating between
 // the next steps.
-class ProfileManagementFlowController {
+class ProfileManagementFlowController
+    : public web_modal::WebContentsModalDialogManagerDelegate {
  public:
   // TODO(crbug.com/40237131): Split the steps more granularly across
   // logical steps instead of according to implementation details.
@@ -63,7 +66,14 @@ class ProfileManagementFlowController {
 
     kFinishFlow = 9,
 
-    kMaxValue = kFinishFlow,
+    // Renders the feature showcase single page app.
+    kFeatureShowcase = 10,
+
+    // Renders the finish or continue, a page which is displayed at the end of
+    // the First Run Experience.
+    kFinishOrContinue = 11,
+
+    kMaxValue = kFinishOrContinue,
   };
   // LINT.ThenChange(//tools/metrics/histograms/metadata/profile/enums.xml:ProfileManagementFlowStep)
 
@@ -72,7 +82,7 @@ class ProfileManagementFlowController {
   explicit ProfileManagementFlowController(ProfilePickerWebContentsHost* host,
                                            ClearHostClosure clear_host_callback,
                                            std::string_view flow_type_string);
-  virtual ~ProfileManagementFlowController();
+  ~ProfileManagementFlowController() override;
 
   // Starts the flow by registering and switching to the first step.
   virtual void Init() = 0;
@@ -96,6 +106,11 @@ class ProfileManagementFlowController {
   // returns back to the main picker screen (if the original EntryPoint was to
   // open the picker).
   virtual void CancelSigninFlow() = 0;
+
+  // Creates and configures the native toolbar builder with flow-specific
+  // buttons. Overrides in subclasses should retrieve the builder from the base
+  // class first to inherit common configurations (e.g. the back button).
+  virtual ProfilePickerToolbar::Builder CreateToolbarBuilder();
 
   // Picks the profile with `profile_path`.
   // `pick_profile_complete_callback` will be called on profile load.
@@ -154,7 +169,9 @@ class ProfileManagementFlowController {
 
   Step current_step() const;
 
-  ProfilePickerWebContentsHost* host() { return host_; }
+  ProfileManagementStepController* GetCurrentStepController() const;
+
+  ProfilePickerWebContentsHost* host() const { return host_; }
 
   // Creates the web contents associated with `profile` and stores them in
   // `signed_out_flow_web_contents_`.
@@ -162,6 +179,10 @@ class ProfileManagementFlowController {
 
   // Returns a pointer to `signed_out_flow_web_contents_`.
   content::WebContents* GetSignedOutFlowWebContents() const;
+
+  // web_modal::WebContentsModalDialogManagerDelegate:
+  web_modal::WebContentsModalDialogHost* GetWebContentsModalDialogHost(
+      content::WebContents* web_contents) override;
 
  private:
   // Structure that takes care of logging metrics based on the flow type and the
@@ -199,7 +220,7 @@ class ProfileManagementFlowController {
   // Called after a browser is open. Clears the host and then runs the callback.
   void CloseHostAndRunCallback(
       PostHostClearedCallback post_host_cleared_callback,
-      Browser* browser);
+      BrowserWindowInterface* browser);
 
   // The signed out flow web contents are used in some steps inside
   // `initialized_steps_`. They have to be destroyed after `initialized_steps_`.

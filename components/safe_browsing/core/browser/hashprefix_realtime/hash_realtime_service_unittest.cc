@@ -147,10 +147,8 @@ class TestOhttpKeyService : public OhttpKeyService {
     ohttp_key_ = ohttp_key;
   }
 
-  void NotifyLookupResponse(
-      const std::string& key,
-      int response_code,
-      scoped_refptr<net::HttpResponseHeaders> headers) override {
+  void NotifyLookupResponse(const std::string& key,
+                            int response_code) override {
     lookup_response_notified_ = true;
   }
 
@@ -257,12 +255,12 @@ class HashRealTimeServiceTest : public PlatformTest {
  protected:
   std::vector<FullHashStr> UrlToFullHashes(const GURL& url) {
     std::vector<FullHashStr> full_hashes;
-    V4ProtocolManagerUtil::UrlToFullHashes(url, &full_hashes);
+    SBProtocolManagerUtil::UrlToFullHashes(url, &full_hashes);
     return full_hashes;
   }
   FullHashStr UrlToSingleFullHash(const GURL& url) {
     std::vector<FullHashStr> full_hashes;
-    V4ProtocolManagerUtil::UrlToFullHashes(url, &full_hashes);
+    SBProtocolManagerUtil::UrlToFullHashes(url, &full_hashes);
     EXPECT_EQ(full_hashes.size(), 1u);
     return full_hashes[0];
   }
@@ -315,8 +313,12 @@ class HashRealTimeServiceTest : public PlatformTest {
   void ResetMetrics() {
     histogram_tester_ = std::make_unique<base::HistogramTester>();
   }
-  void CheckPreRequestMetrics(bool expect_cache_hit_all_prefixes,
-                              bool expected_backoff_mode_status) {
+  void CheckPreRequestMetrics(
+      bool expect_cache_hit_all_prefixes,
+      bool expected_backoff_mode_status,
+      std::optional<int> expected_when_entered_backoff_network_result,
+      std::optional<HashRealTimeService::OperationOutcome>
+          expected_when_entered_backoff_operation_outcome) {
     histogram_tester_->ExpectTotalCount(
         /*name=*/"SafeBrowsing.HPRT.GetCache.Time", /*expected_count=*/1);
     histogram_tester_->ExpectUniqueSample(
@@ -331,6 +333,33 @@ class HashRealTimeServiceTest : public PlatformTest {
           /*name=*/"SafeBrowsing.HPRT.BackoffState",
           /*sample=*/expected_backoff_mode_status,
           /*expected_bucket_count=*/1);
+    }
+
+    if (expected_when_entered_backoff_network_result.has_value()) {
+      histogram_tester_->ExpectUniqueSample(
+          /*name=*/
+          "SafeBrowsing.HPRT.BackoffEnabled.Network.Result.WhenEnteredBackoff",
+          /*sample=*/expected_when_entered_backoff_network_result.value(),
+          /*expected_bucket_count=*/1);
+    } else {
+      histogram_tester_->ExpectTotalCount(
+          /*name=*/
+          "SafeBrowsing.HPRT.BackoffEnabled.Network.Result.WhenEnteredBackoff",
+          /*expected_count=*/0);
+    }
+    if (expected_when_entered_backoff_operation_outcome.has_value()) {
+      histogram_tester_->ExpectUniqueSample(
+          /*name=*/
+          "SafeBrowsing.HPRT.BackoffEnabled.OperationOutcome."
+          "WhenEnteredBackoff",
+          /*sample=*/expected_when_entered_backoff_operation_outcome.value(),
+          /*expected_bucket_count=*/1);
+    } else {
+      histogram_tester_->ExpectTotalCount(
+          /*name=*/
+          "SafeBrowsing.HPRT.BackoffEnabled.OperationOutcome."
+          "WhenEnteredBackoff",
+          /*expected_count=*/0);
     }
   }
   void CheckPostSuccessfulRequestMetrics(int expected_threat_info_size) {
@@ -418,7 +447,10 @@ class HashRealTimeServiceTest : public PlatformTest {
         /*name=*/"SafeBrowsing.HPRT.Network.Result",
         /*expected_count=*/0);
   }
-  void CheckEnteringBackoffMetric(std::optional<int> expected_network_result) {
+  void CheckEnteringBackoffMetric(
+      std::optional<int> expected_network_result,
+      std::optional<HashRealTimeService::OperationOutcome>
+          expected_operation_outcome) {
     if (expected_network_result.has_value()) {
       histogram_tester_->ExpectUniqueSample(
           /*name=*/"SafeBrowsing.HPRT.Network.Result.WhenEnteringBackoff",
@@ -427,6 +459,16 @@ class HashRealTimeServiceTest : public PlatformTest {
     } else {
       histogram_tester_->ExpectTotalCount(
           /*name=*/"SafeBrowsing.HPRT.Network.Result.WhenEnteringBackoff",
+          /*expected_count=*/0);
+    }
+    if (expected_operation_outcome.has_value()) {
+      histogram_tester_->ExpectUniqueSample(
+          /*name=*/"SafeBrowsing.HPRT.OperationOutcome.WhenEnteringBackoff",
+          /*sample=*/expected_operation_outcome.value(),
+          /*expected_bucket_count=*/1);
+    } else {
+      histogram_tester_->ExpectTotalCount(
+          /*name=*/"SafeBrowsing.HPRT.OperationOutcome.WhenEnteringBackoff",
           /*expected_count=*/0);
     }
   }
@@ -510,7 +552,11 @@ class HashRealTimeServiceTest : public PlatformTest {
     WaitForSuccessfulHashRealtimeLookup(response_future, expected_threat_type);
 
     CheckPreRequestMetrics(/*expect_cache_hit_all_prefixes=*/false,
-                           /*expected_backoff_mode_status=*/false);
+                           /*expected_backoff_mode_status=*/false,
+                           /*expected_when_entered_backoff_network_result=*/
+                           std::nullopt,
+                           /*expected_when_entered_backoff_operation_outcome=*/
+                           std::nullopt);
     CheckRequestMetrics(
         /*expected_prefix_count=*/expected_prefix_count,
         /*expected_network_result=*/200,
@@ -571,7 +617,11 @@ class HashRealTimeServiceTest : public PlatformTest {
     WaitForUnsuccessfulHashRealtimeLookup(response_future);
 
     CheckPreRequestMetrics(/*expect_cache_hit_all_prefixes=*/false,
-                           /*expected_backoff_mode_status=*/false);
+                           /*expected_backoff_mode_status=*/false,
+                           /*expected_when_entered_backoff_network_result=*/
+                           std::nullopt,
+                           /*expected_when_entered_backoff_operation_outcome=*/
+                           std::nullopt);
     CheckRequestMetrics(
         /*expected_prefix_count=*/expected_prefix_count,
         /*expected_network_result=*/expected_network_result,
@@ -602,7 +652,11 @@ class HashRealTimeServiceTest : public PlatformTest {
     WaitForSuccessfulHashRealtimeLookup(response_future, expected_threat_type);
 
     CheckPreRequestMetrics(/*expect_cache_hit_all_prefixes=*/true,
-                           /*expected_backoff_mode_status=*/false);
+                           /*expected_backoff_mode_status=*/false,
+                           /*expected_when_entered_backoff_network_result=*/
+                           std::nullopt,
+                           /*expected_when_entered_backoff_operation_outcome=*/
+                           std::nullopt);
     CheckNoNetworkRequestMetric();
     CheckPostSuccessfulRequestMetrics(
         /*expected_threat_info_size=*/expected_threat_info_size);
@@ -615,7 +669,11 @@ class HashRealTimeServiceTest : public PlatformTest {
   // Starts a lookup on |url| when the service is in backoff mode and a request
   // should not be made. Confirms that the lookup's callback is called noting
   // the lookup failed.
-  void RunBackoffRequestTest(const GURL& url) {
+  void RunBackoffRequestTest(
+      const GURL& url,
+      int expected_when_entered_backoff_network_result,
+      HashRealTimeService::OperationOutcome
+          expected_when_entered_backoff_operation_outcome) {
     EXPECT_CALL(*webui_delegate_, AddToHPRTLookupPings(_, _, _)).Times(0);
     EXPECT_CALL(*webui_delegate_, AddToHPRTLookupResponses(_, _)).Times(0);
     auto num_requests = network_context_.total_requests();
@@ -625,7 +683,9 @@ class HashRealTimeServiceTest : public PlatformTest {
     WaitForUnsuccessfulHashRealtimeLookup(response_future);
 
     CheckPreRequestMetrics(/*expect_cache_hit_all_prefixes=*/false,
-                           /*expected_backoff_mode_status=*/true);
+                           /*expected_backoff_mode_status=*/true,
+                           expected_when_entered_backoff_network_result,
+                           expected_when_entered_backoff_operation_outcome);
     CheckNoNetworkRequestMetric();
     CheckNoPostSuccessfulRequestMetrics();
     CheckOperationOutcomeMetric(
@@ -743,7 +803,8 @@ TEST_F(HashRealTimeServiceTest, TestLookup_OneHash) {
        SB_THREAT_TYPE_URL_PHISHING, 1},
       {V5::ThreatType::TRICK_TO_BILL, std::nullopt, SB_THREAT_TYPE_BILLING, 1},
       // Irrelevant threat types should return safe.
-      {V5::ThreatType::API_ABUSE, std::nullopt, SB_THREAT_TYPE_SAFE, 0},
+      {V5::ThreatType::NOTIFICATION_ABUSE, std::nullopt, SB_THREAT_TYPE_SAFE,
+       0},
   };
 
   GURL url = GURL("https://example.test");
@@ -823,7 +884,7 @@ TEST_F(HashRealTimeServiceTest,
       {CreateFullHashProto({V5::ThreatType::SOCIAL_ENGINEERING},
                            UrlToFullHashes(url)[0]),
        CreateFullHashProto({V5::ThreatType::MALWARE}, UrlToFullHashes(url)[2]),
-       CreateFullHashProto({V5::ThreatType::API_ABUSE,
+       CreateFullHashProto({V5::ThreatType::NOTIFICATION_ABUSE,
                             V5::ThreatType::POTENTIALLY_HARMFUL_APPLICATION},
                            UrlToFullHashes(url)[4]),
        CreateFullHashProto(
@@ -832,7 +893,8 @@ TEST_F(HashRealTimeServiceTest,
            UrlToFullHashes(url)[6]),
        CreateFullHashProto(
            {V5::ThreatType::MALWARE, V5::ThreatType::SOCIAL_ENGINEERING,
-            V5::ThreatType::UNWANTED_SOFTWARE, V5::ThreatType::API_ABUSE},
+            V5::ThreatType::UNWANTED_SOFTWARE,
+            V5::ThreatType::NOTIFICATION_ABUSE},
            UrlToFullHashes(url)[8]),
        CreateFullHashProto({V5::ThreatType::SOCIAL_ENGINEERING},
                            UrlToFullHashes(url)[15]),
@@ -858,7 +920,7 @@ TEST_F(HashRealTimeServiceTest, TestLookup_MaxHashes_OnlyIrrelevant) {
                            UrlToHashPrefixes(url)[0] + rest_of_hash),
        CreateFullHashProto({V5::ThreatType::MALWARE},
                            UrlToHashPrefixes(url)[2] + rest_of_hash),
-       CreateFullHashProto({V5::ThreatType::API_ABUSE,
+       CreateFullHashProto({V5::ThreatType::NOTIFICATION_ABUSE,
                             V5::ThreatType::POTENTIALLY_HARMFUL_APPLICATION},
                            UrlToFullHashes(url)[4]),
        CreateFullHashProto(
@@ -867,7 +929,8 @@ TEST_F(HashRealTimeServiceTest, TestLookup_MaxHashes_OnlyIrrelevant) {
            UrlToHashPrefixes(url)[6] + rest_of_hash),
        CreateFullHashProto(
            {V5::ThreatType::MALWARE, V5::ThreatType::SOCIAL_ENGINEERING,
-            V5::ThreatType::UNWANTED_SOFTWARE, V5::ThreatType::API_ABUSE},
+            V5::ThreatType::UNWANTED_SOFTWARE,
+            V5::ThreatType::NOTIFICATION_ABUSE},
            UrlToHashPrefixes(url)[8] + rest_of_hash),
        CreateFullHashProto({V5::ThreatType::SOCIAL_ENGINEERING},
                            UrlToHashPrefixes(url)[15] + rest_of_hash)},
@@ -1274,7 +1337,7 @@ TEST_F(HashRealTimeServiceTest, TestFullyCached_MaxHashes) {
        CreateFullHashProto(
            {V5::ThreatType::MALWARE, V5::ThreatType::SOCIAL_ENGINEERING},
            UrlToFullHashes(url)[2]),
-       CreateFullHashProto({V5::ThreatType::API_ABUSE,
+       CreateFullHashProto({V5::ThreatType::NOTIFICATION_ABUSE,
                             V5::ThreatType::POTENTIALLY_HARMFUL_APPLICATION},
                            UrlToFullHashes(url)[4])});
   ResetMetrics();
@@ -1517,11 +1580,15 @@ TEST_F(HashRealTimeServiceTest, TestBackoffModeSet) {
   EXPECT_FALSE(service_->backoff_operator_->IsInBackoffMode());
   RunSimpleFailingRequest(url);
   EXPECT_FALSE(service_->backoff_operator_->IsInBackoffMode());
-  CheckEnteringBackoffMetric(/*expected_network_result=*/std::nullopt);
+  CheckEnteringBackoffMetric(/*expected_network_result=*/std::nullopt,
+                             /*expected_operation_outcome=*/std::nullopt);
   ResetMetrics();
   RunSimpleFailingRequest(url);
   EXPECT_TRUE(service_->backoff_operator_->IsInBackoffMode());
-  CheckEnteringBackoffMetric(/*expected_network_result=*/net::ERR_FAILED);
+  CheckEnteringBackoffMetric(
+      /*expected_network_result=*/net::ERR_FAILED,
+      /*expected_operation_outcome=*/
+      HashRealTimeService::OperationOutcome::kNetworkError);
   ResetMetrics();
 
   // Backoff mode should still be set until 5 minutes later.
@@ -1541,7 +1608,8 @@ TEST_F(HashRealTimeServiceTest, TestBackoffModeSet) {
   EXPECT_FALSE(service_->backoff_operator_->IsInBackoffMode());
   RunSimpleFailingRequest(url);
   EXPECT_FALSE(service_->backoff_operator_->IsInBackoffMode());
-  CheckEnteringBackoffMetric(/*expected_network_result=*/std::nullopt);
+  CheckEnteringBackoffMetric(/*expected_network_result=*/std::nullopt,
+                             /*expected_operation_outcome=*/std::nullopt);
 }
 
 TEST_F(HashRealTimeServiceTest, TestBackoffModeSet_RetriableError) {
@@ -1555,7 +1623,8 @@ TEST_F(HashRealTimeServiceTest, TestBackoffModeSet_RetriableError) {
   RunSimpleFailingRequest(url, /*net_error=*/net::ERR_INTERNET_DISCONNECTED);
   RunSimpleFailingRequest(url, /*net_error=*/net::ERR_NETWORK_CHANGED);
   EXPECT_FALSE(service_->backoff_operator_->IsInBackoffMode());
-  CheckEnteringBackoffMetric(/*expected_network_result=*/std::nullopt);
+  CheckEnteringBackoffMetric(/*expected_network_result=*/std::nullopt,
+                             /*expected_operation_outcome=*/std::nullopt);
 
   // Retriable errors should not reset the backoff counter back to 0.
   RunSimpleFailingRequest(url, /*net_error=*/net::ERR_FAILED);
@@ -1564,7 +1633,10 @@ TEST_F(HashRealTimeServiceTest, TestBackoffModeSet_RetriableError) {
   EXPECT_FALSE(service_->backoff_operator_->IsInBackoffMode());
   RunSimpleFailingRequest(url, /*net_error=*/net::ERR_FAILED);
   EXPECT_TRUE(service_->backoff_operator_->IsInBackoffMode());
-  CheckEnteringBackoffMetric(/*expected_network_result=*/net::ERR_FAILED);
+  CheckEnteringBackoffMetric(
+      /*expected_network_result=*/net::ERR_FAILED,
+      /*expected_operation_outcome=*/
+      HashRealTimeService::OperationOutcome::kNetworkError);
 }
 
 TEST_F(HashRealTimeServiceTest, TestBackoffModeNotSet_MissingOhttpKey) {
@@ -1585,7 +1657,8 @@ TEST_F(HashRealTimeServiceTest, TestBackoffModeNotSet_MissingOhttpKey) {
 
   // Key related failure should not affect the backoff status.
   EXPECT_FALSE(service_->backoff_operator_->IsInBackoffMode());
-  CheckEnteringBackoffMetric(/*expected_network_result=*/std::nullopt);
+  CheckEnteringBackoffMetric(/*expected_network_result=*/std::nullopt,
+                             /*expected_operation_outcome=*/std::nullopt);
 }
 
 TEST_F(HashRealTimeServiceTest, TestBackoffModeRespected_FullyCached) {
@@ -1627,7 +1700,11 @@ TEST_F(HashRealTimeServiceTest, TestBackoffModeRespected_NotCached) {
   // Since the response is not already cached, the lookup will fail since the
   // service is in backoff mode. This is checked within |RunBackoffRequestTest|.
   ResetMetrics();
-  RunBackoffRequestTest(url);
+  RunBackoffRequestTest(
+      url,
+      /*expected_when_entered_backoff_network_result=*/net::ERR_FAILED,
+      /*expected_when_entered_backoff_operation_outcome=*/
+      HashRealTimeService::OperationOutcome::kNetworkError);
 }
 
 TEST_F(HashRealTimeServiceTest, IsHashDetailMoreSevere) {

@@ -258,7 +258,7 @@
       field_template: "primitive",
       // See the definition of the PseudoId enum for details. This field_size
       // must be updated when public IDs are added or removed.
-      field_size: 24,
+      field_size: 26,
       default_value: "kPseudoIdNone",
       type_name: "unsigned",
       reset_on_new_style: true,
@@ -408,16 +408,6 @@
       default_value: "nullptr",
       wrapper_pointer_name: "Member",
       invalidate: ["reshape"],
-    },
-    {
-      name: "TextAutosizingMultiplier",
-      inherited: true,
-      field_template: "primitive",
-      type_name: "float",
-      field_group: "inherited",
-      default_value: "1.0",
-      computed_style_custom_functions: ["setter"],
-      invalidate: ["layout", "paint"],
     },
     {
       name: "CursorData",
@@ -584,6 +574,33 @@
       wrapper_pointer_name: "std::unique_ptr",
       include_paths: ["third_party/blink/renderer/core/style/counter_directives.h"],
       computed_style_custom_functions: ["getter", "setter"],
+    },
+    {
+      name: "CounterIncrementList",
+      field_template: "pointer",
+      type_name: "CounterPropertyList",
+      field_group: "*",
+      default_value: "nullptr",
+      wrapper_pointer_name: "std::unique_ptr",
+      include_paths: ["third_party/blink/renderer/core/style/counter_directives.h"],
+    },
+    {
+      name: "CounterResetList",
+      field_template: "pointer",
+      type_name: "CounterPropertyList",
+      field_group: "*",
+      default_value: "nullptr",
+      wrapper_pointer_name: "std::unique_ptr",
+      include_paths: ["third_party/blink/renderer/core/style/counter_directives.h"],
+    },
+    {
+      name: "CounterSetList",
+      field_template: "pointer",
+      type_name: "CounterPropertyList",
+      field_group: "*",
+      default_value: "nullptr",
+      wrapper_pointer_name: "std::unique_ptr",
+      include_paths: ["third_party/blink/renderer/core/style/counter_directives.h"],
     },
     {
       name: "Animations",
@@ -753,6 +770,14 @@
       invalidate: ["compositing"],
     },
     {
+      name: "HasCurrentClipPathAnimation",
+      field_template: "primitive",
+      type_name: "bool",
+      field_group: "*",
+      default_value: "false",
+      invalidate: ["compositing"],
+    },
+    {
       name: "HasCurrentBackgroundColorAnimation",
       field_template: "primitive",
       type_name: "bool",
@@ -841,6 +866,13 @@
       type_name: "bool",
       default_value: "false",
     },
+    // Should be set if we need our children blockified for non-display reasons.
+    {
+      name: "ForcesBlockifiesChildren",
+      field_template: "monotonic_flag",
+      field_group: "*",
+      default_value: "false",
+    },
     // Plugins require accelerated compositing for reasons external to blink.
     // In which case, we need to update the ComputedStyle on the
     // LayoutEmbeddedObject, so store this bit so that the style actually changes
@@ -894,31 +926,6 @@
       default_value: "true",
       inherited: true,
       computed_style_protected_functions: ["getter"],
-    },
-    {
-      name: "WillChangeProperties",
-      field_template: "external",
-      type_name: "Vector<CSSPropertyID>",
-      field_group: "misc->will-change",
-      default_value: "Vector<CSSPropertyID>()",
-      include_paths: ["third_party/blink/renderer/platform/wtf/vector.h",
-                      "third_party/blink/renderer/core/css/css_property_names.h"],
-      invalidate: ["compositing"],
-    },
-    {
-      name: "WillChangeContents",
-      field_template: "primitive",
-      type_name: "bool",
-      field_group: "misc->will-change",
-      default_value: "false",
-    },
-    {
-      name: "WillChangeScrollPosition",
-      field_template: "primitive",
-      type_name: "bool",
-      field_group: "misc->will-change",
-      default_value: "false",
-      invalidate: ["compositing"],
     },
     {
       name: "HasAutoColumnWidth",
@@ -1134,10 +1141,9 @@
       invalidate: ["layout", "paint"],
     },
     {
-      name: "EffectiveZIndexZero",
+      name: "AllowsZIndex",
       field_template: "primitive",
       type_name: "bool",
-      field_group: "*",
       default_value: "false",
     },
     {
@@ -1240,6 +1246,7 @@
       field_template: "primitive",
       type_name: "bool",
       default_value: "false",
+      invalidate: ["inert"],
     },
     {
       // https://drafts.csswg.org/css-ui-4/#inertness
@@ -1251,6 +1258,7 @@
       field_template: "primitive",
       type_name: "bool",
       default_value: "false",
+      invalidate: ["inert"],
     },
     {
       // We need to go through LayoutObject::SetStyle with
@@ -1322,6 +1330,14 @@
     {
       // True when @media is used within @function, false otherwise.
       name: "AffectedByFunctionalMedia",
+      field_template: "monotonic_flag",
+      field_group: "*",
+      default_value: "false",
+    },
+    {
+      // True when @navigation is used within if(), or @function, false
+      // otherwise.
+      name: "AffectedByFunctionalNavigation",
       field_template: "monotonic_flag",
       field_group: "*",
       default_value: "false",
@@ -1419,6 +1435,40 @@
       field_group: "*",
       default_value: "false",
       invalidate: ["layout"]
+    },
+    // We store the `continue` and `max-lines` line-clamp longhands in extra
+    // fields so we can use the same storage whether we're exposing the
+    // longhands, or whether we're only exposing line-clamp as a longhand.
+    {
+      name: "Continue",
+      field_group: "*",
+      field_template: "keyword",
+      keywords: ["normal", "collapse", "-webkit-legacy"],
+      default_value: "normal",
+      invalidate: ["layout", "paint"],
+    },
+    {
+      name: "MaxLines",
+      field_group: "*",
+      field_template: "external",
+      include_paths: ["third_party/blink/renderer/core/style/max_lines_data.h"],
+      default_value: "MaxLinesData(0, true)",
+      type_name: "MaxLinesData",
+      keywords: ["auto"],
+      invalidate: ["layout", "paint"],
+    },
+    {
+      // This corresponds to `block-ellipsis`, except it's only used when we're
+      // exposing line-clamp as a longhand. The difference with `continue` and
+      // `max-lines` is that the `block-ellipsis` longhand is inherited, whereas
+      // when setting this field it won't inherit.
+      name: "LineClampInternalBlockEllipsis",
+      field_group: "*",
+      field_template: "keyword",
+      keywords: ["ellipsis", "no-ellipsis"],
+      type_name: "EBlockEllipsis",
+      default_value: "no-ellipsis",
+      invalidate: ["layout", "paint"],
     }
   ],
 }

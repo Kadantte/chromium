@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "base/lazy_instance.h"
+#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -40,7 +41,7 @@
 #include "ui/views/views_export.h"
 #include "ui/views/win/pen_event_processor.h"
 #include "ui/views/win/scoped_enable_unadjusted_mouse_events_win.h"
-#include "ui/views/win/user_resize_detector.h"
+#include "ui/views/win/user_resize_move_detector.h"
 
 namespace gfx {
 class ImageSkia;
@@ -90,6 +91,9 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
                                         public ui::InputMethodObserver,
                                         public ui::WindowEventTarget,
                                         public ui::AXFragmentRootDelegateWin {
+  // TODO(https://crbug.com/495981317): Remove this macro.
+  ADVANCED_MEMORY_SAFETY_CHECKS();
+
  public:
   // See WindowImpl for details on |debugging_id|.
   static std::unique_ptr<HWNDMessageHandler> Create(
@@ -101,11 +105,17 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
 
   ~HWNDMessageHandler() override;
 
+  base::WeakPtr<HWNDMessageHandler> GetWeakPtr() {
+    return msg_handler_weak_factory_.GetWeakPtr();
+  }
+
   virtual void Init(HWND parent, const gfx::Rect& bounds);
   virtual void InitModalType(ui::mojom::ModalType modal_type);
 
   virtual void Close();
   virtual void CloseNow();
+
+  void DestroyHandler();
 
   virtual gfx::Rect GetWindowBoundsInScreen() const;
   virtual gfx::Rect GetClientAreaBoundsInScreen() const;
@@ -162,6 +172,12 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   virtual bool RunMoveLoop(const gfx::Vector2d& drag_offset,
                            bool hide_on_escape);
   virtual void EndMoveLoop();
+
+  // Returns true if any HWndMessageHandler is in a native move/resize loop.
+  static bool IsInNativeMoveResizeLoop();
+
+  // Returns true if any HWNDMessageHandler is in a native menu loop.
+  static bool IsInNativeMenuLoop();
 
   // Tells the HWND its client area has changed.
   virtual void SendFrameChanged();
@@ -750,7 +766,7 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
 
   PenEventProcessor pen_processor_;
 
-  UserResizeDetector user_resize_detector_;
+  UserResizeMoveDetector user_resize_move_detector_;
 
   // Stores a pointer to the WindowEventTarget interface implemented by this
   // class. Allows callers to retrieve the interface pointer.
@@ -795,8 +811,8 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   // glass. Defaults to false.
   bool dwm_transition_desired_;
 
-  // True if HandleWindowSizeChanging has been called in the delegate, but not
-  // HandleClientSizeChanged.
+  // True if a size-changing WM_WINDOWPOSCHANGING has been observed but the
+  // corresponding client size change hasn't been processed yet.
   bool sent_window_size_changing_;
 
   // This is used to keep track of whether a WM_WINDOWPOSCHANGED has
@@ -893,7 +909,8 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   // This is a map of the HMONITOR to full screeen window instance. It is safe
   // to keep a raw pointer to the HWNDMessageHandler instance as we track the
   // window destruction and ensure that the map is cleaned up.
-  using FullscreenWindowMonitorMap = std::map<HMONITOR, HWNDMessageHandler*>;
+  using FullscreenWindowMonitorMap =
+      std::map<HMONITOR, raw_ptr<HWNDMessageHandler>>;
   static base::LazyInstance<FullscreenWindowMonitorMap>::DestructorAtExit
       fullscreen_monitor_map_;
 
@@ -907,6 +924,12 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
 
   base::ScopedObservation<ui::InputMethod, ui::InputMethodObserver>
       observation_{this};
+
+  bool delete_pending_ = false;
+
+  // Returns true if the message handler has been destroyed, and CHECKs that
+  // kDeferHWNDMessageHandlerDestruction is not enabled in that case.
+  static bool IsDestroyed(const base::WeakPtr<HWNDMessageHandler>& ref);
 
   // The WeakPtrFactories below (one inside the
   // CR_MSG_MAP_CLASS_DECLARATIONS macro and autohide_factory_) must

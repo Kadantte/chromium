@@ -28,6 +28,7 @@
 #include "components/tabs/public/tab_group_tab_collection.h"
 #include "components/web_modal/modal_dialog_host.h"
 #include "components/web_modal/web_contents_modal_dialog_host.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -166,6 +167,15 @@ void TabModel::SetGroup(std::optional<tab_groups::TabGroupId> group) {
   group_changed_callback_list_.Notify(this, group_);
 }
 
+void TabModel::SetBlocked(bool blocked) {
+  if (blocked_ == blocked) {
+    return;
+  }
+
+  blocked_ = blocked;
+  blocked_state_changed_callback_list_.Notify(this, blocked_);
+}
+
 void TabModel::WillBecomeHidden(base::PassKey<TabStripModel>) {
   will_become_hidden_callback_list_.Notify(this);
 }
@@ -190,6 +200,28 @@ base::WeakPtr<TabInterface> TabModel::GetWeakPtr() {
 
 content::WebContents* TabModel::GetContents() const {
   return contents_;
+}
+
+void TabModel::LoadIfNeeded() {
+  if (contents_ && contents_->GetController().NeedsReload()) {
+    contents_->GetController().LoadIfNecessary();
+  }
+}
+
+std::u16string TabModel::GetTitle() const {
+  return contents_ ? contents_->GetTitle() : std::u16string();
+}
+
+GURL TabModel::GetURL() const {
+  return contents_ ? contents_->GetLastCommittedURL() : GURL();
+}
+
+base::Time TabModel::GetLastActiveTime() const {
+  return contents_ ? contents_->GetLastActiveTime() : base::Time();
+}
+
+Profile* TabModel::GetProfile() const {
+  return Profile::FromBrowserContext(contents_->GetBrowserContext());
 }
 
 base::CallbackListSubscription TabModel::RegisterWillDiscardContents(
@@ -253,6 +285,11 @@ base::CallbackListSubscription TabModel::RegisterGroupChanged(
   return group_changed_callback_list_.Add(std::move(callback));
 }
 
+base::CallbackListSubscription TabModel::RegisterBlockedStateChanged(
+    TabInterface::BlockedStateChangedCallback callback) {
+  return blocked_state_changed_callback_list_.Add(std::move(callback));
+}
+
 bool TabModel::CanShowModalUI() const {
   return !showing_modal_ui_;
 }
@@ -278,7 +315,7 @@ BrowserWindowInterface* TabModel::GetBrowserWindowInterface() {
 }
 
 const BrowserWindowInterface* TabModel::GetBrowserWindowInterface() const {
-  return GetModelForTabInterface()->delegate()->GetBrowserWindowInterface();
+  return const_cast<TabModel*>(this)->GetBrowserWindowInterface();
 }
 
 tabs::TabFeatures* TabModel::GetTabFeatures() {
@@ -365,8 +402,8 @@ TabStripModel* TabModel::GetModelForTabInterface() const {
 // called from here instead of manually doing it in TabStripModel.
 void TabModel::UpdateProperties() {
   bool pinned = false;
-  std::optional<tab_groups::TabGroupId> group = std::nullopt;
-  std::optional<split_tabs::SplitTabId> split = std::nullopt;
+  std::optional<tab_groups::TabGroupId> group;
+  std::optional<split_tabs::SplitTabId> split;
 
   TabCollection* ancestor = parent_collection_;
   while (ancestor) {
@@ -421,12 +458,14 @@ void TabModel::WriteIntoTrace(perfetto::TracedValue context) const {
 
 std::unique_ptr<content::WebContents> TabModel::DiscardContents(
     std::unique_ptr<content::WebContents> contents) {
+  CHECK_EQ(contents_->GetBrowserContext(), contents->GetBrowserContext());
   will_discard_contents_callback_list_.Notify(this, contents_, contents.get());
   contents_->RemoveUserData(tabs::TabLookupFromWebContents::UserDataKey());
   std::unique_ptr<content::WebContents> old_contents =
       std::move(contents_owned_);
   contents_owned_ = std::move(contents);
   contents_ = contents_owned_.get();
+  WebContentsObserver::Observe(contents_);
 
   const SessionID session_id = sessions::SessionTabHelper::IdForTab(contents_);
   CHECK(session_id.is_valid());

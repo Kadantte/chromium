@@ -165,6 +165,8 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   WebMediaPlayerImpl& operator=(const WebMediaPlayerImpl&) = delete;
   ~WebMediaPlayerImpl() override;
 
+  void Shutdown() override;
+
   // WebSurfaceLayerBridgeObserver implementation.
   void OnWebLayerUpdated() override;
   void RegisterContentsLayer(cc::Layer* layer) override;
@@ -178,6 +180,7 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
 
   // Playback controls.
   void Play() override;
+  void UnlockBackgroundPlayback() override;
   void Pause(PauseReason pause_reason) override;
   void Seek(double seconds) override;
   void SetRate(double rate) override;
@@ -202,10 +205,13 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   // ImageBitmap, printing and capturing capabilities.
   void Paint(cc::PaintCanvas* canvas,
              const gfx::Rect& rect,
-             const cc::PaintFlags& flags) override;
+             const cc::PaintFlags& flags,
+             bool acquire_texture_backing) override;
   scoped_refptr<media::VideoFrame> GetCurrentFrameThenUpdate() override;
   std::optional<media::VideoFrame::ID> CurrentFrameId() const override;
   media::PaintCanvasVideoRenderer* GetPaintCanvasVideoRenderer() override;
+  media::VideoFrameSharedImageCache* GetRGBSharedImageCache() override;
+  media::VideoFrameSharedImageCache* GetYUVSharedImageCache() override;
 
   // True if the loaded media has a playable video/audio track.
   bool HasVideo() const override;
@@ -220,6 +226,10 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   gfx::Size NaturalSize() const override;
 
   gfx::Size VisibleSize() const override;
+
+  media::VideoTransformation GetVideoTransformation() const override;
+
+  media::VideoSpatialFormat GetSpatialFormat() const override;
 
   // Getters of playback state.
   bool Paused() const override;
@@ -278,9 +288,10 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   // WebMediaPlayerDelegate::Observer implementation.
   void OnPageHidden() override;
   void OnPageShown() override;
+  void OnIdleTimeout() override;
+
   void OnFrameHidden() override;
   void OnFrameShown() override;
-  void OnIdleTimeout() override;
 
   void RequestRemotePlaybackDisabled(bool disabled) override;
   void RequestMediaRemoting() override;
@@ -331,6 +342,8 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   base::WeakPtr<WebMediaPlayer> AsWeakPtr() override;
   void RegisterFrameSinkHierarchy() override;
   void UnregisterFrameSinkHierarchy() override;
+  void ReparentFrameSinkHierarchy(
+      const viz::FrameSinkId& new_parent_frame_sink_id) override;
 
   void RecordVideoOcclusionState(std::string_view occlusion_state) override;
   void SetVisibilityRatioAtPlaybackStart(double ratio) override;
@@ -450,7 +463,8 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
 
 #if BUILDFLAG(ENABLE_HLS_DEMUXER)
   void GetUrlData(const GURL& gurl,
-                  bool ignore_cache,
+                  media::DataSource::CacheMode cache_mode,
+                  media::DataSource::EncodingMode encoding_mode,
                   base::OnceCallback<void(scoped_refptr<UrlData>)> cb);
   base::SequenceBound<media::HlsDataSourceProvider> GetHlsDataSourceProvider()
       override;
@@ -480,8 +494,8 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   // Called after synchronous or asynchronous MemoryDataSource initialization.
   void MemoryDataSourceInitialized(bool success, size_t data_size);
 
-  // Called if the |MultiBufferDataSource| is redirected.
-  void OnDataSourceRedirected();
+  // Called if the data source becomes CORS tainted.
+  void OnDataSourceTainted(const media::DataSource* data_source);
 
   // Called when the data source is downloading or paused.
   void NotifyDownloading(bool is_downloading);
@@ -736,7 +750,7 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   // Notifies the `client_` and the `delegate_` about metadata change.
   void DidMediaMetadataChange();
 
-  const raw_ptr<WebLocalFrame> frame_;
+  raw_ptr<WebLocalFrame> frame_ = nullptr;
 
   WebMediaPlayer::NetworkState network_state_ =
       WebMediaPlayer::kNetworkStateEmpty;
@@ -827,8 +841,13 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   CorsMode cors_mode_ = kCorsModeUnspecified;
   bool is_cache_disabled_ = false;
 
-  const raw_ptr<MediaPlayerClient> client_;
-  const raw_ptr<WebMediaPlayerEncryptedMediaClient> encrypted_client_;
+  // Flag for shortcutting the WouldTaintOrigin check. When this is true, there
+  // is no reason to ask the data source vis-a-vis the demuxer manager. Once
+  // this flag is set, it may never be unset.
+  bool is_origin_tainted_ = false;
+
+  raw_ptr<MediaPlayerClient> client_ = nullptr;
+  raw_ptr<WebMediaPlayerEncryptedMediaClient> encrypted_client_ = nullptr;
 
   // WebMediaPlayer notifies the |delegate_| of playback state changes using
   // |delegate_id_|; an id provided after registering with the delegate.  The
@@ -841,7 +860,7 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   // before the frame is destroyed). RenderFrameImpl owns |delegate_| and is
   // guaranteed to outlive |this|; thus it is safe to store |delegate_| as a raw
   // pointer.
-  raw_ptr<WebMediaPlayerDelegate> delegate_;
+  raw_ptr<WebMediaPlayerDelegate> delegate_ = nullptr;
   int delegate_id_ = 0;
 
   // The playback state last reported to |delegate_|, to avoid setting duplicate
@@ -857,7 +876,7 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   // Members for notifying upstream clients about internal memory usage.  The
   // |adjust_allocated_memory_cb_| must only be called on |main_task_runner_|.
   base::RepeatingTimer memory_usage_reporting_timer_;
-  raw_ptr<v8::Isolate> isolate_;
+  raw_ptr<v8::Isolate> isolate_ = nullptr;
   NO_UNIQUE_ADDRESS V8ExternalMemoryAccounterBase external_memory_accounter_;
   int64_t last_reported_memory_usage_ = 0;
   std::unique_ptr<media::MemoryDumpProviderProxy> main_thread_mem_dumper_;
@@ -872,7 +891,7 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   raw_ptr<const base::TickClock> tick_clock_ = nullptr;
 
   std::unique_ptr<BufferedDataSourceHostImpl> buffered_data_source_host_;
-  const raw_ptr<UrlIndex> url_index_;
+  raw_ptr<UrlIndex> url_index_ = nullptr;
   scoped_refptr<viz::RasterContextProvider> raster_context_provider_;
 
   // Video rendering members.
@@ -883,6 +902,8 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   std::unique_ptr<VideoFrameCompositor>
       compositor_;  // Deleted on |vfc_task_runner_|.
   media::PaintCanvasVideoRenderer video_renderer_;
+  media::VideoFrameSharedImageCache rgb_shared_image_cache_;
+  media::VideoFrameSharedImageCache yuv_shared_image_cache_;
 
   // The compositor layer for displaying the video content when using composited
   // playback.
@@ -1018,7 +1039,7 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
 
   // Whether the video requires a user gesture to resume after it was paused in
   // the background. Affects the value of ShouldPausePlaybackWhenHidden().
-  bool video_locked_when_paused_when_hidden_ = false;
+  bool allow_background_video_playback_ = true;
 
   // Whether embedded media experience is currently enabled.
   bool embedded_media_experience_enabled_ = false;
@@ -1105,6 +1126,11 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
   // suspended.
   bool pending_oneshot_suspend_ = false;
 
+  // Last rendered status sent to the player from the containing frame.
+  bool is_frame_hidden_ = false;
+
+  // Whether we should pause playback when the frame is hidden due to the
+  // "media-playback-while-not-visible" permission policy.
   bool should_pause_when_frame_is_hidden_ = false;
 
   bool is_dominant_visible_content_ = false;
@@ -1124,6 +1150,13 @@ class PLATFORM_EXPORT WebMediaPlayerImpl
 
   // Count the number of times a video frame is being readback.
   unsigned video_frame_readback_count_ = 0;
+
+#if BUILDFLAG(IS_WIN)
+  // The media time when a hardware context reset occurs. Used to prevent having
+  // an infinite loop of the same error.
+  std::optional<base::TimeDelta> media_time_on_last_hardware_context_reset_;
+  bool has_reported_hardware_context_reset_recovery_umas_ = false;
+#endif  // BUILDFLAG(IS_WIN)
 
   base::WeakPtr<WebMediaPlayerImpl> weak_this_;
   base::WeakPtrFactory<WebMediaPlayerImpl> weak_factory_{this};

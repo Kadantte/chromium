@@ -13,7 +13,7 @@
 #include "base/test/gmock_expected_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
-#include "base/test/trace_test_utils.h"
+#include "base/test/tracing/trace_test_utils.h"
 #include "base/trace_event/trace_config.h"
 #include "base/trace_event/trace_log.h"
 #include "components/persistent_cache/backend_storage.h"
@@ -32,8 +32,8 @@ static constexpr size_t kDefaultMemoryCacheSizeForTesting = 1 << 16;
 class GpuPersistentCacheTest : public testing::Test {
  public:
   void SetUp() override {
-    cache_ = base::MakeRefCounted<GpuPersistentCache>("Test",
-                                                      MakeDefaultMemoryCache());
+    memory_cache_ = MakeDefaultMemoryCache();
+    cache_ = base::MakeRefCounted<GpuPersistentCache>("Test", memory_cache_);
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
     backend_storage_.emplace(persistent_cache::Client::kTest,
                              persistent_cache::BackendType::kSqlite,
@@ -61,6 +61,7 @@ class GpuPersistentCacheTest : public testing::Test {
   base::ScopedTempDir temp_dir_;
   std::optional<persistent_cache::BackendStorage> backend_storage_;
   scoped_refptr<GpuPersistentCache> cache_;
+  scoped_refptr<MemoryCache> memory_cache_;
 };
 
 TEST_F(GpuPersistentCacheTest,
@@ -228,6 +229,18 @@ void GpuPersistentCacheTest::RunStoreAndLoadDataMultiThreaded(int num_threads) {
   }
 }
 
+// Tests that storing Dawn/Vulkan monolithic VkPipelineCache data doesn't store
+// anything in the memory cache.
+TEST_F(GpuPersistentCacheTest, StoreVkPersistentCache) {
+  InitializeCache();
+
+  const std::string key = "my_keyMonolithicVkPipelineCache";
+  const std::string value = "my_value";
+  cache_->StoreData(key.c_str(), key.size(), value.c_str(), value.size());
+
+  EXPECT_FALSE(memory_cache_->Find(key));
+}
+
 // Tests that the cache can be safely written to and read from by multiple
 // threads concurrently.
 TEST_F(GpuPersistentCacheTest, StoreAndLoadDataMultiThreaded) {
@@ -260,7 +273,7 @@ class GpuPersistentCacheAsyncTest : public GpuPersistentCacheTest {
     auto pending_backend = backend_storage_->MakePendingBackend(
         base::FilePath(FILE_PATH_LITERAL("test")),
         /*single_connection=*/true, /*journal_mode_wal=*/true);
-    if (!pending_backend) {
+    if (!pending_backend.has_value()) {
       ADD_FAILURE() << "Failed to make pending backend for test cache";
       return nullptr;
     }
@@ -269,7 +282,8 @@ class GpuPersistentCacheAsyncTest : public GpuPersistentCacheTest {
     options.task_runner = base::SingleThreadTaskRunner::GetCurrentDefault();
     options.max_pending_bytes_to_write = max_pending_bytes_to_write;
     auto async_cache = base::MakeRefCounted<GpuPersistentCache>(
-        "TestAsync", MakeDefaultMemoryCache(), std::move(options));
+        "TestAsync", MakeDefaultMemoryCache(),
+        GpuPersistentCache::MetadataOpts{}, std::move(options));
     async_cache->InitializeCache(*std::move(pending_backend));
     return async_cache;
   }
@@ -402,6 +416,49 @@ TEST_F(GpuPersistentCacheAsyncTest,
   EXPECT_EQ(std::string(buffer.begin(), buffer.end()), value);
 }
 
+// Tests that LoadData returns 0 if the provided buffer is smaller than the
+// data.
+TEST_F(GpuPersistentCacheTest, LoadToPartialBuffer) {
+  const std::string key = "my_key";
+  const std::string value = "my_value";
+  cache_->StoreData(key.c_str(), key.size(), value.c_str(), value.size());
+
+  std::vector<char> buffer(value.size() / 2);
+  size_t loaded_size =
+      cache_->LoadData(key.c_str(), key.size(), buffer.data(), buffer.size());
+
+  EXPECT_EQ(loaded_size, 0u);
+}
+
+// Tests that LoadData returns the data size if the provided buffer is larger
+// than the data.
+TEST_F(GpuPersistentCacheTest, LoadToLargerBuffer) {
+  const std::string key = "my_key";
+  const std::string value = "my_value";
+  cache_->StoreData(key.c_str(), key.size(), value.c_str(), value.size());
+
+  std::vector<char> buffer(value.size() * 2);
+  size_t loaded_size =
+      cache_->LoadData(key.c_str(), key.size(), buffer.data(), buffer.size());
+
+  EXPECT_EQ(loaded_size, value.size());
+  EXPECT_EQ(std::string(buffer.begin(), buffer.begin() + loaded_size), value);
+}
+
+// Tests that GLBlobCacheGet returns 0 if the provided buffer is smaller than
+// the data.
+TEST_F(GpuPersistentCacheTest, GLBlobCacheGetReadPartialBuffer) {
+  const std::string key = "my_key";
+  const std::string value = "my_value";
+  cache_->StoreData(key.c_str(), key.size(), value.c_str(), value.size());
+
+  std::vector<char> buffer(value.size() / 2);
+  int64_t loaded_size = cache_->GLBlobCacheGet(key.c_str(), key.size(),
+                                               buffer.data(), buffer.size());
+
+  EXPECT_EQ(loaded_size, 0);
+}
+
 // Test that the persistent cache uses the memory backing if no database files
 // are set
 TEST_F(GpuPersistentCacheTest, MemoryBackingOnly) {
@@ -427,7 +484,7 @@ TEST_F(GpuPersistentCacheTest, MemoryBackingSyncedToDisk) {
   {
     // Store the data to the cache without initializing the database files
     auto cache = base::MakeRefCounted<GpuPersistentCache>(
-        "Test", MakeDefaultMemoryCache());
+        "Test", MakeDefaultMemoryCache(), GpuPersistentCache::MetadataOpts{});
     cache->StoreData(key.c_str(), key.size(), value.c_str(), value.size());
 
     // Initialize the cache, the memory storage will be written to disk.
@@ -526,6 +583,95 @@ TEST_F(GpuPersistentCacheTest, ReOpenCacheFromFile) {
         std::string(memory_entry->Data().begin(), memory_entry->Data().end()),
         value);
   }
+}
+
+TEST_F(GpuPersistentCacheTest, MetadataFirstEntriesLoadedToMemory) {
+  constexpr size_t key_count = 3;
+  const std::array<std::string, key_count> keys = {
+      "my_key0",
+      "my_key1",
+      "my_key2",
+  };
+  const std::string value = "my_value";
+
+  // Enable metadata with a preload count of all the keys minus one to confirm
+  // that the correct amount of entries are preloaded
+  GpuPersistentCache::MetadataOpts metadata_enabled;
+  metadata_enabled.enabled = true;
+  metadata_enabled.preload_count = key_count - 1;
+
+  {
+    // Store the data to the cache without initializing the database files
+    auto cache = base::MakeRefCounted<GpuPersistentCache>(
+        "Test", MakeDefaultMemoryCache(), metadata_enabled);
+    ASSERT_OK_AND_ASSIGN(
+        auto pending_backend,
+        backend_storage_->MakePendingBackend(
+            base::FilePath(FILE_PATH_LITERAL("MemoryBackingSyncedToDisk")),
+            /*single_connection=*/true, /*journal_mode_wal=*/true));
+    cache->InitializeCache(std::move(pending_backend));
+
+    // Attempt to load the element from the cache. This will add it to the
+    // metadata of first read entries.
+    std::vector<char> buffer(value.size());
+    for (size_t i = 0; i < key_count; i++) {
+      size_t loaded_size = cache->LoadData(keys[i].c_str(), keys[i].size(),
+                                           buffer.data(), buffer.size());
+      EXPECT_EQ(0u, loaded_size) << i;
+
+      // Store the entry so it's in the disk cache.
+      cache->StoreData(keys[i].c_str(), keys[i].size(), value.c_str(),
+                       value.size());
+    }
+
+    // Make sure the metadata is flushed.
+    cache->FlushMetadataForTesting();
+  }
+
+  // Reload the same persistent cache from disk
+  {
+    auto memory_cache = MakeDefaultMemoryCache();
+    auto cache = base::MakeRefCounted<GpuPersistentCache>("Test", memory_cache,
+                                                          metadata_enabled);
+    ASSERT_OK_AND_ASSIGN(
+        auto pending_backend,
+        backend_storage_->MakePendingBackend(
+            base::FilePath(FILE_PATH_LITERAL("MemoryBackingSyncedToDisk")),
+            /*single_connection=*/true, /*journal_mode_wal=*/true));
+    cache->InitializeCache(std::move(pending_backend));
+
+    // The Metadata used to preload the one entry into the memory cache.
+    for (size_t i = 0; i < key_count; i++) {
+      auto entry = memory_cache->Find(keys[i]);
+      if (i < key_count - 1) {
+        EXPECT_NE(nullptr, entry) << i;
+      } else {
+        EXPECT_EQ(nullptr, entry) << i;
+      }
+    }
+  }
+}
+
+// Test fixture which is friends with the CacheMetadata internal class in
+// GpuPersistentCache
+class GpuPersistentCacheMetadataTest : public testing::Test {};
+
+// Test serialization and deserialization functions with various edge-case keys
+TEST_F(GpuPersistentCacheMetadataTest, SerializeDeserialize) {
+  GpuPersistentCache::CacheMetadata source_data;
+  source_data.first_loaded_keys = {
+      "a",
+      "",
+      std::string("\0a", 2),
+      std::string("\0\0", 2),
+      std::string(2048, 'a'),
+  };
+
+  base::HeapArray<uint8_t> serialized_data = source_data.Serialize();
+
+  GpuPersistentCache::CacheMetadata deserialized_data =
+      GpuPersistentCache::CacheMetadata::Deserialize(serialized_data);
+  EXPECT_EQ(source_data.first_loaded_keys, deserialized_data.first_loaded_keys);
 }
 
 }  // namespace gpu

@@ -5,14 +5,14 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_FILLING_AUTOFILL_AI_FIELD_FILLING_ENTITY_UTIL_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_FILLING_AUTOFILL_AI_FIELD_FILLING_ENTITY_UTIL_H_
 
-#include <optional>
 #include <string>
-#include <utility>
+#include <string_view>
+#include <vector>
 
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
-#include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/browser/filling/field_filling_util.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-forward.h"
 #include "components/autofill/core/common/unique_ids.h"
 
@@ -39,7 +39,7 @@ base::flat_set<FieldGlobalId> GetFieldsFillableByAutofillAi(
     const AutofillClient& client);
 
 // Returns the value from `entity` to fill into `field`.
-std::u16string GetFillValueForEntity(
+FillingValueAndType GetFillingValueAndTypeForEntity(
     const EntityInstance& entity,
     base::span<const AutofillFieldWithAttributeType> fields_and_types,
     const AutofillField& field,
@@ -53,6 +53,15 @@ bool WillFillSensitiveAttributes(const EntityInstance& entity,
                                  const FormStructure& form,
                                  const Section& section,
                                  std::string_view app_locale);
+
+// Returns whether filling `form`'s `section` with `entity` will require a
+// server fetch. This returns true only if the form contains fields that match
+// sensitive attributes that are currently masked, and the feature
+// `features::kAutofillAiWalletPrivatePasses` is enabled.
+bool WillRequireServerFetch(const EntityInstance& entity,
+                            const FormStructure& form,
+                            const Section& section,
+                            std::string_view app_locale);
 
 }  // namespace autofill
 

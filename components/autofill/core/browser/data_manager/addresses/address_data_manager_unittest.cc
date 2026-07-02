@@ -19,6 +19,7 @@
 #include "base/uuid.h"
 #include "build/buildflag.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager_test_utils.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_i18n_api.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile_test_api.h"
 #include "components/autofill/core/browser/data_quality/addresses/profile_token_quality_test_api.h"
@@ -310,8 +311,6 @@ TEST_F(AddressDataManagerTest, GetProfiles_Order) {
 }
 
 TEST_F(AddressDataManagerTest, GetProfilesToSuggest_NameEmailOrder) {
-  base::test::ScopedFeatureList scoped_feature_list{
-      features::kAutofillEnableSupportForNameAndEmail};
   base::Time now = base::Time::Now();
   AutofillProfile profile1 = test::GetFullProfile();
   profile1.usage_history().set_use_date(now - base::Hours(2));
@@ -1261,7 +1260,8 @@ TEST_F(AddressDataManagerTest,
       /*picture_url=*/"");
   identity_test_env_.UpdatePersistentErrorOfRefreshTokenForAccount(
       account_info.account_id,
-      GoogleServiceAuthError(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS));
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
   sync_service_.SetPersistentAuthError();
 
   // User is still signed in.
@@ -1276,27 +1276,10 @@ TEST_F(AddressDataManagerTest,
   EXPECT_FALSE(address_data_manager().IsEligibleForAddressAccountStorage());
 }
 
-TEST_F(AddressDataManagerTest, AutofillSyncToggleAvailableInTransportMode) {
-  identity_test_env_.ClearPrimaryAccount();
-  MakePrimaryAccountAvailable(/*use_sync_transport_mode=*/true,
-                              identity_test_env_, sync_service_);
-  RecreateAddressDataManager();
-  const CoreAccountInfo& account = sync_service_.GetAccountInfo();
-  identity_test_env_.SimulateSuccessfulFetchOfAccountInfo(
-      account.account_id, account.email, account.gaia,
-      /*hosted_domain=*/"", "Full Name", "Given Name", "en-US",
-      /*picture_url=*/"");
-
-
-  prefs_->SetBoolean(::prefs::kExplicitBrowserSignin, false);
-  EXPECT_FALSE(address_data_manager().IsAutofillSyncToggleAvailable());
-}
-
 TEST_F(AddressDataManagerTest, AutofillSyncToggleNotAvailableWithSigninPromos) {
   base::test::ScopedFeatureList feature_list{
       syncer::kReplaceSyncPromosWithSignInPromos};
 
-  prefs_->SetBoolean(::prefs::kExplicitBrowserSignin, true);
   EXPECT_FALSE(address_data_manager().IsAutofillSyncToggleAvailable());
 }
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
@@ -1304,9 +1287,6 @@ TEST_F(AddressDataManagerTest, AutofillSyncToggleNotAvailableWithSigninPromos) {
 // Tests that any `kAccountNameEmail` is created on construction of
 // `AddressDataManager`.
 TEST_F(AddressDataManagerTest, CreateAccountNameEmailProfileAfterInitalLoad) {
-  base::test::ScopedFeatureList feature_list{
-      features::kAutofillEnableSupportForNameAndEmail};
-
   const CoreAccountInfo core_info =
       identity_test_env_.identity_manager()->GetPrimaryAccountInfo(
           signin::ConsentLevel::kSignin);
@@ -1320,40 +1300,10 @@ TEST_F(AddressDataManagerTest, CreateAccountNameEmailProfileAfterInitalLoad) {
                   &AutofillProfile::record_type,
                   AutofillProfile::RecordType::kAccountNameEmail)));
 }
-// Tests that `kAccountNameEmail` is deleted if the feature got disabled.
-TEST_F(AddressDataManagerTest, RemoveAccountNameEmailProfileIfFeatureDisabled) {
-  base::test::ScopedFeatureList feature_list{
-      features::kAutofillEnableSupportForNameAndEmail};
-
-  const CoreAccountInfo core_info =
-      identity_test_env_.identity_manager()->GetPrimaryAccountInfo(
-          signin::ConsentLevel::kSignin);
-  identity_test_env_.SimulateSuccessfulFetchOfAccountInfo(
-      core_info.account_id, core_info.email, core_info.gaia, "", "Full Name",
-      "Full", "en-US", "");
-  RecreateAddressDataManager();
-
-  // Verify that the profile got created.
-  ASSERT_THAT(address_data_manager().GetProfiles(),
-              ElementsAre(testing::Property(
-                  &AutofillProfile::record_type,
-                  AutofillProfile::RecordType::kAccountNameEmail)));
-
-  feature_list.Reset();
-  feature_list.InitAndDisableFeature(
-      features::kAutofillEnableSupportForNameAndEmail);
-  RecreateAddressDataManager();
-  EXPECT_THAT(address_data_manager().GetProfilesByRecordType(
-                  AutofillProfile::RecordType::kAccountNameEmail),
-              testing::IsEmpty());
-}
 
 // Tests the race condition where the user signs out while the profiles are
 // still loading from the database.
 TEST_F(AddressDataManagerTest, RemoveNameEmailProfileOnSignOutWhileLoading) {
-  base::test::ScopedFeatureList scoped_feature_list{
-      features::kAutofillEnableSupportForNameAndEmail};
-
   // Add `kAccountNameEmail` profile.
   sync_service_.SetSignedIn(signin::ConsentLevel::kSignin);
   AutofillProfile profile = test::AccountNameEmailProfile();

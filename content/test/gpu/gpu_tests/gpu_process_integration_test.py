@@ -126,7 +126,9 @@ class GpuProcessIntegrationTest(gpu_integration_test.GpuIntegrationTest):
         ('GpuProcess_webgl_disabled_extension',
          'gpu/functional_webgl_disabled_extension.html'),
         ('GpuProcess_webgpu_iframe_removed', 'gpu/webgpu-iframe-removed.html'),
+        ('GpuProcess_vulkan_vma_race', 'gpu/vulkan_vma_race.html'),
         ('GpuProcess_visibility', 'about:blank'),
+        ('GpuProcess_webgl_y16_uploads', 'gpu/webgl_y16_uploads.html'),
     )
 
     for t in tests:
@@ -473,6 +475,15 @@ class GpuProcessIntegrationTest(gpu_integration_test.GpuIntegrationTest):
       self.fail(
           f'Visibility callback call count expected 3, got {callback_count}')
 
+  def _GpuProcess_webgl_y16_uploads(self, test_path: str) -> None:
+    self.RestartBrowserIfNecessaryWithArgs([
+        '--use-fake-device-for-media-stream=device-count=2',
+        '--use-fake-ui-for-media-stream',
+        '--autoplay-policy=no-user-gesture-required',
+        '--use-angle=swiftshader',
+    ])
+    self._NavigateAndWait(test_path)
+
   def _GpuProcess_disable_gpu_and_swiftshader(self, test_path: str) -> None:
     # Disable SwiftShader, GPU process should launch for display compositing.
     self.RestartBrowserIfNecessaryWithArgs(
@@ -805,6 +816,11 @@ class GpuProcessIntegrationTest(gpu_integration_test.GpuIntegrationTest):
   def _GpuProcess_webgpu_iframe_removed(self, test_path: str) -> None:
     self.RestartBrowserIfNecessaryWithArgs([])
     self._NavigateAndWait(test_path)
+
+  def _GpuProcess_vulkan_vma_race(self, test_path: str) -> None:
+    self.RestartBrowserIfNecessaryWithArgs([])
+    self._NavigateAndWait(test_path)
+    self._VerifyGpuProcessPresent()
 
   @classmethod
   def ExpectationsFiles(cls) -> list[str]:

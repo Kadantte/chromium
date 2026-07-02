@@ -48,6 +48,7 @@
 #include "third_party/blink/renderer/platform/graphics/scoped_image_rendering_settings.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/transforms/affine_transform.h"
+#include "third_party/skia/include/core/SkPathBuilder.h"
 #include "third_party/skia/include/pathops/SkPathOps.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 
@@ -253,26 +254,6 @@ bool ShadowIsFullyObscured(const ShadowData& shadow) {
          shadow.Spread() == 0;
 }
 
-// Creates a path expanded by a stroke thickness using path union.
-// This combines fill and stroke into a single path to avoid double-painting
-// artifacts with semi-transparent colors.
-Path ExpandPathWithStroke(const Path& path, float stroke_thickness) {
-  if (stroke_thickness <= 0) {
-    return path;
-  }
-  StrokeData stroke_data;
-  stroke_data.SetThickness(stroke_thickness);
-  Path stroke_path = path.StrokePath(stroke_data, AffineTransform());
-  SkOpBuilder builder;
-  builder.add(path.GetSkPath(), SkPathOp::kUnion_SkPathOp);
-  builder.add(stroke_path.GetSkPath(), SkPathOp::kUnion_SkPathOp);
-  SkPath result;
-  if (builder.resolve(&result)) {
-    return Path(result);
-  }
-  return path;
-}
-
 template <ShadowStyle shadow_style>
 std::optional<Color> ResolveShadowColor(const ShadowData& shadow,
                                         const ComputedStyle& style,
@@ -313,7 +294,7 @@ void BoxPainterBase::PaintNormalBoxShadow(
   ContouredRect border = ContouredBorderGeometry::PixelSnappedContouredBorder(
       style, paint_rect, sides_to_include);
 
-  bool has_border_radius = style.HasBorderRadius() && !style.HasBorderShape();
+  bool has_border_radius = style.HasBorderRadius();
   bool has_opaque_background =
       !background_is_skipped &&
       style.VisitedDependentColor(GetCSSPropertyBackgroundColor()).IsOpaque();
@@ -382,32 +363,11 @@ void BoxPainterBase::PaintNormalBoxShadow(
           border_shape_rects ? border_shape_rects->outer : paint_rect;
 
       const float spread = shadow.Spread();
-      const float blur_radius = shadow.BlurRadius();
-      if (spread < 0) {
-        // Negative spread: shrink the reference rect by the spread amount and
-        // compute a new outer path for that shrunk rect, then fill it.
-        gfx::RectF adjusted_ref_rect = gfx::RectF(outer_reference_rect);
-        // Outset with a negative value insets the rect.
-        adjusted_ref_rect.Outset(spread);
-        if (adjusted_ref_rect.IsEmpty()) {
-          continue;
-        }
-        PhysicalRect adjusted_physical_ref =
-            PhysicalRect::FastAndLossyFromRectF(adjusted_ref_rect);
-        const Path adjusted_outer_path =
-            BorderShapePainter::OuterPath(style, adjusted_physical_ref);
-        const Path shadow_path =
-            ExpandPathWithStroke(adjusted_outer_path, blur_radius * 2);
-        context.SetFillColor(Color::kBlack);
-        context.FillPath(shadow_path, auto_dark_mode);
-      } else {
-        const Path border_shape_outer_path =
-            BorderShapePainter::OuterPath(style, outer_reference_rect);
-        const Path shadow_path = ExpandPathWithStroke(
-            border_shape_outer_path, (spread + blur_radius) * 2);
-        context.SetFillColor(Color::kBlack);
-        context.FillPath(shadow_path, auto_dark_mode);
-      }
+      const Path shadow_path = BorderShapePainter::OuterPathWithOffset(
+          style, outer_reference_rect, spread);
+
+      context.SetFillColor(Color::kBlack);
+      context.FillPath(shadow_path, auto_dark_mode);
     } else if (has_border_radius) {
       ContouredRect rounded_fill_rect(
           FloatRoundedRect(fill_rect, border.GetRadii()),
@@ -496,45 +456,53 @@ void BoxPainterBase::PaintInsetBoxShadowForBorderShape(
         PaintAutoDarkMode(style, DarkModeFilter::ElementRole::kBackground);
 
     const float spread = shadow.Spread();
-    const float blur_radius = shadow.BlurRadius();
-    if (spread > 0) {
-      // Inner box-shadow follows the inside of the inner path,
-      // rendered as a stroke with stroke width of (spread + blur) * 2, clipped
-      // by the border shape. We include blur_radius to ensure the shadow area
-      // is large enough for the blur effect (similar to
-      // AreaCastingShadowInHole).
+
+    Path hole_path = inner_path;
+
+    if (spread != 0) {
       StrokeData stroke_data;
-      stroke_data.SetThickness((spread + blur_radius) * 2);
-      context.SetStrokeColor(Color::kBlack);
-      context.SetStroke(stroke_data);
-      context.StrokePath(inner_path, auto_dark_mode);
-    } else if (spread < 0) {
-      // Negative spread: shrink the reference rect by the spread amount and
-      // compute a new inner path for that shrunk rect, then fill it.
-      // Include blur_radius to extend shadow area for blur effect.
-      gfx::RectF adjusted_ref_rect = gfx::RectF(inner_reference_rect);
-      // Outset with a negative value insets the rect.
-      adjusted_ref_rect.Outset(spread);
-      PhysicalRect adjusted_physical_ref =
-          PhysicalRect::FastAndLossyFromRectF(adjusted_ref_rect);
-      const Path adjusted_inner_path =
-          BorderShapePainter::InnerPath(style, adjusted_physical_ref);
-      const Path shadow_path =
-          ExpandPathWithStroke(adjusted_inner_path, blur_radius * 2);
-      context.SetFillColor(Color::kBlack);
-      context.FillPath(shadow_path, auto_dark_mode);
-    } else {
-      // When spread is 0 but blur is non-zero, we need to draw a stroke
-      // with thickness based on blur radius to create an area for the
-      // blur effect to be applied to.
-      if (blur_radius > 0) {
-        StrokeData stroke_data;
-        stroke_data.SetThickness(blur_radius * 2);
-        context.SetStroke(stroke_data);
-        context.SetStrokeColor(Color::kBlack);
-        context.StrokePath(inner_path, auto_dark_mode);
+      stroke_data.SetThickness(std::abs(spread) * 2);
+      Path stroke_path = inner_path.StrokePath(stroke_data, AffineTransform());
+
+      SkOpBuilder builder;
+      builder.add(inner_path.GetSkPath(), SkPathOp::kUnion_SkPathOp);
+      if (spread > 0) {
+        // Positive spread for inset shadow means the shadow area grows inward.
+        // So the hole shrinks. We subtract the stroke from the hole.
+        builder.add(stroke_path.GetSkPath(), SkPathOp::kDifference_SkPathOp);
+      } else {
+        // Negative spread for inset shadow means the shadow area shrinks
+        // outward. So the hole grows. We union the stroke with the hole.
+        builder.add(stroke_path.GetSkPath(), SkPathOp::kUnion_SkPathOp);
+      }
+      SkPath result;
+      if (builder.resolve(&result)) {
+        hole_path = Path(result);
       }
     }
+
+    // Create a bounding rect outside the hole, padded sufficiently for blur.
+    // The caster must be large enough that its outer edges don't cast a shadow
+    // into the inner clipping region. We base it on inner_path's bounds because
+    // the clipping region is inner_path, and we must cover it entirely.
+    gfx::RectF bounds = inner_path.BoundingRect();
+    bounds.Outset(std::ceil(3.0f * shadow.BlurAsSigma()));
+    if (spread < 0) {
+      bounds.Outset(-spread);
+    }
+    gfx::RectF offset_bounds = bounds;
+    offset_bounds.Offset(-shadow.Offset());
+    bounds.Union(offset_bounds);
+
+    SkPathBuilder builder;
+    builder.setFillType(SkPathFillType::kEvenOdd);
+    builder.addRect(gfx::RectFToSkRect(bounds));
+    builder.addPath(hole_path.GetSkPath());
+
+    Path path_casting_shadow(builder.detach());
+
+    context.SetFillColor(Color::kBlack);
+    context.FillPath(path_casting_shadow, auto_dark_mode);
   }
 }
 
@@ -710,10 +678,9 @@ BoxPainterBase::FillLayerInfo::FillLayerInfo(
 
   is_printing = doc.Printing();
 
-  String failing_url;
   should_paint_image = image && image->CanRender() &&
                        (!(paint_flags & PaintFlag::kPrivacyPreserving) ||
-                        image->IsAccessAllowed(failing_url));
+                        image->IsCorsSameOrigin());
   if (should_paint_image) {
     respect_image_orientation =
         image->ForceOrientationIfNecessary(respect_image_orientation);
@@ -844,14 +811,16 @@ PhysicalRect GetSubsetDestRectForImage(const BackgroundImageGeometry& geometry,
 // The tile_size is the total image size. The mapping from this size
 //   to the unsnapped_dest_rect size defines the scaling of the image for
 //   sprite computation.
-void DrawTiledBackground(LocalFrame* frame,
-                         GraphicsContext& context,
-                         const ComputedStyle& style,
-                         Image& image,
-                         const BackgroundImageGeometry& geometry,
-                         SkBlendMode op,
-                         RespectImageOrientationEnum respect_orientation,
-                         ImagePaintTimingInfo paint_timing_info) {
+void DrawTiledBackground(
+    LocalFrame* frame,
+    GraphicsContext& context,
+    const ComputedStyle& style,
+    Image& image,
+    const BackgroundImageGeometry& geometry,
+    SkBlendMode op,
+    RespectImageOrientationEnum respect_orientation,
+    ImagePaintTimingInfo paint_timing_info,
+    const ImageNodeAnimationInfo* image_node_animation_info) {
   DCHECK(!geometry.TileSize().IsEmpty());
 
   const PhysicalRect& snapped_dest = geometry.SnappedDestRect();
@@ -869,7 +838,8 @@ void DrawTiledBackground(LocalFrame* frame,
         *frame, style, dest_rect, *single_tile_src);
     context.DrawImage(image, Image::kSyncDecode, image_auto_dark_mode,
                       paint_timing_info, dest_rect, &*single_tile_src, op,
-                      respect_orientation);
+                      respect_orientation, Image::kClampImageToSourceRect,
+                      image_node_animation_info);
     return;
   }
 
@@ -915,7 +885,8 @@ void DrawTiledBackground(LocalFrame* frame,
   // it into the snapped_dest_rect using phase from one_tile_rect and the
   // given repeat spacing. Note the phase is already scaled.
   context.DrawImageTiled(image, dest_rect, tiling_info, image_auto_dark_mode,
-                         paint_timing_info, op, respect_orientation);
+                         paint_timing_info, op, respect_orientation,
+                         image_node_animation_info);
 }
 
 scoped_refptr<Image> GetBGColorPaintWorkletImage(const Document& document,
@@ -984,9 +955,7 @@ bool PaintBGColorWithPaintWorklet(const Document& document,
           /* image_may_be_lcp_candidate */ false,
           /* report_paint_timing */ false),
       dest_rect, src_rect, SkBlendMode::kSrcOver, kRespectImageOrientation,
-      Image::kClampImageToSourceRect,
-      ImageNodeAnimationInfo(node ? node->GetDomNodeId() : kInvalidDOMNodeId,
-                             style.ImageAnimation()));
+      Image::kClampImageToSourceRect);
   animation->OnPaintWorkletImageCreated();
   return true;
 }
@@ -1179,14 +1148,17 @@ inline bool PaintFastBottomLayer(const Document& document,
 
   // Since there is no way for the developer to specify decode behavior, use
   // kSync by default
+  ImageNodeAnimationInfo image_animation =
+      CSSImageAnimations::CreateImageNodeAnimationInfo(
+          node, info.image ? info.image->CachedImage() : nullptr,
+          style.ImageAnimation());
+
   context.DrawImageRRect(
       *image, Image::kSyncDecode, image_auto_dark_mode,
       ComputeImagePaintTimingInfo(node, *image, *info.image, context,
                                   image_border.Rect()),
       image_border, src_rect, composite_op, info.respect_image_orientation,
-      clamping_mode,
-      ImageNodeAnimationInfo(node ? node->GetDomNodeId() : kInvalidDOMNodeId,
-                             style.ImageAnimation()));
+      clamping_mode, &image_animation);
   return true;
 }
 
@@ -1311,11 +1283,17 @@ void PaintFillLayerBackground(const Document& document,
         TRACE_DISABLED_BY_DEFAULT("devtools.timeline"), "PaintImage",
         inspector_paint_image_event::Data, node, *info.image,
         gfx::RectF(image->Rect()), gfx::RectF(scrolled_paint_rect));
+
+    ImageNodeAnimationInfo image_animation =
+        CSSImageAnimations::CreateImageNodeAnimationInfo(
+            node, info.image ? info.image->CachedImage() : nullptr,
+            style.ImageAnimation());
     DrawTiledBackground(
         document.GetFrame(), context, style, *image, geometry, composite_op,
         info.respect_image_orientation,
         ComputeImagePaintTimingInfo(node, *image, *info.image, context,
-                                    gfx::RectF(geometry.SnappedDestRect())));
+                                    gfx::RectF(geometry.SnappedDestRect())),
+        &image_animation);
   }
 }
 
@@ -1412,7 +1390,8 @@ void BoxPainterBase::PaintFillLayer(
   SkBlendMode composite_op = SkBlendMode::kSrcOver;
   std::optional<ScopedImageRenderingSettings> image_rendering_settings_context;
   std::optional<ScopedMaskLuminanceLayer> mask_luminance_scope;
-  if (fill_layer_info.should_paint_image) {
+  if (fill_layer_info.should_paint_image &&
+      !fill_layer_info.image->IsPendingImage()) {
     // Prepare compositing state first so that it's ready in case the layer
     // references an SVG <mask> element.
     if (ShouldApplyBlendOperation(fill_layer_info, bg_layer)) {
@@ -1448,13 +1427,14 @@ void BoxPainterBase::PaintFillLayer(
         SVGMaskPainter::PaintSVGMaskLayer(
             context, *mask_source, bg_paint_context.ImageClient(),
             reference_box, zoom, composite_op,
-            bg_layer.MaskMode() == EFillMaskMode::kMatchSource);
+            bg_layer.MaskMode() == EFillMaskMode::kMatchSource,
+            paint_info.GetPaintFlags());
         return;
       }
     }
     DCHECK_GE(document_.Lifecycle().GetState(),
               DocumentLifecycle::kPrePaintClean);
-    geometry.Calculate(bg_layer, bg_paint_context, scrolled_paint_rect,
+    geometry.Calculate(bg_layer, bg_paint_context, rect, scrolled_paint_rect,
                        paint_info);
 
     const Node* node = node_;
@@ -1465,6 +1445,12 @@ void BoxPainterBase::PaintFillLayer(
     image_rendering_settings_context.emplace(context,
                                              style_.GetInterpolationQuality(),
                                              style_.GetDynamicRangeLimit());
+  } else if (const StyleBorderShape* border_shape = style_.BorderShape()) {
+    // Color-only layer: Calculate() wasn't called, so set border-shape state
+    // on geometry directly.
+    geometry.SetBorderShapeState(
+        style_,
+        bg_paint_context.ComputeBorderShapeReferenceRects(rect, *border_shape));
   }
 
   const PhysicalBoxStrut border = ComputeSnappedBorders(bg_paint_context);
@@ -1486,39 +1472,53 @@ void BoxPainterBase::PaintFillLayer(
     return;
   }
 
+  const EFillBox effective_clip = bg_paint_context.EffectiveClip(bg_layer);
+  const bool is_border_area_clip =
+      (effective_clip == EFillBox::kBorderArea ||
+       effective_clip == EFillBox::kBorderAreaText) &&
+      RuntimeEnabledFeatures::CSSBackgroundClipBorderAreaEnabled();
+
   std::optional<RoundedInnerRectClipper> clip_to_border;
   std::optional<GraphicsContextStateSaver> border_shape_saver;
-  if (border_shape) {
+  // Skip the generic border-shape clip for border-area: border-area handles
+  // its own border-shape clipping (outer minus inner ring) in
+  // PaintFillLayerBorderAreaFillBox().
+  if (border_shape && !is_border_area_clip) {
     DCHECK(!bg_paint_context.CanCompositeBackgroundAttachmentFixed());
     border_shape_saver.emplace(context);
-    // Compute reference rects for border-shape clipping using geometry boxes.
-    std::optional<BorderShapeReferenceRects> shape_ref_rects =
-        ComputeBorderShapeReferenceRects(rect, style_,
-                                         *node_->GetLayoutObject());
+    DCHECK(geometry.BorderShapeRects());
+    const auto& shape_rects = *geometry.BorderShapeRects();
 
     const bool use_inner_shape = border_shape->HasSeparateInnerShape();
     const BasicShape& clip_shape = use_inner_shape ? border_shape->InnerShape()
                                                    : border_shape->OuterShape();
     const PhysicalRect& clip_ref_rect =
-        use_inner_shape && shape_ref_rects
-            ? shape_ref_rects->inner
-            : (shape_ref_rects ? shape_ref_rects->outer : rect);
+        use_inner_shape ? shape_rects.inner : shape_rects.outer;
 
     context.ClipPath(
         clip_shape.GetPath(gfx::RectF(clip_ref_rect), style_.EffectiveZoom(), 1)
-            .GetSkPath());
+            .GetSkPath(),
+        kAntiAliased);
   } else if (fill_layer_info.is_rounded_fill) {
     DCHECK(!bg_paint_context.CanCompositeBackgroundAttachmentFixed());
     clip_to_border.emplace(context, rect, border_rect);
   }
-
-  EFillBox effective_clip = bg_paint_context.EffectiveClip(bg_layer);
 
   if (effective_clip == EFillBox::kText) {
     DCHECK(!bg_paint_context.CanCompositeBackgroundAttachmentFixed());
     PaintFillLayerTextFillBox(paint_info, fill_layer_info, image.get(),
                               composite_op, geometry, rect, scrolled_paint_rect,
                               object_has_multiple_boxes);
+    return;
+  }
+
+  if (is_border_area_clip) {
+    DCHECK(!bg_paint_context.CanCompositeBackgroundAttachmentFixed());
+    bool include_text = effective_clip == EFillBox::kBorderAreaText;
+    PaintFillLayerBorderAreaFillBox(paint_info, fill_layer_info, image.get(),
+                                    composite_op, geometry, rect,
+                                    scrolled_paint_rect, bleed_avoidance,
+                                    include_text, object_has_multiple_boxes);
     return;
   }
 
@@ -1608,6 +1608,140 @@ void BoxPainterBase::PaintFillLayerTextFillBox(
   context.EndLayer();  // Background layer.
 }
 
+// Returns true if all border sides with nonzero width use effective styles that
+// completely fill the border area (i.e. no gaps). Uses BorderEdge (which
+// applies EffectiveStyle) for consistency with how borders are actually painted
+// (e.g. double with width < 3 becomes solid). Border color is intentionally
+// ignored because border-area clips based on the border style geometry
+// regardless of color/transparency. When true, a path-based clip (outer minus
+// inner border rect) can be used. When false, at least one side has gaps
+// (dashed, dotted, or double), and we must fall back to a mask-based approach.
+static bool AllBordersFillBorderArea(const ComputedStyle& style,
+                                     PhysicalBoxSides sides_to_include) {
+  BorderEdgeArray edges;
+  style.GetBorderEdgeInfo(edges, sides_to_include);
+  for (const auto& edge : edges) {
+    if (edge.UsedWidth() == 0) {
+      continue;
+    }
+    EBorderStyle effective = edge.BorderStyle();
+    if (effective == EBorderStyle::kDotted ||
+        effective == EBorderStyle::kDashed ||
+        effective == EBorderStyle::kDouble) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void BoxPainterBase::PaintFillLayerBorderAreaFillBox(
+    const PaintInfo& paint_info,
+    const BoxPainterBase::FillLayerInfo& info,
+    Image* image,
+    SkBlendMode composite_op,
+    const BackgroundImageGeometry& geometry,
+    const PhysicalRect& rect,
+    const PhysicalRect& scrolled_paint_rect,
+    BackgroundBleedAvoidance bleed_avoidance,
+    bool include_text,
+    bool object_has_multiple_boxes) {
+  GraphicsContext& context = paint_info.context;
+
+  // Expand the paint rect to include border-shape outer bounds if needed.
+  PhysicalRect background_paint_rect = scrolled_paint_rect;
+  if (geometry.BorderShapeOuterBounds()) {
+    background_paint_rect.Unite(
+        PhysicalRect::EnclosingRect(*geometry.BorderShapeOuterBounds()));
+  }
+
+  // Must match BorderShapePainter::Paint() so border-area clips align with
+  // the visible border shape.
+  if (style_.HasBorderShape()) {
+    const auto& border_shape_rects = geometry.BorderShapeRects();
+    const auto& border_shape_outer_bounds = geometry.BorderShapeOuterBounds();
+    DCHECK(border_shape_rects);
+    DCHECK(border_shape_outer_bounds);
+
+    // Use the outer path bounds as the clip/paint rect rather than the border
+    // rect, because border-shape strokes can extend beyond the border box at
+    // sharp vertices due to miter joins.
+    gfx::Rect mask_rect = ToPixelSnappedRect(rect);
+    gfx::Rect clip_rect = gfx::ToEnclosingRect(*border_shape_outer_bounds);
+    if (include_text) {
+      clip_rect.Union(mask_rect);
+    }
+
+    GraphicsContextStateSaver background_clip_state_saver(context);
+    context.Clip(clip_rect);
+    context.BeginLayer(composite_op);
+
+    PaintFillLayerBackground(document_, context, info, node_, style_, image,
+                             SkBlendMode::kSrcOver, geometry,
+                             background_paint_rect);
+
+    context.BeginLayer(SkBlendMode::kDstIn);
+
+    BorderShapePainter::PaintBorderArea(
+        context, style_, border_shape_rects->outer, border_shape_rects->inner);
+
+    if (include_text) {
+      PaintTextClipMask(paint_info, mask_rect, scrolled_paint_rect.offset,
+                        object_has_multiple_boxes);
+    }
+
+    context.EndLayer();  // Mask layer.
+    context.EndLayer();  // Background layer.
+    return;
+  }
+
+  if (AllBordersFillBorderArea(style_, info.sides_to_include) &&
+      !include_text) {
+    // For area-filling border styles (solid, inset, outset, groove, ridge),
+    // the border stroke area is simply the outer minus inner border contour.
+    // Clip to that path directly — no compositing layers needed.
+    ContouredRect outer = ContouredBorderGeometry::PixelSnappedContouredBorder(
+        style_, rect, info.sides_to_include);
+    ContouredRect inner =
+        ContouredBorderGeometry::PixelSnappedContouredInnerBorder(
+            style_, rect, info.sides_to_include);
+
+    GraphicsContextStateSaver clip_state_saver(context);
+    context.ClipContouredRect(outer);
+    context.ClipOutContouredRect(inner);
+
+    PaintFillLayerBackground(document_, context, info, node_, style_, image,
+                             composite_op, geometry, background_paint_rect);
+    return;
+  }
+
+  // Paint the background into a compositing layer and use a DstIn mask to
+  // clip to where the border strokes paint (and optionally where text is).
+  gfx::Rect mask_rect = ToPixelSnappedRect(rect);
+
+  GraphicsContextStateSaver background_clip_state_saver(context);
+  context.Clip(mask_rect);
+  context.BeginLayer(composite_op);
+
+  PaintFillLayerBackground(document_, context, info, node_, style_, image,
+                           SkBlendMode::kSrcOver, geometry,
+                           background_paint_rect);
+
+  // Build a union mask: paint both border-area and text shapes as opaque
+  // regions, then use DstIn to keep only where the mask has coverage.
+  context.BeginLayer(SkBlendMode::kDstIn);
+
+  BoxBorderPainter::PaintBorderArea(context, rect, style_, bleed_avoidance,
+                                    info.sides_to_include);
+
+  if (include_text) {
+    PaintTextClipMask(paint_info, mask_rect, scrolled_paint_rect.offset,
+                      object_has_multiple_boxes);
+  }
+
+  context.EndLayer();  // Mask layer.
+  context.EndLayer();  // Background layer.
+}
+
 void BoxPainterBase::PaintBorder(
     const ImageResourceObserver& obj,
     const Document& document,
@@ -1628,9 +1762,8 @@ void BoxPainterBase::PaintBorder(
   }
 
   // border-image is not affected by border-radius.
-  String failing_url;
   if (!(info.IsPrivacyPreserving() && style.BorderImage().GetImage() &&
-        !style.BorderImage().GetImage()->IsAccessAllowed(failing_url))) {
+        !style.BorderImage().GetImage()->IsCorsSameOrigin())) {
     if (NinePieceImagePainter::Paint(info.context, obj, document, node, rect,
                                      style, style.BorderImage())) {
       return;
@@ -1653,9 +1786,8 @@ void BoxPainterBase::PaintMaskImages(
 
   PaintFillLayers(paint_info, Color::kTransparent, style_.MaskLayers(),
                   paint_rect, bg_paint_context);
-  String failing_url;
   if (!(paint_info.IsPrivacyPreserving() && style_.MaskBoxImage().GetImage() &&
-        !style_.MaskBoxImage().GetImage()->IsAccessAllowed(failing_url))) {
+        !style_.MaskBoxImage().GetImage()->IsCorsSameOrigin())) {
     NinePieceImagePainter::Paint(paint_info.context, obj, document_, node_,
                                  paint_rect, style_, style_.MaskBoxImage(),
                                  sides_to_include);

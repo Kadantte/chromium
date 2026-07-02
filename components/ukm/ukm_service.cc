@@ -19,7 +19,8 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/metrics/log_decoder.h"
-#include "components/metrics/metrics_log.h"
+#include "components/metrics/metrics_pref_names.h"
+#include "components/metrics/metrics_reporting_choice_service.h"
 #include "components/metrics/metrics_service_client.h"
 #include "components/metrics/ukm_demographic_metrics_provider.h"
 #include "components/prefs/pref_registry_simple.h"
@@ -241,6 +242,11 @@ UkmService::UkmService(PrefService* pref_service,
       task_runner_(base::SequencedTaskRunner::GetCurrentDefault()) {
   DCHECK(pref_service_);
   DCHECK(client_);
+
+  SetShouldUseMetricsConsentRestructure(
+      metrics::MetricsReportingChoiceService::
+          ShouldUseMetricsConsentRestructure(pref_service));
+
   DVLOG(DebuggingLogLevel::Rare) << "UkmService::Constructor";
   reporting_service_.Initialize();
 
@@ -405,11 +411,14 @@ void UkmService::PurgeAppsData() {
   PurgeDataFromUnsentLogStore(
       reporting_service_.ukm_log_store(),
       [&](const Source& source) {
-        if (GetSourceIdType(source.id()) == SourceIdType::APP_ID) {
+        auto source_id_type = GetSourceIdType(source.id());
+        if (source_id_type == SourceIdType::APP_ID ||
+            source_id_type == SourceIdType::IWA_BUNDLE_ID) {
           return true;
         }
         for (const auto& url_info : source.urls()) {
-          if (GURL(url_info.url()).SchemeIs(kAppScheme)) {
+          GURL url = GURL(url_info.url());
+          if (url.SchemeIs(kAppScheme) || url.SchemeIs(kIsolatedAppScheme)) {
             return true;
           }
         }
@@ -419,7 +428,9 @@ void UkmService::PurgeAppsData() {
 
   // Purge data currently in the recordings intended for the next ukm::Report.
   UkmRecorderImpl::PurgeRecordingsWithUrlScheme(kAppScheme);
+  UkmRecorderImpl::PurgeRecordingsWithUrlScheme(kIsolatedAppScheme);
   UkmRecorderImpl::PurgeRecordingsWithSourceIdType(SourceIdType::APP_ID);
+  UkmRecorderImpl::PurgeRecordingsWithSourceIdType(SourceIdType::IWA_BUNDLE_ID);
 }
 
 void UkmService::PurgeMsbbData() {

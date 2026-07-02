@@ -13,6 +13,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/memory/raw_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -1027,6 +1028,370 @@ TEST_F(WindowTest, StackChildAbove) {
   EXPECT_EQ(child2.layer(), parent.layer()->children()[0]);
   EXPECT_EQ(child1.layer(), parent.layer()->children()[1]);
   EXPECT_EQ(child3.layer(), parent.layer()->children()[2]);
+}
+
+class TestLayoutManager : public LayoutManager {
+ public:
+  TestLayoutManager() {}
+  ~TestLayoutManager() override {}
+
+  // LayoutManager:
+  void OnWindowResized() override {}
+  void OnWindowAddedToLayout(Window* child) override {}
+  void OnWillRemoveWindowFromLayout(Window* child) override {}
+  void OnWindowRemovedFromLayout(Window* child) override {}
+  void OnChildWindowVisibilityChanged(Window* child, bool visible) override {}
+  void SetChildBounds(Window* child,
+                      const gfx::Rect& requested_bounds) override {
+    SetChildBoundsDirect(child, requested_bounds);
+  }
+};
+
+using WindowLayerManagedByParentTest = WindowTest;
+
+TEST_F(WindowLayerManagedByParentTest, BasicOrders) {
+  // Window tree:
+  //        parent
+  //       /   |   \
+  //    child1 child2 child3
+  //
+  // Layer tree (child2 is unmanaged, layer is detached):
+  //        parent (layer)
+  //        /          \
+  //    child1 (layer) child3 (layer)
+  //
+  //    child2 (layer) ---> (detached)
+  Window parent(nullptr);
+  parent.Init(ui::LAYER_NOT_DRAWN);
+  Window child1(nullptr);
+  child1.Init(ui::LAYER_NOT_DRAWN);
+  Window child2(nullptr);
+  child2.Init(ui::LAYER_NOT_DRAWN);
+  Window child3(nullptr);
+  child3.Init(ui::LAYER_NOT_DRAWN);
+
+  // 1. Verify default value.
+  EXPECT_TRUE(child1.layer_managed_by_parent());
+
+  // 2. Mark child2 as not managed by parent before adding.
+  child2.SetLayerManagedByParent(false);
+  EXPECT_FALSE(child2.layer_managed_by_parent());
+
+  parent.AddChild(&child1);
+  parent.AddChild(&child2);
+  parent.AddChild(&child3);
+
+  // Initial order: child1, child2, child3
+  ASSERT_EQ(3u, parent.children().size());
+  // child2's layer should NOT be in parent's layer children.
+  ASSERT_EQ(2u, parent.layer()->children().size());
+  EXPECT_EQ(child1.layer(), parent.layer()->children()[0]);
+  EXPECT_EQ(child3.layer(), parent.layer()->children()[1]);
+
+  // Stack child2 (unmanaged) at top.
+  // Logical order should change: child1, child3, child2
+  // Layer order should NOT change (child2 layer not in parent layer).
+  parent.StackChildAtTop(&child2);
+  EXPECT_EQ(&child2, parent.children()[2]);
+  ASSERT_EQ(2u, parent.layer()->children().size());
+  EXPECT_EQ(child1.layer(), parent.layer()->children()[0]);
+  EXPECT_EQ(child3.layer(), parent.layer()->children()[1]);
+
+  // Stack child1 (managed) above child3 (managed).
+  // Logical order before: child1, child3, child2
+  // Logical order after: child3, child1, child2
+  // Layer order before: child1, child3
+  // Layer order after: child3, child1
+  parent.StackChildAbove(&child1, &child3);
+  EXPECT_EQ(&child3, parent.children()[0]);
+  EXPECT_EQ(&child1, parent.children()[1]);
+  EXPECT_EQ(&child2, parent.children()[2]);
+  ASSERT_EQ(2u, parent.layer()->children().size());
+  EXPECT_EQ(child3.layer(), parent.layer()->children()[0]);
+  EXPECT_EQ(child1.layer(), parent.layer()->children()[1]);
+
+  // Stack child3 (managed) above child2 (unmanaged).
+  // Stacking relative to unmanaged should be ignored for layers.
+  // Logical order should change: child1, child2, child3
+  // Layer order should remain same: child3, child1
+  parent.StackChildAbove(&child3, &child2);
+  EXPECT_EQ(&child1, parent.children()[0]);
+  EXPECT_EQ(&child2, parent.children()[1]);
+  EXPECT_EQ(&child3, parent.children()[2]);
+  ASSERT_EQ(2u, parent.layer()->children().size());
+  EXPECT_EQ(child3.layer(), parent.layer()->children()[0]);
+  EXPECT_EQ(child1.layer(), parent.layer()->children()[1]);
+
+  // Remove child2 (unmanaged). Should not crash.
+  parent.RemoveChild(&child2);
+  ASSERT_EQ(2u, parent.children().size());
+  ASSERT_EQ(2u, parent.layer()->children().size());
+  EXPECT_EQ(child3.layer(), parent.layer()->children()[0]);
+  EXPECT_EQ(child1.layer(), parent.layer()->children()[1]);
+
+  // Add child2 back.
+  parent.AddChild(&child2);
+  // Logical order: child3, child1, child2
+  // Layer order should still be [child3, child1]
+  ASSERT_EQ(3u, parent.children().size());
+  ASSERT_EQ(2u, parent.layer()->children().size());
+  EXPECT_EQ(child3.layer(), parent.layer()->children()[0]);
+  EXPECT_EQ(child1.layer(), parent.layer()->children()[1]);
+
+  // Enable layer management dynamically.
+  child2.SetLayerManagedByParent(true);
+  // Layer should be added.
+  // Logical order: child3, child1, child2
+  // Layer order should become: child3, child1, child2 (added at top by default)
+  ASSERT_EQ(3u, parent.layer()->children().size());
+  EXPECT_EQ(child3.layer(), parent.layer()->children()[0]);
+  EXPECT_EQ(child1.layer(), parent.layer()->children()[1]);
+  EXPECT_EQ(child2.layer(), parent.layer()->children()[2]);
+
+  // Disable layer management dynamically.
+  child2.SetLayerManagedByParent(false);
+  // Layer should be removed.
+  ASSERT_EQ(2u, parent.layer()->children().size());
+  EXPECT_EQ(child3.layer(), parent.layer()->children()[0]);
+  EXPECT_EQ(child1.layer(), parent.layer()->children()[1]);
+
+  // 3. Verify Coordinate Conversion fails with different roots.
+  child1.SetBounds(gfx::Rect(10, 20, 100, 100));
+  child2.SetBounds(gfx::Rect(30, 40, 100, 100));
+
+  gfx::PointF point(10.f, 10.f);
+  EXPECT_DEATH(Window::ConvertPointToTarget(&child2, &child1, &point), "");
+  EXPECT_DEATH(Window::ConvertPointToTarget(&child1, &child2, &point), "");
+}
+
+// Verify SetBounds behavior for unmanaged layer.
+TEST_F(WindowLayerManagedByParentTest, SetBounds) {
+  // 1 No Parent Window
+  {
+    Window standalone(nullptr);
+    standalone.Init(ui::LAYER_NOT_DRAWN);
+    standalone.SetLayerManagedByParent(false);
+    gfx::Rect new_bounds(10, 10, 50, 50);
+    standalone.SetBounds(new_bounds);
+    EXPECT_EQ(new_bounds, standalone.bounds());
+    EXPECT_EQ(new_bounds, standalone.layer()->bounds());
+    EXPECT_EQ(new_bounds, standalone.GetTargetBounds());
+  }
+
+  // 2 Parent Window but Detached Layer
+  {
+    Window parent(nullptr);
+    parent.Init(ui::LAYER_NOT_DRAWN);
+    Window child(nullptr);
+    child.Init(ui::LAYER_NOT_DRAWN);
+    child.SetLayerManagedByParent(false);
+    parent.AddChild(&child);
+
+    gfx::Rect new_bounds(10, 10, 50, 50);
+    child.SetBounds(new_bounds);
+    EXPECT_EQ(new_bounds, child.bounds());
+    EXPECT_EQ(new_bounds, child.layer()->bounds());
+    EXPECT_EQ(new_bounds, child.GetTargetBounds());
+  }
+
+  // 3 Fully Established (Automatic Conversion)
+  {
+    Window parent(nullptr);
+    parent.Init(ui::LAYER_NOT_DRAWN);
+    Window child(nullptr);
+    child.Init(ui::LAYER_NOT_DRAWN);
+    child.SetLayerManagedByParent(false);
+    parent.AddChild(&child);
+
+    // Create an intermediate layer and parent it to parent's layer.
+    // L_X is at (10, 10) relative to L_P.
+    ui::Layer layer_x(ui::LAYER_NOT_DRAWN);
+    layer_x.SetBounds(gfx::Rect(10, 10, 100, 100));
+    parent.layer()->Add(&layer_x);
+
+    // Parent child's layer to L_X.
+    layer_x.Add(child.layer());
+
+    // Call SetBounds on child with (50, 50, 50, 50) relative to parent.
+    // Since L_X is at (10, 10), child's layer bounds should become (40, 40, 50,
+    // 50).
+    gfx::Rect new_bounds(50, 50, 50, 50);
+    child.SetBounds(new_bounds);
+
+    EXPECT_EQ(new_bounds, child.bounds());
+    EXPECT_EQ(gfx::Rect(40, 40, 50, 50), child.layer()->bounds());
+    EXPECT_EQ(new_bounds, child.GetTargetBounds());
+  }
+
+  // 4 Multiple Intermediate Layers (Automatic Conversion)
+  {
+    Window parent(nullptr);
+    parent.Init(ui::LAYER_NOT_DRAWN);
+    Window child(nullptr);
+    child.Init(ui::LAYER_NOT_DRAWN);
+    child.SetLayerManagedByParent(false);
+    parent.AddChild(&child);
+
+    // L_P -> L_X1 (10, 10) -> L_X2 (20, 20) -> L_C
+    ui::Layer layer_x1(ui::LAYER_NOT_DRAWN);
+    layer_x1.SetBounds(gfx::Rect(10, 10, 100, 100));
+    parent.layer()->Add(&layer_x1);
+
+    ui::Layer layer_x2(ui::LAYER_NOT_DRAWN);
+    layer_x2.SetBounds(gfx::Rect(20, 20, 100, 100));
+    layer_x1.Add(&layer_x2);
+
+    // Parent child's layer to L_X2.
+    layer_x2.Add(child.layer());
+
+    // Call SetBounds on child with (100, 100, 50, 50) relative to parent.
+    // L_X2 origin relative to L_P is (30, 30).
+    // child's layer bounds should become (70, 70, 50, 50).
+    gfx::Rect new_bounds(100, 100, 50, 50);
+    child.SetBounds(new_bounds);
+
+    EXPECT_EQ(new_bounds, child.bounds());
+    EXPECT_EQ(gfx::Rect(70, 70, 50, 50), child.layer()->bounds());
+    EXPECT_EQ(new_bounds, child.GetTargetBounds());
+  }
+
+  // 5 Bounds Animation (GetTargetBounds during animation)
+  {
+    gfx::ScopedAnimationDurationScaleMode test_duration_mode(
+        gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+    Window parent(nullptr);
+    parent.Init(ui::LAYER_NOT_DRAWN);
+    Window child(nullptr);
+    child.Init(ui::LAYER_NOT_DRAWN);
+    child.SetLayerManagedByParent(false);
+    parent.AddChild(&child);
+
+    // L_P -> L_X (10, 10) -> L_C
+    ui::Layer layer_x(ui::LAYER_NOT_DRAWN);
+    layer_x.SetBounds(gfx::Rect(10, 10, 100, 100));
+    parent.layer()->Add(&layer_x);
+    layer_x.Add(child.layer());
+
+    // Set initial bounds.
+    gfx::Rect old_bounds(50, 50, 50, 50);
+    child.SetBounds(old_bounds);
+    ASSERT_EQ(gfx::Rect(40, 40, 50, 50), child.layer()->bounds());
+
+    // Enable animation.
+    child.layer()->GetAnimator()->set_disable_timer_for_test(true);
+    ui::ScopedLayerAnimationSettings settings(child.layer()->GetAnimator());
+    settings.SetTransitionDuration(base::Milliseconds(200));
+
+    // Set new bounds. Target window bounds: (100, 100, 50, 50).
+    // Target layer bounds should become (90, 90, 50, 50).
+    gfx::Rect new_bounds(100, 100, 50, 50);
+    child.SetBounds(new_bounds);
+
+    // During animation:
+    // GetTargetBounds() should return the target window bounds (100, 100, 50,
+    // 50).
+    EXPECT_EQ(new_bounds, child.GetTargetBounds());
+
+    // Layer's target bounds should be (90, 90, 50, 50), as it is parented
+    // layer_x, whose origin is (10, 10).
+    EXPECT_EQ(gfx::Rect(90, 90, 50, 50), child.layer()->GetTargetBounds());
+
+    // Since it is animating, layer's current bounds should still be initial
+    // (40, 40, 50, 50).
+    EXPECT_EQ(gfx::Rect(40, 40, 50, 50), child.layer()->bounds());
+
+    // Window's bounds() should still be the old bounds during animation.
+    EXPECT_EQ(old_bounds, child.bounds());
+  }
+
+  // 6 Bounds with Transform on Intermediate Layer (Ignored)
+  {
+    Window parent(nullptr);
+    parent.Init(ui::LAYER_NOT_DRAWN);
+    Window child(nullptr);
+    child.Init(ui::LAYER_NOT_DRAWN);
+    child.SetLayerManagedByParent(false);
+    parent.AddChild(&child);
+
+    // L_P -> L_X (10, 10) -> L_C
+    ui::Layer layer_x(ui::LAYER_NOT_DRAWN);
+    layer_x.SetBounds(gfx::Rect(10, 10, 100, 100));
+
+    // Apply transform to L_X (translate by 100, 100).
+    gfx::Transform transform;
+    transform.Translate(100.f, 100.f);
+    layer_x.SetTransform(transform);
+
+    parent.layer()->Add(&layer_x);
+    layer_x.Add(child.layer());
+
+    // Call SetBounds on child with (50, 50, 50, 50) relative to parent.
+    // The transform on L_X should be IGNORED.
+    // So child's layer bounds should still become (40, 40, 50, 50).
+    gfx::Rect new_bounds(50, 50, 50, 50);
+    child.SetBounds(new_bounds);
+
+    EXPECT_EQ(new_bounds, child.bounds());
+    EXPECT_EQ(gfx::Rect(40, 40, 50, 50), child.layer()->bounds());
+    EXPECT_EQ(new_bounds, child.GetTargetBounds());
+  }
+
+  // 7 Layer Bounds Change Updates Window Bounds (Unmanaged)
+  {
+    Window parent(nullptr);
+    parent.Init(ui::LAYER_NOT_DRAWN);
+    Window child(nullptr);
+    child.Init(ui::LAYER_NOT_DRAWN);
+    child.SetLayerManagedByParent(false);
+    parent.AddChild(&child);
+
+    // L_P -> L_X (10, 10) -> L_C
+    ui::Layer layer_x(ui::LAYER_NOT_DRAWN);
+    layer_x.SetBounds(gfx::Rect(10, 10, 100, 100));
+
+    parent.layer()->Add(&layer_x);
+    layer_x.Add(child.layer());
+
+    // Initial bounds of child: (0, 0, 0, 0)
+    // Now change child's layer bounds directly.
+    // L_X is at (10, 10).
+    // If we set child's layer bounds to (40, 40, 50, 50).
+    // The window bounds of child should become (50, 50, 50, 50) relative to
+    // parent.
+    child.layer()->SetBounds(gfx::Rect(40, 40, 50, 50));
+
+    EXPECT_EQ(gfx::Rect(50, 50, 50, 50), child.bounds());
+    EXPECT_EQ(gfx::Rect(50, 50, 50, 50), child.GetTargetBounds());
+  }
+}
+
+// Verify LayoutManager Constraints
+TEST_F(WindowLayerManagedByParentTest, NoLayoutManager) {
+  // 1 Add Child to LayoutManager
+  {
+    Window parent(nullptr);
+    parent.Init(ui::LAYER_NOT_DRAWN);
+    parent.SetLayoutManager(std::make_unique<TestLayoutManager>());
+
+    Window child(nullptr);
+    child.Init(ui::LAYER_NOT_DRAWN);
+    child.SetLayerManagedByParent(false);
+
+    EXPECT_DEATH(parent.AddChild(&child), "");
+  }
+
+  // 2 Set LayoutManager with Unmanaged Child
+  {
+    Window parent(nullptr);
+    parent.Init(ui::LAYER_NOT_DRAWN);
+    Window child(nullptr);
+    child.Init(ui::LAYER_NOT_DRAWN);
+    child.SetLayerManagedByParent(false);
+    parent.AddChild(&child);
+
+    EXPECT_DEATH(parent.SetLayoutManager(std::make_unique<TestLayoutManager>()),
+                 "");
+  }
 }
 
 // Various capture assertions.
@@ -3160,6 +3525,51 @@ TEST_F(WindowTest, DeleteWindowFromOnWindowDestroyed) {
 }
 
 // WindowObserver implementation that deletes a window in
+// OnWindowBoundsChanged().
+class DeleteOnBoundsChangedObserver : public WindowObserver {
+ public:
+  explicit DeleteOnBoundsChangedObserver(Window* window) : window_(window) {
+    window_->AddObserver(this);
+  }
+
+  DeleteOnBoundsChangedObserver(const DeleteOnBoundsChangedObserver&) = delete;
+  DeleteOnBoundsChangedObserver& operator=(
+      const DeleteOnBoundsChangedObserver&) = delete;
+
+  ~DeleteOnBoundsChangedObserver() override {
+    CHECK(window_);
+    window_->RemoveObserver(this);
+  }
+
+  // WindowObserver:
+  void OnWindowBoundsChanged(Window* window,
+                             const gfx::Rect& old_bounds,
+                             const gfx::Rect& new_bounds,
+                             ui::PropertyChangeReason reason) override {
+    // This will fail with CHECK.
+    delete window_;
+    NOTREACHED();
+  }
+
+  void OnWindowDestroyed(Window* window) override { NOTREACHED(); }
+
+ private:
+  raw_ptr<Window> window_;
+};
+
+using WindowDeathTest = WindowTest;
+
+TEST_F(WindowDeathTest, DeleteWindowInBoundsChange) {
+  std::unique_ptr<Window> window = std::make_unique<Window>(nullptr);
+  window->Init(ui::LAYER_NOT_DRAWN);
+  auto weak_window = window->GetWeakPtr();
+  DeleteOnBoundsChangedObserver observer(window.get());
+  EXPECT_DEATH(window->SetBounds(gfx::Rect(10, 10, 300, 300)), "");
+  // Deletion fails with CHECK.
+  EXPECT_TRUE(weak_window);
+}
+
+// WindowObserver implementation that deletes a window in
 // OnWindowVisibilityChanged().
 class DeleteOnVisibilityChangedObserver : public WindowObserver {
  public:
@@ -3194,6 +3604,24 @@ class DeleteOnVisibilityChangedObserver : public WindowObserver {
   raw_ptr<Window> to_observe_;
   raw_ptr<Window> to_delete_;
 };
+
+TEST_F(WindowTest, DeleteWindowFromOnWindowVisibilityChanged) {
+  std::unique_ptr<Window> root =
+      CreateTestWindow({.bounds = {100, 100}, .window_id = 0});
+  Window* child =
+      CreateTestWindow(
+          {.parent = root.get(), .bounds = {100, 100}, .window_id = 0})
+          .release();
+  auto weak_root = root->GetWeakPtr();
+  auto weak_child = child->GetWeakPtr();
+
+  // This deletes |child| when OnWindowVisibilityChanged() is
+  // received by |child|.
+  DeleteOnVisibilityChangedObserver deletion_observer(child, child);
+  child->Hide();
+  EXPECT_FALSE(weak_child);
+  EXPECT_TRUE(weak_root);
+}
 
 TEST_F(WindowTest, DeleteParentWindowFromOnWindowVisibiltyChanged) {
   WindowTracker tracker;
@@ -3590,6 +4018,55 @@ TEST_F(WindowTest, OnWindowHierarchyChange) {
     w1.reset();
     w2.reset();
   }
+}
+
+namespace {
+
+class HierarchyMutatingObserver : public WindowObserver {
+ public:
+  explicit HierarchyMutatingObserver(Window* window_to_remove)
+      : window_to_remove_(window_to_remove) {}
+
+  HierarchyMutatingObserver(const HierarchyMutatingObserver&) = delete;
+  HierarchyMutatingObserver& operator=(const HierarchyMutatingObserver&) =
+      delete;
+
+  void OnWindowAddedToRootWindow(Window* window) override {
+    if (window_to_remove_) {
+      window_to_remove_->parent()->RemoveChild(window_to_remove_);
+      window_to_remove_ = nullptr;
+    }
+  }
+
+ private:
+  raw_ptr<Window> window_to_remove_;
+};
+
+}  // namespace
+
+// Tests that modifying the hierarchy during NotifyAddedToRootWindow doesn't
+// cause a crash.
+TEST_F(WindowTest, MutateHierarchyDuringNotifyAddedToRootWindow) {
+  std::unique_ptr<Window> parent_window(CreateTestWindow({.window_id = 0}));
+  std::unique_ptr<Window> w1(CreateTestWindow({.window_id = 1}));
+  std::unique_ptr<Window> w2(CreateTestWindow({.window_id = 2}));
+  std::unique_ptr<Window> w3(CreateTestWindow({.window_id = 3}));
+
+  parent_window->AddChild(w1.get());
+  parent_window->AddChild(w2.get());
+  parent_window->AddChild(w3.get());
+
+  // Add an observer to w2 that removes w1.
+  // When parent_window is added to the root, it will notify its children: w1,
+  // w2, w3.
+  // 1. Notify w1.
+  // 2. Notify w2. w2's observer removes w1.
+  // 3. Notify w3.
+  HierarchyMutatingObserver observer(w1.get());
+  base::ScopedObservation<Window, WindowObserver> observation(&observer);
+  observation.Observe(w2.get());
+
+  root_window()->AddChild(parent_window.get());
 }
 
 class TestLayerAnimationObserver : public ui::LayerAnimationObserver {

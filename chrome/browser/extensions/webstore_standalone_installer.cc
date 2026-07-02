@@ -13,10 +13,8 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/values.h"
 #include "base/version.h"
-#include "chrome/browser/extensions/crx_installer.h"
 #include "chrome/browser/extensions/extension_install_prompt.h"
 #include "chrome/browser/extensions/install_tracker_factory.h"
-#include "chrome/browser/extensions/webstore_data_fetcher.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/crx_file/id_util.h"
 #include "content/public/browser/storage_partition.h"
@@ -28,6 +26,7 @@
 #include "extensions/browser/install_approval.h"
 #include "extensions/browser/install_tracker.h"
 #include "extensions/browser/scoped_active_install.h"
+#include "extensions/browser/webstore_data_fetcher.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_urls.h"
@@ -269,8 +268,7 @@ void WebstoreStandaloneInstaller::OnFetchItemSnippetParseSuccess(
   // The helper will call us back via OnWebstoreParseSuccess() or
   // OnWebstoreParseFailure().
   helper->Start(profile_->GetDefaultStoragePartition()
-                    ->GetURLLoaderFactoryForBrowserProcess()
-                    .get());
+                    ->GetURLLoaderFactoryForBrowserProcess());
 }
 
 void WebstoreStandaloneInstaller::OnWebstoreResponseParseFailure(
@@ -303,10 +301,11 @@ void WebstoreStandaloneInstaller::OnWebstoreParseFailure(
     const std::string& error_message) {
   webstore_install::Result install_result = webstore_install::OTHER_ERROR;
   switch (result_code) {
-    case WebstoreInstallHelper::Delegate::kManifestError:
+    case WebstoreInstallHelper::Delegate::InstallHelperResultCode::
+        kManifestError:
       install_result = webstore_install::INVALID_MANIFEST;
       break;
-    case WebstoreInstallHelper::Delegate::ICON_ERROR:
+    case WebstoreInstallHelper::Delegate::InstallHelperResultCode::kIconError:
       install_result = webstore_install::ICON_ERROR;
       break;
     default:

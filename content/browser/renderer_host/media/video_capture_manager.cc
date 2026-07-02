@@ -41,6 +41,13 @@
 
 namespace {
 
+// Test feature that simulates a hardware limitation where starting a second
+// display capture stream automatically stops the first one.
+// TODO(crbug.com/485200165): Remove this once testing is completed and the bug
+// is fixed.
+BASE_FEATURE(kVideoCaptureManagerStopFirstDisplayCaptureAfterSecondStarts,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 void LogVideoCaptureError(media::VideoCaptureError error) {
   base::UmaHistogramEnumeration("Media.VideoCapture.Error", error);
 }
@@ -128,7 +135,7 @@ void VideoCaptureManager::RegisterListener(
   // track foreground/background state if this feature is DISABLED,
   // ensuring that capture is stopped when the app is no longer active.
   if (!base::FeatureList::IsEnabled(
-          features::kAndroidEnableBackgroundMediaCapturing)) {
+          media::kAndroidEnableBackgroundMediaCapturing)) {
     application_state_has_running_activities_ = true;
     app_status_listener_ =
         base::android::ApplicationStatusListener::New(base::BindRepeating(
@@ -200,6 +207,11 @@ void VideoCaptureManager::Close(
   auto session_it = sessions_.find(capture_session_id);
   if (session_it == sessions_.end()) {
     return;
+  }
+
+  if (base::FeatureList::IsEnabled(
+          kVideoCaptureManagerStopFirstDisplayCaptureAfterSecondStarts)) {
+    std::erase(display_capture_session_ids_, capture_session_id);
   }
 
   VideoCaptureController* const existing_device =
@@ -361,6 +373,28 @@ void VideoCaptureManager::OnDeviceLaunched(VideoCaptureController* controller) {
   DCHECK_EQ(controller, device_start_request_queue_.begin()->controller());
   DCHECK(controller);
 
+  // Test feature that simulates a hardware limitation where starting a second
+  // display capture stream automatically stops the first one.
+  // TODO(crbug.com/485200165): Remove this once testing is completed and the
+  // bug is fixed.
+  if (base::FeatureList::IsEnabled(
+          kVideoCaptureManagerStopFirstDisplayCaptureAfterSecondStarts) &&
+      controller->stream_type() ==
+          blink::mojom::MediaStreamType::DISPLAY_VIDEO_CAPTURE) {
+    const media::VideoCaptureSessionId session_id =
+        device_start_request_queue_.front().session_id();
+    if (!display_capture_session_ids_.empty()) {
+      const base::UnguessableToken first_session_id =
+          display_capture_session_ids_.front();
+      base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+          FROM_HERE,
+          base::BindOnce(&VideoCaptureManager::Close,
+                         weak_factory_.GetWeakPtr(), first_session_id),
+          base::Milliseconds(30));
+    }
+    display_capture_session_ids_.push_back(session_id);
+  }
+
   if (blink::IsVideoDesktopCaptureMediaType(controller->stream_type())) {
     const media::VideoCaptureSessionId session_id =
         device_start_request_queue_.front().session_id();
@@ -418,16 +452,30 @@ void VideoCaptureManager::OpenNativeScreenCapturePicker(
     base::OnceCallback<void(DesktopMediaID::Id)> created_callback,
     base::OnceCallback<void(webrtc::DesktopCapturer::Source)> picker_callback,
     base::OnceCallback<void()> cancel_callback,
-    base::OnceCallback<void()> error_callback) {
+    base::OnceCallback<void()> error_callback,
+    base::OnceCallback<void(DesktopMediaID::Id)> stop_audio_callback) {
   video_capture_provider_->OpenNativeScreenCapturePicker(
       type, std::move(created_callback), std::move(picker_callback),
-      std::move(cancel_callback), std::move(error_callback));
+      std::move(cancel_callback), std::move(error_callback),
+      std::move(stop_audio_callback));
 }
 
 void VideoCaptureManager::CloseNativeScreenCapturePicker(
     DesktopMediaID device_id) {
   video_capture_provider_->CloseNativeScreenCapturePicker(device_id);
 }
+
+#if BUILDFLAG(IS_MAC)
+void VideoCaptureManager::GetApplicationAudioCaptureId(
+    DesktopMediaID::Id session_id,
+    base::OnceCallback<
+        void(const std::optional<desktop_capture::ApplicationAudioCaptureId>&)>
+        callback) {
+  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  video_capture_provider_->GetApplicationAudioCaptureId(session_id,
+                                                        std::move(callback));
+}
+#endif
 
 void VideoCaptureManager::ConnectClient(
     const media::VideoCaptureSessionId& session_id,

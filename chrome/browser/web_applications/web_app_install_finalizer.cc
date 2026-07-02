@@ -18,7 +18,6 @@
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
@@ -29,13 +28,13 @@
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/web_applications/commands/web_app_uninstall_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_integrity_block_data.h"
 #include "chrome/browser/web_applications/jobs/finalize_install_job.h"
 #include "chrome/browser/web_applications/jobs/finalize_update_job.h"
 #include "chrome/browser/web_applications/jobs/uninstall/remove_install_source_job.h"
 #include "chrome/browser/web_applications/jobs/uninstall/remove_install_url_job.h"
 #include "chrome/browser/web_applications/jobs/uninstall/remove_web_app_job.h"
 #include "chrome/browser/web_applications/model/app_installed_by.h"
+#include "chrome/browser/web_applications/model/integrity_block_data.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
 #include "chrome/browser/web_applications/os_integration/os_integration_manager.h"
 #include "chrome/browser/web_applications/os_integration/web_app_shortcuts_menu.h"
@@ -63,7 +62,6 @@
 #include "chrome/browser/web_applications/web_app_translation_manager.h"
 #include "chrome/browser/web_applications/web_app_ui_manager.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
-#include "chrome/common/chrome_features.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_types.h"
@@ -105,7 +103,7 @@ void WebAppInstallFinalizer::FinalizeInstall(
   }
 
   std::unique_ptr<FinalizeInstallJob> web_app_install_job =
-      std::make_unique<FinalizeInstallJob>(*profile_, *provider_, clock_.get(),
+      std::make_unique<FinalizeInstallJob>(*profile_, nullptr, nullptr,
                                            std::move(web_app_info), options);
   FinalizeInstallJob* job_ptr = web_app_install_job.get();
   install_jobs_.insert(std::move(web_app_install_job));
@@ -136,8 +134,16 @@ void WebAppInstallFinalizer::OnInstallUpdateJobFinished(
 void WebAppInstallFinalizer::FinalizeUpdate(
     const WebAppInstallInfo& web_app_info,
     InstallFinalizedCallback callback) {
+  FinalizeUpdate(nullptr, web_app_info, std::move(callback));
+}
+
+void WebAppInstallFinalizer::FinalizeUpdate(
+    WithAppResources* lock,
+    const WebAppInstallInfo& web_app_info,
+    InstallFinalizedCallback callback) {
   std::unique_ptr<FinalizeUpdateJob> web_app_install_update_job =
-      std::make_unique<FinalizeUpdateJob>(*provider_, std::move(web_app_info));
+      std::make_unique<FinalizeUpdateJob>(nullptr, lock, *provider_,
+                                          web_app_info);
   FinalizeUpdateJob* job_ptr = web_app_install_update_job.get();
   install_update_jobs_.insert(std::move(web_app_install_update_job));
   job_ptr->Start(
@@ -165,7 +171,9 @@ void WebAppInstallFinalizer::Shutdown() {
 }
 
 void WebAppInstallFinalizer::SetClockForTesting(base::Clock* clock) {
-  clock_ = clock;
+  if (provider_) {
+    provider_->SetClockForTesting(clock);
+  }
 }
 
 }  // namespace web_app

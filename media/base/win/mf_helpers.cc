@@ -45,6 +45,47 @@
 
 namespace media {
 
+namespace {
+
+void DestroySharedImageResourcesOnGpuThread(
+    std::unique_ptr<gpu::VideoImageRepresentation> representation,
+    std::unique_ptr<gpu::VideoImageRepresentation::ScopedReadAccess>
+        scoped_read_access,
+    scoped_refptr<gpu::SharedContextState> context_state) {
+  if (context_state && context_state->MakeCurrent(nullptr, /*needs_gl=*/true)) {
+    scoped_read_access.reset();
+    representation.reset();
+  } else {
+    if (representation) {
+      representation->OnContextLost();
+    }
+    scoped_read_access.reset();
+    representation.reset();
+  }
+}
+
+}  // namespace
+
+SharedImageReadLock::SharedImageReadLock(
+    std::unique_ptr<gpu::VideoImageRepresentation> representation,
+    std::unique_ptr<gpu::VideoImageRepresentation::ScopedReadAccess>
+        scoped_read_access,
+    scoped_refptr<VideoFrame> frame,
+    scoped_refptr<gpu::SharedContextState> context_state)
+    : representation_(std::move(representation)),
+      scoped_read_access_(std::move(scoped_read_access)),
+      frame_(std::move(frame)),
+      context_state_(std::move(context_state)),
+      task_runner_(base::SequencedTaskRunner::GetCurrentDefault()) {}
+
+SharedImageReadLock::~SharedImageReadLock() {
+  task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(&DestroySharedImageResourcesOnGpuThread,
+                     std::move(representation_), std::move(scoped_read_access_),
+                     std::move(context_state_)));
+}
+
 using Microsoft::WRL::ComPtr;
 using Microsoft::WRL::MakeAndInitialize;
 
@@ -820,7 +861,12 @@ HRESULT CreateDecryptConfigFromSample(
             MFSampleExtension_Encryption_CryptByteBlock, &crypt_byte_block)) &&
         SUCCEEDED(mf_sample->GetUINT32(
             MFSampleExtension_Encryption_SkipByteBlock, &skip_byte_block))) {
-      encryption_pattern = EncryptionPattern(crypt_byte_block, skip_byte_block);
+      auto pattern =
+          EncryptionPattern::Create(crypt_byte_block, skip_byte_block);
+      if (!pattern) {
+        return MF_E_INVALID_STREAM_DATA;
+      }
+      encryption_pattern = *pattern;
     }
 
     DVLOG(3) << __func__ << ": encryption_pattern=" << encryption_pattern;
@@ -873,8 +919,24 @@ Microsoft::WRL::ComPtr<IMFSample> CreateSampleFromTexture(
 
   HRESULT hr;
   if (need_perform_copy) {
+    if (frame->format() == PIXEL_FORMAT_NV12 ||
+        frame->format() == PIXEL_FORMAT_I420 ||
+        frame->format() == PIXEL_FORMAT_YV12 ||
+        frame->format() == PIXEL_FORMAT_NV21) {
+      const gfx::Rect& visible_rect = frame->visible_rect();
+      if (visible_rect.x() % 2 != 0 || visible_rect.y() % 2 != 0 ||
+          visible_rect.width() % 2 != 0 || visible_rect.height() % 2 != 0) {
+        DLOG(ERROR) << "Source visible_rect is not properly aligned for 4:2:0 "
+                       "subsampled format.";
+        return nullptr;
+      }
+    } else {
+      NOTREACHED();
+    }
     D3D11_TEXTURE2D_DESC desc;
     input_texture->GetDesc(&desc);
+    desc.Width = static_cast<UINT>(frame->visible_rect().width());
+    desc.Height = static_cast<UINT>(frame->visible_rect().height());
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_VIDEO_ENCODER;
     desc.ArraySize = 1;
@@ -1037,25 +1099,39 @@ HRESULT GenerateSampleFromVideoFrame(
 
 void GenerateResourceOnSyncTokenReleased(
     scoped_refptr<VideoFrame> frame,
-    bool use_same_device,
+    Microsoft::WRL::ComPtr<ID3D11Device> encoder_device,
     scoped_refptr<CommandBufferHelper> command_buffer_helper,
     ResourceAvailableCB sample_available_cb) {
   TRACE_EVENT0("media", "GenerateResourceOnSyncTokenReleased");
 
-#define RETURN_ON_FAILURE_WITH_CALLBACK(hr, message)                       \
-  if (FAILED(hr)) {                                                        \
-    LOG(ERROR) << message << ": " << logging::SystemErrorCodeToString(hr); \
-    std::move(sample_available_cb)                                         \
-        .Run(std::move(frame), nullptr, std::nullopt, std::nullopt, hr);   \
-    return;                                                                \
+#define RETURN_ON_FAILURE_WITH_CALLBACK(hr, message)                         \
+  if (FAILED(hr)) {                                                          \
+    LOG(ERROR) << message << ": " << logging::SystemErrorCodeToString(hr);   \
+    std::move(sample_available_cb)                                           \
+        .Run(std::move(frame), nullptr, std::nullopt, nullptr, std::nullopt, \
+             hr);                                                            \
+    return;                                                                  \
+  }
+
+  auto* shared_image_stub = command_buffer_helper->GetSharedImageStub();
+  if (!shared_image_stub) {
+    RETURN_ON_FAILURE_WITH_CALLBACK(E_FAIL, "Invalid shared image stub");
+  }
+
+  auto shared_context_state = shared_image_stub->shared_context_state();
+  if (!shared_context_state) {
+    RETURN_ON_FAILURE_WITH_CALLBACK(E_FAIL, "Invalid shared context state");
+  }
+
+  if (!shared_context_state->MakeCurrent(nullptr, /*needs_gl=*/true)) {
+    RETURN_ON_FAILURE_WITH_CALLBACK(E_FAIL, "Failed to make context current");
   }
 
   Microsoft::WRL::ComPtr<ID3D11Device> shared_d3d11_device =
-      command_buffer_helper->GetSharedImageStub()
-          ->shared_context_state()
-          ->GetD3D11Device();
+      shared_context_state->GetD3D11Device();
   HRESULT hr = shared_d3d11_device ? S_OK : E_FAIL;
   RETURN_ON_FAILURE_WITH_CALLBACK(hr, "Invalid shared d3d11 device");
+  bool use_same_device = (encoder_device.Get() == shared_d3d11_device.Get());
   gpu::SharedImageManager* shared_image_manager =
       command_buffer_helper->GetSharedImageManager();
   std::unique_ptr<gpu::VideoImageRepresentation> image_representation =
@@ -1065,9 +1141,25 @@ void GenerateResourceOnSyncTokenReleased(
   RETURN_ON_FAILURE_WITH_CALLBACK(image_representation ? S_OK : E_FAIL,
                                   "Failed to produce video");
 
+  if (image_representation->size() != frame->coded_size()) {
+    RETURN_ON_FAILURE_WITH_CALLBACK(E_FAIL, "SharedImage size mismatch");
+  }
+
   auto scoped_read_access = image_representation->BeginScopedReadAccess();
+  if (!scoped_read_access) {
+    RETURN_ON_FAILURE_WITH_CALLBACK(E_FAIL, "Failed to begin read access");
+  }
+  ComPtr<SharedImageReadLock> si_lock =
+      Microsoft::WRL::Make<SharedImageReadLock>(
+          std::move(image_representation), std::move(scoped_read_access), frame,
+          std::move(shared_context_state));
+  if (!si_lock) {
+    RETURN_ON_FAILURE_WITH_CALLBACK(E_OUTOFMEMORY,
+                                    "Failed to create SharedImageReadLock");
+  }
+
   gpu::D3D11TextureAndArrayIndex input_texture =
-      scoped_read_access->GetD3D11Texture();
+      si_lock->access()->GetD3D11Texture();
 
   D3D11_TEXTURE2D_DESC texture_desc;
   input_texture.texture->GetDesc(&texture_desc);
@@ -1087,8 +1179,8 @@ void GenerateResourceOnSyncTokenReleased(
     RETURN_ON_FAILURE_WITH_CALLBACK(sample != nullptr ? S_OK : E_FAIL,
                                     "Failed to create MF sample");
     std::move(sample_available_cb)
-        .Run(std::move(frame), std::move(sample), std::nullopt, std::nullopt,
-             S_OK);
+        .Run(std::move(frame), std::move(sample), std::nullopt,
+             std::move(si_lock), std::nullopt, S_OK);
     return;
   }
 
@@ -1105,6 +1197,21 @@ void GenerateResourceOnSyncTokenReleased(
                                            nullptr, &shared_handle);
   }
   if (FAILED(hr) || is_texture_array) {
+    if (frame->format() == PIXEL_FORMAT_NV12 ||
+        frame->format() == PIXEL_FORMAT_I420 ||
+        frame->format() == PIXEL_FORMAT_YV12 ||
+        frame->format() == PIXEL_FORMAT_NV21) {
+      const gfx::Rect& visible_rect = frame->visible_rect();
+      if (visible_rect.x() % 2 != 0 || visible_rect.y() % 2 != 0 ||
+          visible_rect.width() % 2 != 0 || visible_rect.height() % 2 != 0) {
+        RETURN_ON_FAILURE_WITH_CALLBACK(
+            E_INVALIDARG,
+            "Source visible_rect is not properly aligned for "
+            "4:2:0 subsampled format.");
+      }
+    } else {
+      NOTREACHED();
+    }
     TRACE_EVENT0("media", "CopyTextureOnCreateSharedHandleFailed");
     texture_desc.Usage = D3D11_USAGE_DEFAULT;
     texture_desc.BindFlags =
@@ -1113,6 +1220,8 @@ void GenerateResourceOnSyncTokenReleased(
     texture_desc.CPUAccessFlags = 0;
     texture_desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE |
                              D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+    texture_desc.Width = static_cast<UINT>(frame->visible_rect().width());
+    texture_desc.Height = static_cast<UINT>(frame->visible_rect().height());
     Microsoft::WRL::ComPtr<ID3D11Texture2D> shared_texture;
     hr = shared_d3d11_device->CreateTexture2D(&texture_desc, nullptr,
                                               &shared_texture);
@@ -1168,20 +1277,21 @@ void GenerateResourceOnSyncTokenReleased(
 
   std::move(sample_available_cb)
       .Run(std::move(frame), nullptr, std::move(scoped_shared_handle),
-           input_texture_has_been_copied, S_OK);
+           std::move(si_lock), input_texture_has_been_copied, S_OK);
 #undef RETURN_ON_FAILURE_WITH_CALLBACK
 }
 
 void GenerateResourceFromSharedImageVideoFrame(
     scoped_refptr<VideoFrame> frame,
-    bool use_same_device,
+    Microsoft::WRL::ComPtr<ID3D11Device> encoder_device,
     scoped_refptr<CommandBufferHelper> command_buffer_helper,
     ResourceAvailableCB sample_available_cb) {
   gpu::SyncToken acquire_sync_token = frame->acquire_sync_token();
   command_buffer_helper->WaitForSyncToken(
       acquire_sync_token,
       base::BindOnce(&GenerateResourceOnSyncTokenReleased, std::move(frame),
-                     use_same_device, std::move(command_buffer_helper),
+                     std::move(encoder_device),
+                     std::move(command_buffer_helper),
                      std::move(sample_available_cb)));
 }
 

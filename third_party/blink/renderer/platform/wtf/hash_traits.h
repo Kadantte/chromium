@@ -51,7 +51,8 @@ namespace blink {
 //   template parameters of HashTable-based classes.
 // The former is preferred if the hash traits defines the default hash behavior
 // of the type. The latter is suitable when a type has multiple hash behaviors,
-// e.g. CaseFoldingHashTraits defines an alternative hash behavior of strings.
+// e.g. IgnoringAsciiCaseHashTraits defines an alternative hash behavior of
+// strings.
 //
 // This file contains definitions of hash traits for integral types,
 // floating-point types, enums, raw and smart pointers, std::pair, etc.
@@ -388,6 +389,15 @@ struct GenericHashTraits<std::unique_ptr<T>>
 // a specialized HashTraits<T> to inherit GenericHashTraits<T>.
 template <typename T>
 struct HashTraits : GenericHashTraits<T> {};
+
+// Helper to avoid HashTraits<unsigned> sentinel values (0 and 0xFFFFFFFF)
+// by turning them into 1.
+constexpr unsigned EnsureValidHash(unsigned hash) {
+  return (hash == HashTraits<unsigned>::EmptyValue() ||
+          hash == HashTraits<unsigned>::DeletedValue())
+             ? 1
+             : hash;
+}
 
 // This hash traits type requires the following methods in class T, unless
 // the corresponding hash traits method is overridden:

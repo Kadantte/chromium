@@ -5,6 +5,7 @@
 #import <XCTest/XCTest.h>
 
 #import "base/strings/sys_string_conversions.h"
+#import "base/test/ios/wait_util.h"
 #import "components/themes/ntp_background.pb.h"
 #import "ios/chrome/browser/content_suggestions/test/new_tab_page_app_interface.h"
 #import "ios/chrome/browser/home_customization/model/home_customization_seed_colors.h"
@@ -118,23 +119,8 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
 }
 
-- (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config = [super appConfigurationForTestCase];
-
-  config.features_enabled.push_back(kNTPBackgroundCustomization);
-
-  return config;
-}
-
 // Tests that a custom color can be set.
 - (void)testCustomizeColor {
-#if !TARGET_IPHONE_SIMULATOR
-  // TODO(crbug.com/474141910): Re-enable when fixed.
-  if (![ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_DISABLED(@"Test is flaky on iPhone device.");
-  }
-#endif
-
   [[EarlGrey
       selectElementWithMatcher:grey_accessibilityID(
                                    kNTPCustomizationMenuButtonIdentifier)]
@@ -157,10 +143,12 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
                                    chosenColor.accessibilityNameId))]
       performAction:grey_tap()];
 
-  NewTabPageColorPalette* palette =
-      [NewTabPageAppInterface currentBackgroundColor];
-  SkColor paletteSeedColor = skia::UIColorToSkColor(palette.seedColor);
-  EXPECT_EQ(chosenColor.color, paletteSeedColor);
+  EXPECT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForUIElementTimeout, ^bool() {
+        NewTabPageColorPalette* palette =
+            [NewTabPageAppInterface currentBackgroundColor];
+        return skia::UIColorToSkColor(palette.seedColor) == chosenColor.color;
+      }));
 
   // Tapping Done should dismiss the entire menu and keep the background color.
   [[EarlGrey
@@ -173,9 +161,12 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
                      kHomeCustomizationMainViewAccessibilityIdentifier)]
       assertWithMatcher:grey_nil()];
 
-  palette = [NewTabPageAppInterface currentBackgroundColor];
-  paletteSeedColor = skia::UIColorToSkColor(palette.seedColor);
-  EXPECT_EQ(chosenColor.color, paletteSeedColor);
+  EXPECT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForUIElementTimeout, ^bool() {
+        NewTabPageColorPalette* palette =
+            [NewTabPageAppInterface currentBackgroundColor];
+        return skia::UIColorToSkColor(palette.seedColor) == chosenColor.color;
+      }));
 }
 
 // Tests that a custom gallery background can be set.
@@ -293,6 +284,53 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
                  grey_accessibilityID(
                      kHomeCustomizationMainViewAccessibilityIdentifier)]
       assertWithMatcher:grey_notNil()];
+}
+
+// Tests that tapping on the rainbow slider track changes the background color.
+- (void)testTapOnRainbowSliderChangesColor {
+  // Navigate to the color picker.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kNTPCustomizationMenuButtonIdentifier)]
+      performAction:grey_tap()];
+
+  [[EarlGrey
+      selectElementWithMatcher:
+          grey_accessibilityID(kBackgroundPickerCellAccessibilityIdentifier)]
+      performAction:grey_tap()];
+
+  [[EarlGrey selectElementWithMatcher:
+                 chrome_test_util::AlertAction(l10n_util::GetNSStringWithFixup(
+                     IDS_IOS_HOME_CUSTOMIZATION_BACKGROUND_PICKER_COLOR_TITLE))]
+      performAction:grey_tap()];
+
+  // Tap the custom color cell (eyedropper) to reveal the rainbow slider.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kCustomColorCellAccessibilityIdentifier)]
+      performAction:grey_tap()];
+
+  // Record the initial background color.
+  NewTabPageColorPalette* initialPalette =
+      [NewTabPageAppInterface currentBackgroundColor];
+
+  // Tap near the trailing end of the slider to pick a different hue.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kRainbowSliderAccessibilityIdentifier)]
+      performAction:grey_tapAtPoint(CGPointMake(250, 22))];
+
+  // Verify the background color changed.
+  EXPECT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForUIElementTimeout, ^bool() {
+        NewTabPageColorPalette* palette =
+            [NewTabPageAppInterface currentBackgroundColor];
+        if (!palette) {
+          return initialPalette == nil;
+        }
+        return skia::UIColorToSkColor(palette.seedColor) !=
+               skia::UIColorToSkColor(initialPalette.seedColor);
+      }));
 }
 
 @end

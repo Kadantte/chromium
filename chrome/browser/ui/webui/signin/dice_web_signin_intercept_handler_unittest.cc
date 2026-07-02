@@ -10,7 +10,6 @@
 #include "base/functional/callback_helpers.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
-#include "chrome/browser/browser_features.h"
 #include "chrome/browser/enterprise/browser_management/management_service_factory.h"
 #include "chrome/browser/new_tab_page/chrome_colors/selected_colors_info.h"
 #include "chrome/browser/profiles/profile.h"
@@ -75,7 +74,7 @@ AccountInfo CreateAccount(GaiaId gaia_id,
           .SetFullName(full_name)
           .SetHostedDomain(hosted_domain)
           .Build();
-  AccountCapabilitiesTestMutator(&account_info.capabilities)
+  AccountCapabilitiesTestMutator(&account_info)
       .set_is_subject_to_enterprise_features(hosted_domain !=
                                              kNoHostedDomainFound);
   return account_info;
@@ -234,7 +233,7 @@ class DiceWebSigninInterceptHandlerTestBase : public testing::Test {
   base::DictValue GetInterceptionParameters() {
     Profile* profile = profile_manager_.CreateTestingProfile("Primary Profile");
     // Resetting the platform authority to NONE, as not all platforms have the
-    // same value in browser tests. See https://crbug.com/1324377.
+    // same value in browser tests. See https://crbug.com/40839235.
     policy::ScopedManagementServiceOverrideForTesting
         platform_management_authority_override(
             policy::ManagementServiceFactory::GetForPlatform(),
@@ -282,7 +281,7 @@ class DiceWebSigninInterceptHandlerTest
       public testing::WithParamInterface<TestParam> {
  public:
   DiceWebSigninInterceptHandlerTest() {
-    AccountCapabilitiesTestMutator mutator(&intercepted_account.capabilities);
+    AccountCapabilitiesTestMutator mutator(&intercepted_account);
     switch (GetParam().is_supervised) {
       case signin::Tribool::kTrue:
         mutator.set_is_subject_to_parental_controls(true);
@@ -354,7 +353,7 @@ class DiceWebSigninInterceptHandlerChromeSigninInterceptionTest
     CHECK(interception_type() ==
           WebSigninInterceptor::SigninInterceptionType::kChromeSignin);
 
-    AccountCapabilitiesTestMutator mutator(&intercepted_account.capabilities);
+    AccountCapabilitiesTestMutator mutator(&intercepted_account);
     switch (IsSupervisedUser()) {
       case signin::Tribool::kTrue:
         mutator.set_is_subject_to_parental_controls(true);
@@ -371,8 +370,7 @@ class DiceWebSigninInterceptHandlerChromeSigninInterceptionTest
     std::string title = l10n_util::GetStringUTF8(
         IDS_SIGNIN_DICE_WEB_INTERCEPT_BUBBLE_CHROME_SIGNIN_TITLE);
     std::string subtitle = l10n_util::GetStringUTF8(
-        base::FeatureList::IsEnabled(
-            syncer::kReplaceSyncPromosWithSignInPromos)
+        syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
             ? IDS_SIGNIN_DICE_WEB_INTERCEPT_BUBBLE_CHROME_SIGNIN_SUBTITLE_WITH_BOOKMARKS
             : IDS_SIGNIN_DICE_WEB_INTERCEPT_BUBBLE_CHROME_SIGNIN_SUBTITLE);
     std::string avatar_badge_alt_text;

@@ -5,8 +5,12 @@
 package org.chromium.chrome.browser.omnibox;
 
 import static org.hamcrest.core.IsEqual.equalTo;
-import static org.mockito.Mockito.mock;
 
+import static org.chromium.ui.test.util.MockitoHelper.clearInvocations;
+
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.text.TextUtils;
 import android.view.KeyEvent;
 import android.view.View;
@@ -20,6 +24,7 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
@@ -36,7 +41,10 @@ import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.ReusedCtaTransitTestRule;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.OmniboxTestUtils;
+import org.chromium.components.omnibox.OmniboxCapabilities;
+import org.chromium.components.omnibox.TextSelection;
 import org.chromium.content_public.common.ContentUrlConstants;
+import org.chromium.url.GURL;
 
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -64,6 +72,7 @@ public class UrlBarTest {
     private WebPageStation mStartingPage;
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Mock private Callback<String> mUrlTextChangeListener;
 
     @Before
     public void setUpTest() throws Exception {
@@ -209,9 +218,9 @@ public class UrlBarTest {
         final AtomicReference<String> requestedAutocompleteText = new AtomicReference<>();
         final AtomicBoolean didPreventInlineAutocomplete = new AtomicBoolean();
         mUrlBar.setTextChangeListener(
-                (textWithoutAutocomplete) -> {
+                (info) -> {
                     autocompleteHelper.notifyCalled();
-                    requestedAutocompleteText.set(textWithoutAutocomplete);
+                    requestedAutocompleteText.set(info);
                     didPreventInlineAutocomplete.set(!mUrlBar.shouldAutocomplete());
                     mUrlBar.setTextChangeListener(null);
                 });
@@ -575,17 +584,17 @@ public class UrlBarTest {
     @SmallTest
     @DisabledTest(message = "Disabled because of b/333536371")
     public void testUrlTextChangeListener() {
-        Callback<String> listener = mock(Callback.class);
-        mUrlBar.setTextChangeListener(listener);
+        mUrlBar.setTextChangeListener(mUrlTextChangeListener);
 
         mOmnibox.setText("onomatop");
-        Mockito.verify(listener).onResult("onomatop");
+        Mockito.verify(mUrlTextChangeListener).onResult("onomatop");
 
         // Setting autocomplete does not send a change update.
         mOmnibox.setAutocompleteText("oeia", null);
 
+        clearInvocations(mUrlTextChangeListener);
         mOmnibox.setText("");
-        Mockito.verify(listener).onResult("");
+        Mockito.verify(mUrlTextChangeListener).onResult("");
     }
 
     @Test
@@ -666,5 +675,73 @@ public class UrlBarTest {
         mOmnibox.typeText("test", false);
         mOmnibox.clearFocus();
         mOmnibox.checkText(equalTo(ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL), null);
+    }
+
+    @Test
+    @SmallTest
+    public void testCopyUrl_SchemePreservation() throws Exception {
+        // Force desktop mode.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> OmniboxCapabilities.setHasDesktopExperienceForTesting(Boolean.TRUE));
+
+        mOmnibox.clearFocus();
+
+        String url = "https://www.foo.com/index.html";
+        mOmnibox.requestFocus();
+        LocationBarCoordinator locationBarCoordinator =
+                (LocationBarCoordinator)
+                        mActivityTestRule
+                                .getActivity()
+                                .getToolbarManager()
+                                .getToolbarLayoutForTesting()
+                                .getLocationBar();
+        UrlBarData urlBarData = UrlBarData.forUrlAndText(new GURL(url), "www.foo.com/index.html");
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    locationBarCoordinator
+                            .getMediatorForTesting()
+                            .setUrlBarText(
+                                    urlBarData,
+                                    UrlBar.ScrollType.NO_SCROLL,
+                                    TextSelection.SELECT_ALL);
+                });
+
+        String expectedStripped = "www.foo.com/index.html";
+        mOmnibox.checkText(equalTo(expectedStripped), null);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> mUrlBar.setSelection(0, mUrlBar.getText().length()));
+        ThreadUtils.runOnUiThreadBlocking(() -> mUrlBar.onTextContextMenuItem(android.R.id.copy));
+
+        String clipboardText = getClipboardText();
+        Assert.assertEquals(url, clipboardText);
+
+        mOmnibox.setText("");
+        mOmnibox.typeText("bar", false);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> mUrlBar.setSelection(0, mUrlBar.getText().length()));
+        ThreadUtils.runOnUiThreadBlocking(() -> mUrlBar.onTextContextMenuItem(android.R.id.copy));
+
+        clipboardText = getClipboardText();
+        Assert.assertEquals("bar", clipboardText);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> OmniboxCapabilities.setHasDesktopExperienceForTesting((Boolean) null));
+    }
+
+    private String getClipboardText() {
+        return ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    ClipboardManager clipboard =
+                            (ClipboardManager)
+                                    mUrlBar.getContext()
+                                            .getSystemService(Context.CLIPBOARD_SERVICE);
+                    ClipData clip = clipboard.getPrimaryClip();
+                    if (clip != null && clip.getItemCount() > 0) {
+                        return clip.getItemAt(0).getText().toString();
+                    }
+                    return "";
+                });
     }
 }

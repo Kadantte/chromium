@@ -5,8 +5,8 @@
 #include "cc/mojom/render_frame_metadata_mojom_traits.h"
 
 #include "build/build_config.h"
-#include "cc/mojom/tracked_element_bounds_mojom_traits.h"
 #include "services/viz/public/cpp/compositing/selection_mojom_traits.h"
+#include "services/viz/public/cpp/compositing/tracked_element_rects_mojom_traits.h"
 #include "services/viz/public/cpp/compositing/vertical_scroll_direction_mojom_traits.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/geometry/mojom/geometry_mojom_traits.h"
@@ -35,11 +35,29 @@ bool StructTraits<
   out->external_page_scale_factor = data.external_page_scale_factor();
   out->top_controls_height = data.top_controls_height();
   out->top_controls_shown_ratio = data.top_controls_shown_ratio();
+
+  // Ensure top controls are finite and non-negative heights so that the top
+  // controls cannot be moved offscreen by the renderer.
+  if (!std::isfinite(out->top_controls_height) ||
+      out->top_controls_height < 0 ||
+      !std::isfinite(out->top_controls_shown_ratio)) {
+    return false;
+  }
+
   out->primary_main_frame_item_sequence_number =
       data.primary_main_frame_item_sequence_number();
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
   out->bottom_controls_height = data.bottom_controls_height();
   out->bottom_controls_shown_ratio = data.bottom_controls_shown_ratio();
+
+  // Ensure bottom controls are finite and non-negative heights so that the
+  // bottom controls cannot be moved offscreen by the renderer.
+  if (!std::isfinite(out->bottom_controls_height) ||
+      out->bottom_controls_height < 0 ||
+      !std::isfinite(out->bottom_controls_shown_ratio)) {
+    return false;
+  }
+
   out->top_controls_min_height_offset = data.top_controls_min_height_offset();
   out->bottom_controls_min_height_offset =
       data.bottom_controls_min_height_offset();
@@ -55,7 +73,7 @@ bool StructTraits<
          data.ReadScrollableViewportSize(&out->scrollable_viewport_size) &&
          data.ReadRootLayerSize(&out->root_layer_size) &&
 #endif
-         data.ReadTrackedElementBounds(&out->tracked_element_bounds) &&
+         data.ReadTrackedElementRects(&out->tracked_element_rects) &&
          data.ReadViewportSizeInPixels(&out->viewport_size_in_pixels) &&
          data.ReadLocalSurfaceId(&out->local_surface_id) &&
          data.ReadNewVerticalScrollDirection(

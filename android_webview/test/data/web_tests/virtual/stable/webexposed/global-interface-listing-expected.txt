@@ -96,9 +96,11 @@ interface AnimationEffect
     method updateTiming
 interface AnimationEvent : Event
     attribute @@toStringTag
+    getter animation
     getter animationName
     getter elapsedTime
     getter pseudoElement
+    getter pseudoTarget
     method constructor
 interface AnimationPlaybackEvent : Event
     attribute @@toStringTag
@@ -400,6 +402,7 @@ interface Blob
     method slice
     method stream
     method text
+    method textStream
 interface BlobEvent : Event
     attribute @@toStringTag
     getter data
@@ -451,6 +454,7 @@ interface CSSConditionRule : CSSGroupingRule
     method constructor
 interface CSSContainerRule : CSSConditionRule
     attribute @@toStringTag
+    getter conditions
     getter containerName
     getter containerQuery
     method constructor
@@ -823,6 +827,13 @@ interface CSSPropertyRule : CSSRule
     getter name
     getter syntax
     method constructor
+interface CSSPseudoElement
+    attribute @@toStringTag
+    getter element
+    getter parent
+    getter type
+    method constructor
+    method pseudo
 interface CSSRotate : CSSTransformComponent
     attribute @@toStringTag
     getter angle
@@ -1298,6 +1309,7 @@ interface CreateMonitor : EventTarget
     method constructor
     setter ondownloadprogress
 interface Credential
+    static method isConditionalMediationAvailable
     attribute @@toStringTag
     getter id
     getter type
@@ -2141,6 +2153,7 @@ interface EditContext : EventTarget
 interface Element : Node
     attribute @@toStringTag
     attribute @@unscopables
+    getter activeViewTransition
     getter ariaActiveDescendantElement
     getter ariaAtomic
     getter ariaAutoComplete
@@ -2263,6 +2276,7 @@ interface Element : Node
     method matches
     method moveBefore
     method prepend
+    method pseudo
     method querySelector
     method querySelectorAll
     method releasePointerCapture
@@ -2286,6 +2300,7 @@ interface Element : Node
     method setHTML
     method setHTMLUnsafe
     method setPointerCapture
+    method startViewTransition
     method toggleAttribute
     method webkitMatchesSelector
     method webkitRequestFullScreen
@@ -2693,6 +2708,29 @@ interface FontFace
     setter variant
     setter variationSettings
     setter weight
+interface FontFaceSet : EventTarget
+    attribute @@toStringTag
+    getter onloading
+    getter onloadingdone
+    getter onloadingerror
+    getter ready
+    getter size
+    getter status
+    method @@iterator
+    method add
+    method check
+    method clear
+    method constructor
+    method delete
+    method entries
+    method forEach
+    method has
+    method keys
+    method load
+    method values
+    setter onloading
+    setter onloadingdone
+    setter onloadingerror
 interface FontFaceSetLoadEvent : Event
     attribute @@toStringTag
     getter fontfaces
@@ -2817,6 +2855,7 @@ interface GPUComputePassEncoder
     method popDebugGroup
     method pushDebugGroup
     method setBindGroup
+    method setImmediates
     method setPipeline
     method writeTimestamp
     setter label
@@ -2921,6 +2960,7 @@ interface GPURenderBundleEncoder
     method popDebugGroup
     method pushDebugGroup
     method setBindGroup
+    method setImmediates
     method setIndexBuffer
     method setPipeline
     method setVertexBuffer
@@ -2942,6 +2982,7 @@ interface GPURenderPassEncoder
     method pushDebugGroup
     method setBindGroup
     method setBlendConstant
+    method setImmediates
     method setIndexBuffer
     method setPipeline
     method setScissorRect
@@ -2993,6 +3034,7 @@ interface GPUSupportedLimits
     getter maxComputeWorkgroupsPerDimension
     getter maxDynamicStorageBuffersPerPipelineLayout
     getter maxDynamicUniformBuffersPerPipelineLayout
+    getter maxImmediateSize
     getter maxInterStageShaderVariables
     getter maxSampledTexturesPerShaderStage
     getter maxSamplersPerShaderStage
@@ -3425,6 +3467,8 @@ interface HTMLElement : Element
     getter draggable
     getter editContext
     getter enterKeyHint
+    getter focusGroup
+    getter focusGroupStart
     getter hidden
     getter inert
     getter innerText
@@ -3568,6 +3612,8 @@ interface HTMLElement : Element
     setter draggable
     setter editContext
     setter enterKeyHint
+    setter focusGroup
+    setter focusGroupStart
     setter hidden
     setter inert
     setter innerText
@@ -4197,6 +4243,7 @@ interface HTMLMediaElement : HTMLElement
     getter duration
     getter ended
     getter error
+    getter loading
     getter loop
     getter mediaKeys
     getter muted
@@ -4232,6 +4279,7 @@ interface HTMLMediaElement : HTMLElement
     setter currentTime
     setter defaultMuted
     setter defaultPlaybackRate
+    setter loading
     setter loop
     setter muted
     setter onencrypted
@@ -4675,12 +4723,14 @@ interface HTMLTableSectionElement : HTMLElement
 interface HTMLTemplateElement : HTMLElement
     attribute @@toStringTag
     getter content
+    getter htmlFor
     getter shadowRootClonable
     getter shadowRootCustomElementRegistry
     getter shadowRootDelegatesFocus
     getter shadowRootMode
     getter shadowRootSerializable
     method constructor
+    setter htmlFor
     setter shadowRootClonable
     setter shadowRootCustomElementRegistry
     setter shadowRootDelegatesFocus
@@ -5159,6 +5209,14 @@ interface IntegrityViolationReportBody : ReportBody
     getter reportOnly
     method constructor
     method toJSON
+interface InteractionContentfulPaint : PerformanceEntry
+    attribute @@toStringTag
+    getter interactionId
+    getter largestContentfulPaint
+    getter paintTime
+    getter presentationTime
+    method constructor
+    method toJSON
 interface InterestEvent : Event
     attribute @@toStringTag
     getter source
@@ -5344,6 +5402,8 @@ interface MathMLElement : Element
     getter attributeStyleMap
     getter autofocus
     getter dataset
+    getter focusGroup
+    getter focusGroupStart
     getter nonce
     getter onabort
     getter onanimationcancel
@@ -5457,6 +5517,8 @@ interface MathMLElement : Element
     method constructor
     method focus
     setter autofocus
+    setter focusGroup
+    setter focusGroupStart
     setter nonce
     setter onabort
     setter onanimationcancel
@@ -5805,7 +5867,9 @@ interface MediaStreamTrackGenerator : MediaStreamTrack
     method constructor
 interface MediaStreamTrackProcessor
     attribute @@toStringTag
+    getter discardedFrames
     getter readable
+    getter totalFrames
     method constructor
 interface MediaStreamTrackVideoStats
     attribute @@toStringTag
@@ -6555,6 +6619,7 @@ interface PerformanceEntry
     getter duration
     getter entryType
     getter name
+    getter navigationId
     getter startTime
     method constructor
     method toJSON
@@ -6643,6 +6708,7 @@ interface PerformanceResourceTiming : PerformanceEntry
     getter connectEnd
     getter connectStart
     getter contentEncoding
+    getter contentType
     getter decodedBodySize
     getter deliveryType
     getter domainLookupEnd
@@ -6691,6 +6757,14 @@ interface PerformanceServerTiming
     getter name
     method constructor
     method toJSON
+interface PerformanceSoftNavigation : PerformanceEntry
+    attribute @@toStringTag
+    getter interactionId
+    getter navigationType
+    getter paintTime
+    getter presentationTime
+    method constructor
+    method getLargestInteractionContentfulPaint
 interface PerformanceTiming
     attribute @@toStringTag
     getter connectEnd
@@ -6736,6 +6810,13 @@ interface Permissions
     attribute @@toStringTag
     method constructor
     method query
+interface PermissionsPolicy
+    attribute @@toStringTag
+    method allowedFeatures
+    method allowsFeature
+    method constructor
+    method features
+    method getAllowlistForFeature
 interface PictureInPictureEvent : Event
     attribute @@toStringTag
     getter pictureInPictureWindow
@@ -6793,6 +6874,13 @@ interface ProcessingInstruction : CharacterData
     getter sheet
     getter target
     method constructor
+    method getAttribute
+    method getAttributeNames
+    method hasAttribute
+    method hasAttributes
+    method removeAttribute
+    method setAttribute
+    method toggleAttribute
 interface Profiler : EventTarget
     attribute @@toStringTag
     getter sampleInterval
@@ -7217,6 +7305,7 @@ interface Request
     getter headers
     getter integrity
     getter isHistoryNavigation
+    getter isReloadNavigation
     getter keepalive
     getter method
     getter mode
@@ -7233,6 +7322,7 @@ interface Request
     method formData
     method json
     method text
+    method textStream
 interface ResizeObserver
     attribute @@toStringTag
     method constructor
@@ -7273,6 +7363,7 @@ interface Response
     method formData
     method json
     method text
+    method textStream
 interface SVGAElement : SVGGraphicsElement
     attribute @@toStringTag
     getter download
@@ -7443,6 +7534,8 @@ interface SVGElement : Element
     getter autofocus
     getter className
     getter dataset
+    getter focusGroup
+    getter focusGroupStart
     getter nonce
     getter onabort
     getter onanimationcancel
@@ -7558,6 +7651,8 @@ interface SVGElement : Element
     method constructor
     method focus
     setter autofocus
+    setter focusGroup
+    setter focusGroupStart
     setter nonce
     setter onabort
     setter onanimationcancel
@@ -8455,10 +8550,12 @@ interface Sanitizer
     attribute @@toStringTag
     method allowAttribute
     method allowElement
+    method allowProcessingInstruction
     method constructor
     method get
     method removeAttribute
     method removeElement
+    method removeProcessingInstruction
     method removeUnsafe
     method replaceElementWithChildren
     method setComments
@@ -8737,6 +8834,7 @@ interface SpeechRecognition : EventTarget
     getter onspeechstart
     getter onstart
     getter processLocally
+    getter quality
     method abort
     method constructor
     method start
@@ -8758,6 +8856,7 @@ interface SpeechRecognition : EventTarget
     setter onspeechstart
     setter onstart
     setter processLocally
+    setter quality
 interface SpeechRecognitionErrorEvent : Event
     attribute @@toStringTag
     getter error
@@ -9116,9 +9215,11 @@ interface TransformStreamDefaultController
     method terminate
 interface TransitionEvent : Event
     attribute @@toStringTag
+    getter animation
     getter elapsedTime
     getter propertyName
     getter pseudoElement
+    getter pseudoTarget
     method constructor
 interface TreeWalker
     attribute @@toStringTag
@@ -9173,6 +9274,7 @@ interface TrustedTypePolicyFactory
 interface UIEvent : Event
     attribute @@toStringTag
     getter detail
+    getter pseudoTarget
     getter sourceCapabilities
     getter view
     getter which
@@ -9348,6 +9450,7 @@ interface ViewTransition
     attribute @@toStringTag
     getter finished
     getter ready
+    getter transitionRoot
     getter types
     getter updateCallbackDone
     method constructor
@@ -10845,16 +10948,20 @@ interface WebTransportDatagramDuplexStream
     attribute @@toStringTag
     getter incomingHighWaterMark
     getter incomingMaxAge
+    getter incomingMaxBufferedDatagrams
     getter maxDatagramSize
     getter outgoingHighWaterMark
     getter outgoingMaxAge
+    getter outgoingMaxBufferedDatagrams
     getter readable
     getter writable
     method constructor
     setter incomingHighWaterMark
     setter incomingMaxAge
+    setter incomingMaxBufferedDatagrams
     setter outgoingHighWaterMark
     setter outgoingMaxAge
+    setter outgoingMaxBufferedDatagrams
 interface WebTransportError : DOMException
     attribute @@toStringTag
     getter source
@@ -10869,6 +10976,7 @@ interface WheelEvent : MouseEvent
     getter deltaX
     getter deltaY
     getter deltaZ
+    getter momentum
     getter wheelDelta
     getter wheelDeltaX
     getter wheelDeltaY
@@ -11154,6 +11262,7 @@ interface webkitSpeechRecognition : EventTarget
     getter onspeechstart
     getter onstart
     getter processLocally
+    getter quality
     method abort
     method constructor
     method start
@@ -11175,6 +11284,7 @@ interface webkitSpeechRecognition : EventTarget
     setter onspeechstart
     setter onstart
     setter processLocally
+    setter quality
 interface webkitSpeechRecognitionError : Event
     attribute @@toStringTag
     getter error

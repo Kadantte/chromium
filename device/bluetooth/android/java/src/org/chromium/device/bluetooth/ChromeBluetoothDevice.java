@@ -112,6 +112,7 @@ final class ChromeBluetoothDevice {
 
     // Implements BluetoothDeviceAndroid::GetUUIDs for classic devices.
     @CalledByNative
+    @JniType("std::vector<std::string>")
     private String[] getUuids() {
         ParcelUuid[] uuids = mDevice.getUuids();
         if (uuids == null) {
@@ -119,7 +120,7 @@ final class ChromeBluetoothDevice {
         }
         String[] uuidStrings = new String[uuids.length];
         for (int i = 0; i < uuids.length; i++) {
-            uuidStrings[i] = uuids[i].toString();
+            uuidStrings[i] = uuids[i].getUuid().toString();
         }
         return uuidStrings;
     }
@@ -130,10 +131,10 @@ final class ChromeBluetoothDevice {
     private Outcome<BluetoothSocketWrapper> connectToService(
             @JniType("std::string") String uuidString) {
         try {
-            return new Outcome(
+            return new Outcome<>(
                     mDevice.createRfcommSocketToServiceRecord(UUID.fromString(uuidString)));
         } catch (IOException e) {
-            return new Outcome(e);
+            return new Outcome<>(e);
         }
     }
 
@@ -143,10 +144,10 @@ final class ChromeBluetoothDevice {
     private Outcome<BluetoothSocketWrapper> connectToServiceInsecurely(
             @JniType("std::string") String uuidString) {
         try {
-            return new Outcome(
+            return new Outcome<>(
                     mDevice.createInsecureRfcommSocketToServiceRecord(UUID.fromString(uuidString)));
         } catch (IOException e) {
-            return new Outcome(e);
+            return new Outcome<>(e);
         }
     }
 

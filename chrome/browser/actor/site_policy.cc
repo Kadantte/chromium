@@ -15,11 +15,7 @@
 #include "base/strings/string_split.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/types/expected.h"
-#include "chrome/browser/actor/actor_features.h"
-#include "chrome/browser/actor/actor_util.h"
-#include "chrome/browser/actor/aggregated_journal.h"
-#include "chrome/browser/actor/enterprise_policy_url_checker.h"
-#include "chrome/browser/actor/origin_checker.h"
+#include "chrome/browser/actor/enterprise_policy_checker.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/lookalikes/lookalike_url_service.h"
 #include "chrome/browser/lookalikes/lookalike_url_service_factory.h"
@@ -27,12 +23,17 @@
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_io_data.h"
-#include "chrome/common/actor/actor_logging.h"
-#include "chrome/common/actor/journal_details_builder.h"
+#include "components/actor/core/actor_features.h"
+#include "components/actor/core/actor_logging.h"
+#include "components/actor/core/actor_util.h"
+#include "components/actor/core/aggregated_journal.h"
+#include "components/actor/core/journal_details_builder.h"
+#include "components/actor/public/mojom/actor_types.mojom.h"
 #include "components/optimization_guide/core/filters/optimization_hints_component_update_listener.h"
 #include "components/optimization_guide/core/hints/optimization_guide_decision.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/proto/hints.pb.h"
+#include "components/origin_gating/core/origin_gating_cache.h"
 #include "components/safe_browsing/buildflags.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/variations/service/variations_service.h"
@@ -133,12 +134,14 @@ void OnOptimizationGuideDecision(
   }
 }
 
-void MayActOnUrlInternal(const GURL& url,
-                         bool allow_insecure_http,
-                         Profile* profile,
-                         base::optional_ref<const OriginChecker> origin_checker,
-                         const EnterprisePolicyUrlChecker& policy_checker,
-                         std::unique_ptr<DecisionWrapper> decision_wrapper) {
+void MayActOnUrlInternal(
+    const GURL& url,
+    bool allow_insecure_http,
+    Profile* profile,
+    const origin_gating::OriginGatingCache& origin_gating_cache,
+    const EnterprisePolicyChecker& policy_checker,
+    bool apply_sensitive_origin_check,
+    std::unique_ptr<DecisionWrapper> decision_wrapper) {
   if ((net::IsLocalhost(url) && url.SchemeIsHTTPOrHTTPS()) ||
       url.IsAboutBlank()) {
     decision_wrapper->Accept();
@@ -220,15 +223,15 @@ void MayActOnUrlInternal(const GURL& url,
     }
   }
 
-  const EnterprisePolicyBlockReason enterprise_reason =
+  const EnterprisePolicyChecker::UrlBlockReason enterprise_reason =
       policy_checker.Evaluate(url);
   switch (enterprise_reason) {
-    case EnterprisePolicyBlockReason::kNotBlocked:
+    case EnterprisePolicyChecker::UrlBlockReason::kNotBlocked:
       break;
-    case EnterprisePolicyBlockReason::kExplicitlyAllowed:
+    case EnterprisePolicyChecker::UrlBlockReason::kExplicitlyAllowed:
       decision_wrapper->Accept();
       return;
-    case EnterprisePolicyBlockReason::kExplicitlyBlocked:
+    case EnterprisePolicyChecker::UrlBlockReason::kExplicitlyBlocked:
       decision_wrapper->Reject("Enterprise policy block",
                                MayActOnUrlBlockReason::kEnterprisePolicy);
       return;
@@ -254,36 +257,33 @@ void MayActOnUrlInternal(const GURL& url,
     return;
   }
 
-  // Blocklist is checked by `ShouldBlockNavigationUrlForOriginGating` when this
-  // feature is enabled, and origins the user allowed the actor to interact with
-  // will be included in the `origin_checker`. If `url`'s origin has not been
-  // confirmed by the user, we apply the optimization guide check.
-  if (IsNavigationGatingEnabled() &&
-      (!origin_checker ||
-       origin_checker->IsNavigationConfirmedByUser(url::Origin::Create(url)))) {
+  if (origin_gating_cache.IsNavigationConfirmedByUser(
+          url::Origin::Create(url))) {
     decision_wrapper->Accept();
     return;
   }
 
-  // Check that the optimization guide component has loaded. It could be
-  // missing, for example, if the user has very recently installed chrome and
-  // the component updater has not yet run. We don't want to reject every URL,
-  // so we check for this and fail open.
-  const bool optimization_guide_component_loaded =
-      optimization_guide::OptimizationHintsComponentUpdateListener::
-          GetInstance()
-              ->hints_component_info()
-              .has_value();
+  if (apply_sensitive_origin_check) {
+    // Check that the optimization guide component has loaded. It could be
+    // missing, for example, if the user has very recently installed chrome and
+    // the component updater has not yet run. We don't want to reject every URL,
+    // so we check for this and fail open.
+    const bool optimization_guide_component_loaded =
+        optimization_guide::OptimizationHintsComponentUpdateListener::
+            GetInstance()
+                ->hints_component_info()
+                .has_value();
 
-  if (auto* optimization_guide_decider =
-          OptimizationGuideKeyedServiceFactory::GetForProfile(profile);
-      optimization_guide_decider && optimization_guide_component_loaded &&
-      base::FeatureList::IsEnabled(kGlicActionUseOptimizationGuide)) {
-    optimization_guide_decider->CanApplyOptimization(
-        url, optimization_guide::proto::GLIC_ACTION_PAGE_BLOCK,
-        base::BindOnce(&OnOptimizationGuideDecision,
-                       std::move(decision_wrapper)));
-    return;
+    if (auto* optimization_guide_decider =
+            OptimizationGuideKeyedServiceFactory::GetForProfile(profile);
+        optimization_guide_decider && optimization_guide_component_loaded &&
+        base::FeatureList::IsEnabled(kGlicActionUseOptimizationGuide)) {
+      optimization_guide_decider->CanApplyOptimization(
+          url, optimization_guide::proto::GLIC_ACTION_PAGE_BLOCK,
+          base::BindOnce(&OnOptimizationGuideDecision,
+                         std::move(decision_wrapper)));
+      return;
+    }
   }
 
   // Fail open.
@@ -306,8 +306,8 @@ void InitActionBlocklist(Profile* profile) {
 void MayActOnTab(const tabs::TabInterface& tab,
                  AggregatedJournal& journal,
                  TaskId task_id,
-                 const OriginChecker& origin_checker,
-                 const EnterprisePolicyUrlChecker& policy_checker,
+                 const origin_gating::OriginGatingCache& origin_gating_cache,
+                 const EnterprisePolicyChecker& policy_checker,
                  DecisionCallbackWithReason callback) {
   content::WebContents& web_contents = *tab.GetContents();
 
@@ -339,7 +339,8 @@ void MayActOnTab(const tabs::TabInterface& tab,
   MayActOnUrlInternal(
       url, /*allow_insecure_http=*/false,
       Profile::FromBrowserContext(web_contents.GetBrowserContext()),
-      origin_checker, policy_checker, std::move(decision_wrapper));
+      origin_gating_cache, policy_checker,
+      /*apply_sensitive_origin_check=*/true, std::move(decision_wrapper));
 }
 
 void MayActOnUrl(const GURL& url,
@@ -347,13 +348,16 @@ void MayActOnUrl(const GURL& url,
                  Profile* profile,
                  AggregatedJournal& journal,
                  TaskId task_id,
-                 const EnterprisePolicyUrlChecker& policy_checker,
+                 const origin_gating::OriginGatingCache& origin_gating_cache,
+                 const EnterprisePolicyChecker& policy_checker,
                  DecisionCallbackWithReason callback) {
   std::unique_ptr<DecisionWrapper> decision_wrapper =
       std::make_unique<DecisionWrapper>(journal, url, task_id, "MayActOnUrl",
                                         std::move(callback));
-  MayActOnUrlInternal(url, allow_insecure_http, profile, std::nullopt,
-                      policy_checker, std::move(decision_wrapper));
+  MayActOnUrlInternal(
+      url, allow_insecure_http, profile, origin_gating_cache, policy_checker,
+      /*apply_sensitive_origin_check=*/!IsNavigationGatingEnabled(),
+      std::move(decision_wrapper));
 }
 
 base::expected<void, DecisionCallback>
@@ -395,6 +399,13 @@ mojom::ActionResultCode BlockReasonToResultCode(MayActOnUrlBlockReason reason,
       for_navigation ? ActionResultCode::kTriggeredNavigationBlocked
                      : ActionResultCode::kUrlBlocked;
 
+  auto maybe_granular = [generic_block_code](
+                            mojom::ActionResultCode specific_code) {
+    return base::FeatureList::IsEnabled(kGlicGranularBlockingActionResultCodes)
+               ? specific_code
+               : generic_block_code;
+  };
+
   switch (reason) {
     case MayActOnUrlBlockReason::kAllowed:
       return ActionResultCode::kOk;
@@ -404,15 +415,23 @@ mojom::ActionResultCode BlockReasonToResultCode(MayActOnUrlBlockReason reason,
       }
       return generic_block_code;
     }
-    case MayActOnUrlBlockReason::kIpAddress:
     case MayActOnUrlBlockReason::kLookalikeDomain:
-    case MayActOnUrlBlockReason::kOptimizationGuideBlock:
-    case MayActOnUrlBlockReason::kSafeBrowsing:
-    case MayActOnUrlBlockReason::kTabIsErrorDocument:
-    case MayActOnUrlBlockReason::kUrlNotInAllowlist:
-    case MayActOnUrlBlockReason::kWrongScheme:
-    case MayActOnUrlBlockReason::kEnterprisePolicy:
     case MayActOnUrlBlockReason::kBlockedByStaticList:
+      return maybe_granular(ActionResultCode::kActionsBlockedForSiteRisk);
+    case MayActOnUrlBlockReason::kSafeBrowsing:
+      return maybe_granular(
+          ActionResultCode::kActionsBlockedSafeBrowsingDisabled);
+    case MayActOnUrlBlockReason::kEnterprisePolicy:
+      return maybe_granular(
+          ActionResultCode::kActionsBlockedByEnterprisePolicy);
+    case MayActOnUrlBlockReason::kWrongScheme:
+      return maybe_granular(ActionResultCode::kActionsBlockedForScheme);
+    case MayActOnUrlBlockReason::kTabIsErrorDocument:
+      return maybe_granular(ActionResultCode::kActionsBlockedOnErrorPage);
+    case MayActOnUrlBlockReason::kIpAddress:
+    case MayActOnUrlBlockReason::kOptimizationGuideBlock:
+    case MayActOnUrlBlockReason::kUrlNotInAllowlist:
+    case MayActOnUrlBlockReason::kBlockedByContainerConfig:
       return generic_block_code;
   }
 }

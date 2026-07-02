@@ -10,6 +10,7 @@
 #include "base/files/file_path.h"
 #include "base/functional/callback_helpers.h"
 #include "base/notreached.h"
+#include "base/scoped_observation.h"
 #include "base/strings/strcat.h"
 #include "base/test/bind.h"
 #include "base/thread_annotations.h"
@@ -21,6 +22,7 @@
 #include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/profiles/profile_management_step_controller.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_test_base.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_view_test_utils.h"
@@ -40,12 +42,15 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/scoped_animation_duration_scale_mode.h"
+#include "ui/views/view_observer.h"
 
 // Tests for the chrome://profile-picker/ WebUI page. They live here
 // and not in the webui directory because they manipulate views.
 namespace {
 constexpr char kEmail[] = "joe@gmail.com";
 constexpr char kOtherEmail[] = "other@gmail.com";
+constexpr char kManagedEmail[] = "joework@example.com";
+constexpr char kOtherManagedEmail[] = "otherwork@example.com";
 
 struct ProfilePickerTestParam {
   PixelTestParam pixel_test_param;
@@ -54,14 +59,14 @@ struct ProfilePickerTestParam {
   bool has_supervised_user = false;
   bool disallow_profile_creation = false;
   bool use_glic_version = false;
+  bool use_refreshed_ui = false;
   bool no_glic_eligible_profiles = false;
   bool is_enterprise_badging_enabled = false;
   bool is_profile_picker_first_run = true;
-  bool open_all_profiles_experiment_enabled = false;
-  std::string text_variation_feature_param;
   std::optional<std::variant<ForceSigninUIError::Type, SigninUIError::Type>>
       signin_error_dialog_type;
   bool error_with_signin_button = false;
+  bool use_ai_avatar_ring = false;
 };
 
 // To be passed as 4th argument to `INSTANTIATE_TEST_SUITE_P()`, allows the test
@@ -143,22 +148,6 @@ const ProfilePickerTestParam kTestParams[] = {
                               PixelTestParam::kPortraitModeWindowSize},
      .use_multiple_profiles = true,
      .use_glic_version = true},
-    {.pixel_test_param = {.test_suffix = "VariationKeepWorkAndLifeSeparate"},
-     .text_variation_feature_param = "keep-work-and-life-separate"},
-    {.pixel_test_param = {.test_suffix = "VariationGotAnotherGoogleAccount"},
-     .text_variation_feature_param = "got-another-google-account"},
-    {.pixel_test_param = {.test_suffix = "VariationKeepTasksSeparate"},
-     .text_variation_feature_param = "keep-tasks-separate"},
-    {.pixel_test_param = {.test_suffix = "VariationSharingAComputer"},
-     .text_variation_feature_param = "sharing-a-computer"},
-    {.pixel_test_param = {.test_suffix = "VariationKeepEverythingInChrome"},
-     .text_variation_feature_param = "keep-everything-in-chrome"},
-    {.pixel_test_param = {.test_suffix = "OpenAllProfilesExperimentNoButton"},
-     .open_all_profiles_experiment_enabled = true},
-    {.pixel_test_param = {.test_suffix =
-                              "OpenAllProfilesExperimentButtonShown"},
-     .use_multiple_profiles = true,
-     .open_all_profiles_experiment_enabled = true},
     /* Force Signin UI error dialog params */
     {.pixel_test_param = {.test_suffix = "SigninErrorDialogPattern"},
      .signin_error_dialog_type =
@@ -181,6 +170,29 @@ const ProfilePickerTestParam kTestParams[] = {
     {.pixel_test_param = {.test_suffix = "SigninErrorCookiesNotAllowed",
                           .use_dark_theme = true},
      .signin_error_dialog_type = SigninUIError::Type::kSigninCookiesDisallowed},
+    /* Refreshed UI params (FirstRunDesktopRefresh) */
+    {.pixel_test_param = {.test_suffix = "RefreshedUI"},
+     .use_multiple_profiles = true,
+     .use_refreshed_ui = true},
+    {.pixel_test_param = {.test_suffix = "RefreshedUIDarkMode",
+                          .use_dark_theme = true},
+     .use_multiple_profiles = true,
+     .use_refreshed_ui = true},
+    {.pixel_test_param = {.test_suffix = "SingleProfileAiRing"},
+     .use_ai_avatar_ring = true},
+    {.pixel_test_param = {.test_suffix = "DarkSingleProfileAiRing",
+                          .use_dark_theme = true},
+     .use_ai_avatar_ring = true},
+    {.pixel_test_param = {.test_suffix = "SingleProfileManagedAiRing"},
+     .is_enterprise_badging_enabled = true,
+     .use_ai_avatar_ring = true},
+    {.pixel_test_param = {.test_suffix = "MultipleProfilesAiRing"},
+     .use_multiple_profiles = true,
+     .use_ai_avatar_ring = true},
+    {.pixel_test_param = {.test_suffix = "DarkMultipleProfilesAiRing",
+                          .use_dark_theme = true},
+     .use_multiple_profiles = true,
+     .use_ai_avatar_ring = true},
 };
 
 enum class ProfileStatus {
@@ -188,13 +200,18 @@ enum class ProfileStatus {
   kSignedIn,
   kSignedInManaged,
   kSignedInSupervised,
+  kSignedInAiSubscription,
+  kSignedInManagedAiSubscription,
 };
 
-void SetSigninProfileProperties(signin::IdentityManager* identity_manager,
+void SetSigninProfileProperties(Profile* profile,
                                 ProfileStatus profile_status,
-                                bool is_glic_version,
-                                const base::FilePath& profile_path) {
+                                bool is_glic_version) {
+  CHECK(profile);
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(profile);
   CHECK(identity_manager);
+  const base::FilePath& profile_path = profile->GetPath();
 
   AccountInfo account_info;
   switch (profile_status) {
@@ -202,12 +219,11 @@ void SetSigninProfileProperties(signin::IdentityManager* identity_manager,
       break;
     case ProfileStatus::kSignedIn:
       account_info = signin::MakePrimaryAccountAvailable(
-          identity_manager, "joe@gmail.com", signin::ConsentLevel::kSignin);
+          identity_manager, kEmail, signin::ConsentLevel::kSignin);
       break;
     case ProfileStatus::kSignedInManaged: {
       account_info = signin::MakePrimaryAccountAvailable(
-          identity_manager, "joework@example.com",
-          signin::ConsentLevel::kSignin);
+          identity_manager, kManagedEmail, signin::ConsentLevel::kSignin);
       account_info =
           FillAccountInfo(account_info, AccountManagementStatus::kManaged,
                           signin::Tribool::kUnknown);
@@ -222,6 +238,28 @@ void SetSigninProfileProperties(signin::IdentityManager* identity_manager,
           account_info, identity_manager, true);
       break;
     }
+    case ProfileStatus::kSignedInAiSubscription: {
+      account_info = signin::MakePrimaryAccountAvailable(
+          identity_manager, kOtherEmail, signin::ConsentLevel::kSignin);
+      g_browser_process->profile_manager()
+          ->GetProfileAttributesStorage()
+          .GetProfileAttributesWithPath(profile_path)
+          ->SetAiSubscriptionTier(1);
+      break;
+    }
+    case ProfileStatus::kSignedInManagedAiSubscription: {
+      account_info = signin::MakePrimaryAccountAvailable(
+          identity_manager, kOtherManagedEmail, signin::ConsentLevel::kSignin);
+      account_info =
+          FillAccountInfo(account_info, AccountManagementStatus::kManaged,
+                          signin::Tribool::kUnknown);
+      signin::UpdateAccountInfoForAccount(identity_manager, account_info);
+      g_browser_process->profile_manager()
+          ->GetProfileAttributesStorage()
+          .GetProfileAttributesWithPath(profile_path)
+          ->SetAiSubscriptionTier(1);
+      break;
+    }
   }
 
   if (!account_info.IsEmpty() && is_glic_version) {
@@ -234,21 +272,35 @@ void SetSigninProfileProperties(signin::IdentityManager* identity_manager,
         .GetProfileAttributesWithPath(profile_path)
         ->SetIsGlicEligible(true);
   }
+
+  if (profile_status == ProfileStatus::kSignedInManaged ||
+      profile_status == ProfileStatus::kSignedInManagedAiSubscription) {
+    enterprise_util::SetUserAcceptedAccountManagement(profile, true);
+  }
 }
 
 // Create 4 profiles with different icons and types.
-void AddMultipleProfiles(bool is_glic_version, bool has_supervised_user) {
+void AddMultipleProfiles(bool is_glic_version,
+                         bool has_supervised_user,
+                         bool use_ai_avatar_ring) {
+  ProfileStatus signed_in_status_with_potential_ai_subscription =
+      use_ai_avatar_ring ? ProfileStatus::kSignedInAiSubscription
+                         : ProfileStatus::kSignedIn;
+  ProfileStatus managed_status_with_potential_ai_subscription =
+      use_ai_avatar_ring ? ProfileStatus::kSignedInManagedAiSubscription
+                         : ProfileStatus::kSignedInManaged;
+
   std::vector<ProfileStatus> profiles_status;
   if (is_glic_version) {
     // For the glic version, we need all Profiles to be signed in.
-    profiles_status.insert(
-        profiles_status.end(),
-        {ProfileStatus::kSignedIn, ProfileStatus::kSignedInManaged,
-         ProfileStatus::kSignedIn, ProfileStatus::kSignedInManaged});
+    profiles_status = {ProfileStatus::kSignedIn,
+                       ProfileStatus::kSignedInManaged,
+                       signed_in_status_with_potential_ai_subscription,
+                       managed_status_with_potential_ai_subscription};
   } else {
-    profiles_status.insert(profiles_status.end(),
-                           {ProfileStatus::kSignedOut, ProfileStatus::kSignedIn,
-                            ProfileStatus::kSignedInManaged});
+    profiles_status = {ProfileStatus::kSignedOut,
+                       signed_in_status_with_potential_ai_subscription,
+                       managed_status_with_potential_ai_subscription};
     if (has_supervised_user) {
       profiles_status.push_back(ProfileStatus::kSignedInSupervised);
     }
@@ -262,12 +314,7 @@ void AddMultipleProfiles(bool is_glic_version, bool has_supervised_user) {
         /*initialized_callback=*/
         base::BindLambdaForTesting([&run_loop, &profile_status,
                                     &is_glic_version](Profile* profile) {
-          SetSigninProfileProperties(
-              IdentityManagerFactory::GetForProfile(profile), profile_status,
-              is_glic_version, profile->GetPath());
-          if (profile_status == ProfileStatus::kSignedInManaged) {
-            enterprise_util::SetUserAcceptedAccountManagement(profile, true);
-          }
+          SetSigninProfileProperties(profile, profile_status, is_glic_version);
           run_loop.Quit();
         }));
     run_loop.Run();
@@ -278,21 +325,27 @@ void AddMultipleProfiles(bool is_glic_version, bool has_supervised_user) {
 class ProfilePickerUIPixelTest
     : public WithProfilePickerTestHelpers,
       public ProfilesPixelTestBaseT<UiBrowserTest>,
-      public testing::WithParamInterface<ProfilePickerTestParam> {
+      public testing::WithParamInterface<ProfilePickerTestParam>,
+      public views::ViewObserver {
  public:
   ProfilePickerUIPixelTest()
       : ProfilesPixelTestBaseT<UiBrowserTest>(GetParam().pixel_test_param) {
-    if (!GetParam().text_variation_feature_param.empty()) {
-      scoped_feature_list_.InitWithFeaturesAndParameters(
-          {{switches::kProfilePickerTextVariations,
-            {{"profile-picker-variation",
-              GetParam().text_variation_feature_param}}}},
-          {});
+    std::vector<base::test::FeatureRefAndParams> enabled_features;
+    std::vector<base::test::FeatureRef> disabled_features;
+    if (GetParam().use_refreshed_ui) {
+      enabled_features.push_back({switches::kFirstRunDesktopRefresh, {}});
+    } else {
+      disabled_features.push_back(switches::kFirstRunDesktopRefresh);
     }
-    if (GetParam().open_all_profiles_experiment_enabled) {
-      scoped_feature_list_.InitAndEnableFeature(
-          switches::kOpenAllProfilesFromProfilePickerExperiment);
+    if (GetParam().use_ai_avatar_ring) {
+      enabled_features.push_back(
+          {features::kEnableAiSubscriptionAvatarRing, {}});
+    } else {
+      disabled_features.push_back(features::kEnableAiSubscriptionAvatarRing);
     }
+
+    scoped_feature_list_.InitWithFeaturesAndParameters(enabled_features,
+                                                       disabled_features);
   }
 
   ForceSigninUIError GetForceSigninUIError() {
@@ -326,6 +379,8 @@ class ProfilePickerUIPixelTest
         return SigninUIError::UsernameNotAllowedByPatternFromPrefs(kEmail);
       case SigninUIError::Type::kWrongReauthAccount:
         return SigninUIError::WrongReauthAccount(kEmail, kOtherEmail);
+      case SigninUIError::Type::kAccountAlreadyUsedByAnotherProfile:
+        NOTREACHED() << "Not tested yet.";
       case SigninUIError::Type::kProfileWasUsedByAnotherAccount:
         // This error uses a dedicated profile picker view, not the modal error
         // dialog. See `ProfilePickerSignInProvider::ShowSigninError`.
@@ -363,13 +418,18 @@ class ProfilePickerUIPixelTest
     bool is_glic_version = GetParam().use_glic_version;
     bool no_glic_eligible_profiles = GetParam().no_glic_eligible_profiles;
 
-    // In Glic mode, sign in the default account as well if we need eligible
-    // profiles.
-    if (is_glic_version && !no_glic_eligible_profiles) {
-      SetSigninProfileProperties(
-          IdentityManagerFactory::GetForProfile(browser()->profile()),
-          ProfileStatus::kSignedIn,
-          /*is_glic_version=*/true, browser()->profile()->GetPath());
+    // Sign in the default profile if needed.
+    bool sign_in_default =
+        (is_glic_version && !no_glic_eligible_profiles) ||
+        (GetParam().use_ai_avatar_ring && !GetParam().use_multiple_profiles);
+    if (sign_in_default) {
+      ProfileStatus status = ProfileStatus::kSignedIn;
+      if (GetParam().use_ai_avatar_ring) {
+        status = GetParam().is_enterprise_badging_enabled
+                     ? ProfileStatus::kSignedInManagedAiSubscription
+                     : ProfileStatus::kSignedInAiSubscription;
+      }
+      SetSigninProfileProperties(browser()->profile(), status, is_glic_version);
     }
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
@@ -386,7 +446,8 @@ class ProfilePickerUIPixelTest
       // In Glic mode, if `use_multiple_profiles` is set,
       // `no_glic_eligible_profiles` must be set to false.
       CHECK(!is_glic_version || !no_glic_eligible_profiles);
-      AddMultipleProfiles(is_glic_version, GetParam().has_supervised_user);
+      AddMultipleProfiles(is_glic_version, GetParam().has_supervised_user,
+                          GetParam().use_ai_avatar_ring);
     }
 
     if (GetParam().disallow_profile_creation) {
@@ -413,10 +474,9 @@ class ProfilePickerUIPixelTest
     ProfilePicker::Params params =
         is_glic_version
             ? ProfilePicker::Params::ForGlicManager(base::DoNothing())
-            // We use `ProfilePicker::Params::ForFirstRun` here because it is
-            // the only constructor that lets us force a profile to use.
-            : ProfilePicker::Params::ForFirstRun(
-                  browser()->profile()->GetPath(), base::DoNothing());
+            : ProfilePicker::Params::ForTesting(
+                  ProfilePicker::EntryPoint::kOnStartup,
+                  browser()->profile()->GetPath());
 
     if (!GetParam().is_profile_picker_first_run) {
       ProfilePicker::Show(ProfilePicker::Params::FromEntryPoint(
@@ -436,6 +496,7 @@ class ProfilePickerUIPixelTest
               return ProfileManagementStepController::CreateForProfilePickerApp(
                   host, profile_picker_main_view_url);
             }));
+    view_observation_.Observe(profile_picker_view_);
     profile_picker_view_->ShowAndWait(GetParam().pixel_test_param.window_size);
     observer.Wait();
 
@@ -480,12 +541,20 @@ class ProfilePickerUIPixelTest
   }
 
  private:
+  // views::ViewObserver:
+  void OnViewIsDeleting(views::View* observed_view) override {
+    CHECK_EQ(observed_view, profile_picker_view_);
+    view_observation_.Reset();
+    profile_picker_view_ = nullptr;
+  }
+
   views::Widget* GetWidgetForScreenshot() {
     return profile_picker_view_->GetWidget();
   }
 
-  raw_ptr<ProfileManagementStepTestView, DanglingUntriaged>
-      profile_picker_view_;
+  raw_ptr<ProfileManagementStepTestView> profile_picker_view_ = nullptr;
+  base::ScopedObservation<views::View, views::ViewObserver> view_observation_{
+      this};
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 

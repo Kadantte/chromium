@@ -6,7 +6,9 @@
 
 #include <optional>
 
+#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
+#include "ash/constants/chrome_pref_names.h"
 #include "base/check_is_test.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
@@ -16,7 +18,6 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/common/chrome_features.h"
-#include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
 
 namespace policy::local_user_files {
@@ -66,17 +67,17 @@ bool LocalUserFilesAllowed() {
     return true;
   }
   return g_browser_process->local_state()->GetBoolean(
-      prefs::kLocalUserFilesAllowed);
+      ash::prefs::kLocalUserFilesAllowed);
 }
 
 MigrationDestination GetMigrationDestination() {
   if (!base::FeatureList::IsEnabled(features::kSkyVault) ||
-      !base::FeatureList::IsEnabled(features::kSkyVaultV2)) {
+      !base::FeatureList::IsEnabled(ash::features::kSkyVaultV2)) {
     return MigrationDestination::kNotSpecified;
   }
 
   const std::string destination = g_browser_process->local_state()->GetString(
-      prefs::kLocalUserFilesMigrationDestination);
+      ash::prefs::kLocalUserFilesMigrationDestination);
 
   if (destination == kMigrationDestinationGoogleDrive) {
     return MigrationDestination::kGoogleDrive;
@@ -84,7 +85,7 @@ MigrationDestination GetMigrationDestination() {
   if (destination == kMigrationDestinationOneDrive) {
     return MigrationDestination::kOneDrive;
   }
-  if (base::FeatureList::IsEnabled(features::kSkyVaultV3) &&
+  if (base::FeatureList::IsEnabled(ash::features::kSkyVaultV3) &&
       destination == kMigrationDestinationDelete) {
     return MigrationDestination::kDelete;
   }
@@ -97,7 +98,8 @@ bool IsCloudDestination(MigrationDestination destination) {
 }
 
 FileSaveDestination GetDownloadsDestination(Profile* profile) {
-  return GetDestinationForPref(profile, prefs::kDownloadDefaultDirectory);
+  return GetDestinationForPref(profile,
+                               ash::chrome_prefs::kDownloadDefaultDirectory);
 }
 
 FileSaveDestination GetScreenCaptureDestination(Profile* profile) {
@@ -119,12 +121,12 @@ base::FilePath GetMyFilesPath(Profile* profile) {
 }
 
 std::optional<base::Time> GetMigrationStartTime(Profile* profile) {
-  if (!base::FeatureList::IsEnabled(features::kSkyVaultV3)) {
+  if (!base::FeatureList::IsEnabled(ash::features::kSkyVaultV3)) {
     return std::nullopt;
   }
   PrefService* pref_service = profile->GetPrefs();
   base::Time scheduled_start_time =
-      pref_service->GetTime(prefs::kSkyVaultMigrationScheduledStartTime);
+      pref_service->GetTime(ash::prefs::kSkyVaultMigrationScheduledStartTime);
   if (scheduled_start_time.is_null()) {
     LOG(ERROR) << "Migration/deletion start time cannot be determined.";
     return std::nullopt;

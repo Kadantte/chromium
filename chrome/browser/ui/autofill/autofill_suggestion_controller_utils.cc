@@ -8,6 +8,7 @@
 #include <variant>
 #include <vector>
 
+#include "base/notreached.h"
 #include "chrome/browser/feature_engagement/tracker_factory.h"
 #include "components/autofill/content/browser/content_autofill_driver.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
@@ -41,74 +42,94 @@ bool IsAcceptableSuggestionType(SuggestionType id) {
   return !kUnacceptableItemIds.contains(id);
 }
 
-bool IsFooterSuggestionType(SuggestionType type) {
+SuggestionSection GetSuggestionSection(SuggestionType type) {
   switch (type) {
+    // Structural items.
+    case SuggestionType::kSeparator:
+    case SuggestionType::kTitle:
+      return SuggestionSection::kStructure;
+
+    // Footer items.
     case SuggestionType::kAllLoyaltyCardsEntry:
     case SuggestionType::kAllSavedPasswordsEntry:
+    case SuggestionType::kAutocompleteAtMemoryButton:
+    case SuggestionType::kBnplFootnote:
     case SuggestionType::kFreeformFooter:
     case SuggestionType::kManageAddress:
     case SuggestionType::kManageAutofillAi:
     case SuggestionType::kManageAutofillAiIdentityDocs:
+    case SuggestionType::kManageAutofillAiShopping:
     case SuggestionType::kManageAutofillAiTravel:
     case SuggestionType::kManageCreditCard:
     case SuggestionType::kManageIban:
     case SuggestionType::kManageLoyaltyCard:
-    case SuggestionType::kManagePlusAddress:
+    case SuggestionType::kPendingStateSignin:
     case SuggestionType::kScanCreditCard:
     case SuggestionType::kSeePromoCodeDetails:
     case SuggestionType::kUndoOrClear:
     case SuggestionType::kViewPasswordDetails:
-    case SuggestionType::kPendingStateSignin:
-      return true;
+      return SuggestionSection::kFooter;
+
+    // Body items.
     case SuggestionType::kAccountStoragePasswordEntry:
     case SuggestionType::kAddressEntry:
     case SuggestionType::kAddressEntryOnTyping:
     case SuggestionType::kAddressFieldByFieldFilling:
+    case SuggestionType::kAtMemoryGenericError:
+    case SuggestionType::kAtMemoryInactivityNudge:
+    case SuggestionType::kAtMemoryNoConnection:
+    case SuggestionType::kAtMemorySearchAffordance:
+    case SuggestionType::kAtMemorySearchResult:
     case SuggestionType::kAutocompleteEntry:
-    case SuggestionType::kComposeResumeNudge:
-    case SuggestionType::kComposeProactiveNudge:
+    case SuggestionType::kAutofillAiOtherOrders:
+    case SuggestionType::kBackupPasswordEntry:
+    case SuggestionType::kBnplEntry:
     case SuggestionType::kComposeDisable:
     case SuggestionType::kComposeGoToSettings:
     case SuggestionType::kComposeNeverShowOnThisSiteAgain:
+    case SuggestionType::kComposeProactiveNudge:
+    case SuggestionType::kComposeResumeNudge:
     case SuggestionType::kComposeSavedStateNotification:
     case SuggestionType::kCreditCardEntry:
     case SuggestionType::kDatalistEntry:
     case SuggestionType::kDevtoolsTestAddressByCountry:
     case SuggestionType::kDevtoolsTestAddressEntry:
     case SuggestionType::kDevtoolsTestAddresses:
-    case SuggestionType::kFillExistingPlusAddress:
+    case SuggestionType::kFetchingAmbientData:
+    case SuggestionType::kFillAutofillAi:
     case SuggestionType::kFillPassword:
     case SuggestionType::kGeneratePasswordEntry:
     case SuggestionType::kIbanEntry:
+    case SuggestionType::kIdentityCredential:
     case SuggestionType::kInsecureContextPaymentDisabledMessage:
+    case SuggestionType::kLoadingThrobber:
     case SuggestionType::kLoyaltyCardEntry:
+    case SuggestionType::kMaximizeCreditCardBenefitsEntry:
     case SuggestionType::kMerchantPromoCodeEntry:
     case SuggestionType::kMixedFormMessage:
-    case SuggestionType::kPasswordEntry:
-    case SuggestionType::kBackupPasswordEntry:
-    case SuggestionType::kTroubleSigningInEntry:
-    case SuggestionType::kPasswordFieldByFieldFilling:
-    case SuggestionType::kSaveAndFillCreditCardEntry:
-    case SuggestionType::kSeparator:
-    case SuggestionType::kTitle:
-    case SuggestionType::kVirtualCreditCardEntry:
-    case SuggestionType::kIdentityCredential:
-    case SuggestionType::kWebauthnCredential:
-    case SuggestionType::kFillAutofillAi:
-    case SuggestionType::kBnplEntry:
     case SuggestionType::kOneTimePasswordEntry:
-    case SuggestionType::kLoadingThrobber:
-      return false;
+    case SuggestionType::kOpenGemini:
+    case SuggestionType::kPasswordEntry:
+    case SuggestionType::kPasswordFieldByFieldFilling:
+    case SuggestionType::kPersonalContextNotice:
+    case SuggestionType::kSaveAndFillCreditCardEntry:
+    case SuggestionType::kTroubleSigningInEntry:
+    case SuggestionType::kVirtualCreditCardEntry:
+    case SuggestionType::kWebauthnCredential:
+    case SuggestionType::kWebauthnPasskeyQrCode:
+      return SuggestionSection::kBody;
+
     case SuggestionType::kWebauthnSignInWithAnotherDevice:
-      // The hybrid item is reintroduced as a footer.
-#if !BUILDFLAG(IS_ANDROID)
-      return base::FeatureList::IsEnabled(
-          password_manager::features::
-              kAutofillReintroduceHybridPasskeyDropdownItem);
+#if BUILDFLAG(IS_ANDROID)
+      return SuggestionSection::kBody;
 #else
-      return false;
-#endif  // !BUILDFLAG(IS_ANDROID)
+      return SuggestionSection::kFooter;
+#endif
   }
+}
+
+bool IsFooterSuggestionType(SuggestionType type) {
+  return GetSuggestionSection(type) == SuggestionSection::kFooter;
 }
 
 bool IsFooterItem(const std::vector<Suggestion>& suggestions,
@@ -117,17 +138,25 @@ bool IsFooterItem(const std::vector<Suggestion>& suggestions,
     return false;
   }
 
-  // Separators are a special case: They belong into the footer iff the next
-  // item exists and is a footer item.
+  // Structural elements (separators, titles) belong to the footer section
+  // iff the next item exists and belongs to the footer section.
   SuggestionType type = suggestions[line_number].type;
-  return type == SuggestionType::kSeparator
+  return GetSuggestionSection(type) == SuggestionSection::kStructure
              ? IsFooterItem(suggestions, line_number + 1)
              : IsFooterSuggestionType(type);
 }
 
 bool IsStandaloneSuggestionType(SuggestionType type) {
-  return !IsFooterSuggestionType(type) ||
-         (type == SuggestionType::kScanCreditCard);
+  switch (GetSuggestionSection(type)) {
+    case SuggestionSection::kBody:
+      return true;
+    case SuggestionSection::kFooter:
+      return type == SuggestionType::kScanCreditCard ||
+             type == SuggestionType::kWebauthnSignInWithAnotherDevice;
+    case SuggestionSection::kStructure:
+      return false;
+  }
+  NOTREACHED();
 }
 
 content::RenderFrameHost* GetRenderFrameHost(

@@ -10,9 +10,11 @@
 #import "base/test/scoped_feature_list.h"
 #import "components/image_fetcher/core/cached_image_fetcher.h"
 #import "components/image_fetcher/core/image_data_fetcher.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/base/signin_pref_names.h"
 #import "components/signin/public/identity_manager/identity_test_utils.h"
 #import "components/signin/public/identity_manager/primary_account_mutator.h"
+#import "components/sync/test/test_sync_service.h"
 #import "ios/chrome/browser/drive/model/drive_list.h"
 #import "ios/chrome/browser/drive/model/drive_service_factory.h"
 #import "ios/chrome/browser/drive/model/test_drive_file_downloader.h"
@@ -41,6 +43,7 @@
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/signin/model/identity_test_environment_browser_state_adaptor.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/browser/web/model/choose_file/choose_file_tab_helper.h"
 #import "ios/chrome/browser/web/model/choose_file/fake_choose_file_controller.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
@@ -108,6 +111,10 @@ constexpr char kFakeIconURL[] = "http://www.example.com/image";
     didActivateSearch:(BOOL)searchActivated {
 }
 
+- (void)mediator:(DriveFilePickerMediator*)mediator
+    didPickDriveItems:(const std::vector<DriveItem>&)driveItems {
+}
+
 @end
 
 // Fake drive file picker commands for `DriveFilePickerMediator`.
@@ -122,6 +129,11 @@ constexpr char kFakeIconURL[] = "http://www.example.com/image";
   self.hideDriveFilePickerCalled = YES;
 }
 - (void)setDriveFilePickerSelectedIdentity:(id<SystemIdentity>)identity {
+}
+- (void)showDriveFilePickerWithComposeboxDelegate:
+            (id<ComposeboxPickerPresenterDelegate>)delegate
+                               baseViewController:
+                                   (UIViewController*)baseViewController {
 }
 @end
 
@@ -238,6 +250,9 @@ constexpr char kFakeIconURL[] = "http://www.example.com/image";
 - (void)setAllowsMultipleSelection:(BOOL)allowsMultipleSelection {
 }
 
+- (void)setAccountButtonHidden:(BOOL)hidden {
+}
+
 @end
 
 // Test fixture for testing DriveFilePickerMediator class.
@@ -257,6 +272,8 @@ class DriveFilePickerMediatorTest : public PlatformTest {
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetFactoryWithDelegate(
             std::make_unique<FakeAuthenticationServiceDelegate>()));
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
     builder.AddTestingFactory(
         IdentityManagerFactory::GetInstance(),
         base::BindRepeating(IdentityTestEnvironmentBrowserStateAdaptor::
@@ -332,17 +349,24 @@ class DriveFilePickerMediatorTest : public PlatformTest {
     }
     mediator_ = [[DriveFilePickerMediator alloc]
              initWithWebState:web_state_.get()
-                   collection:std::move(collection)
                       options:DriveFilePickerOptions::Default()
+                       isRoot:YES
+                forComposebox:NO
               identityManager:_identityManager
         authenticationService:auth_service_];
     mediator_.delegate = fake_delegate_;
     mediator_.driveService = drive_service_;
     mediator_.accountManagerService = _accountManagerService;
     mediator_.driveFilePickerHandler = fake_drive_file_picker_handler_;
+    [mediator_ setCollection:std::move(collection)];
     mediator_.imageFetcher = image_fetcher_.get();
     mediator_.metricsHelper = metrics_helper_;
     mediator_.consumer = fake_consumer_;
+    if (drive_list_->IsExecutingQuery()) {
+      drive_list_->SetListItemsCompletionQuitClosure(
+          task_environment_.QuitClosure());
+      task_environment_.RunUntilQuit();
+    }
   }
 
   // Starts file selection in the WebState.

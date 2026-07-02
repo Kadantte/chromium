@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 import {YourSavedInfoDataCategory, YourSavedInfoDataChip, YourSavedInfoRelatedService} from 'chrome://settings/settings.js';
-import type {AiPageComposeInteractions, AiPageHistorySearchInteractions, AiPageInteractions, AiPageTabOrganizationInteractions, AutofillSettingsReferrer, DeleteBrowsingDataAction, MetricsBrowserProxy, PrivacyElementInteractions, PrivacyGuideInteractions, PrivacyGuideSettingsStates, PrivacyGuideStepsEligibleAndReached, SafeBrowsingInteractions, SafetyCheckNotificationsModuleInteractions, SafetyCheckUnusedSitePermissionsModuleInteractions, SafetyHubCardState, SafetyHubEntryPoint, SafetyHubModuleType, SafetyHubSurfaces} from 'chrome://settings/settings.js';
+import type {AiPageComposeInteractions, AiPageHistorySearchInteractions, AiPageInteractions, AiPageSuggestionsInteractions, AutofillSettingsReferrer, DeleteBrowsingDataAction, MetricsBrowserProxy, PrivacyElementInteractions, PrivacyGuideInteractions, PrivacyGuideSettingsStates, PrivacyGuideStepsEligibleAndReached, SafeBrowsingInteractions, SafetyCheckNotificationsModuleInteractions, SafetyCheckUnusedSitePermissionsModuleInteractions, SafetyHubCardState, SafetyHubEntryPoint, SafetyHubModuleType, SafetyHubSurfaces} from 'chrome://settings/settings.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 
 export class TestMetricsBrowserProxy extends TestBrowserProxy implements
@@ -38,7 +38,7 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
       'recordAiPageInteractions',
       'recordAiPageHistorySearchInteractions',
       'recordAiPageComposeInteractions',
-      'recordAiPageTabOrganizationInteractions',
+      'recordAiPageSuggestionsInteractions',
       'recordAutofillSettingsReferrer',
       'recordYourSavedInfoCategoryClick',
       'recordYourSavedInfoDataChipClick',
@@ -180,9 +180,9 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
     this.methodCalled('recordAiPageComposeInteractions', interaction);
   }
 
-  recordAiPageTabOrganizationInteractions(
-      interaction: AiPageTabOrganizationInteractions) {
-    this.methodCalled('recordAiPageTabOrganizationInteractions', interaction);
+  recordAiPageSuggestionsInteractions(
+      interaction: AiPageSuggestionsInteractions) {
+    this.methodCalled('recordAiPageSuggestionsInteractions', interaction);
   }
 
   recordYourSavedInfoCategoryClick(category: YourSavedInfoDataCategory) {

@@ -17,19 +17,19 @@ class AndroidBnplStrategyTest : public testing::Test {
   AndroidBnplStrategy android_bnpl_strategy_;
 };
 
-// Verify that GetNextActionOnSuggestionShown() returns the correct action for
+// Verify that GetNextActionOnSuggestionsShown() returns the correct action for
 // the Android platform.
-TEST_F(AndroidBnplStrategyTest, GetNextActionOnSuggestionShown) {
-  EXPECT_EQ(android_bnpl_strategy_.GetNextActionOnSuggestionShown(),
-            BnplStrategy::SuggestionShownNextAction::
+TEST_F(AndroidBnplStrategyTest, GetNextActionOnSuggestionsShown) {
+  EXPECT_EQ(android_bnpl_strategy_.GetNextActionOnSuggestionsShown(),
+            BnplStrategy::SuggestionsShownNextAction::
                 kSkipNotifyingUpdateCallbackOfSuggestionsShownResponse);
 }
 
-// Verify that GetNextActionOnBnplSuggestionAcceptance() returns the correct
+// Verify that GetNextActionOnUserDecisionToUseBnpl() returns the correct
 // action for the Android platform.
-TEST_F(AndroidBnplStrategyTest, GetNextActionOnBnplSuggestionAcceptance) {
-  EXPECT_EQ(android_bnpl_strategy_.GetNextActionOnBnplSuggestionAcceptance(),
-            BnplStrategy::BnplSuggestionAcceptedNextAction::
+TEST_F(AndroidBnplStrategyTest, GetNextActionOnUserDecisionToUseBnpl) {
+  EXPECT_EQ(android_bnpl_strategy_.GetNextActionOnUserDecisionToUseBnpl(),
+            BnplStrategy::UserDecisionToUseBnplNextAction::
                 kCheckAmountExtractionBeforeContinuingFlowForAndroid);
 }
 
@@ -46,6 +46,16 @@ TEST_F(AndroidBnplStrategyTest, GetNextActionOnAmountExtractionReturned) {
 TEST_F(AndroidBnplStrategyTest, GetBeforeViewSwitchAction) {
   EXPECT_EQ(android_bnpl_strategy_.GetBeforeViewSwitchAction(),
             BnplStrategy::BeforeSwitchingViewAction::kDoNothing);
+}
+
+// Verify that GetNextActionOnAiBasedAmountExtractionReturned() returns the
+// correct action for the Android platform.
+TEST_F(AndroidBnplStrategyTest,
+       GetNextActionOnAiBasedAmountExtractionReturned) {
+  EXPECT_EQ(
+      android_bnpl_strategy_.GetNextActionOnAiBasedAmountExtractionReturned(),
+      BnplStrategy::BnplAiBasedAmountExtractionReturnedNextAction::
+          kSwitchToIssuerSelectionScreenOnAndroid);
 }
 
 // Verify that ShouldRemoveExistingUiOnServerReturn() returns the correct

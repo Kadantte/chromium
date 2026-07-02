@@ -12,7 +12,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "build/branding_buildflags.h"
-#include "chrome/browser/browser_features.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_profile.h"
@@ -46,7 +45,7 @@ class AidaClientTest : public testing::Test {
 
     auto account_info = identity_test_env_->MakePrimaryAccountAvailable(
         kEmail, signin::ConsentLevel::kSignin);
-    AccountCapabilitiesTestMutator mutator(&account_info.capabilities);
+    AccountCapabilitiesTestMutator mutator(&account_info);
     mutator.set_can_use_devtools_generative_ai_features(true);
     signin::UpdateAccountInfoForAccount(identity_test_env_->identity_manager(),
                                         account_info);
@@ -106,7 +105,7 @@ TEST_F(AidaClientTest, FailsIfNotAuthorized) {
   aida_client.PrepareRequestOrFail(base::BindOnce(
       &Delegate::FinishCallback, base::Unretained(&delegate), &run_loop));
   identity_test_env_->WaitForAccessTokenRequestIfNecessaryAndRespondWithError(
-      GoogleServiceAuthError(GoogleServiceAuthError::REQUEST_CANCELED));
+      GoogleServiceAuthError::CreateRequestCanceled());
 
   EXPECT_EQ(
       R"({"error": "Cannot get OAuth credentials", "detail": "Request canceled."})",
@@ -180,7 +179,7 @@ TEST_F(AidaClientTest, NotAvailableIfCapabilityFalse) {
 
   auto account_info = identity_test_env_->identity_manager()
                           ->FindExtendedAccountInfoByEmailAddress(kEmail);
-  AccountCapabilitiesTestMutator mutator(&account_info.capabilities);
+  AccountCapabilitiesTestMutator mutator(&account_info);
   mutator.set_can_use_devtools_generative_ai_features(false);
   signin::UpdateAccountInfoForAccount(identity_test_env_->identity_manager(),
                                       account_info);

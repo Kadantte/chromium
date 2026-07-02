@@ -146,125 +146,23 @@ TEST_F(CookieControlsIconViewUnitTest, DefaultNotVisible) {
   EXPECT_FALSE(LabelShown());
 }
 
-TEST_F(CookieControlsIconViewUnitTest,
-       IconAnimatesWhenShouldHighlightIsTrueAnd3pcsBlocked) {
-  view_->OnCookieControlsIconStatusChanged(
-      /*icon_visible=*/true, CookieControlsState::kBlocked3pc,
-      /*should_highlight=*/true);
-  FlushEvents();
-  EXPECT_TRUE(Visible());
-  EXPECT_TRUE(LabelShown());
-  EXPECT_EQ(TooltipText(), BlockedLabel());
-  EXPECT_EQ(LabelText(), BlockedLabel());
-// TODO(b/436858103): Fix screenreader tests on ChromeOS and Mac.
-#if !OS_MAC && !BUILDFLAG(IS_CHROMEOS)
-  EXPECT_EQ(a11y_counter_.GetCount(ax::mojom::Event::kAlert), 1);
-#endif
-  ExecuteIcon();
-  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconAnimated), 1);
-  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconAnimatedOpened), 1);
-  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconShown), 0);
-  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconOpened), 0);
-  EXPECT_EQ(user_actions_.GetActionCount(kUMABubbleOpenedBlocked), 1);
-}
-
-TEST_F(CookieControlsIconViewUnitTest,
-       IconAnimatesOnPageReloadWithChanged3pcSettings) {
-  view_->OnCookieControlsIconStatusChanged(
-      /*icon_visible=*/true, CookieControlsState::kBlocked3pc,
-      /*should_highlight=*/false);
-  FlushEvents();
-  ExecuteIcon();
-  // Force the icon to animate and set the label again
-  view_->OnFinishedPageReloadWithChangedSettings();
-
-  EXPECT_TRUE(Visible());
-  EXPECT_TRUE(LabelShown());
-  EXPECT_EQ(TooltipText(), BlockedLabel());
-  EXPECT_EQ(LabelText(), BlockedLabel());
-}
-
-TEST_F(CookieControlsIconViewUnitTest,
-       IconAnimationTextDoesNotResetWhenStateDoesNotChange) {
-  view_->OnCookieControlsIconStatusChanged(
-      /*icon_visible=*/true, CookieControlsState::kBlocked3pc,
-      /*should_highlight=*/true);
-  FlushEvents();
-  EXPECT_TRUE(Visible());
-  EXPECT_TRUE(LabelShown());
-  EXPECT_EQ(LabelText(), BlockedLabel());
-
-  view_->OnCookieControlsIconStatusChanged(
-      /*icon_visible=*/true, CookieControlsState::kBlocked3pc,
-      /*should_highlight=*/true);
-  FlushEvents();
-  EXPECT_EQ(LabelText(), BlockedLabel());
-}
-
-TEST_F(CookieControlsIconViewUnitTest,
-       IconAnimationTextUpdatesWhen3pcStateChanges) {
-  view_->OnCookieControlsIconStatusChanged(
-      /*icon_visible=*/true, CookieControlsState::kBlocked3pc,
-      /*should_highlight=*/true);
-  FlushEvents();
-  EXPECT_TRUE(Visible());
-  EXPECT_TRUE(LabelShown());
-  EXPECT_EQ(LabelText(), BlockedLabel());
-
-  view_->OnCookieControlsIconStatusChanged(
-      /*icon_visible=*/true, CookieControlsState::kAllowed3pc,
-      /*should_highlight=*/true);
-  FlushEvents();
-  EXPECT_EQ(LabelText(), AllowedLabel());
-}
-
-TEST_F(CookieControlsIconViewUnitTest, IconAnimationIsResetOnWebContentChange) {
-  view_->OnCookieControlsIconStatusChanged(
-      /*icon_visible=*/true, CookieControlsState::kBlocked3pc,
-      /*should_highlight=*/true);
-  FlushEvents();
-  EXPECT_TRUE(Visible());
-  EXPECT_TRUE(LabelShown());
-  ExecuteIcon();
-  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconAnimated), 1);
-  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconAnimatedOpened), 1);
-  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconShown), 0);
-  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconOpened), 0);
-  // Simulate a change in web content.
-  view_->UpdateImpl();
-  view_->OnCookieControlsIconStatusChanged(
-      /*icon_visible=*/true, CookieControlsState::kBlocked3pc,
-      /*should_highlight=*/false);
-  FlushEvents();
-  ExecuteIcon();
-  EXPECT_TRUE(Visible());
-  EXPECT_FALSE(LabelShown());
-  // Animated user actions should not be counted.
-  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconAnimated), 1);
-  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconAnimatedOpened), 1);
-  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconShown), 1);
-  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconOpened), 1);
-}
-
 TEST_F(CookieControlsIconViewUnitTest, HidingIconDoesNotRetriggerA11yReadOut) {
   view_->OnCookieControlsIconStatusChanged(
-      /*icon_visible=*/true, CookieControlsState::kBlocked3pc,
-      /*should_highlight=*/true);
+      /*icon_visible=*/true, CookieControlsState::kBlocked3pc);
   FlushEvents();
   EXPECT_TRUE(Visible());
-  EXPECT_TRUE(LabelShown());
+  EXPECT_FALSE(LabelShown());
   EXPECT_EQ(TooltipText(), BlockedLabel());
   EXPECT_EQ(LabelText(), BlockedLabel());
 // TODO(b/436858103): Fix screenreader tests on ChromeOS and Mac.
 #if !OS_MAC && !BUILDFLAG(IS_CHROMEOS)
-  EXPECT_EQ(a11y_counter_.GetCount(ax::mojom::Event::kAlert), 1);
+  EXPECT_EQ(a11y_counter_.GetCount(ax::mojom::Event::kAlert), 0);
 #endif
 
-  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconAnimated), 1);
-  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconShown), 0);
+  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconAnimated), 0);
+  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconShown), 1);
   view_->OnCookieControlsIconStatusChanged(
-      /*icon_visible=*/false, CookieControlsState::kBlocked3pc,
-      /*should_highlight=*/false);
+      /*icon_visible=*/false, CookieControlsState::kBlocked3pc);
   FlushEvents();
   EXPECT_FALSE(Visible());
   EXPECT_FALSE(LabelShown());
@@ -272,18 +170,17 @@ TEST_F(CookieControlsIconViewUnitTest, HidingIconDoesNotRetriggerA11yReadOut) {
   EXPECT_EQ(LabelText(), BlockedLabel());
   // We don't read out the label again when the icon becomes hidden.
 #if !OS_MAC && !BUILDFLAG(IS_CHROMEOS)
-  EXPECT_EQ(a11y_counter_.GetCount(ax::mojom::Event::kAlert), 1);
+  EXPECT_EQ(a11y_counter_.GetCount(ax::mojom::Event::kAlert), 0);
 #endif
   // Verify no metrics are recorded when icon is hidden.
-  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconAnimated), 1);
-  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconShown), 0);
+  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconAnimated), 0);
+  EXPECT_EQ(user_actions_.GetActionCount(kUMAIconShown), 1);
 }
 
 TEST_F(CookieControlsIconViewUnitTest,
        IconDoesNotAnimateWhenShouldHighlightIsFalse) {
   view_->OnCookieControlsIconStatusChanged(
-      /*icon_visible=*/true, CookieControlsState::kBlocked3pc,
-      /*should_highlight=*/false);
+      /*icon_visible=*/true, CookieControlsState::kBlocked3pc);
   FlushEvents();
   EXPECT_TRUE(Visible());
   EXPECT_FALSE(LabelShown());
@@ -294,8 +191,7 @@ TEST_F(CookieControlsIconViewUnitTest,
 
 TEST_F(CookieControlsIconViewUnitTest, IconHiddenWhenIconVisibleIsFalse) {
   view_->OnCookieControlsIconStatusChanged(
-      /*icon_visible=*/false, CookieControlsState::kAllowed3pc,
-      /*should_highlight=*/false);
+      /*icon_visible=*/false, CookieControlsState::kAllowed3pc);
   FlushEvents();
   EXPECT_FALSE(Visible());
   EXPECT_FALSE(LabelShown());
@@ -310,8 +206,7 @@ TEST_F(CookieControlsIconViewUnitTest, IconHiddenWhenIconVisibleIsFalse) {
 
 TEST_F(CookieControlsIconViewUnitTest, RecordsIconOpenMetricWhen3pcsAllowed) {
   view_->OnCookieControlsIconStatusChanged(
-      /*icon_visible=*/true, CookieControlsState::kAllowed3pc,
-      /*should_highlight=*/false);
+      /*icon_visible=*/true, CookieControlsState::kAllowed3pc);
   FlushEvents();
   EXPECT_TRUE(Visible());
   EXPECT_EQ(TooltipText(), AllowedLabel());
@@ -324,8 +219,7 @@ TEST_F(CookieControlsIconViewUnitTest, RecordsIconOpenMetricWhen3pcsAllowed) {
 
 TEST_F(CookieControlsIconViewUnitTest, RecordsIconOpenMetricWhen3pcsBlocked) {
   view_->OnCookieControlsIconStatusChanged(
-      /*icon_visible=*/true, CookieControlsState::kBlocked3pc,
-      /*should_highlight=*/false);
+      /*icon_visible=*/true, CookieControlsState::kBlocked3pc);
   FlushEvents();
   EXPECT_EQ(TooltipText(), BlockedLabel());
   EXPECT_EQ(LabelText(), BlockedLabel());

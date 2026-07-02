@@ -108,9 +108,8 @@ ScrollTimeline::TimelineState ScrollTimeline::ComputeTimelineState() const {
          scrollable_area->MinimumScrollOffset().x() == 0);
 
   ScrollOffset scroll_offset = scrollable_area->GetScrollOffset();
-  auto physical_orientation =
-      ToPhysicalScrollOrientation(GetAxis(), *scroll_container);
-  double current_offset = (physical_orientation == kHorizontalScroll)
+  auto physical_orientation = ResolvePhysicalAxis(GetAxis(), *scroll_container);
+  double current_offset = (physical_orientation == PhysicalAxis::kHorizontal)
                               ? scroll_offset.x()
                               : scroll_offset.y();
   // When using a rtl direction, current_offset grows correctly from 0 to
@@ -130,7 +129,6 @@ ScrollTimeline::TimelineState ScrollTimeline::ComputeTimelineState() const {
   // Timeline is inactive unless the scroll offset range is positive.
   // github.com/w3c/csswg-drafts/issues/7401
   if (state.scroll_offsets->end - state.scroll_offsets->start > 0) {
-    state.phase = TimelinePhase::kActive;
     double offset = current_offset - state.scroll_offsets->start;
     double range = state.scroll_offsets->end - state.scroll_offsets->start;
     double duration_in_microseconds =
@@ -144,7 +142,7 @@ ScrollTimeline::TimelineState ScrollTimeline::ComputeTimelineState() const {
 }
 
 void ScrollTimeline::CalculateOffsets(PaintLayerScrollableArea* scrollable_area,
-                                      ScrollOrientation physical_orientation,
+                                      PhysicalAxis physical_orientation,
                                       TimelineState* state) const {
   CalculateScrollLimits(scrollable_area, physical_orientation, state);
   state->scroll_offsets = state->scroll_limits;
@@ -215,11 +213,11 @@ Element* ScrollTimeline::ComputeSourceNoLayout() const {
     NOTREACHED();
   }
 
-  if (node->IsElementNode()) {
-    return DynamicTo<Element>(node);
+  if (auto* element = DynamicTo<Element>(*node)) {
+    return element;
   }
-  if (node->IsDocumentNode()) {
-    return DynamicTo<Document>(node)->ScrollingElementNoLayout();
+  if (auto* document = DynamicTo<Document>(*node)) {
+    return document->ScrollingElementNoLayout();
   }
 
   NOTREACHED();
@@ -278,10 +276,10 @@ std::optional<double> ScrollTimeline::GetMaximumScrollPosition() const {
   }
   ScrollOffset scroll_dimensions = scrollable_area->MaximumScrollOffset() -
                                    scrollable_area->MinimumScrollOffset();
-  auto physical_orientation =
-      ToPhysicalScrollOrientation(GetAxis(), *scroll_container);
-  return physical_orientation == kHorizontalScroll ? scroll_dimensions.x()
-                                                   : scroll_dimensions.y();
+  auto physical_orientation = ResolvePhysicalAxis(GetAxis(), *scroll_container);
+  return physical_orientation == PhysicalAxis::kHorizontal
+             ? scroll_dimensions.x()
+             : scroll_dimensions.y();
 }
 
 std::optional<double> ScrollTimeline::GetCurrentScrollPosition() const {
@@ -298,10 +296,10 @@ std::optional<double> ScrollTimeline::GetCurrentScrollPosition() const {
   }
 
   ScrollOffset scroll_offset = scrollable_area->GetScrollOffset();
-  auto physical_orientation =
-      ToPhysicalScrollOrientation(GetAxis(), *scroll_container);
-  return (physical_orientation == kHorizontalScroll) ? scroll_offset.x()
-                                                     : scroll_offset.y();
+  auto physical_orientation = ResolvePhysicalAxis(GetAxis(), *scroll_container);
+  return (physical_orientation == PhysicalAxis::kHorizontal)
+             ? scroll_offset.x()
+             : scroll_offset.y();
 }
 
 void ScrollTimeline::AddTrigger(TimelineTrigger* trigger) {
@@ -319,19 +317,20 @@ void ScrollTimeline::RemoveTrigger(TimelineTrigger* trigger) {
 }
 
 // static
-ScrollOrientation ScrollTimeline::ToPhysicalScrollOrientation(
-    ScrollAxis axis,
-    const LayoutBox& source_box) {
+PhysicalAxis ScrollTimeline::ResolvePhysicalAxis(ScrollAxis axis,
+                                                 const LayoutBox& source_box) {
   bool is_horizontal = source_box.IsHorizontalWritingMode();
   switch (axis) {
     case ScrollAxis::kBlock:
-      return is_horizontal ? kVerticalScroll : kHorizontalScroll;
+      return is_horizontal ? PhysicalAxis::kVertical
+                           : PhysicalAxis::kHorizontal;
     case ScrollAxis::kInline:
-      return is_horizontal ? kHorizontalScroll : kVerticalScroll;
+      return is_horizontal ? PhysicalAxis::kHorizontal
+                           : PhysicalAxis::kVertical;
     case ScrollAxis::kX:
-      return kHorizontalScroll;
+      return PhysicalAxis::kHorizontal;
     case ScrollAxis::kY:
-      return kVerticalScroll;
+      return PhysicalAxis::kVertical;
   }
 }
 

@@ -16,6 +16,7 @@
 
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/critical_closure.h"
 #include "base/debug/alias.h"
 #include "base/files/file.h"
@@ -55,6 +56,7 @@ constexpr int kReplaceRetryFailure = 10;
 static_assert(kReplaceRetryFailure > kReplaceRetries, "No overlap allowed");
 
 constexpr auto kReplacePauseInterval = Milliseconds(100);
+#endif
 
 // Alternate representation of ReplaceFile results, recorded to
 // ImportantFile.FileReplaceResult.
@@ -70,17 +72,9 @@ enum class ReplaceResult {
   kMaxValue = kFailure
 };
 
-void UmaHistogramRetryCountWithSuffix(std::string_view histogram_suffix,
-                                      int retry_count,
-                                      bool success) {
-  constexpr char kCountHistogramName[] = "ImportantFile.FileReplaceRetryCount2";
+void UmaHistogramReplaceResultWithSuffix(std::string_view histogram_suffix,
+                                         ReplaceResult result) {
   constexpr char kResultHistogramName[] = "ImportantFile.FileReplaceResult";
-  CHECK_LE(retry_count, kReplaceRetries);
-  auto result = success
-                    ? (retry_count > 0 ? ReplaceResult::kSuccessWithRetry
-                                       : ReplaceResult::kSuccessWithoutRetry)
-                    : ReplaceResult::kFailure;
-
   // Log with the given suffix and the aggregated ".All" suffix.
   if (histogram_suffix.empty()) {
     UmaHistogramEnumeration(kResultHistogramName, result);
@@ -91,7 +85,23 @@ void UmaHistogramRetryCountWithSuffix(std::string_view histogram_suffix,
   }
   UmaHistogramEnumeration(base::JoinString({kResultHistogramName, "All"}, "."),
                           result);
+}
+
+#if BUILDFLAG(IS_WIN)
+void UmaHistogramRetryCountWithSuffix(std::string_view histogram_suffix,
+                                      int retry_count,
+                                      bool success) {
+  CHECK_LE(retry_count, kReplaceRetries);
+  auto result = success
+                    ? (retry_count > 0 ? ReplaceResult::kSuccessWithRetry
+                                       : ReplaceResult::kSuccessWithoutRetry)
+                    : ReplaceResult::kFailure;
+  UmaHistogramReplaceResultWithSuffix(histogram_suffix, result);
+
+  // We only retry on Windows
   if (retry_count > 0) {
+    constexpr char kCountHistogramName[] =
+        "ImportantFile.FileReplaceRetryCount2";
     if (histogram_suffix.empty()) {
       UmaHistogramExactLinear(kCountHistogramName, retry_count,
                               kReplaceRetries + 1);
@@ -106,10 +116,9 @@ void UmaHistogramRetryCountWithSuffix(std::string_view histogram_suffix,
 }
 #endif
 
-void UmaHistogramTimesWithSuffix(const char* histogram_name,
+void UmaHistogramTimesWithSuffix(std::string_view histogram_name,
                                  std::string_view histogram_suffix,
                                  base::TimeDelta sample) {
-  DCHECK(histogram_name);
   // Log with the given suffix and the aggregated ".All" suffix.
   if (histogram_suffix.empty()) {
     UmaHistogramTimes(histogram_name, sample);
@@ -118,6 +127,19 @@ void UmaHistogramTimesWithSuffix(const char* histogram_name,
                       sample);
   }
   UmaHistogramTimes(base::JoinString({histogram_name, "All"}, "."), sample);
+}
+
+void UmaHistogramCounts10MWithSuffix(std::string_view histogram_name,
+                                     std::string_view histogram_suffix,
+                                     int sample) {
+  // Log with the given suffix and the aggregated ".All" suffix.
+  if (histogram_suffix.empty()) {
+    UmaHistogramCounts10M(histogram_name, sample);
+  } else {
+    UmaHistogramCounts10M(
+        base::JoinString({histogram_name, histogram_suffix}, "."), sample);
+  }
+  UmaHistogramCounts10M(base::JoinString({histogram_name, "All"}, "."), sample);
 }
 
 // Deletes the file named |tmp_file_path| (which may be open as |tmp_file|),
@@ -321,6 +343,11 @@ bool ImportantFileWriter::WriteFileAtomicallyImpl(
 #else
   tmp_file.Close();
   result = replace_file_callback.Run(tmp_file_path, path, &replace_file_error);
+  // Log the result of the ReplaceFile operation. In contrast with Windows,
+  // we don't retry the operation, so we only record the result.
+  UmaHistogramReplaceResultWithSuffix(
+      histogram_suffix,
+      result ? ReplaceResult::kSuccessWithoutRetry : ReplaceResult::kFailure);
 #endif  // BUILDFLAG(IS_WIN)
 
   if (!result) {
@@ -456,6 +483,13 @@ void ImportantFileWriter::DoScheduledWrite() {
     }
 
     previous_data_size_ = data->size();
+    // Note: We use UmaHistogramCounts10M() instead of one of the ByteSize
+    // functions because we care about values under 1MB, which the ByteSize
+    // functions currently don't support (crbug.com/40526504).
+    UmaHistogramCounts10MWithSuffix("ImportantFile.SerializationSize",
+                                    histogram_suffix_,
+                                    static_cast<int>(previous_data_size_));
+
     data_producer_for_background_sequence = base::BindOnce(
         [](std::string data) { return std::make_optional(std::move(data)); },
         std::move(data).value());

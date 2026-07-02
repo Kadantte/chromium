@@ -169,6 +169,10 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   // Return whether or not we are currently able to fire events.
   bool CanFireEvents() const override;
 
+  // Returns false for generated events that should not be exposed for this
+  // accessibility tree source.
+  bool ShouldFireGeneratedEvent(AXEventGenerator::Event event_type) const;
+
   // Return a pointer to the root of the tree.
   BrowserAccessibility* GetBrowserAccessibilityRoot() const;
 
@@ -207,6 +211,11 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   // a generated event is fired from this BrowserAccessibilityManager.
   void SetGeneratedEventCallbackForTesting(
       const GeneratedEventCallbackForTesting& callback);
+
+  // For testing only, register a function to be called when handling
+  // accessibility events.
+  void SetAccessibilityEventsCallbackForTesting(
+      const base::RepeatingClosure& callback);
 
   // For testing only, register a function to be called when nodes
   // change location / bounding box in this BrowserAccessibilityManager.
@@ -261,6 +270,9 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   void SetValue(const BrowserAccessibility& node, const std::string& value);
   void SetSelection(const AXActionData& action_data);
   void SetSelection(const BrowserAccessibility::AXRange& range);
+  void ReplaceRanges(const BrowserAccessibility& node,
+                     const std::vector<BrowserAccessibility::AXRange>& ranges,
+                     const std::vector<std::string>& replacement_strings);
   void ShowContextMenu(const BrowserAccessibility& node);
   void SignalEndOfTest();
   void StitchChildTree(const BrowserAccessibility& node,
@@ -603,6 +615,9 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   // For testing only; A function to call when locations change.
   base::RepeatingClosure location_change_callback_for_testing_;
 
+  // For testing only: A function to call when accessibility events are sent.
+  base::RepeatingClosure accessibility_events_callback_for_testing_;
+
   // Keeps track of the nested popup root's id, if it exists. See GetPopupRoot()
   // for details.
   std::set<int32_t> popup_root_ids_;
@@ -612,7 +627,7 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   static bool never_suppress_or_delay_events_for_testing_;
 
   // For debug only: True when handling OnAccessibilityEvents.
-#if DCHECK_IS_ON()
+#if BUILDFLAG(IS_WIN) || DCHECK_IS_ON()
   bool in_on_accessibility_events_ = false;
 #endif  // DCHECK_IS_ON()
 

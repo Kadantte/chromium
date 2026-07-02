@@ -36,9 +36,7 @@
 namespace content {
 
 PageImpl::PageImpl(RenderFrameHostImpl& rfh, PageDelegate& delegate)
-    : main_document_(rfh),
-      delegate_(delegate),
-      text_autosizer_page_info_({0, 0, 1.f}) {
+    : main_document_(rfh), delegate_(delegate) {
   if (base::FeatureList::IsEnabled(features::kSharedStorageSelectURLLimit)) {
     select_url_overall_budget_ =
         features::kSharedStorageSelectURLBitBudgetPerPageLoad.Get();
@@ -82,6 +80,21 @@ void PageImpl::GetManifest(GetManifestCallback callback) {
 
 bool PageImpl::IsPrimary() const {
   return main_document_->IsInPrimaryMainFrame();
+}
+
+const blink::mojom::CaptureHandleConfig& PageImpl::GetCaptureHandleConfig() {
+  return capture_handle_config_;
+}
+
+void PageImpl::SetCaptureHandleConfig(
+    blink::mojom::CaptureHandleConfigPtr config) {
+  if (capture_handle_config_ == *config) {
+    return;
+  }
+  capture_handle_config_ = std::move(*config);
+
+  // Notify the tab-level observers via the delegate bridge.
+  main_document_->delegate()->OnCaptureHandleConfigUpdate(*this);
 }
 
 void PageImpl::UpdateManifestUrl(const GURL& manifest_url) {
@@ -168,38 +181,6 @@ void PageImpl::SetContentsMimeType(std::string mime_type) {
   contents_mime_type_ = std::move(mime_type);
 }
 
-void PageImpl::OnTextAutosizerPageInfoChanged(
-    blink::mojom::TextAutosizerPageInfoPtr page_info) {
-  OPTIONAL_TRACE_EVENT0("content", "PageImpl::OnTextAutosizerPageInfoChanged");
-
-  // Keep a copy of `page_info` in case we create a new `blink::WebView` before
-  // the next update, so that the PageImpl can tell the newly created
-  // `blink::WebView` about the autosizer info.
-  text_autosizer_page_info_.main_frame_width = page_info->main_frame_width;
-  text_autosizer_page_info_.main_frame_layout_width =
-      page_info->main_frame_layout_width;
-  text_autosizer_page_info_.device_scale_adjustment =
-      page_info->device_scale_adjustment;
-
-  auto remote_frames_broadcast_callback =
-      [this](RenderFrameProxyHost* proxy_host) {
-        DCHECK(proxy_host);
-        proxy_host->GetAssociatedRemoteMainFrame()->UpdateTextAutosizerPageInfo(
-            text_autosizer_page_info_.Clone());
-      };
-
-  {
-    TRACE_EVENT("navigation",
-                "PageImpl::OnTextAutosizerPageInfoChanged broadcast");
-    main_document_->frame_tree()
-        ->root()
-        ->render_manager()
-        ->ExecuteRemoteFramesBroadcastMethod(
-            std::move(remote_frames_broadcast_callback),
-            main_document_->GetSiteInstance()->group());
-  }
-}
-
 void PageImpl::SetActivationStartTime(base::TimeTicks activation_start) {
   CHECK(!activation_start_time_);
   activation_start_time_ = activation_start;
@@ -210,18 +191,17 @@ void PageImpl::NotifyCrossOriginSubframePrerenderIsAllowed() {
 }
 
 void PageImpl::Activate(
-    ActivationType type,
     StoredPage::RenderViewHostImplSafeRefSet& render_view_hosts,
     std::optional<blink::ViewTransitionState> view_transition_state,
     base::OnceCallback<void(base::TimeTicks)> completion_callback) {
-  TRACE_EVENT1("navigation", "PageImpl::Activate", "activation_type", type);
+  TRACE_EVENT0("navigation", "PageImpl::Activate");
 
   // SetActivationStartTime() should be called first as the value is used in
   // the callback below.
   CHECK(activation_start_time_.has_value());
 
   base::OnceClosure did_activate_render_views = base::BindOnce(
-      &PageImpl::DidActivateAllRenderViewsForPrerenderingOrPreview,
+      &PageImpl::DidActivateAllRenderViewsForPrerendering,
       weak_factory_.GetWeakPtr(), std::move(completion_callback));
 
   base::RepeatingClosure barrier = base::BarrierClosure(
@@ -242,44 +222,26 @@ void PageImpl::Activate(
       view_transition_state_consumed = true;
     }
 
-    const bool should_send_activation_start = [&]() {
-      // For prerendering activation, send activation_start only to the
-      // RenderViewHost for the main frame to avoid sending the info
-      // cross-origin. Only this RenderViewHost needs the info, as we expect
-      // the other RenderViewHosts are made for cross-origin iframes which
-      // have not yet loaded their document. To the renderer, it just looks
-      // like an ongoing navigation is happening in the frame and has not yet
-      // committed.
-      if (is_main_document) {
-        return true;
-      }
-
-      // Even cross-origin, we allow if the main document has the special
-      // header. See PrerenderHost::AllowCrossOriginSubframeNavigation() for
-      // detail.
-      if (type == ActivationType::kPrerendering &&
-          is_cross_origin_subframe_prerender_allowed_) {
-        return true;
-      }
-
-      // For preview activation, send activation_start to all RenderViewHosts
-      // as preview loads cross-origin subframes under the capability control,
-      // and activation_start time is meaningful there.
-      if (type == ActivationType::kPreview) {
-        return true;
-      }
-      return false;
-    }();
+    // For prerendering activation, send activation_start only to the
+    // RenderViewHost for the main frame to avoid sending the info
+    // cross-origin. Only this RenderViewHost needs the info, as we expect
+    // the other RenderViewHosts are made for cross-origin iframes which
+    // have not yet loaded their document. To the renderer, it just looks
+    // like an ongoing navigation is happening in the frame and has not yet
+    // committed.
+    //
+    // Even cross-origin, we allow if the main document has the special
+    // header. See PrerenderHost::AllowCrossOriginSubframeNavigation() for
+    // detail.
+    const bool should_send_activation_start =
+        is_main_document || is_cross_origin_subframe_prerender_allowed_;
     if (should_send_activation_start) {
       params->activation_start = *activation_start_time_;
     }
 
-    // For preview activation, there is no way to activate the previewed page
-    // other than with a user action, or testing only methods.
     params->was_user_activated =
-        (main_document_->frame_tree_node()
-             ->has_received_user_gesture_before_nav() ||
-         type == ActivationType::kPreview)
+        main_document_->frame_tree_node()
+                ->has_received_user_gesture_before_nav()
             ? blink::mojom::WasActivatedOption::kYes
             : blink::mojom::WasActivatedOption::kNo;
     rvh->ActivatePrerenderedPage(std::move(params), barrier);
@@ -288,7 +250,7 @@ void PageImpl::Activate(
   // Prepare each RenderFrameHostImpl in this Page for activation.
   main_document_->ForEachRenderFrameHostImplIncludingSpeculative(
       [](RenderFrameHostImpl* rfh) {
-        rfh->RendererWillActivateForPrerenderingOrPreview();
+        rfh->RendererWillActivateForPrerendering();
       });
 }
 
@@ -324,7 +286,7 @@ void PageImpl::MaybeDispatchLoadEventsOnPrerenderActivation() {
       &RenderFrameHostImpl::MaybeDispatchDidFinishLoadOnPrerenderActivation);
 }
 
-void PageImpl::DidActivateAllRenderViewsForPrerenderingOrPreview(
+void PageImpl::DidActivateAllRenderViewsForPrerendering(
     base::OnceCallback<void(base::TimeTicks)> completion_callback) {
   TRACE_EVENT0("navigation",
                "PageImpl::DidActivateAllRenderViewsForPrerendering");
@@ -408,12 +370,14 @@ base::flat_map<std::string, std::string> PageImpl::GetKeyboardLayoutMap() {
 }
 
 int32_t PageImpl::GetSavedQueryResultIndexOrStoreCallback(
-    const url::Origin& origin,
+    const url::Origin& context_origin,
+    const url::Origin& data_origin,
     const GURL& script_url,
     const std::string& operation_name,
     const std::u16string& query_name,
     base::OnceCallback<void(uint32_t)> callback) {
-  auto key = std::make_tuple(origin, script_url, operation_name, query_name);
+  auto key = std::make_tuple(context_origin, data_origin, script_url,
+                             operation_name, query_name);
   auto it = select_url_saved_query_index_results_.find(key);
   if (it == select_url_saved_query_index_results_.end()) {
     select_url_saved_query_index_results_[key] = SharedStorageSavedQueryData();
@@ -434,12 +398,14 @@ int32_t PageImpl::GetSavedQueryResultIndexOrStoreCallback(
 }
 
 void PageImpl::SetSavedQueryResultIndexAndRunCallbacks(
-    const url::Origin& origin,
+    const url::Origin& context_origin,
+    const url::Origin& data_origin,
     const GURL& script_url,
     const std::string& operation_name,
     const std::u16string& query_name,
     uint32_t index) {
-  auto key = std::make_tuple(origin, script_url, operation_name, query_name);
+  auto key = std::make_tuple(context_origin, data_origin, script_url,
+                             operation_name, query_name);
   auto it = select_url_saved_query_index_results_.find(key);
   CHECK(it != select_url_saved_query_index_results_.end());
   CHECK_EQ(it->second.index, -1L);

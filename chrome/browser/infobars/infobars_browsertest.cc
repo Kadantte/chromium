@@ -13,35 +13,38 @@
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
 #include "chrome/browser/buildflags.h"
 #include "chrome/browser/devtools/devtools_infobar_delegate.h"
 #include "chrome/browser/extensions/api/debugger/extension_dev_tools_infobar_delegate.h"
 #include "chrome/browser/extensions/api/messaging/incognito_connectability_infobar_delegate.h"
-#include "chrome/browser/extensions/crx_installer.h"
 #include "chrome/browser/extensions/extension_install_prompt.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/theme_installed_infobar_delegate.h"
+#include "chrome/browser/infobars/infobar_features.h"
 #include "chrome/browser/infobars/test_support/infobar_observer.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/chrome_select_file_policy.h"
 #include "chrome/browser/ui/collected_cookies_infobar_delegate.h"
 #include "chrome/browser/ui/extensions/installation_error_infobar_delegate.h"
 #include "chrome/browser/ui/page_info/page_info_infobar_delegate.h"
+#include "chrome/browser/ui/select_file_policy/chrome_select_file_policy.h"
 #include "chrome/browser/ui/startup/automation_infobar_delegate.h"
 #include "chrome/browser/ui/startup/bad_flags_prompt.h"
 #include "chrome/browser/ui/startup/google_api_keys_infobar_delegate.h"
 #include "chrome/browser/ui/startup/obsolete_system_infobar_delegate.h"
+#include "chrome/browser/ui/startup/oscryptasync_availability_infobar_delegate.h"
 #include "chrome/browser/ui/tab_sharing/mock_tab_sharing_ui.h"
 #include "chrome/browser/ui/tab_sharing/tab_sharing_infobar_delegate.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_infobar.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
+#include "chrome/browser/ui/views/site_data/page_specific_site_data_dialog_controller.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -51,6 +54,7 @@
 #include "components/infobars/core/infobar.h"
 #include "content/public/common/buildflags.h"
 #include "content/public/test/browser_test.h"
+#include "extensions/browser/crx_installer.h"
 #include "extensions/browser/extension_dialog_auto_confirm.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/sandboxed_unpacker.h"
@@ -155,7 +159,11 @@ IN_PROC_BROWSER_TEST_F(InfoBarsTest, TestInfoBarsCloseOnNewTheme) {
 
 class InfoBarUiTest : public TestInfoBar {
  public:
-  InfoBarUiTest() = default;
+  InfoBarUiTest() {
+    feature_list_.InitAndEnableFeatureWithParameters(
+        infobars::kCentralizedInfoBarFramework,
+        {{"Migrated", "collected_cookies"}});
+  }
 
   InfoBarUiTest(const InfoBarUiTest&) = delete;
   InfoBarUiTest& operator=(const InfoBarUiTest&) = delete;
@@ -167,6 +175,7 @@ class InfoBarUiTest : public TestInfoBar {
  private:
   using IBD = infobars::InfoBarDelegate;
 
+  base::test::ScopedFeatureList feature_list_;
   MockTabSharingUI mock_tab_sharing_ui_views_;
 };
 
@@ -194,6 +203,8 @@ void InfoBarUiTest::ShowUi(const std::string& name) {
           {"default_browser", IBD::DEFAULT_BROWSER_INFOBAR_DELEGATE},
           {"google_api_keys", IBD::GOOGLE_API_KEYS_INFOBAR_DELEGATE},
           {"obsolete_system", IBD::OBSOLETE_SYSTEM_INFOBAR_DELEGATE},
+          {"oscryptasync_availability",
+           IBD::OSCRYPTASYNC_AVAILABILITY_INFOBAR_DELEGATE},
           {"page_info", IBD::PAGE_INFO_INFOBAR_DELEGATE},
           {"translate", IBD::TRANSLATE_INFOBAR_DELEGATE_NON_AURA},
           {"automation", IBD::AUTOMATION_INFOBAR_DELEGATE},
@@ -264,7 +275,13 @@ void InfoBarUiTest::ShowUi(const std::string& name) {
       break;
 
     case IBD::COLLECTED_COOKIES_INFOBAR_DELEGATE:
-      CollectedCookiesInfoBarDelegate::Create(GetInfoBarManager());
+      if (infobars::IsInfoBarMigrated(
+              infobars::InfoBarDelegate::COLLECTED_COOKIES_INFOBAR_DELEGATE)) {
+        PageSpecificSiteDataDialogController::ShowCollectedCookiesInfoBar(
+            GetWebContents());
+      } else {
+        CollectedCookiesInfoBarDelegate::Create(GetInfoBarManager());
+      }
       break;
 
     case IBD::INSTALLATION_ERROR_INFOBAR_DELEGATE: {
@@ -300,6 +317,11 @@ void InfoBarUiTest::ShowUi(const std::string& name) {
 
     case IBD::OBSOLETE_SYSTEM_INFOBAR_DELEGATE:
       ObsoleteSystemInfoBarDelegate::Create(GetInfoBarManager());
+      break;
+
+    case IBD::OSCRYPTASYNC_AVAILABILITY_INFOBAR_DELEGATE:
+      OSCryptAsyncAvailabilityInfoBarDelegate::CreateForTest(
+          GetInfoBarManager());
       break;
 
     case IBD::PAGE_INFO_INFOBAR_DELEGATE:
@@ -339,7 +361,6 @@ void InfoBarUiTest::ShowUi(const std::string& name) {
           /*role=*/TabSharingInfoBarDelegate::TabRole::kOtherTab,
           /*share_this_tab_instead_button_state=*/
           TabSharingInfoBarDelegate::ButtonState::ENABLED,
-          /*focus_target=*/content::GlobalRenderFrameHostId(),
           /*captured_surface_control_active=*/false,
           /*ui=*/&mock_tab_sharing_ui_views_,
           TabSharingInfoBarDelegate::TabShareType::CAPTURE);
@@ -433,6 +454,10 @@ IN_PROC_BROWSER_TEST_F(InfoBarUiTest, InvokeUi_obsolete_system) {
   ShowAndVerifyUi();
 }
 
+IN_PROC_BROWSER_TEST_F(InfoBarUiTest, InvokeUi_oscryptasync_availability) {
+  ShowAndVerifyUi();
+}
+
 IN_PROC_BROWSER_TEST_F(InfoBarUiTest, InvokeUi_page_info) {
   ShowAndVerifyUi();
 }
@@ -454,7 +479,7 @@ IN_PROC_BROWSER_TEST_F(InfoBarUiTest, MAYBE_InvokeUi_automation) {
   ShowAndVerifyUi();
 }
 
-// Consistently failing on Windows https://crbug.com/1462107.
+// Consistently failing on Windows https://crbug.com/40921752.
 #if BUILDFLAG(IS_WIN)
 #define MAYBE_InvokeUi_tab_sharing DISABLED_InvokeUi_tab_sharing
 #else
@@ -464,7 +489,7 @@ IN_PROC_BROWSER_TEST_F(InfoBarUiTest, MAYBE_InvokeUi_tab_sharing) {
   ShowAndVerifyUi();
 }
 
-// Consistently failing on Windows https://crbug.com/1462107.
+// Consistently failing on Windows https://crbug.com/40921752.
 #if BUILDFLAG(IS_WIN)
 #define MAYBE_InvokeUi_multiple_infobars DISABLED_InvokeUi_multiple_infobars
 #else

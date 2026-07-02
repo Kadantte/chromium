@@ -49,6 +49,10 @@ class SVGSVGElement final : public SVGViewportContainerElement,
   explicit SVGSVGElement(Document&);
   ~SVGSVGElement() override;
 
+  ElementType GetElementType() const final {
+    return ElementType::kSVGSVGElement;
+  }
+
   std::optional<float> IntrinsicWidth() const;
   std::optional<float> IntrinsicHeight() const;
   const SVGRect& CurrentViewBox() const override;
@@ -108,9 +112,6 @@ class SVGSVGElement final : public SVGViewportContainerElement,
   void SetViewSpec(const SVGViewSpec*);
 
   bool ZoomAndPanEnabled() const;
-
-  CSSPropertyValueSet* CreateWidthAndHeightPresentationAttributeStyleIfNeeded(
-      const Element& original_element);
 
   SVGAnimatedLength* x() const { return x_.Get(); }
   SVGAnimatedLength* y() const { return y_.Get(); }

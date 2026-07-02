@@ -50,6 +50,7 @@
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink-forward.h"
 #include "third_party/blink/public/platform/resource_request_blocked_reason.h"
 #include "third_party/blink/public/platform/web_url_request_extra_data.h"
+#include "third_party/blink/renderer/platform/loader/fetch/ad_tagging_utils.h"
 #include "third_party/blink/renderer/platform/loader/fetch/render_blocking_behavior.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_load_priority.h"
 #include "third_party/blink/renderer/platform/network/http_header_map.h"
@@ -224,8 +225,6 @@ class PLATFORM_EXPORT ResourceRequestHead {
   }
   void SetHTTPOrigin(const SecurityOrigin*);
   void ClearHTTPOrigin();
-  void SetHttpOriginIfNeeded(const SecurityOrigin*);
-  void SetHTTPOriginToMatchReferrerIfNeeded();
 
   void SetHTTPUserAgent(const AtomicString& http_user_agent) {
     SetHttpHeaderField(http_names::kUserAgent, http_user_agent);
@@ -446,8 +445,20 @@ class PLATFORM_EXPORT ResourceRequestHead {
     return suggested_filename_;
   }
 
-  void SetIsAdResource() { is_ad_resource_ = true; }
-  bool IsAdResource() const { return is_ad_resource_; }
+  void SetIsAdResource(AdProvenance ad_provenance = NoProvenance{}) {
+    // Only update `ad_provenance_` if it wasn't set.
+    // TODO(crbug.com/490396399): Ideally, we should ensure `SetIsAdResource` is
+    // only called once.
+    if (!ad_provenance_.has_value()) {
+      ad_provenance_ = std::move(ad_provenance);
+    }
+  }
+
+  bool IsAdResource() const { return ad_provenance_.has_value(); }
+
+  const std::optional<AdProvenance>& GetAdProvenance() const {
+    return ad_provenance_;
+  }
 
   void SetUpgradeIfInsecure(bool upgrade_if_insecure) {
     upgrade_if_insecure_ = upgrade_if_insecure;
@@ -464,12 +475,13 @@ class PLATFORM_EXPORT ResourceRequestHead {
   void SetAllowStaleResponse(bool value) { allow_stale_response_ = value; }
   bool AllowsStaleResponse() const { return allow_stale_response_; }
 
-  const std::optional<base::UnguessableToken>& GetDevToolsToken() const {
-    return devtools_token_;
+  const std::optional<base::UnguessableToken>& GetDevToolsThrottlingToken()
+      const {
+    return devtools_throttling_token_;
   }
-  void SetDevToolsToken(
+  void SetDevToolsThrottlingToken(
       const std::optional<base::UnguessableToken>& devtools_token) {
-    devtools_token_ = devtools_token;
+    devtools_throttling_token_ = devtools_token;
   }
 
   const scoped_refptr<
@@ -496,8 +508,12 @@ class PLATFORM_EXPORT ResourceRequestHead {
   void SetClientDataHeader(const String& value) { client_data_header_ = value; }
   const String& GetClientDataHeader() const { return client_data_header_; }
 
-  void SetPurposeHeader(const String& value) { purpose_header_ = value; }
-  const String& GetPurposeHeader() const { return purpose_header_; }
+  void SetEventSourceLastEventId(const String& value) {
+    event_source_last_event_id_ = value;
+  }
+  const String& GetEventSourceLastEventId() const {
+    return event_source_last_event_id_;
+  }
 
   // A V8 stack id string describing where the request was initiated. DevTools
   // can use this to display the initiator call stack when debugging a process
@@ -685,14 +701,12 @@ class PLATFORM_EXPORT ResourceRequestHead {
 #endif
   }
 
-  bool AllowsDeviceBoundSessionRegistration() const {
-    return allows_device_bound_session_registration_;
+  bool AllowsDeviceBoundSessions() const {
+    return allows_device_bound_sessions_;
   }
 
-  void SetAllowsDeviceBoundSessionRegistration(
-      bool allows_device_bound_session_registration) {
-    allows_device_bound_session_registration_ =
-        allows_device_bound_session_registration;
+  void SetAllowsDeviceBoundSessions(bool allows_device_bound_sessions) {
+    allows_device_bound_sessions_ = allows_device_bound_sessions;
   }
 
  private:
@@ -729,7 +743,6 @@ class PLATFORM_EXPORT ResourceRequestHead {
   bool site_for_cookies_set_ : 1;
   bool is_form_submission_ : 1;
   bool priority_incremental_ : 1;
-  bool is_ad_resource_ : 1;
   bool upgrade_if_insecure_ : 1;
   bool is_revalidating_ : 1;
   bool is_automatic_upgrade_ : 1;
@@ -774,17 +787,19 @@ class PLATFORM_EXPORT ResourceRequestHead {
   std::optional<network::mojom::blink::TrustTokenParams> trust_token_params_;
   network::mojom::IPAddressSpace target_address_space_;
 
+  std::optional<AdProvenance> ad_provenance_;
+
   std::optional<String> suggested_filename_;
 
   mutable CacheControlHeader cache_control_header_cache_;
 
   static const base::TimeDelta default_timeout_interval_;
 
-  std::optional<base::UnguessableToken> devtools_token_;
+  std::optional<base::UnguessableToken> devtools_throttling_token_;
   String devtools_id_;
   String requested_with_header_;
   String client_data_header_;
-  String purpose_header_;
+  String event_source_last_event_id_;
 
   std::optional<String> devtools_stack_id_;
 
@@ -852,10 +867,10 @@ class PLATFORM_EXPORT ResourceRequestHead {
   bool is_set_url_allowed_ = true;
 #endif
 
-  // Whether this request is allowed to register new device bound
-  // sessions or accept challenges on device bound sessions (e.g. due to
-  // an Origin Trial)
-  bool allows_device_bound_session_registration_ = false;
+  // Whether this request is allowed to belong to a device bound session. This
+  // includes registering a new session, accepting challenges, or deferring the
+  // request until a session is refreshed.
+  bool allows_device_bound_sessions_ = true;
 };
 
 class PLATFORM_EXPORT ResourceRequestBody {

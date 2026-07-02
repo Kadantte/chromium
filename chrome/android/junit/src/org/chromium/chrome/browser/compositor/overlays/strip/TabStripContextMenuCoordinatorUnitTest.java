@@ -9,6 +9,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -17,6 +18,7 @@ import android.graphics.Rect;
 import android.view.View;
 import android.widget.ListView;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -27,13 +29,31 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.glic.GlicEnabling;
+import org.chromium.chrome.browser.glic.GlicPrefNames;
+import org.chromium.chrome.browser.multiwindow.MultiInstanceManager;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
+import org.chromium.chrome.browser.multiwindow.UiUtils.NameWindowDialogSource;
+import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
+import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
+import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.tabmodel.TabList;
+import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModel.RecentlyClosedEntryType;
+import org.chromium.chrome.browser.task_manager.TaskManager;
+import org.chromium.chrome.browser.task_manager.TaskManagerFactory;
+import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.tab_ui.R;
+import org.chromium.components.prefs.PrefService;
+import org.chromium.components.user_prefs.UserPrefs;
+import org.chromium.components.user_prefs.UserPrefsJni;
+import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.listmenu.ListItemType;
 import org.chromium.ui.listmenu.ListMenuItemProperties;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.ModelListAdapter;
@@ -41,19 +61,26 @@ import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.widget.AnchoredPopupWindow;
 import org.chromium.ui.widget.RectProvider;
 
+import java.lang.ref.WeakReference;
+import java.util.Collections;
+
 /** Unit tests for {@link TabStripContextMenuCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
-@EnableFeatures({
-    ChromeFeatureList.ROBUST_WINDOW_MANAGEMENT,
-    ChromeFeatureList.TAB_STRIP_EMPTY_SPACE_CONTEXT_MENU_ANDROID
-})
-@DisableFeatures(ChromeFeatureList.GLIC)
+@DisableFeatures({ChromeFeatureList.GLIC, ChromeFeatureList.TASK_MANAGER_CLANK})
 public class TabStripContextMenuCoordinatorUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    @Mock private TabStripContextMenuDelegate mDelegate;
+    @Mock private TabModel mTabModel;
+    @Mock private MultiInstanceManager mMultiInstanceManager;
+    @Mock private WindowAndroid mWindowAndroid;
+    @Mock private SnackbarManager mSnackbarManager;
+    @Mock private Runnable mOnNewTabClick;
     @Mock private RectProvider mRectProvider;
+    @Mock private Profile mProfile;
+    @Mock private PrefService mPrefService;
+    @Mock private UserPrefs.Natives mUserPrefsJniMock;
+    @Mock private TaskManager mTaskManager;
 
     private Activity mActivity;
     private TabStripContextMenuCoordinator mCoordinator;
@@ -63,29 +90,81 @@ public class TabStripContextMenuCoordinatorUnitTest {
 
     @Before
     public void setUp() {
+        GlicEnabling.setEnabledForTesting(ChromeFeatureList.isEnabled(ChromeFeatureList.GLIC));
         mActivity = Robolectric.buildActivity(Activity.class).setup().get();
         mActivity.setTheme(R.style.Theme_BrowserUI_DayNight);
-        mCoordinator = new TabStripContextMenuCoordinator(mActivity, mDelegate);
+
+        when(mWindowAndroid.getActivity()).thenReturn(new WeakReference<>(mActivity));
+        when(mTabModel.getMostRecentlyClosedEntryType()).thenReturn(RecentlyClosedEntryType.TAB);
+        when(mTabModel.getCount()).thenReturn(2);
+        when(mTabModel.getProfile()).thenReturn(mProfile);
+        when(mProfile.getOriginalProfile()).thenReturn(mProfile);
+
+        doAnswer(invocation -> Collections.emptyIterator()).when((TabList) mTabModel).iterator();
+
+        mCoordinator =
+                TabStripContextMenuCoordinator.createContextMenuCoordinator(
+                        mTabModel,
+                        mMultiInstanceManager,
+                        mWindowAndroid,
+                        mSnackbarManager,
+                        mOnNewTabClick);
+
+        UserPrefsJni.setInstanceForTesting(mUserPrefsJniMock);
+        when(mUserPrefsJniMock.get(mProfile)).thenReturn(mPrefService);
+        TaskManagerFactory.setInstanceForTesting(mTaskManager);
+
         when(mRectProvider.getRect())
                 .thenReturn(new Rect(10, 10, mActivity.getWindow().getDecorView().getWidth(), 50));
-        when(mDelegate.getRecentlyClosedEntryType()).thenReturn(RecentlyClosedEntryType.TAB);
-        when(mDelegate.getTabCount()).thenReturn(2);
     }
 
-    @Test
-    @DisableFeatures({
-        ChromeFeatureList.ROBUST_WINDOW_MANAGEMENT,
-        ChromeFeatureList.TAB_STRIP_EMPTY_SPACE_CONTEXT_MENU_ANDROID
-    })
-    public void showMenu_emptyList_verifyMenuState() {
-        // Arrange.
+    @After
+    public void tearDown() {
+        ChromeSharedPreferences.getInstance().removeKey(ChromePreferenceKeys.VERTICAL_TABS_ENABLED);
+    }
+
+    private void runToggleLayoutMenuTest(boolean isVerticalTabsEnabled, int expectedTitleRes) {
         MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
+        ChromeSharedPreferences.getInstance()
+                .writeBoolean(ChromePreferenceKeys.VERTICAL_TABS_ENABLED, isVerticalTabsEnabled);
 
         // Act.
         mCoordinator.showMenu(mRectProvider, false, mActivity);
 
-        // Verify.
-        verifyMenuState(/* expectedNumItems= */ 0);
+        // Verify: Baseline items (4) + divider (1) + toggle item (1) = 6 items.
+        verifyMenuState(/* expectedNumItems= */ 6);
+
+        // Index 4 is the divider.
+        ListItem dividerItem = (ListItem) mListView.getAdapter().getItem(4);
+        assertEquals(ListItemType.DIVIDER, dividerItem.type);
+
+        // Index 5 is the layout toggle entry point.
+        PropertyModel toggleLayoutItemModel = getItemModelAtPosition(5);
+        assertEquals(
+                R.id.toggle_tab_layout_menu_id,
+                toggleLayoutItemModel.get(ListMenuItemProperties.MENU_ITEM_ID));
+        assertEquals(expectedTitleRes, toggleLayoutItemModel.get(ListMenuItemProperties.TITLE_ID));
+
+        // Act: Select the toggle option.
+        mCoordinator
+                .getListMenuDelegate(mContentView)
+                .onItemSelected(toggleLayoutItemModel, mListView);
+
+        assertFalse(mMenuWindow.isShowing());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_VERTICAL_TABS)
+    @Config(qualifiers = "sw600dp")
+    public void showMenu_verifyVerticalTabsEntryPoint() {
+        runToggleLayoutMenuTest(/* isVerticalTabsEnabled= */ false, R.string.show_tabs_vertically);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_VERTICAL_TABS)
+    @Config(qualifiers = "sw600dp")
+    public void showMenu_verifyHorizontalTabsEntryPoint() {
+        runToggleLayoutMenuTest(/* isVerticalTabsEnabled= */ true, R.string.show_tabs_horizontally);
     }
 
     @Test
@@ -105,7 +184,7 @@ public class TabStripContextMenuCoordinatorUnitTest {
         // Arrange.
         MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
         // In Incognito, there are no recently closed entries.
-        when(mDelegate.getRecentlyClosedEntryType()).thenReturn(RecentlyClosedEntryType.NONE);
+        when(mTabModel.getMostRecentlyClosedEntryType()).thenReturn(RecentlyClosedEntryType.NONE);
 
         // Act.
         mCoordinator.showMenu(mRectProvider, true, mActivity);
@@ -148,7 +227,7 @@ public class TabStripContextMenuCoordinatorUnitTest {
                 .onItemSelected(getItemModelAtPosition(0), mListView);
 
         // Verify.
-        verify(mDelegate).onNewTab();
+        verify(mOnNewTabClick).run();
         assertFalse(mMenuWindow.isShowing());
     }
 
@@ -168,7 +247,7 @@ public class TabStripContextMenuCoordinatorUnitTest {
                 .onItemSelected(getItemModelAtPosition(1), mListView);
 
         // Verify.
-        verify(mDelegate).onReopenClosedEntry();
+        verify(mTabModel).openMostRecentlyClosedEntry();
         assertFalse(mMenuWindow.isShowing());
     }
 
@@ -188,7 +267,6 @@ public class TabStripContextMenuCoordinatorUnitTest {
                 .onItemSelected(getItemModelAtPosition(2), mListView);
 
         // Verify.
-        verify(mDelegate).onBookmarkAllTabs();
         assertFalse(mMenuWindow.isShowing());
     }
 
@@ -208,21 +286,20 @@ public class TabStripContextMenuCoordinatorUnitTest {
                 .onItemSelected(getItemModelAtPosition(3), mListView);
 
         // Verify.
-        verify(mDelegate).onNameWindow();
+        verify(mMultiInstanceManager).showNameWindowDialog(NameWindowDialogSource.TAB_STRIP);
         assertFalse(mMenuWindow.isShowing());
     }
 
     @Test
     @EnableFeatures(ChromeFeatureList.GLIC)
-    // TODO(crbug.com/483509451): Split test to ensure pin only shows when Glic not visible
     public void showMenu_verifyPinGlicOption() {
         // Arrange.
         MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
+        when(mPrefService.getBoolean(GlicPrefNames.GLIC_PINNED_TO_TABSTRIP)).thenReturn(false);
         mCoordinator.showMenu(mRectProvider, false, mActivity);
         verifyMenuState(/* expectedNumItems= */ 6);
         assertEquals(
-                R.string.menu_pin_glic,
-                getItemModelAtPosition(5).get(ListMenuItemProperties.TITLE_ID));
+                R.string.glic_pin, getItemModelAtPosition(5).get(ListMenuItemProperties.TITLE_ID));
 
         // Act: Select "Pin Gemini" option.
         mCoordinator
@@ -230,7 +307,63 @@ public class TabStripContextMenuCoordinatorUnitTest {
                 .onItemSelected(getItemModelAtPosition(5), mListView);
 
         // Verify.
-        verify(mDelegate).onPinGlic();
+        verify(mPrefService).setBoolean(GlicPrefNames.GLIC_PINNED_TO_TABSTRIP, true);
+        assertFalse(mMenuWindow.isShowing());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.GLIC)
+    public void showMenu_verifyUnpinGlicOption() {
+        // Arrange.
+        MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
+        when(mPrefService.getBoolean(GlicPrefNames.GLIC_PINNED_TO_TABSTRIP)).thenReturn(true);
+        mCoordinator.showMenu(mRectProvider, false, mActivity);
+        verifyMenuState(/* expectedNumItems= */ 6);
+        assertEquals(
+                R.string.glic_unpin,
+                getItemModelAtPosition(5).get(ListMenuItemProperties.TITLE_ID));
+
+        // Act: Select "Unpin Gemini" option.
+        mCoordinator
+                .getListMenuDelegate(mContentView)
+                .onItemSelected(getItemModelAtPosition(5), mListView);
+
+        // Verify.
+        verify(mPrefService).setBoolean(GlicPrefNames.GLIC_PINNED_TO_TABSTRIP, false);
+        assertFalse(mMenuWindow.isShowing());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.TASK_MANAGER_CLANK)
+    public void showMenu_verifyTaskManagerOption() {
+        // Arrange.
+        MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
+
+        // Act.
+        mCoordinator.showMenu(mRectProvider, false, mActivity);
+
+        // Verify: Baseline (4) + Divider (1) + Task Manager (1) = 6 items.
+        verifyMenuState(/* expectedNumItems= */ 6);
+
+        // Index 4 is the divider.
+        ListItem dividerItem = (ListItem) mListView.getAdapter().getItem(4);
+        assertEquals(ListItemType.DIVIDER, dividerItem.type);
+
+        // Index 5 is the Task Manager.
+        PropertyModel taskManagerItemModel = getItemModelAtPosition(5);
+        assertEquals(
+                R.id.task_manager, taskManagerItemModel.get(ListMenuItemProperties.MENU_ITEM_ID));
+        assertEquals(
+                R.string.menu_task_manager,
+                taskManagerItemModel.get(ListMenuItemProperties.TITLE_ID));
+
+        // Act: Select the Task Manager option.
+        mCoordinator
+                .getListMenuDelegate(mContentView)
+                .onItemSelected(taskManagerItemModel, mListView);
+
+        // Verify.
+        verify(mTaskManager).launch(ContextUtils.getApplicationContext());
         assertFalse(mMenuWindow.isShowing());
     }
 

@@ -11,10 +11,12 @@
 <translation id="1556537182262721003">Кеңейтүү каталогу профилге жылган жок.</translation>
 <translation id="1610570795592207282">Скрипт үчүн css '<ph name="RELATIVE_PATH" />' жүктөлбөй койду.</translation>
 <translation id="1616298854599875024">"<ph name="IMPORT_NAME" />" кеңейтүүсү импорттолбой жатат, анткени ал бөлүшүлгөн модуль эмес</translation>
+<translation id="1757786065507923842">Ата-эненин уруксат сурамы ишке ашкан жок.</translation>
 <translation id="1803557475693955505">'<ph name="BACKGROUND_PAGE" />' фондук баракча жүктөлгөн жок.</translation>
 <translation id="1875387611427697908">Муну <ph name="CHROME_WEB_STORE" /> дарегинен гана кошсо болот</translation>
 <translation id="2131077480075264">"<ph name="APP_NAME" />" орното албайт, анткени ага "<ph name="IMPORT_NAME" />" тарабынан уруксат берилген эмес</translation>
 <translation id="2159915644201199628">Сүрөттүн коддору чечилген жок: '<ph name="IMAGE_NAME" />'</translation>
+<translation id="2193567467390483943">Ата-энең бул кеңейтүүнү ырастаган жок</translation>
 <translation id="2350172092385603347">Жергиликтештирилген, бирок демейки_тил стандарты манифестте көрсөтүлбөй калган.</translation>
 <translation id="2576842806987913196">Мындай аталыштагы CRX файлы мурунтан эле бар.</translation>
 <translation id="2662876636500006917">Chrome Желе дүкөнү</translation>
@@ -25,13 +27,16 @@
 <translation id="3115238746683532089"><ph name="VENDOR_ID" /> дегенден белгисиз өндүрүм <ph name="PRODUCT_ID" /> (сериялык номери – <ph name="SERIAL_NUMBER" />)</translation>
 <translation id="3144135466825225871">crx файлы алмаштырылган жок. Файлдын колдонулуп жаткандыгын текшериңиз.</translation>
 <translation id="3163201441334626963"><ph name="VENDOR_ID" /> дегенден белгисиз өндүрүм <ph name="PRODUCT_ID" /></translation>
+<translation id="3174723475300476613">Уюмуңуз бул кеңейтүүнү бөгөттөп койгон.</translation>
 <translation id="3242289508736283383">"Киоск_гана" деген манифести бар колдонмо ChromeOS киоск режиминде орнотулушу керек</translation>
+<translation id="3364986687961713424">Администраторуңуздан билдирүү: <ph name="ADMIN_MESSAGE" /></translation>
 <translation id="3393440416772303020"><ph name="PRODUCT_NAME" /> (сериялык номери – <ph name="SERIAL_NUMBER" />)</translation>
 <translation id="3466070586188012397"><ph name="VENDOR_ID" /> дегенден <ph name="PRODUCT_NAME" /> (сериялык номери – <ph name="SERIAL_NUMBER" />)</translation>
 <translation id="3561217442734750519">Купуя ачкычтын киргизүү мааниси жарактуу жол болушу керек.</translation>
 <translation id="3834775135533257713">"<ph name="TO_INSTALL_APP_NAME" />" колдонмосу "<ph name="INSTALLED_APP_NAME" />" колдонмосуна карама-каршы келгендиктен, кошулбай койду.</translation>
 <translation id="388442998277590542">'<ph name="OPTIONS_PAGE" />' параметрлер бети ачылган жок.</translation>
 <translation id="3984413272403535372">Кеңейтүү киргизилип жатканда ката кетти.</translation>
+<translation id="4094452115117798451">Уюмуңуз бул кеңейтүү категориясын бөгөттөп койгон.</translation>
 <translation id="4233778200880751280">Кандайдыр бир нерсе жөнүндө бет жүктөлгөн жок '<ph name="ABOUT_PAGE" />'.</translation>
 <translation id="424963718355121712">Колдонмолор өзүлөрүнө тиешеси бар башкы түйүндөн тейленишет</translation>
 <translation id="4306119971288449206">Колдонмолор "<ph name="CONTENT_TYPE" />" мазмун түрү менен тейлениши керек</translation>
@@ -64,6 +69,7 @@
 <translation id="7003844668372540529"><ph name="VENDOR_NAME" /> дегенден белгисиз өндүрүм <ph name="PRODUCT_ID" /></translation>
 <translation id="7068383018033524534">Манифест файлы жараксыз</translation>
 <translation id="7217838517480956708">Бул шаймандын администратору <ph name="EXTENSION_NAME" /> орнотууну талап кылууда. Аны чыгарып салууга же өзгөртүүгө болбойт.</translation>
+<translation id="7287143125007575591">Кирүү мүмкүнчүлүгү четке кагылды.</translation>
 <translation id="7612608473764576263">Купуя ачкычтын киргизүү мааниси жарактуу форматта болушу керек (PKCS#8 форматындагы PEM менен шифрленген RSA ачкычы).</translation>
 <translation id="765293928828334535">Бул вебсайттан колдонмолорду, кеңейтүүлөрдү жана колдонуучунун скрипттерин кошууга болбойт</translation>
 <translation id="7876803335449432072">Контенттин скриптинин "<ph name="RELATIVE_PATH" />" файлы жүктөлгөн жок. Контенттин скриптинин стилдерин .css файлдары сыяктуу колдоого алынган стиль файлдарынан гана жүктөөгө болот.</translation>

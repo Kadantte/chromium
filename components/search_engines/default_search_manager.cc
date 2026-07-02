@@ -83,6 +83,7 @@ const char DefaultSearchManager::kPreconnectToSearchUrl[] =
     "preconnect_to_search_url";
 const char DefaultSearchManager::kPrefetchLikelyNavigations[] =
     "prefetch_likely_navigations";
+const char DefaultSearchManager::kSendXGeoHeader[] = "send_x_geo_header";
 const char DefaultSearchManager::kIsActive[] = "is_active";
 const char DefaultSearchManager::kStarterPackId[] = "starter_pack_id";
 const char DefaultSearchManager::kEnforcedByPolicy[] = "enforced_by_policy";
@@ -110,10 +111,14 @@ DefaultSearchManager::DefaultSearchManager(
         kDefaultSearchProviderDataPrefName,
         base::BindRepeating(&DefaultSearchManager::OnDefaultSearchPrefChanged,
                             base::Unretained(this)));
-    pref_change_registrar_.Add(
-        prefs::kSearchProviderOverrides,
-        base::BindRepeating(&DefaultSearchManager::OnOverridesPrefChanged,
-                            base::Unretained(this)));
+
+    if (!base::FeatureList::IsEnabled(
+            switches::kIgnoreSearchProviderOverrides)) {
+      pref_change_registrar_.Add(
+          prefs::kSearchProviderOverrides,
+          base::BindRepeating(&DefaultSearchManager::OnOverridesPrefChanged,
+                              base::Unretained(this)));
+    }
   }
   LoadPrepopulatedFallbackSearch();
   if (search_engine_choice_service->IsDsePropagationAllowedForGuest()) {
@@ -216,8 +221,11 @@ DefaultSearchManager::GetDefaultSearchEngineIgnoringExtensions() const {
       pref_service_->GetUserPrefValue(kDefaultSearchProviderDataPrefName);
   if (user_value && user_value->is_dict()) {
     auto turl_data = TemplateURLDataFromDictionary(user_value->GetDict());
-    if (turl_data)
-      return turl_data;
+    if (turl_data) {
+      ReconcilingTemplateURLDataHolder reconciler(*prepopulate_data_resolver_);
+      reconciler.SetAndReconcile(std::move(turl_data));
+      return reconciler.Release();
+    }
   }
 
   const TemplateURLData* fallback = GetFallbackSearchEngine();
@@ -300,6 +308,10 @@ void DefaultSearchManager::OnDefaultSearchPrefChanged() {
 }
 
 void DefaultSearchManager::OnOverridesPrefChanged() {
+  if (base::FeatureList::IsEnabled(switches::kIgnoreSearchProviderOverrides)) {
+    return;
+  }
+
   LoadPrepopulatedFallbackSearch();
 
   const TemplateURLData* effective_data = GetDefaultSearchEngine(nullptr);
@@ -407,7 +419,7 @@ void DefaultSearchManager::HandleDefaultSearchEngineTampering(
     // Clear the mirrored pref to eliminate future mismatch.
     pref_service_->ClearPref(kMirroredDefaultSearchProviderDataPrefName);
   } else {  // Tampering detected.
-    if (!base::IsEnterpriseDevice()) {
+    if (!default_search_mandatory_by_policy_) {
       outcome = DefaultSearchEngineMirrorCheckOutcomeType::kMirrorCheckReset;
       pref_service_->ClearPref(kDefaultSearchProviderDataPrefName);
       // Clear the mirrored pref to eliminate future mismatch.
@@ -419,7 +431,7 @@ void DefaultSearchManager::HandleDefaultSearchEngineTampering(
           base::Time::Now());
     } else {
       outcome = DefaultSearchEngineMirrorCheckOutcomeType::
-          kResetSkippedForEnterpriseDevice;
+          kResetSkippedForManagedDefaultSearch;
     }
   }
   base::UmaHistogramEnumeration(kDefaultSearchEngineMirrorCheckOutcomeMetric,

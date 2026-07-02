@@ -45,6 +45,10 @@
 #include "base/android/content_uri_utils.h"
 #endif
 
+#if BUILDFLAG(IS_WIN)
+#include "content/browser/network/network_service_process_tracker_win.h"
+#endif
+
 #if BUILDFLAG(IS_MAC)
 #include "base/task/current_thread.h"
 #endif
@@ -210,6 +214,7 @@ void NetworkServiceClient::OnIPAddressChanged(
 #if BUILDFLAG(IS_WIN)
 mojo::PendingRemote<network::mojom::SocketBroker>
 NetworkServiceClient::BindSocketBroker() {
+  EnsureNetworkServiceListenerStarted();
   return socket_broker_.BindNewRemote();
 }
 #endif  // BUILDFLAG(IS_WIN)
@@ -299,6 +304,11 @@ void NetworkServiceClient::OnLocalNetworkAccessPermissionRequired(
     network::mojom::IPAddressSpace ip_address_space,
     OnLocalNetworkAccessPermissionRequiredCallback callback) {
   std::move(callback).Run(network::mojom::LocalNetworkAccessResult::kDenied);
+}
+
+void NetworkServiceClient::OnPlatformLocalNetworkPermissionRequired(
+    OnPlatformLocalNetworkPermissionRequiredCallback callback) {
+  std::move(callback).Run(/*granted=*/false);
 }
 
 void NetworkServiceClient::OnClearSiteData(

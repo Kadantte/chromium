@@ -9,6 +9,7 @@
 #include "base/json/values_util.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/time/time.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
@@ -216,13 +217,13 @@ void SafeBrowsingMetricsCollector::LogDailyEventMetrics() {
       total_security_sensitive_event_count += security_sensitive_event_count;
     }
   }
-  base::UmaHistogramCounts100("SafeBrowsing.Daily.BypassCountLast28Days." +
-                                  GetUserStateMetricSuffix(user_state) +
-                                  ".AllEvents",
-                              total_bypass_count);
   base::UmaHistogramCounts100(
-      "SafeBrowsing.Daily.SecuritySensitiveCountLast28Days." +
-          GetUserStateMetricSuffix(user_state) + ".AllEvents",
+      base::StrCat({"SafeBrowsing.Daily.BypassCountLast28Days.",
+                    GetUserStateMetricSuffix(user_state), ".AllEvents"}),
+      total_bypass_count);
+  base::UmaHistogramCounts100(
+      base::StrCat({"SafeBrowsing.Daily.SecuritySensitiveCountLast28Days.",
+                    GetUserStateMetricSuffix(user_state), ".AllEvents"}),
       total_security_sensitive_event_count);
 }
 
@@ -273,6 +274,9 @@ void SafeBrowsingMetricsCollector::AddBypassEventToPref(
       break;
     case ThreatSource::ANDROID_SAFEBROWSING:
       event = EventType::ANDROID_SAFEBROWSING_INTERSTITIAL_BYPASS;
+      break;
+    case ThreatSource::GLIC_COUNTER_ABUSE:
+      event = EventType::GLIC_COUNTER_ABUSE_INTERSTITIAL_BYPASS;
       break;
     default:
       NOTREACHED() << "Unexpected threat source.";
@@ -513,6 +517,7 @@ bool SafeBrowsingMetricsCollector::IsBypassEventType(const EventType& type) {
     case EventType::HASH_PREFIX_REAL_TIME_INTERSTITIAL_BYPASS:
     case EventType::ANDROID_SAFEBROWSING_REAL_TIME_INTERSTITIAL_BYPASS:
     case EventType::ANDROID_SAFEBROWSING_INTERSTITIAL_BYPASS:
+    case EventType::GLIC_COUNTER_ABUSE_INTERSTITIAL_BYPASS:
       return true;
   }
 }
@@ -532,6 +537,7 @@ bool SafeBrowsingMetricsCollector::IsSecuritySensitiveEventType(
     case EventType::HASH_PREFIX_REAL_TIME_INTERSTITIAL_BYPASS:
     case EventType::ANDROID_SAFEBROWSING_REAL_TIME_INTERSTITIAL_BYPASS:
     case EventType::ANDROID_SAFEBROWSING_INTERSTITIAL_BYPASS:
+    case EventType::GLIC_COUNTER_ABUSE_INTERSTITIAL_BYPASS:
       return false;
     case EventType::SECURITY_SENSITIVE_SAFE_BROWSING_INTERSTITIAL:
     case EventType::SECURITY_SENSITIVE_SSL_INTERSTITIAL:
@@ -542,7 +548,7 @@ bool SafeBrowsingMetricsCollector::IsSecuritySensitiveEventType(
   }
 }
 
-std::string SafeBrowsingMetricsCollector::GetUserStateMetricSuffix(
+std::string_view SafeBrowsingMetricsCollector::GetUserStateMetricSuffix(
     const UserState& user_state) {
   switch (user_state) {
     case UserState::kStandardProtection:

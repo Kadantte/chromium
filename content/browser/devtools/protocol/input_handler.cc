@@ -17,6 +17,7 @@
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/string_split.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
@@ -41,8 +42,10 @@
 #include "content/common/input/synthetic_tap_gesture.h"
 #include "content/common/input/synthetic_tap_gesture_params.h"
 #include "content/public/common/content_features.h"
+#include "content/public/common/url_constants.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
+#include "ui/base/clipboard/clipboard_constants.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom-shared.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/blink/web_input_event_traits.h"
@@ -125,10 +128,14 @@ int GetEventModifiers(int modifiers,
 
 base::TimeTicks GetEventTimeTicks(const std::optional<double>& timestamp) {
   // Convert timestamp, in seconds since unix epoch, to an event timestamp
-  // which is time ticks since platform start time.
-  return timestamp.has_value()
-             ? base::Seconds(timestamp.value()) + base::TimeTicks::UnixEpoch()
-             : base::TimeTicks::Now();
+  // which is time ticks since platform start time. Anchor both clocks to the
+  // current instant to map the wall-clock time onto the TimeTicks timeline.
+  if (!timestamp.has_value()) {
+    return base::TimeTicks::Now();
+  }
+  const base::Time event_time =
+      base::Time::UnixEpoch() + base::Seconds(timestamp.value());
+  return base::TimeTicks::Now() - (base::Time::Now() - event_time);
 }
 
 bool SetKeyboardEventText(
@@ -349,6 +356,41 @@ void DispatchPointerActionsResponse(
   }
 }
 
+bool HasFileRelatedItem(Input::DragData* data) {
+  if (data->HasFiles()) {
+    return true;
+  }
+  if (!data->GetItems()) {
+    return false;
+  }
+  for (const auto& item : *data->GetItems()) {
+    if (item->GetMimeType() == ui::kMimeTypeUriList) {
+      std::vector<std::string> lines =
+          base::SplitString(item->GetData(), "\r\n", base::KEEP_WHITESPACE,
+                            base::SPLIT_WANT_NONEMPTY);
+      for (const std::string& line : lines) {
+        if (line.starts_with('#')) {
+          continue;
+        }
+        GURL url(line);
+        GURL inner_url = url;
+        while (inner_url.SchemeIs(content::kViewSourceScheme)) {
+          inner_url = GURL(inner_url.GetContent());
+        }
+        bool is_file = inner_url.SchemeIsFile();
+#if BUILDFLAG(IS_CHROMEOS)
+        // The "externalfile" scheme is ChromeOS-specific.
+        is_file |= inner_url.SchemeIs(content::kExternalFileScheme);
+#endif
+        if (is_file) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 DropData ProtocolDragDataToDropData(std::unique_ptr<Input::DragData> data) {
   std::vector<blink::mojom::DragItemPtr> items;
 
@@ -364,9 +406,11 @@ DropData ProtocolDragDataToDropData(std::unique_ptr<Input::DragData> data) {
     items.push_back(blink::mojom::DragItem::NewString(std::move(mojo_item)));
   }
 
-  blink::mojom::DragDataPtr mojo_data = blink::mojom::DragData::New(
-      std::move(items), std::nullopt,
-      /*force_default_action=*/false, network::mojom::ReferrerPolicy::kDefault);
+  blink::mojom::DragDataPtr mojo_data =
+      blink::mojom::DragData::New(std::move(items), std::nullopt,
+                                  /*force_default_action=*/false,
+                                  /*source_effect_allowed=*/std::nullopt,
+                                  network::mojom::ReferrerPolicy::kDefault);
   DropData drop_data = DragDataToDropData(*mojo_data);
 
   protocol::Array<protocol::String> default_value;
@@ -1396,7 +1440,7 @@ void InputHandler::DispatchDragEvent(
     std::unique_ptr<Input::DragData> data,
     std::optional<int> modifiers,
     std::unique_ptr<DispatchDragEventCallback> callback) {
-  if (!allow_file_access_ && data->HasFiles()) {
+  if (HasFileRelatedItem(data.get()) && !allow_file_access_) {
     callback->sendFailure(Response::InvalidParams("Not allowed"));
     return;
   }
@@ -1439,7 +1483,7 @@ void InputHandler::OnWidgetForDispatchDragEvent(
       static_cast<blink::DragOperationsMask>(data->GetDragOperationsMask());
   std::unique_ptr<DropData> drop_data =
       std::make_unique<DropData>(ProtocolDragDataToDropData(std::move(data)));
-  drop_data->view_id = widget_host->GetRoutingID();
+  widget_host->FilterDropData(drop_data.get());
   int event_modifiers =
       GetEventModifiers(modifiers.value_or(blink::WebInputEvent::kNoModifiers),
                         false, false, 0, 0);

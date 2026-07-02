@@ -9,7 +9,6 @@ import android.animation.AnimatorListenerAdapter;
 import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
 import android.app.Activity;
-import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.util.Pair;
@@ -26,16 +25,19 @@ import android.widget.TextView;
 
 import androidx.annotation.ColorInt;
 import androidx.annotation.Px;
+import androidx.core.text.BidiFormatter;
 import androidx.core.view.ViewCompat;
 
+import org.chromium.base.Callback;
+import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarSwipeHandler.Delegate;
 import org.chromium.chrome.ui.messages.R;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.browser_ui.widget.gesture.SwipeGestureListener;
 import org.chromium.components.browser_ui.widget.text.TemplatePreservingTextView;
+import org.chromium.ui.KeyboardVisibilityDelegate;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.insets.InsetObserver;
 import org.chromium.ui.interpolators.Interpolators;
@@ -61,16 +63,20 @@ public class SnackbarView implements InsetObserver.WindowInsetObserver {
     private final ViewGroup mOriginalParent;
     private final int mMaxWidth;
     private final int mSnackbarMargin;
+    private final int mDefaultBottomMargin;
+    private final Callback<Integer> mAdditionalBottomMarginPxObserver = this::updateBottomMargin;
     protected ViewGroup mParent;
+    private NonNullObservableSupplier<Integer> mAdditionalBottomMarginPxSupplier;
     protected Snackbar mSnackbar;
     private final View mRootContentView;
+
+    private final KeyboardVisibilityDelegate.KeyboardVisibilityListener
+            mKeyboardVisibilityListener = (isShowing) -> adjustViewPosition();
     private @ColorInt int mBackgroundColor;
     private boolean mIsBeingDragged;
     private boolean mIsAnimating;
 
     // Variables used to adjust view position and size when visible frame is changed.
-    private final Rect mCurrentVisibleRect = new Rect();
-    private final Rect mPreviousVisibleRect = new Rect();
 
     private final SnackbarSwipeHandler mSnackbarSwipeHandler;
 
@@ -100,8 +106,8 @@ public class SnackbarView implements InsetObserver.WindowInsetObserver {
      * @param parentView The ViewGroup used to display this snackbar.
      * @param windowAndroid The WindowAndroid used for starting animation. If it is null,
      *     Animator#start is called instead.
-     * @param edgeToEdgeSupplier The supplier publishes the changes of the edge-to-edge state and
-     *     the expected bottom paddings when edge-to-edge is on.
+     * @param additionalBottomMarginPxSupplier The bottom margin to be added to the snackbar view
+     *     when shown.
      */
     public SnackbarView(
             Activity activity,
@@ -109,9 +115,11 @@ public class SnackbarView implements InsetObserver.WindowInsetObserver {
             Snackbar snackbar,
             ViewGroup parentView,
             @Nullable WindowAndroid windowAndroid,
-            @Nullable EdgeToEdgeController edgeToEdgeSupplier) {
+            NonNullObservableSupplier<Integer> additionalBottomMarginPxSupplier) {
         mOriginalParent = parentView;
         mWindowAndroid = windowAndroid;
+        mAdditionalBottomMarginPxSupplier = additionalBottomMarginPxSupplier;
+        additionalBottomMarginPxSupplier.addSyncObserver(mAdditionalBottomMarginPxObserver);
 
         mRootContentView = activity.findViewById(android.R.id.content);
         mParent = mOriginalParent;
@@ -170,8 +178,8 @@ public class SnackbarView implements InsetObserver.WindowInsetObserver {
         // margin has to be applied to the snackbar view itself to avoid weird visual clipping
         // in its dismissal animation.
         FrameLayout.LayoutParams lp = getLayoutParams();
-        int bottomInsetPx = edgeToEdgeSupplier != null ? edgeToEdgeSupplier.getBottomInsetPx() : 0;
-        lp.bottomMargin = lp.bottomMargin + bottomInsetPx;
+        mDefaultBottomMargin = lp.bottomMargin;
+        lp.bottomMargin = lp.bottomMargin + mAdditionalBottomMarginPxSupplier.get();
         mContainerView.setLayoutParams(lp);
         // Set a max width of 480dp for both mobile and tablet.
         mMaxWidth = mParent.getResources().getDimensionPixelSize(R.dimen.snackbar_width_max);
@@ -182,6 +190,8 @@ public class SnackbarView implements InsetObserver.WindowInsetObserver {
 
     public void show() {
         addToParent();
+        KeyboardVisibilityDelegate.getInstance()
+                .addKeyboardVisibilityListener(mKeyboardVisibilityListener);
         mContainerView.addOnLayoutChangeListener(
                 new OnLayoutChangeListener() {
                     @Override
@@ -210,6 +220,9 @@ public class SnackbarView implements InsetObserver.WindowInsetObserver {
         // Prevent clicks during dismissal animations. Intentionally not using setEnabled(false) to
         // avoid unnecessary text color changes in this transitory state.
         mActionButtonView.setOnClickListener(null);
+        KeyboardVisibilityDelegate.getInstance()
+                .removeKeyboardVisibilityListener(mKeyboardVisibilityListener);
+        mAdditionalBottomMarginPxSupplier.removeObserver(mAdditionalBottomMarginPxObserver);
         Pair<Float, Float> translateData = mSnackbarSwipeHandler.getTranslateData();
         AnimatorSet moveAnimator = new AnimatorSet();
         if (translateData.first != 0) {
@@ -234,7 +247,7 @@ public class SnackbarView implements InsetObserver.WindowInsetObserver {
                 new AnimatorListenerAdapter() {
                     @Override
                     public void onAnimationEnd(Animator animation) {
-                        mRootContentView.removeOnLayoutChangeListener(mLayoutListener);
+                        mParent.removeOnLayoutChangeListener(mLayoutListener);
                         mParent.removeView(mContainerView);
                         mIsAnimating = false;
                     }
@@ -247,20 +260,22 @@ public class SnackbarView implements InsetObserver.WindowInsetObserver {
      * ensure its maximum width.
      */
     void adjustViewPosition() {
-        mParent.getWindowVisibleDisplayFrame(mCurrentVisibleRect);
-        // Only update if the visible frame has changed, otherwise there will be a layout loop.
-        if (!mCurrentVisibleRect.equals(mPreviousVisibleRect)) {
-            mPreviousVisibleRect.set(mCurrentVisibleRect);
-            FrameLayout.LayoutParams lp = getLayoutParams();
+        FrameLayout.LayoutParams lp = getLayoutParams();
+        int targetWidth = Math.min(mMaxWidth, mParent.getWidth() - 2 * mSnackbarMargin);
+        int keyboardHeight =
+                KeyboardVisibilityDelegate.getInstance()
+                        .calculateTotalKeyboardHeight(mRootContentView);
+        int targetBottomMargin =
+                mDefaultBottomMargin + mAdditionalBottomMarginPxSupplier.get() + keyboardHeight;
+        int targetGravity = Gravity.CENTER_HORIZONTAL | Gravity.BOTTOM;
 
-            int prevWidth = lp.width;
-            int prevGravity = lp.gravity;
-
-            lp.width = Math.min(mMaxWidth, mParent.getWidth() - 2 * mSnackbarMargin);
-            lp.gravity = Gravity.CENTER_HORIZONTAL | Gravity.BOTTOM;
-            if (prevWidth != lp.width || prevGravity != lp.gravity) {
-                mContainerView.setLayoutParams(lp);
-            }
+        if (lp.width != targetWidth
+                || lp.bottomMargin != targetBottomMargin
+                || lp.gravity != targetGravity) {
+            lp.width = targetWidth;
+            lp.gravity = targetGravity;
+            lp.bottomMargin = targetBottomMargin;
+            mContainerView.setLayoutParams(lp);
         }
         if (mIsBeingDragged) {
             Pair<Float, Float> translate = mSnackbarSwipeHandler.getTranslateData();
@@ -273,19 +288,35 @@ public class SnackbarView implements InsetObserver.WindowInsetObserver {
     }
 
     /**
-     * @see SnackbarManager#overrideParent(ViewGroup)
+     * @see SnackbarManager#overrideParent(ViewGroup, NonNullObservableSupplier)
      */
-    void overrideParent(ViewGroup overridingParent) {
-        mRootContentView.removeOnLayoutChangeListener(mLayoutListener);
-        mParent = overridingParent == null ? mOriginalParent : overridingParent;
+    void overrideParent(
+            ViewGroup overridingParent,
+            NonNullObservableSupplier<Integer> additionalBottomMarginPxSupplier) {
+        if (mParent == overridingParent
+                && mAdditionalBottomMarginPxSupplier == additionalBottomMarginPxSupplier) {
+            return;
+        }
+
+        mParent.removeOnLayoutChangeListener(mLayoutListener);
+        mParent = overridingParent;
         if (mContainerView.getParent() != null) {
             ((ViewGroup) mContainerView.getParent()).removeView(mContainerView);
         }
         addToParent();
+
+        mAdditionalBottomMarginPxSupplier.removeObserver(mAdditionalBottomMarginPxObserver);
+        mAdditionalBottomMarginPxSupplier = additionalBottomMarginPxSupplier;
+        mAdditionalBottomMarginPxSupplier.addSyncObserverAndCallIfNonNull(
+                mAdditionalBottomMarginPxObserver);
     }
 
-    boolean isShowing() {
+    public boolean isShowing() {
         return mContainerView.isShown();
+    }
+
+    public boolean isBeingDragged() {
+        return mIsBeingDragged;
     }
 
     void bringToFront() {
@@ -297,11 +328,13 @@ public class SnackbarView implements InsetObserver.WindowInsetObserver {
      * reader is enabled.
      */
     public void updateAccessibilityPaneTitle() {
-        StringBuilder accessibilityText = new StringBuilder(mMessageView.getContentDescription());
+        BidiFormatter bidiFormatter = BidiFormatter.getInstance();
+        StringBuilder accessibilityText =
+                new StringBuilder(bidiFormatter.unicodeWrap(mMessageView.getContentDescription()));
         if (mActionButtonView.getContentDescription() != null) {
             accessibilityText
                     .append(". ")
-                    .append(mActionButtonView.getContentDescription())
+                    .append(bidiFormatter.unicodeWrap(mActionButtonView.getContentDescription()))
                     .append(". ")
                     .append(
                             mContainerView
@@ -343,12 +376,7 @@ public class SnackbarView implements InsetObserver.WindowInsetObserver {
 
     private void addToParent() {
         mParent.addView(mContainerView);
-
-        // Why setting listener on parent? It turns out that if we force a relayout in the layout
-        // change listener of the view itself, the force layout flag will be reset to 0 when
-        // layout() returns. Therefore we have to do request layout on one level above the requested
-        // view.
-        mRootContentView.addOnLayoutChangeListener(mLayoutListener);
+        mParent.addOnLayoutChangeListener(mLayoutListener);
     }
 
     // TODO(fgorski): Start using color ID, to remove the view from arguments.
@@ -394,7 +422,7 @@ public class SnackbarView implements InsetObserver.WindowInsetObserver {
     }
 
     private boolean updateInternal(Snackbar snackbar, boolean animate) {
-        if (mSnackbar == snackbar) return false;
+        boolean isNewSnackbar = (mSnackbar != snackbar);
         mSnackbar = snackbar;
         mMessageView.setMaxLines(snackbar.getDefaultLines() ? DEFAULT_LINES : MAX_LINES);
         mMessageView.setTemplate(snackbar.getTemplateText());
@@ -439,7 +467,7 @@ public class SnackbarView implements InsetObserver.WindowInsetObserver {
         } else {
             mProfileImageView.setVisibility(View.GONE);
         }
-        return true;
+        return isNewSnackbar;
     }
 
     /**
@@ -460,9 +488,9 @@ public class SnackbarView implements InsetObserver.WindowInsetObserver {
     }
 
     private void setViewText(TextView view, CharSequence text, boolean animate) {
-        if (view.getText().toString().equals(text)) return;
+        if (view.getText().toString().equals(text.toString())) return;
         view.animate().cancel();
-        if (animate) {
+        if (animate && view.getAlpha() < 1.0f) {
             view.setAlpha(0.0f);
             view.setText(text);
             view.animate().alpha(1.f).setDuration(mAnimationDuration).setListener(null);
@@ -475,7 +503,20 @@ public class SnackbarView implements InsetObserver.WindowInsetObserver {
         return mContainerView.getResources().getDisplayMetrics().widthPixels;
     }
 
+    private void updateBottomMargin(int additionalBottomMarginPx) {
+        FrameLayout.LayoutParams lp = getLayoutParams();
+        int newBottomMargin = mDefaultBottomMargin + additionalBottomMarginPx;
+        if (lp.bottomMargin == newBottomMargin) return;
+
+        lp.bottomMargin = newBottomMargin;
+        mContainerView.setLayoutParams(lp);
+    }
+
     public ViewGroup getViewForTesting() {
         return mSnackbarView;
+    }
+
+    public ViewGroup getContainerViewForTesting() {
+        return mContainerView;
     }
 }

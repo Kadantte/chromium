@@ -9,6 +9,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
+#include "components/variations/scoped_variations_ids_provider.h"
 #include "content/browser/preloading/preload_pipeline_info_impl.h"
 #include "content/browser/preloading/preloading.h"
 #include "content/browser/preloading/preloading_confidence.h"
@@ -91,11 +92,36 @@ void CommitPrerenderNavigation(PrerenderHost& host) {
 
 class PrerenderHostRegistryTest : public RenderViewHostImplTestHarness {
  public:
-  PrerenderHostRegistryTest() = default;
+  PrerenderHostRegistryTest()
+      : scoped_variations_ids_provider_(
+            variations::test::ScopedVariationsIdsProvider(
+                variations::VariationsIdsProvider::Mode::kUseSignedInState)) {}
   ~PrerenderHostRegistryTest() override = default;
 
   void SetUp() override {
     RenderViewHostImplTestHarness::SetUp();
+
+    scoped_feature_list_prerender2_fallback_.InitWithFeaturesAndParameters(
+        {
+            {
+                features::kPrerender2FallbackPrefetchSpecRules,
+                {
+                    {
+                        features::
+                            kPrerender2FallbackPrefetchUseBlockUntilHeadTimetout
+                                .name,
+                        "false",
+                    },
+                    {
+                        features::kPrerender2FallbackPrefetchSchedulerPolicy
+                            .name,
+                        "NotUse",
+                    },
+                },
+            },
+        },
+        {});
+
     web_contents_delegate_ =
         std::make_unique<test::ScopedPrerenderWebContentsDelegate>(*contents());
     contents()->NavigateAndCommit(GURL("https://example.com/"));
@@ -189,7 +215,7 @@ class PrerenderHostRegistryTest : public RenderViewHostImplTestHarness {
   PrerenderAttributes GeneratePrerenderAttributes(
       const GURL& url,
       PreloadingTriggerType trigger_type,
-      const std::string& embedder_histogram_suffix,
+      const std::string& histogram_suffix,
       std::optional<blink::mojom::SpeculationEagerness> eagerness,
       RenderFrameHostImpl* rfh) {
     switch (trigger_type) {
@@ -197,7 +223,7 @@ class PrerenderHostRegistryTest : public RenderViewHostImplTestHarness {
       case PreloadingTriggerType::kSpeculationRuleFromIsolatedWorld:
       case PreloadingTriggerType::kSpeculationRuleFromAutoSpeculationRules:
         return PrerenderAttributes(
-            url, trigger_type, embedder_histogram_suffix,
+            url, trigger_type, histogram_suffix,
             std::make_optional(SpeculationRulesParams(
                 blink::mojom::SpeculationTargetHint::kNoHint,
                 eagerness.value_or(
@@ -217,7 +243,7 @@ class PrerenderHostRegistryTest : public RenderViewHostImplTestHarness {
             /*form_submission=*/false);
       case PreloadingTriggerType::kEmbedder:
         return PrerenderAttributes(
-            url, trigger_type, embedder_histogram_suffix,
+            url, trigger_type, histogram_suffix,
             /*speculation_rules_params=*/std::nullopt, Referrer(),
             /*no_vary_search_hint=*/std::nullopt,
             /*initiator_render_frame_host=*/nullptr, contents()->GetWeakPtr(),
@@ -253,21 +279,21 @@ class PrerenderHostRegistryTest : public RenderViewHostImplTestHarness {
 
   void ExpectUniqueSampleOfEmbedderFinalStatus(
       PrerenderFinalStatus status,
-      const std::string& embedder_histogram_suffix,
+      const std::string& histogram_suffix,
       base::HistogramBase::Count32 count = 1) {
     histogram_tester_.ExpectUniqueSample(
         "Prerender.Experimental.PrerenderHostFinalStatus.Embedder_" +
-            embedder_histogram_suffix,
+            histogram_suffix,
         status, count);
   }
 
   void ExpectBucketCountOfEmbedderFinalStatus(
       PrerenderFinalStatus status,
-      const std::string& embedder_histogram_suffix,
+      const std::string& histogram_suffix,
       base::HistogramBase::Count32 count = 1) {
     histogram_tester_.ExpectBucketCount(
         "Prerender.Experimental.PrerenderHostFinalStatus.Embedder_" +
-            embedder_histogram_suffix,
+            histogram_suffix,
         status, count);
   }
 
@@ -297,9 +323,14 @@ class PrerenderHostRegistryTest : public RenderViewHostImplTestHarness {
 
  private:
   test::ScopedPrerenderFeatureList scoped_feature_list_;
+  base::test::ScopedFeatureList scoped_feature_list_prerender2_fallback_;
   base::HistogramTester histogram_tester_;
   std::unique_ptr<test::ScopedPrerenderWebContentsDelegate>
       web_contents_delegate_;
+  // Prevent `DCHECK(g_instance)` failure in
+  // `VariationsIdsProvider::GetInstance()` via
+  // `PrefetchContainer::MakeInitialResourceRequest()`.
+  variations::test::ScopedVariationsIdsProvider scoped_variations_ids_provider_;
 };
 
 TEST_F(PrerenderHostRegistryTest, CreateAndStartHost_SpeculationRule) {
@@ -644,7 +675,7 @@ class PrerenderHostRegistryLimitGroupTest
  public:
   using PrerenderLimitGroup = PrerenderHostRegistry::PrerenderLimitGroup;
 
-  const std::string embedder_histogram_suffix = "EmbedderSuffixForTest";
+  const std::string histogram_suffix = "EmbedderSuffixForTest";
 
   bool IsNewTabTrigger(PrerenderLimitGroup limit_group) {
     return GetParam() && limit_group != PrerenderLimitGroup::kEmbedder;
@@ -671,7 +702,7 @@ class PrerenderHostRegistryLimitGroupTest
         case PrerenderLimitGroup::kEmbedder:
           return GeneratePrerenderAttributes(
               prerendering_url, PreloadingTriggerType::kEmbedder,
-              embedder_histogram_suffix, std::nullopt, nullptr);
+              histogram_suffix, std::nullopt, nullptr);
       }
     }();
 
@@ -743,7 +774,7 @@ TEST_P(PrerenderHostRegistryLimitGroupTest, Immediate) {
       PrerenderFinalStatus::kMaxNumOfRunningImmediatePrerendersExceeded, 1);
   ExpectUniqueSampleOfEmbedderFinalStatus(
       PrerenderFinalStatus::kMaxNumOfRunningEmbedderPrerendersExceeded,
-      embedder_histogram_suffix, 0);
+      histogram_suffix, 0);
 }
 
 TEST_P(PrerenderHostRegistryLimitGroupTest, NonImmediate) {
@@ -778,9 +809,8 @@ TEST_P(PrerenderHostRegistryLimitGroupTest, NonImmediate) {
         WebContents::FromFrameTreeNodeId(prerender_frame_tree_node_id));
     PrerenderHost* prerender_host = nullptr;
     if (web_contents_impl) {
-      prerender_host =
-          web_contents_impl->GetPrerenderHostRegistry()
-              ->FindNonReservedHostById(prerender_frame_tree_node_id);
+      prerender_host = web_contents_impl->GetPrerenderHostRegistry()
+                           ->FindNonReservedHostById(id);
     }
     if (id == started_prerender_ids[0]) {
       // The oldest prerender has been canceled.
@@ -803,7 +833,7 @@ TEST_P(PrerenderHostRegistryLimitGroupTest, NonImmediate) {
       PrerenderFinalStatus::kMaxNumOfRunningNonImmediatePrerendersExceeded, 1);
   ExpectUniqueSampleOfEmbedderFinalStatus(
       PrerenderFinalStatus::kMaxNumOfRunningEmbedderPrerendersExceeded,
-      embedder_histogram_suffix, 0);
+      histogram_suffix, 0);
 }
 
 TEST_P(PrerenderHostRegistryLimitGroupTest, Embedder) {
@@ -823,7 +853,7 @@ TEST_P(PrerenderHostRegistryLimitGroupTest, Embedder) {
   EXPECT_FALSE(prerender_host_id_embedder_exceeded);
   ExpectUniqueSampleOfEmbedderFinalStatus(
       PrerenderFinalStatus::kMaxNumOfRunningEmbedderPrerendersExceeded,
-      embedder_histogram_suffix, 1);
+      histogram_suffix, 1);
 
   // On the other hand, prerenders belonging to different limit group(immediate,
   // non-egaer) can still be started.
@@ -840,7 +870,7 @@ TEST_P(PrerenderHostRegistryLimitGroupTest, Embedder) {
       PrerenderFinalStatus::kMaxNumOfRunningNonImmediatePrerendersExceeded, 0);
   ExpectUniqueSampleOfEmbedderFinalStatus(
       PrerenderFinalStatus::kMaxNumOfRunningEmbedderPrerendersExceeded,
-      embedder_histogram_suffix, 1);
+      histogram_suffix, 1);
 }
 
 TEST_F(PrerenderHostRegistryTest,
@@ -1122,7 +1152,7 @@ TEST_F(PrerenderHostRegistryTest,
 TEST_F(PrerenderHostRegistryTest, PurposeHeaderIsIgnoredForParamMatching) {
   EXPECT_TRUE(CheckIsActivatedForParams(
       base::BindLambdaForTesting([](NavigationSimulatorImpl* navigation) {
-        navigation->set_request_headers("Purpose: Test");
+        navigation->set_request_headers("Sec-Purpose: Test");
       })));
   ExpectUniqueSampleOfActivationNavigationParamsMatch(
       PrerenderHost::ActivationNavigationParamsMatch::kOk);

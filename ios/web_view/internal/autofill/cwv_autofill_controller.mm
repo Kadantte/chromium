@@ -22,6 +22,7 @@
 #import "components/autofill/core/browser/foundations/autofill_manager.h"
 #import "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #import "components/autofill/core/browser/payments/card_unmask_challenge_option.h"
+#import "components/autofill/core/browser/payments/credit_card_access_manager.h"
 #import "components/autofill/core/browser/payments/legal_message_line.h"
 #import "components/autofill/core/browser/payments/payments_autofill_client.h"
 #import "components/autofill/core/browser/payments/virtual_card_enrollment_manager.h"
@@ -37,6 +38,7 @@
 #import "components/autofill/ios/browser/autofill_util.h"
 #import "components/autofill/ios/browser/suggestion_controller_java_script_feature.h"
 #import "components/autofill/ios/form_util/form_activity_params.h"
+#import "components/autofill/ios/form_util/form_activity_tab_helper.h"
 #import "components/keyed_service/core/service_access_type.h"
 #import "components/password_manager/core/browser/leak_detection_dialog_utils.h"
 #import "components/password_manager/ios/shared_password_controller.h"
@@ -76,6 +78,9 @@ using autofill::FieldRendererId;
 using autofill::FormData;
 using autofill::FormRendererId;
 using UserDecision = autofill::AutofillClient::AddressPromptUserDecision;
+
+NSErrorDomain const CWVAutofillErrorDomain =
+    @"org.chromium.chromewebview.AutofillErrorDomain";
 
 @interface CWVAutofillController () <AutofillManagerObserver,
                                      CRWWebFramesManagerObserver>
@@ -180,6 +185,7 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
   NSString* _lastFormActivityType;
   FormRendererId _lastFormActivityFormRendererID;
   FieldRendererId _lastFormActivityFieldRendererID;
+  BOOL _lastFormActivityHasUserGesture;
 
   // YES to support xframe submission to correctly handle form submission when
   // autofill across iframes is enabled.
@@ -290,6 +296,11 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
   return _autofillClient.get();
 }
 
+- (void)setForceSubmittedByUserForTesting:(BOOL)force {
+  autofill::FormActivityTabHelper::GetOrCreateForWebState(_webState)
+      ->SetForceSubmittedByUserForTesting(force);  // IN-TEST
+}
+
 - (void)clearFormWithName:(NSString*)formName
           fieldIdentifier:(NSString*)fieldIdentifier
                   frameID:(NSString*)frameID
@@ -326,6 +337,18 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
         }
       };
 
+  BOOL hasUserGesture = NO;
+  if ([formName isEqualToString:_lastFormActivityFormName] &&
+      [fieldIdentifier isEqualToString:_lastFormActivityFieldIdentifier] &&
+      [frameID isEqualToString:_lastFormActivityFrameID]) {
+    hasUserGesture = _lastFormActivityHasUserGesture;
+  }
+
+  autofill::FormRendererId targetFormRendererID =
+      _lastFormActivityFormRendererID;
+  autofill::FieldRendererId targetFieldRendererID =
+      _lastFormActivityFieldRendererID;
+
   _lastFormActivityFormName = formName;
   _lastFormActivityFrameID = frameID;
   _lastFormActivityFieldIdentifier = fieldIdentifier;
@@ -333,9 +356,9 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
   // Construct query.
   FormSuggestionProviderQuery* formQuery = [[FormSuggestionProviderQuery alloc]
       initWithFormName:formName
-        formRendererID:_lastFormActivityFormRendererID
+        formRendererID:targetFormRendererID
        fieldIdentifier:fieldIdentifier
-       fieldRendererID:_lastFormActivityFieldRendererID
+       fieldRendererID:targetFieldRendererID
              fieldType:fieldType
                   type:_lastFormActivityType
             typedValue:_lastFormActivityTypedValue
@@ -368,7 +391,9 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
                   [[CWVAutofillSuggestion alloc]
                       initWithFormSuggestion:formSuggestion
                                     formName:formName
+                              formRendererID:targetFormRendererID
                              fieldIdentifier:fieldIdentifier
+                             fieldRendererID:targetFieldRendererID
                                      frameID:frameID
                         isPasswordSuggestion:isPasswordSuggestion];
               [autofillSuggestions addObject:autofillSuggestion];
@@ -381,7 +406,7 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
     };
 
     [suggestionProvider checkIfSuggestionsAvailableForForm:formQuery
-                                            hasUserGesture:YES
+                                            hasUserGesture:hasUserGesture
                                                   webState:_webState
                                          completionHandler:availableHandler];
   }
@@ -394,9 +419,9 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
     [_passwordController didSelectSuggestion:suggestion.formSuggestion
                                      atIndex:index
                                         form:suggestion.formName
-                              formRendererID:_lastFormActivityFormRendererID
+                              formRendererID:suggestion.formRendererID
                              fieldIdentifier:suggestion.fieldIdentifier
-                             fieldRendererID:_lastFormActivityFieldRendererID
+                             fieldRendererID:suggestion.fieldRendererID
                                      frameID:suggestion.frameID
                            completionHandler:^{
                              if (completionHandler) {
@@ -407,9 +432,9 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
     [_autofillAgent didSelectSuggestion:suggestion.formSuggestion
                                 atIndex:index
                                    form:suggestion.formName
-                         formRendererID:_lastFormActivityFormRendererID
+                         formRendererID:suggestion.formRendererID
                         fieldIdentifier:suggestion.fieldIdentifier
-                        fieldRendererID:_lastFormActivityFieldRendererID
+                        fieldRendererID:suggestion.fieldRendererID
                                 frameID:suggestion.frameID
                       completionHandler:^{
                         if (completionHandler) {
@@ -423,11 +448,17 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
                              atIndex:(NSInteger)index
                    completionHandler:
                        (nullable void (^)(void))completionHandler {
+  if (!card) {
+    return;
+  }
+  autofill::SuggestionType type =
+      card.isVirtual ? autofill::SuggestionType::kVirtualCreditCardEntry
+                     : autofill::SuggestionType::kCreditCardEntry;
   FormSuggestion* suggestion = [FormSuggestion
       suggestionWithValue:nil
        displayDescription:nil
                      icon:nil
-                     type:autofill::SuggestionType::kCreditCardEntry
+                     type:type
                   payload:autofill::Suggestion::Guid(card.internalCard->guid())
            requiresReauth:NO];
 
@@ -443,6 +474,52 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
                         completionHandler();
                       }
                     }];
+}
+
+- (void)fetchFullCardDetailsForCard:(CWVCreditCard*)card
+                  completionHandler:(CWVFetchFullCardDetailsCompletionHandler)
+                                        completionHandler {
+  web::WebFrame* frame = autofill::AutofillJavaScriptFeature::GetInstance()
+                             ->GetWebFramesManager(_webState)
+                             ->GetFrameWithId(_lastFormActivityWebFrameID);
+
+  if (!frame) {
+    if (completionHandler) {
+      NSError* error = [NSError errorWithDomain:CWVAutofillErrorDomain
+                                           code:CWVAutofillErrorNoWebFrame
+                                       userInfo:nil];
+      completionHandler(/*fullCard=*/nil, error);
+    }
+    return;
+  }
+
+  autofill::AutofillDriverIOS* driver =
+      autofill::AutofillDriverIOS::FromWebStateAndWebFrame(_webState, frame);
+  if (!driver) {
+    if (completionHandler) {
+      NSError* error = [NSError errorWithDomain:CWVAutofillErrorDomain
+                                           code:CWVAutofillErrorNoAutofillDriver
+                                       userInfo:nil];
+      completionHandler(/*fullCard=*/nil, error);
+    }
+    return;
+  }
+
+  autofill::BrowserAutofillManager& manager = driver->GetAutofillManager();
+  autofill::CreditCardAccessManager* accessManager =
+      manager.GetCreditCardAccessManager();
+
+  accessManager->FetchCreditCard(
+      card.internalCard, base::BindOnce(
+                             ^(CWVFetchFullCardDetailsCompletionHandler handler,
+                               const autofill::CreditCard& fetchedCard) {
+                               CWVCreditCard* fullCard = [[CWVCreditCard alloc]
+                                   initWithCreditCard:fetchedCard];
+                               if (handler) {
+                                 handler(fullCard, /*error=*/nil);
+                               }
+                             },
+                             completionHandler));
 }
 
 - (void)focusPreviousField {
@@ -532,10 +609,6 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
   return [_autofillAgent isLastQueriedField:fieldId];
 }
 
-- (void)showPlusAddressEmailOverrideNotification:
-    (base::OnceClosure)emailOverrideUndoCallback {
-  NOTIMPLEMENTED();
-}
 
 - (void)
     showSaveCreditCardToCloud:(const autofill::CreditCard&)creditCard
@@ -871,6 +944,10 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
   _lastFormActivityWebFrameID = frame_id;
   _lastFormActivityTypedValue = nsValue;
   _lastFormActivityType = nsType;
+  _lastFormActivityHasUserGesture = userInitiated;
+  _lastFormActivityFormName = nsFormName;
+  _lastFormActivityFieldIdentifier = nsFieldIdentifier;
+  _lastFormActivityFrameID = nsFrameID;
   if (params.type == "focus") {
     if ([_delegate respondsToSelector:@selector
                    (autofillController:
@@ -923,6 +1000,15 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
   if (_supportXframeSubmission) {
     return;
   }
+  if ([_delegate respondsToSelector:@selector
+                 (autofillController:
+                     didSubmitFormWithName:frameID:perfectFilling:)]) {
+    [_delegate autofillController:self
+            didSubmitFormWithName:base::SysUTF16ToNSString(formData.name())
+                          frameID:base::SysUTF8ToNSString(frame->GetFrameId())
+                   perfectFilling:perfectFilling];
+  }
+
   if ([_delegate
           respondsToSelector:@selector
           (autofillController:
@@ -962,7 +1048,10 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
                     formData:(const autofill::FormData&)form {
   // Skip immediately if the delegate doesn't handle submission to save
   // computation.
-  if (![_delegate
+  if (![_delegate respondsToSelector:@selector
+                  (autofillController:
+                      didSubmitFormWithName:frameID:perfectFilling:)] &&
+      ![_delegate
           respondsToSelector:@selector
           (autofillController:
               didSubmitFormWithName:frameID:userInitiated:perfectFilling:)]) {
@@ -976,19 +1065,33 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
   NSString* nsFrameID =
       frame ? base::SysUTF8ToNSString(frame->GetFrameId()) : @"";
 
-  BOOL perfectFilling = autofill::IsFormPerfectlyFilled(form);
+  BOOL perfectFilling = autofill::IsFormDataPerfectlyFilled(form);
 
-  // Use YES as a dummy value for `userInitiated` since that bit isn't supported
-  // by the _delegate implementations and we can't get that information on
-  // -onAfterFormSubmitted. Also, a value of YES should cover most of the
-  // submission cases that probably consist of user initiated submissions, and
-  // note that computing that bit is based on a best guess so it isn't that
-  // reliable.
-  [_delegate autofillController:self
-          didSubmitFormWithName:base::SysUTF16ToNSString(form.name())
-                        frameID:nsFrameID
-                  userInitiated:YES
-                 perfectFilling:perfectFilling];
+  if ([_delegate respondsToSelector:@selector
+                 (autofillController:
+                     didSubmitFormWithName:frameID:perfectFilling:)]) {
+    [_delegate autofillController:self
+            didSubmitFormWithName:base::SysUTF16ToNSString(form.name())
+                          frameID:nsFrameID
+                   perfectFilling:perfectFilling];
+  }
+
+  // Use YES as a dummy value for `userInitiated` since that bit
+  // isn't supported by the _delegate implementations and we can't get that
+  // information on -onAfterFormSubmitted. Also, a value of YES should cover
+  // most of the submission cases that probably consist of user initiated
+  // submissions, and note that computing that bit is based on a best guess so
+  // it isn't that reliable.
+  if ([_delegate
+          respondsToSelector:@selector
+          (autofillController:
+              didSubmitFormWithName:frameID:userInitiated:perfectFilling:)]) {
+    [_delegate autofillController:self
+            didSubmitFormWithName:base::SysUTF16ToNSString(form.name())
+                          frameID:nsFrameID
+                    userInitiated:YES
+                   perfectFilling:perfectFilling];
+  }
 }
 
 - (void)

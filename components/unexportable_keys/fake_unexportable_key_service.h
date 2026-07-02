@@ -18,23 +18,41 @@ class FakeUnexportableKeyService : public UnexportableKeyService {
       base::span<const crypto::SignatureVerifier::SignatureAlgorithm>
           acceptable_algorithms,
       BackgroundTaskPriority priority,
-      base::OnceCallback<void(ServiceErrorOr<UnexportableKeyId>)> callback)
-      override;
+      base::OnceCallback<void(ServiceErrorOr<UnexportableSigningKeyId>)>
+          callback) override;
   void FromWrappedSigningKeySlowlyAsync(
       base::span<const uint8_t> wrapped_key,
       BackgroundTaskPriority priority,
-      base::OnceCallback<void(ServiceErrorOr<UnexportableKeyId>)> callback)
-      override;
-  void GetAllSigningKeysForGarbageCollectionSlowlyAsync(
+      base::OnceCallback<void(ServiceErrorOr<UnexportableSigningKeyId>)>
+          callback) override;
+  void GenerateAttestationKeySlowlyAsync(
+      base::span<const crypto::SignatureVerifier::SignatureAlgorithm>
+          acceptable_algorithms,
+      BackgroundTaskPriority priority,
+      base::OnceCallback<void(ServiceErrorOr<UnexportableAttestationKeyId>)>
+          callback) override;
+  void FromWrappedAttestationKeySlowlyAsync(
+      base::span<const uint8_t> wrapped_key,
+      BackgroundTaskPriority priority,
+      base::OnceCallback<void(ServiceErrorOr<UnexportableAttestationKeyId>)>
+          callback) override;
+  void GetAllKeysForGarbageCollectionSlowlyAsync(
       BackgroundTaskPriority priority,
       base::OnceCallback<void(ServiceErrorOr<std::vector<UnexportableKeyId>>)>
           callback) override;
   void SignSlowlyAsync(
-      UnexportableKeyId key_id,
+      UnexportableSigningKeyId key_id,
       base::span<const uint8_t> data,
       BackgroundTaskPriority priority,
       base::OnceCallback<void(ServiceErrorOr<std::vector<uint8_t>>)> callback)
       override;
+  void CertifySlowlyAsync(
+      UnexportableAttestationKeyId attestation_key_id,
+      UnexportableSigningKeyId signing_key_id,
+      base::span<const uint8_t> challenge,
+      BackgroundTaskPriority priority,
+      base::OnceCallback<void(ServiceErrorOr<crypto::AttestationStatement>)>
+          callback) override;
   void DeleteKeysSlowlyAsync(
       base::span<const UnexportableKeyId> key_ids,
       BackgroundTaskPriority priority,

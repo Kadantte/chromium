@@ -41,6 +41,7 @@ class FrameTreeNode;
 class NavigationControllerDelegate;
 class NavigationEntryImpl;
 class NavigationRequest;
+class InitiatorNavigationState;
 class NavigatorDelegate;
 class PrefetchedSignedExchangeCache;
 class RenderFrameHostImpl;
@@ -108,6 +109,7 @@ class CONTENT_EXPORT Navigator {
       mojo::PendingAssociatedRemote<mojom::NavigationClient>* navigation_client,
       blink::LocalFrameToken initiator_frame_token,
       int initiator_process_id,
+      scoped_refptr<InitiatorNavigationState> initiator_navigation_state,
       base::TimeTicks actual_navigation_start);
 
   // Navigation requests -------------------------------------------------------
@@ -128,6 +130,7 @@ class CONTENT_EXPORT Navigator {
       int initiator_process_id,
       const std::optional<url::Origin>& initiator_origin,
       const std::optional<GURL>& initiator_base_url,
+      scoped_refptr<InitiatorNavigationState> initiator_navigation_state,
       const scoped_refptr<network::ResourceRequestBody>& post_body,
       const std::string& extra_headers,
       const Referrer& referrer,
@@ -138,7 +141,8 @@ class CONTENT_EXPORT Navigator {
       const std::string& href_translate,
       scoped_refptr<network::SharedURLLoaderFactory> blob_url_loader_factory,
       const std::optional<blink::Impression>& impression,
-      bool has_rel_opener);
+      bool has_rel_opener,
+      bool started_by_ad);
 
   // Called when a document requests a navigation in another document through a
   // `blink::RemoteFrame`. If `method` is "POST", then `post_body` needs to
@@ -150,7 +154,7 @@ class CONTENT_EXPORT Navigator {
       int initiator_process_id,
       const url::Origin& initiator_origin,
       const std::optional<GURL>& initiator_base_url,
-      SiteInstance* source_site_instance,
+      scoped_refptr<InitiatorNavigationState> initiator_navigation_state,
       const Referrer& referrer,
       ui::PageTransition page_transition,
       bool should_replace_current_entry,
@@ -171,8 +175,6 @@ class CONTENT_EXPORT Navigator {
       bool force_new_browsing_instance = false,
       bool is_container_initiated = false,
       bool has_rel_opener = false,
-      net::StorageAccessApiStatus storage_access_api_status =
-          net::StorageAccessApiStatus::kNone,
       std::optional<std::u16string> embedder_shared_storage_context =
           std::nullopt);
 
@@ -202,8 +204,12 @@ class CONTENT_EXPORT Navigator {
       mojo::PendingReceiver<mojom::NavigationRendererCancellationListener>
           renderer_cancellation_listener,
       mojo::PendingReceiver<
+          mojom::NavigationRendererIgnoreDuplicateNavigationListener>
+          renderer_ignore_duplicate_navigation_listener,
+      mojo::PendingReceiver<
           blink::mojom::NavigationResumeDeferredCommitListener>
-          deferred_commit_resume_listener);
+          deferred_commit_resume_listener,
+      scoped_refptr<InitiatorNavigationState> initiator_navigation_state);
 
   // Used to restart a navigation that was thought to be same-document in
   // cross-document mode.
@@ -232,9 +238,6 @@ class CONTENT_EXPORT Navigator {
   // Returns the NavigationController associated with this Navigator.
   NavigationControllerImpl& controller() { return controller_; }
   const NavigationControllerImpl& controller() const { return controller_; }
-
-  void SetWillNavigateFromFrameProxyCallbackForTesting(
-      const base::RepeatingClosure& callback);
 
  private:
   friend class NavigatorTestWithBrowserSideNavigation;
@@ -274,9 +277,6 @@ class CONTENT_EXPORT Navigator {
 
   // Tracks metrics for each navigation.
   std::unique_ptr<Navigator::NavigationMetricsData> metrics_data_;
-
-  // Called every time NavigateFromFrameProxy() is called.
-  base::RepeatingClosure will_navigate_from_frame_proxy_callback_for_testing_;
 };
 
 }  // namespace content

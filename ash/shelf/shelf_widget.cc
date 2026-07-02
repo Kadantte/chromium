@@ -83,11 +83,15 @@ class HideAnimationObserver : public ui::ImplicitAnimationObserver {
   // ui::ImplicitAnimationObserver:
   void OnImplicitAnimationsScheduled() override {}
 
-  void OnImplicitAnimationsCompleted() override { layer_->SetOpacity(0); }
+  void OnImplicitAnimationsCompleted() override {
+    CHECK(layer_);
+    layer_->SetOpacity(0);
+    layer_ = nullptr;
+  }
 
  private:
   // Unowned.
-  const raw_ptr<ui::Layer, DanglingUntriaged> layer_;
+  raw_ptr<ui::Layer> layer_;
 };
 
 class ShelfBackgroundLayerDelegate : public ui::LayerOwner,
@@ -364,7 +368,9 @@ ShelfWidgetDelegateView::ShelfWidgetDelegateView(ShelfWidget* shelf_widget,
       opaque_background_(shelf, this),
       animating_background_(ui::LAYER_SOLID_COLOR),
       animating_drag_handle_(ui::LAYER_SOLID_COLOR) {
-  animating_background_.SetName("shelf/Animation");
+  animating_background_.SetName("shelf/AnimatingBackground");
+  animating_drag_handle_.SetName("shelf/AnimatingDragHandle");
+
   animating_background_.Add(&animating_drag_handle_);
 
   opaque_background_.Initialize();
@@ -991,6 +997,11 @@ void ShelfWidget::ShowIfHidden() {
 
 ui::Layer* ShelfWidget::GetDelegateViewOpaqueBackgroundLayerForTesting() {
   return delegate_view_->opaque_background_layer();
+}
+
+void ShelfWidget::OnNativeWidgetDestroyed() {
+  delegate_view_ = nullptr;
+  views::Widget::OnNativeWidgetDestroyed();
 }
 
 void ShelfWidget::OnMouseEvent(ui::MouseEvent* event) {

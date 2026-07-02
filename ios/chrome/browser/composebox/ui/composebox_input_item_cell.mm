@@ -10,8 +10,8 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/strings/utf_string_conversions.h"
 #import "ios/chrome/browser/composebox/public/composebox_constants.h"
+#import "ios/chrome/browser/composebox/shared/ui/composebox_ui_constants.h"
 #import "ios/chrome/browser/composebox/ui/composebox_input_item_view.h"
-#import "ios/chrome/browser/composebox/ui/composebox_ui_constants.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
@@ -144,7 +144,9 @@ const CGFloat kCloseButtonAlpha = 0.9;
       self.accessibilityTraits |= UIAccessibilityTraitImage;
       break;
     }
-    case ComposeboxInputItemType::kComposeboxInputItemTypeFile: {
+    case ComposeboxInputItemType::kComposeboxInputItemTypeRawFile:
+    case ComposeboxInputItemType::kComposeboxInputItemTypePDF:
+    case ComposeboxInputItemType::kComposeboxInputItemTypeDrive: {
       std::u16string title = base::SysNSStringToUTF16(item.title);
       std::u16string pattern = l10n_util::GetStringUTF16(
           IDS_IOS_COMPOSEBOX_ATTACHMENT_FILE_ACCESSIBILITY_LABEL);

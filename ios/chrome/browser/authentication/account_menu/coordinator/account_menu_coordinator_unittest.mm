@@ -15,10 +15,11 @@
 #import "ios/chrome/browser/authentication/account_menu/public/account_menu_constants.h"
 #import "ios/chrome/browser/authentication/account_menu/ui/account_menu_view_controller.h"
 #import "ios/chrome/browser/authentication/add_account_signin/coordinator/add_account_signin_coordinator.h"
+#import "ios/chrome/browser/authentication/signin/reauth/coordinator/signin_reauth_coordinator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_coordinator+protected.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signout_action_sheet/signout_action_sheet_coordinator.h"
-#import "ios/chrome/browser/settings/ui_bundled/google_services/sync_error_settings_command_handler.h"
+#import "ios/chrome/browser/settings/manage_sync/public/sync_error_settings_command_handler.h"
 #import "ios/chrome/browser/settings/ui_bundled/sync/sync_encryption_passphrase_table_view_controller.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/test/stub_browser_provider_interface.h"
@@ -61,6 +62,7 @@ const FakeSystemIdentity* kManagedIdentity =
 
 @interface AccountMenuCoordinator (Testing) <
     AccountMenuMediatorDelegate,
+    SigninReauthCoordinatorDelegate,
     SignoutActionSheetCoordinatorDelegate,
     SyncErrorSettingsCommandHandler,
     UIAdaptivePresentationControllerDelegate,
@@ -140,8 +142,6 @@ class AccountMenuCoordinatorTest : public PlatformTest {
     fake_system_identity_manager_ =
         FakeSystemIdentityManager::FromSystemIdentityManager(
             GetApplicationContext()->GetSystemIdentityManager());
-    authentication_service_ =
-        AuthenticationServiceFactory::GetForProfile(profile_.get());
 
     SigninWithPrimaryIdentity();
     AddSecondaryIdentity();
@@ -168,6 +168,10 @@ class AccountMenuCoordinatorTest : public PlatformTest {
   void TearDown() override {
     VerifyMock();
     PlatformTest::TearDown();
+  }
+
+  AuthenticationService* authentication_service() {
+    return AuthenticationServiceFactory::GetForProfile(profile_.get());
   }
 
  protected:
@@ -208,7 +212,6 @@ class AccountMenuCoordinatorTest : public PlatformTest {
   AccountMenuMediator* mediator_;
   id<SyncEncryptionPassphraseTableViewControllerPresentationDelegate>
       presentation_delegate_;
-  raw_ptr<AuthenticationService, DanglingUntriaged> authentication_service_;
   raw_ptr<FakeSystemIdentityManager> fake_system_identity_manager_;
   // The view owned by the view controller.
   UIView* view_;
@@ -230,8 +233,8 @@ class AccountMenuCoordinatorTest : public PlatformTest {
   // Signs in kPrimaryIdentity as primary identity.
   void SigninWithPrimaryIdentity() {
     fake_system_identity_manager_->AddIdentity(kPrimaryIdentity);
-    authentication_service_->SignIn(kPrimaryIdentity,
-                                    signin_metrics::AccessPoint::kStartPage);
+    authentication_service()->SignIn(kPrimaryIdentity,
+                                     signin_metrics::AccessPoint::kStartPage);
   }
 
   // Add kSecondaryIdentity as a secondary identity.
@@ -259,6 +262,30 @@ TEST_F(AccountMenuCoordinatorTest, testManageYourGoogleAccount) {
   AssertOpenAndStop();
 }
 
+// Tests that `didTapManageYourGoogleAccount` opens a reauth dialog when the
+// primary identity does not have valid auth, and continues the flow after
+// successful reauth.
+TEST_F(AccountMenuCoordinatorTest, testManageYourGoogleAccountInvalidAuth) {
+  FakeSystemIdentityManager::FromSystemIdentityManager(
+      GetApplicationContext()->GetSystemIdentityManager())
+      ->SetPersistentAuthErrorForAccount(
+          CoreAccountId::FromGaiaId(kPrimaryIdentity.gaiaId));
+
+  id reauthMock = OCMClassMock([SigninReauthCoordinator class]);
+  OCMExpect([reauthMock alloc]).andReturn(reauthMock);
+  //  We can ignore calls to `reauthMock`. If it’s allocated, we can safely
+  // assume it’s initialized and started.
+
+  OCMReject([view_controller_ presentViewController:[OCMArg any]
+                                           animated:YES
+                                         completion:nil]);
+
+  [coordinator_ didTapManageYourGoogleAccount];
+
+  EXPECT_OCMOCK_VERIFY(reauthMock);
+  AssertOpenAndStop();
+}
+
 // Tests that `didTapManageAccounts` has no impact on the view controller and
 // mediator.
 TEST_F(AccountMenuCoordinatorTest, testEditAccountList) {
@@ -281,9 +308,7 @@ TEST_F(AccountMenuCoordinatorTest, testSignOut) {
                              closure.Run();
                            }];
   run_loop.Run();
-  EXPECT_EQ(authentication_service_->GetPrimaryIdentity(
-                signin::ConsentLevel::kSignin),
-            nil);
+  EXPECT_EQ(authentication_service()->GetPrimaryIdentity(), nil);
 }
 
 // Tests that `mediatorWantsToBeDismissed` requests to the delegate to stop the

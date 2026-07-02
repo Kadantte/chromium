@@ -16,6 +16,8 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 
+import androidx.annotation.ColorInt;
+import androidx.annotation.Px;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.Callback;
@@ -34,10 +36,10 @@ import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarSceneLayer;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsUtils;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsVisibilityManager;
-import org.chromium.chrome.browser.compositor.bottombar.OverlayPanelManager;
-import org.chromium.chrome.browser.compositor.bottombar.contextualsearch.ContextualSearchPanel;
 import org.chromium.chrome.browser.compositor.layouts.Layout.Orientation;
 import org.chromium.chrome.browser.compositor.layouts.components.LayoutTab;
+import org.chromium.chrome.browser.compositor.overlay_panel.OverlayPanelManager;
+import org.chromium.chrome.browser.compositor.overlay_panel.contextualsearch.ContextualSearchPanel;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutHelperManager;
 import org.chromium.chrome.browser.fullscreen.BrowserControlsManager;
 import org.chromium.chrome.browser.gesturenav.OverscrollGlowCoordinator;
@@ -68,7 +70,7 @@ import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.browser.theme.ThemeUtils;
-import org.chromium.chrome.browser.theme.TopUiThemeColorProvider;
+import org.chromium.chrome.browser.theme.ToolbarThemeColorProvider;
 import org.chromium.chrome.browser.toolbar.ControlContainer;
 import org.chromium.chrome.browser.toolbar.bottom.ScrollingBottomViewSceneLayer;
 import org.chromium.chrome.browser.toolbar.top.TopToolbarOverlayCoordinator;
@@ -136,8 +138,8 @@ public class LayoutManagerImpl
             };
     private TabModelSelectorTabObserver mTabModelSelectorTabObserver;
 
-    // An observer for watching TabGroupModelFilters changes events.
-    private TabModelObserver mTabGroupModelFilterObserver;
+    // An observer for watching TabModels changes events.
+    private TabModelObserver mTabGroupObserver;
 
     // External Observers
     private final ObserverList<LayoutStateObserver> mLayoutObservers = new ObserverList<>();
@@ -191,8 +193,8 @@ public class LayoutManagerImpl
     /** A map of {@link SceneOverlay} to its position relative to the others. */
     private Map<Class, Integer> mOverlayOrderMap = new HashMap<>();
 
-    /** The supplier of {@link ThemeColorProvider} for top UI. */
-    private final Supplier<TopUiThemeColorProvider> mTopUiThemeColorProvider;
+    /** The supplier of {@link ToolbarThemeColorProvider} for the toolbar. */
+    private final Supplier<ToolbarThemeColorProvider> mToolbarThemeColorProvider;
 
     /** The supplier of whether this is going to intercept back press gesture. */
     private final SettableNonNullObservableSupplier<Boolean> mHandleBackPressChangedSupplier =
@@ -202,8 +204,8 @@ public class LayoutManagerImpl
     private @Nullable ShowingEventSequencer mShowingEventSequencer;
 
     /**
-     * Protected class to handle {@link TabModelObserver} related tasks. Extending classes will
-     * need to override any related calls to add new functionality
+     * Protected class to handle {@link TabModelObserver} related tasks. Extending classes will need
+     * to override any related calls to add new functionality
      */
     protected class LayoutManagerTabModelObserver implements TabModelObserver {
         @Override
@@ -238,33 +240,23 @@ public class LayoutManagerImpl
                 boolean markedForSelection) {
             int tabId = tab.getId();
             if (launchType == TabLaunchType.FROM_RESTORE) return;
-                boolean incognito = tab.isIncognito();
-                boolean willBeSelected =
-                        (launchType != TabLaunchType.FROM_LONGPRESS_BACKGROUND
-                                        && launchType
-                                                != TabLaunchType.FROM_LONGPRESS_BACKGROUND_IN_GROUP
-                                        && launchType != TabLaunchType.FROM_RECENT_TABS
-                                        && launchType != TabLaunchType.FROM_RESTORE_TABS_UI
-                                        && launchType != TabLaunchType.FROM_SYNC_BACKGROUND
-                                        && launchType
-                                                != TabLaunchType
-                                                        .FROM_COLLABORATION_BACKGROUND_IN_GROUP)
-                                || (!getTabModelSelector().isIncognitoSelected() && incognito);
-                float lastTapX = LocalizationUtils.isLayoutRtl() ? mHost.getWidth() * mPxToDp : 0.f;
-                float lastTapY = 0.f;
-                if (launchType != TabLaunchType.FROM_CHROME_UI) {
-                    lastTapX = mPxToDp * mLastTapX;
-                    lastTapY = mPxToDp * mLastTapY;
-                }
+            boolean incognito = tab.isIncognito();
+            boolean willBeSelected = willAddedTabBeSelected(launchType, incognito);
+            float lastTapX = LocalizationUtils.isLayoutRtl() ? mHost.getWidth() * mPxToDp : 0.f;
+            float lastTapY = 0.f;
+            if (launchType != TabLaunchType.FROM_CHROME_UI) {
+                lastTapX = mPxToDp * mLastTapX;
+                lastTapY = mPxToDp * mLastTapY;
+            }
 
-                tabCreated(
-                        tabId,
-                        getTabModelSelector().getCurrentTabId(),
-                        launchType,
-                        incognito,
-                        willBeSelected,
-                        lastTapX,
-                        lastTapY);
+            tabCreated(
+                    tabId,
+                    getTabModelSelector().getCurrentTabId(),
+                    launchType,
+                    incognito,
+                    willBeSelected,
+                    lastTapX,
+                    lastTapY);
         }
 
         @Override
@@ -296,6 +288,26 @@ public class LayoutManagerImpl
         @Override
         public void tabRemoved(Tab tab) {
             tabClosed(tab.getId(), tab.isIncognito(), true);
+        }
+
+        private boolean willAddedTabBeSelected(@TabLaunchType int launchType, boolean incognito) {
+            boolean isBackgroundLaunch;
+            switch (launchType) {
+                case TabLaunchType.FROM_LONGPRESS_BACKGROUND:
+                case TabLaunchType.FROM_LONGPRESS_BACKGROUND_IN_GROUP:
+                case TabLaunchType.FROM_RECENT_TABS:
+                case TabLaunchType.FROM_RESTORE_TABS_UI:
+                case TabLaunchType.FROM_SYNC_BACKGROUND:
+                case TabLaunchType.FROM_BROWSER_ACTIONS:
+                case TabLaunchType.FROM_COLLABORATION_BACKGROUND_IN_GROUP:
+                    isBackgroundLaunch = true;
+                    break;
+                default:
+                    isBackgroundLaunch = false;
+            }
+
+            return !isBackgroundLaunch
+                    || (!getTabModelSelector().isIncognitoSelected() && incognito);
         }
     }
 
@@ -330,20 +342,21 @@ public class LayoutManagerImpl
 
     /**
      * Creates a {@link LayoutManagerImpl} instance.
+     *
      * @param host A {@link LayoutManagerHost} instance.
      * @param contentContainer A {@link ViewGroup} for Android views to be bound to.
      * @param tabContentManagerSupplier Supplier of the {@link TabContentManager} instance.
-     * @param topUiThemeColorProvider {@link ThemeColorProvider} for top UI.
+     * @param toolbarThemeColorProvider {@link ToolbarThemeColorProvider} for the toolbar.
      */
     public LayoutManagerImpl(
             LayoutManagerHost host,
             ViewGroup contentContainer,
             MonotonicObservableSupplier<TabContentManager> tabContentManagerSupplier,
-            Supplier<TopUiThemeColorProvider> topUiThemeColorProvider) {
+            Supplier<ToolbarThemeColorProvider> toolbarThemeColorProvider) {
         mHost = host;
         mPxToDp = 1.f / mHost.getContext().getResources().getDisplayMetrics().density;
         mTabContentManagerSupplier = tabContentManagerSupplier;
-        mTopUiThemeColorProvider = topUiThemeColorProvider;
+        mToolbarThemeColorProvider = toolbarThemeColorProvider;
         mContext = host.getContext();
 
         // Overlays are ordered back (closest to the web content) to front.
@@ -357,6 +370,7 @@ public class LayoutManagerImpl
                     StripLayoutHelperManager.class,
                     // The Bookmark Bar will appear to move behind the toolbar during animation.
                     BookmarkBarSceneLayer.class,
+                    ReadAloudMiniPlayerSceneLayer.class,
                     TopToolbarOverlayCoordinator.class,
                     // StripLayoutHelperManager should be updated before
                     // ScrollingBottomViewSceneLayer Since ScrollingBottomViewSceneLayer change
@@ -364,8 +378,7 @@ public class LayoutManagerImpl
                     ScrollingBottomViewSceneLayer.class,
                     ContextualSearchPanel.class,
                     EdgeToEdgeBottomChinSceneLayer.class,
-                    StatusIndicatorCoordinator.getSceneOverlayClass(),
-                    ReadAloudMiniPlayerSceneLayer.class
+                    StatusIndicatorCoordinator.getSceneOverlayClass()
                 };
 
         for (int i = 0; i < overlayOrder.length; i++) mOverlayOrderMap.put(overlayOrder[i], i);
@@ -400,11 +413,12 @@ public class LayoutManagerImpl
     /**
      * Gives the {@link LayoutManagerImpl} a chance to intercept and process motion events from the
      * Android {@link View} system.
-     * @param e                 The {@link MotionEvent} that might be intercepted.
+     *
+     * @param e The {@link MotionEvent} that might be intercepted.
      * @param isKeyboardShowing Whether or not the keyboard is showing.
-     * @param eventType         The type of input event that is processed by an {@link EventFilter}.
-     * @return                  Whether or not this current motion event should be intercepted and
-     *                          continually forwarded to this class.
+     * @param eventType The type of input event that is processed by an {@link EventFilter}.
+     * @return Whether or not this current motion event should be intercepted and continually
+     *     forwarded to this class.
      */
     public boolean onInterceptMotionEvent(
             MotionEvent e, boolean isKeyboardShowing, @EventType int eventType) {
@@ -462,8 +476,9 @@ public class LayoutManagerImpl
     /**
      * Gives the {@link LayoutManagerImpl} a chance to process the touch events from the Android
      * {@link View} system.
+     *
      * @param e A {@link MotionEvent} instance.
-     * @return  Whether or not {@code e} was consumed.
+     * @return Whether or not {@code e} was consumed.
      */
     public boolean onTouchEvent(MotionEvent e) {
         if (mActiveEventFilter == null) return false;
@@ -572,7 +587,7 @@ public class LayoutManagerImpl
     }
 
     /**
-     * Updates the state of the active {@link Layout} if needed.  This updates the animations and
+     * Updates the state of the active {@link Layout} if needed. This updates the animations and
      * cascades the changes to the tabs.
      */
     public void onUpdate() {
@@ -633,7 +648,7 @@ public class LayoutManagerImpl
      * @param creator A {@link TabCreatorManager} instance.
      * @param controlContainer A {@link ControlContainer} for browser controls' layout.
      * @param dynamicResourceLoader A {@link DynamicResourceLoader} instance.
-     * @param topUiColorProvider A theme color provider for the top browser controls.
+     * @param toolbarColorProvider A theme color provider for the top browser controls.
      * @param bottomControlsOffsetSupplier Supplier of the offset, relative to the bottom of the
      *     viewport, of the bottom-anchored toolbar.
      */
@@ -643,7 +658,7 @@ public class LayoutManagerImpl
             TabCreatorManager creator,
             @Nullable ControlContainer controlContainer,
             DynamicResourceLoader dynamicResourceLoader,
-            TopUiThemeColorProvider topUiColorProvider,
+            ToolbarThemeColorProvider toolbarColorProvider,
             NonNullObservableSupplier<Integer> bottomControlsOffsetSupplier) {
         LayoutRenderHost renderHost = mHost.getLayoutRenderHost();
 
@@ -661,7 +676,7 @@ public class LayoutManagerImpl
                         selector,
                         assertNonNull(mTabContentManagerSupplier.get()),
                         mBrowserControlsStateProvider,
-                        mTopUiThemeColorProvider,
+                        mToolbarThemeColorProvider,
                         getLayoutNeedOffsetTagSupplier());
 
         setNextLayout(null, true);
@@ -671,7 +686,7 @@ public class LayoutManagerImpl
         mOverlayPanelManager.setContainerView(mContentContainer);
 
         // The {@link setTabModelSelector} should be called after all of the initialization above
-        // complete. See https://crbug.com/1132948.
+        // complete. See https://crbug.com/40150830.
         if (mTabModelSelector == null) {
             setTabModelSelector(selector);
         }
@@ -714,8 +729,8 @@ public class LayoutManagerImpl
 
         selector.getCurrentTabModelSupplier().addSyncObserver(mCurrentTabModelObserver);
 
-        mTabGroupModelFilterObserver = createTabModelObserver();
-        getTabModelSelector().addTabGroupModelFilterObserver(mTabGroupModelFilterObserver);
+        mTabGroupObserver = createTabModelObserver();
+        getTabModelSelector().addObserverToAllModels(mTabGroupObserver);
     }
 
     @Override
@@ -730,12 +745,14 @@ public class LayoutManagerImpl
                     .getCurrentTabModelSupplier()
                     .removeObserver(mCurrentTabModelObserver);
         }
-        if (mTabGroupModelFilterObserver != null) {
-            getTabModelSelector().removeTabGroupModelFilterObserver(mTabGroupModelFilterObserver);
+        if (mTabGroupObserver != null) {
+            getTabModelSelector().removeObserverFromAllModels(mTabGroupObserver);
         }
     }
 
-    /** @return A resource manager to pull textures from. */
+    /**
+     * @return A resource manager to pull textures from.
+     */
     public ResourceManager getResourceManager() {
         return mHost.getLayoutRenderHost().getResourceManager();
     }
@@ -881,9 +898,14 @@ public class LayoutManagerImpl
         }
     }
 
+    /** Sets the {@link LayoutTab#CONTENT_OFFSET_X} for the static layout. */
+    public void setContentOffsetX(@Px int contentOffsetX) {
+        mStaticLayout.setContentOffsetX(contentOffsetX);
+    }
+
     /**
      * @return The default {@link Layout} to show when {@link Layout}s get hidden and the next
-     *         {@link Layout} to show isn't known.
+     *     {@link Layout} to show isn't known.
      */
     protected Layout getDefaultLayout() {
         return mStaticLayout;
@@ -909,13 +931,14 @@ public class LayoutManagerImpl
 
     /**
      * Should be called when a tab created event is triggered.
-     * @param id             The id of the tab that was created.
-     * @param sourceId       The id of the creating tab if any.
-     * @param launchType     How the tab was launched.
-     * @param incognito      Whether or not the created tab is incognito.
+     *
+     * @param id The id of the tab that was created.
+     * @param sourceId The id of the creating tab if any.
+     * @param launchType How the tab was launched.
+     * @param incognito Whether or not the created tab is incognito.
      * @param willBeSelected Whether or not the created tab will be selected.
-     * @param originX        The x coordinate of the action that created this tab in dp.
-     * @param originY        The y coordinate of the action that created this tab in dp.
+     * @param originX The x coordinate of the action that created this tab in dp.
+     * @param originY The y coordinate of the action that created this tab in dp.
      */
     protected void tabCreated(
             int id,
@@ -978,8 +1001,8 @@ public class LayoutManagerImpl
      */
     protected void tabsAllClosing(boolean incognito) {}
 
-    protected Supplier<TopUiThemeColorProvider> getTopUiThemeColorProvider() {
-        return mTopUiThemeColorProvider;
+    protected Supplier<ToolbarThemeColorProvider> getTopUiThemeColorProvider() {
+        return mToolbarThemeColorProvider;
     }
 
     @Override
@@ -1003,13 +1026,14 @@ public class LayoutManagerImpl
                         && !isNativePage
                         && !tab.isHidden();
 
-        TopUiThemeColorProvider topUiTheme = mTopUiThemeColorProvider.get();
+        ToolbarThemeColorProvider toolbarTheme = mToolbarThemeColorProvider.get();
+        @ColorInt int toolbarBackgroundColor = toolbarTheme.getToolbarBackgroundColor(tab);
         layoutTab.initFromHost(
-                topUiTheme.getBackgroundColor(tab),
+                ThemeUtils.getBackgroundColor(tab),
                 canUseLiveTexture,
-                topUiTheme.getSceneLayerBackground(tab),
+                toolbarBackgroundColor,
                 ThemeUtils.getTextBoxColorForToolbarBackground(
-                        mContext, tab, topUiTheme.calculateColor(tab, tab.getThemeColor())));
+                        mContext, tab, toolbarBackgroundColor));
 
         mHost.requestRender();
     }
@@ -1024,8 +1048,7 @@ public class LayoutManagerImpl
         LayoutTab layoutTab = mTabCache.get(tabId);
         if (layoutTab == null) return;
 
-        layoutTab.set(
-                LayoutTab.BACKGROUND_COLOR, mTopUiThemeColorProvider.get().getBackgroundColor(tab));
+        layoutTab.set(LayoutTab.BACKGROUND_COLOR, ThemeUtils.getBackgroundColor(tab));
     }
 
     @Override
@@ -1056,15 +1079,17 @@ public class LayoutManagerImpl
     }
 
     /**
-     * @return The next {@link Layout} that will be shown.  If no {@link Layout} has been set
-     *         since the last time {@link #startShowing(Layout, boolean)} was called, this will be
-     *         {@link #getDefaultLayout()}.
+     * @return The next {@link Layout} that will be shown. If no {@link Layout} has been set since
+     *     the last time {@link #startShowing(Layout, boolean)} was called, this will be {@link
+     *     #getDefaultLayout()}.
      */
     protected Layout getNextLayout() {
         return mNextActiveLayout != null ? mNextActiveLayout : getDefaultLayout();
     }
 
-    /** @return Whether a next layout has been explicitly specified. */
+    /**
+     * @return Whether a next layout has been explicitly specified.
+     */
     protected boolean hasExplicitNextLayout() {
         return mNextActiveLayout != null;
     }
@@ -1306,6 +1331,7 @@ public class LayoutManagerImpl
 
     /**
      * Should be called when the user presses the back button on the phone.
+     *
      * @return Whether or not the back button was consumed by the active {@link Layout}.
      */
     public boolean onBackPressed() {
@@ -1387,6 +1413,7 @@ public class LayoutManagerImpl
 
     /**
      * Clears all content associated with {@code tabId} from the internal caches.
+     *
      * @param tabId The id of the tab to clear.
      */
     protected void emptyTabCachesExcept(int tabId) {

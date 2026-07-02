@@ -10,8 +10,11 @@
 #include <utility>
 #include <vector>
 
+#include "base/byte_size.h"
 #include "base/check.h"
 #include "base/containers/flat_map.h"
+#include "base/containers/span.h"
+#include "base/containers/to_vector.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
@@ -41,7 +44,8 @@ namespace {
 
 // Returns the amount of physical memory in GB, rounded to the nearest GB.
 int GetPhysicalMemoryGB() {
-  return base::ClampRound(base::SysInfo::AmountOfPhysicalMemory().InGiBF());
+  return base::ClampRound(
+      base::SysInfo::AmountOfTotalPhysicalMemory().InGiBF());
 }
 
 std::string GetOSVersion() {
@@ -87,7 +91,7 @@ base::flat_map<std::string, std::string> BuildUpdateCheckExtraRequestHeaders(
   const std::vector<std::string>& app_ids =
       ids.size() <= maxIdsCount
           ? ids
-          : std::vector<std::string>(ids.cbegin(), ids.cbegin() + maxIdsCount);
+          : base::ToVector(base::span(ids).first(maxIdsCount));
   return {
       {"X-Goog-Update-Updater",
        base::StrCat({prod_id, "-", browser_version.GetString()})},

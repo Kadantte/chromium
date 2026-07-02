@@ -4,7 +4,7 @@
 
 #include "chrome/browser/webauthn/passkey_unlock_manager.h"
 
-#include "base/test/scoped_feature_list.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
@@ -17,9 +17,9 @@
 #include "chrome/browser/webauthn/enclave_manager_factory.h"
 #include "chrome/browser/webauthn/passkey_unlock_manager_factory.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "components/trusted_vault/trusted_vault_histograms.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
-#include "device/fido/public/features.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/http/http_status_code.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -30,7 +30,7 @@
 
 // These tests are also disabled under MSAN. The enclave subprocess is written
 // in Rust and FFI from Rust to C++ doesn't work in Chromium at this time
-// (crbug.com/1369167).
+// (crbug.com/40240570).
 #if !defined(MEMORY_SANITIZER)
 
 namespace webauthn {
@@ -98,7 +98,7 @@ class PasskeyUnlockManagerBrowserTest : public EnclaveAuthenticatorTestBase {
     ASSERT_TRUE(sync_harness()->SetupSync());
     ASSERT_TRUE(
         identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSync));
- }
+  }
 
  protected:
   void SetUpOnMainThread() override {
@@ -119,9 +119,6 @@ class PasskeyUnlockManagerBrowserTest : public EnclaveAuthenticatorTestBase {
 
     EnableSync();
   }
-
- private:
-  base::test::ScopedFeatureList feature_list_{device::kPasskeyUnlockManager};
 };
 
 IN_PROC_BROWSER_TEST_F(PasskeyUnlockManagerBrowserTest, IsCreated) {
@@ -134,6 +131,7 @@ IN_PROC_BROWSER_TEST_F(PasskeyUnlockManagerBrowserTest,
                        OpensNewTabWithPasskeyUnlockUrl) {
   TabStripModel* tab_strip_model = browser()->tab_strip_model();
   int initial_tab_count = tab_strip_model->count();
+  base::HistogramTester histogram_tester;
 
   PasskeyUnlockManager::OpenTabWithPasskeyUnlockChallenge(
       browser(), trusted_vault::TrustedVaultUserActionTriggerForUMA::
@@ -143,15 +141,12 @@ IN_PROC_BROWSER_TEST_F(PasskeyUnlockManagerBrowserTest,
   EXPECT_EQ(initial_tab_count + 1, tab_strip_model->count());
   content::WebContents* new_contents = tab_strip_model->GetActiveWebContents();
   ASSERT_TRUE(new_contents);
-#if BUILDFLAG(IS_CHROMEOS)
-  EXPECT_EQ(GURL("https://accounts.google.com/encryption/unlock/"
-                 "chromeos?kdi=CAESDgoMaHdfcHJvdGVjdGVk"),
-            new_contents->GetVisibleURL());
-#else
-  EXPECT_EQ(GURL("https://accounts.google.com/encryption/unlock/"
-                 "desktop?kdi=CAESDgoMaHdfcHJvdGVjdGVk"),
-            new_contents->GetVisibleURL());
-#endif
+  EXPECT_THAT(
+      new_contents->GetVisibleURL().spec(),
+      testing::StartsWith("https://accounts.google.com/encryption/unlock/"));
+  histogram_tester.ExpectUniqueSample(
+      "TrustedVault.RecoveryFlowTriggeredEndpoint",
+      trusted_vault::TrustedVaultRecoveryFlowEndpoint::kDesktop, 1);
   TrustedVaultEncryptionKeysTabHelper* tab_helper =
       TrustedVaultEncryptionKeysTabHelper::FromWebContents(new_contents);
   ASSERT_TRUE(tab_helper);

@@ -49,6 +49,8 @@ enum TabOpeningPostOpeningAction {
   EXTERNAL_ACTION_SHOW_BROWSER_SETTINGS,
   START_LENS_FROM_SHARE_EXTENSION,
   CREDENTIAL_EXCHANGE_IMPORT,
+  TRIGGER_GEMINI_PROMO,
+  SHOW_GOOGLE_ONE_SCREEN,
 };
 
 // Represents the status of a request to change the application mode.
@@ -119,6 +121,8 @@ class GURL;
 @property(nonatomic, readwrite, assign) BOOL openedWithURL;
 // Boolean to track whether the app was opened via share extension.
 @property(nonatomic, readwrite, assign) BOOL openedViaShareExtensionScheme;
+// Boolean to track whether the app was opened via Siri shortcut.
+@property(nonatomic, readwrite, assign) BOOL openedViaSiriShortcut;
 
 - (instancetype)init NS_UNAVAILABLE;
 

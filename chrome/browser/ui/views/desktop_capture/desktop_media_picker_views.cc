@@ -8,7 +8,6 @@
 #include <string>
 #include <utility>
 
-#include "audio_capture_permission_checker_mac.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
@@ -22,8 +21,8 @@
 #include "chrome/browser/media/webrtc/desktop_media_picker_controller.h"
 #include "chrome/browser/media/webrtc/desktop_media_picker_manager.h"
 #include "chrome/browser/media/webrtc/desktop_media_picker_utils.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/extensions/extensions_container.h"
 #include "chrome/browser/ui/layout_constants.h"
@@ -44,6 +43,7 @@
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/desktop_capture_pip_utils.h"
 #include "content/public/browser/desktop_media_id.h"
 #include "content/public/browser/media_stream_request.h"
 #include "content/public/browser/render_frame_host.h"
@@ -52,6 +52,7 @@
 #include "content/public/browser/web_contents_delegate.h"
 #include "media/audio/audio_features.h"
 #include "media/base/media_switches.h"
+#include "media/capture/capture_switches.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -72,6 +73,11 @@
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/widget/widget.h"
+
+#if BUILDFLAG(IS_MAC)
+#include "chrome/browser/ui/views/desktop_capture/audio_capture_permission_checker_mac.h"
+#endif
+
 #if defined(USE_AURA)
 #include "ui/aura/window_tree_host.h"
 #endif
@@ -155,15 +161,6 @@ void RecordUma(GDMResult result, base::TimeTicks dialog_open_time) {
   histogram->AddTime(elapsed);
 }
 
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-enum class PermissionInteraction {
-  kNotShown = 0,
-  kShown = 1,
-  kClicked = 2,
-  kMaxValue = kClicked
-};
-
 void RecordUmaCancellation(base::TimeTicks dialog_open_time) {
   RecordAction(base::UserMetricsAction("GetDisplayMedia.Cancel"));
   RecordUma(GDMResult::kUserCancelled, dialog_open_time);
@@ -215,11 +212,6 @@ void RecordUmaSelection(content::GlobalRenderFrameHostId capturer_global_id,
 }
 
 #if BUILDFLAG(IS_MAC)
-void RecordUma(PermissionInteraction permission_interaction) {
-  base::UmaHistogramEnumeration(
-      "Media.Ui.GetDisplayMedia.PermissionInteractionMac",
-      permission_interaction);
-}
 
 void RecordPermissionButtonOpenedAction(DesktopMediaList::Type type) {
   switch (type) {
@@ -263,8 +255,10 @@ std::u16string GetLabelForReselectButton(DesktopMediaList::Type type) {
 // the picker choices may have been restricted.
 std::unique_ptr<views::View> CreatePolicyRestrictedView() {
   auto icon = std::make_unique<views::ImageView>();
-  icon->SetImage(ui::ImageModel::FromVectorIcon(vector_icons::kBusinessIcon,
-                                                ui::kColorIcon, 18));
+  icon->SetImage(ui::ImageModel::FromVectorIcon(
+      features::IsRoundedIconsEnabled() ? vector_icons::kDomainIcon
+                                        : vector_icons::kBusinessOldIcon,
+      ui::kColorIcon, 18));
 
   auto policy_label = std::make_unique<views::Label>();
   policy_label->SetMultiLine(true);
@@ -490,11 +484,9 @@ DesktopMediaPickerDialogView::DesktopMediaPickerDialogView(
 
   SetModalType(params.modality);
   int message_id = IDS_DESKTOP_MEDIA_PICKER_SHARE;
-#if BUILDFLAG(ENABLE_GLIC)
   if (request_source_ == RequestSource::kGlic) {
     message_id = IDS_GLIC_SCREEN_PICKER_CTA;
   }
-#endif
   SetButtonLabel(ui::mojom::DialogButton::kOk,
                  l10n_util::GetStringUTF16(message_id));
   SetButtonStyle(ui::mojom::DialogButton::kCancel, ui::ButtonStyle::kTonal);
@@ -664,12 +656,10 @@ DesktopMediaPickerDialogView::DesktopMediaPickerDialogView(
     }
   }
 
-#if BUILDFLAG(ENABLE_GLIC)
   if (request_source_ == RequestSource::kGlic) {
     description_label_->SetText(
         l10n_util::GetStringUTF16(IDS_GLIC_SCREEN_PICKER_DESCRIPTION));
   }
-#endif
 
   DCHECK(!categories_.empty());
 
@@ -682,7 +672,9 @@ DesktopMediaPickerDialogView::DesktopMediaPickerDialogView(
 
   bool modal_dialog = MediaPickerCanShowAsWebModal(params.web_contents);
   views::Widget* widget = CreateMediaPickerDialogWidget(
-      modal_dialog ? chrome::FindBrowserWithTab(params.web_contents) : nullptr,
+      modal_dialog ? GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+                         params.web_contents)
+                   : nullptr,
       params.web_contents,
       /*delegate=*/this, params.context, /*parent=*/gfx::NativeView());
 
@@ -720,11 +712,44 @@ DesktopMediaPickerDialogView::DesktopMediaPickerDialogView(
   }
 
   GetSelectedController()->FocusView();
+
+#if BUILDFLAG(IS_WIN)
+  // Register the picker as a capturer to make sure the document
+  // Picture-in-Picture window is hidden from the preview. macOS manages screen
+  // capture exclusion through a different, platform-specific mechanism in
+  // ScreenCaptureKit.
+  if (base::FeatureList::IsEnabled(features::kExcludePipFromScreenCapture)) {
+    auto session_id =
+        content::desktop_capture::RegisterDesktopMediaPickerAsCapture(
+            capturer_global_id_);
+    if (!session_id.is_empty()) {
+      pip_exclusion_session_id_ = session_id;
+    }
+  }
+#endif
 }
 
 DesktopMediaPickerDialogView::~DesktopMediaPickerDialogView() {
-#if BUILDFLAG(IS_MAC)
-  RecordPermissionInteractionUma();
+#if BUILDFLAG(IS_WIN)
+  if (!pip_exclusion_session_id_) {
+    return;
+  }
+
+  // To prevent flickering during the hand-off when the user confirms their
+  // selection, we delay the unregistration of the picker-dialog capture session
+  // by 500ms. When the user clicks Cancel, we unregister immediately to avoid
+  // keeping the Picture-in-Picture window hidden unnecessarily.
+  constexpr base::TimeDelta kPipExclusionUnregistrationDelay =
+      base::Milliseconds(500);
+  const base::TimeDelta delay =
+      accepted_ ? kPipExclusionUnregistrationDelay : base::TimeDelta();
+
+  content::GetUIThreadTaskRunner({})->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(
+          &content::desktop_capture::UnregisterDesktopMediaPickerAsCapture,
+          *pip_exclusion_session_id_),
+      delay);
 #endif
 }
 
@@ -761,7 +786,6 @@ void DesktopMediaPickerDialogView::ConfigureUIForNewPane(int index) {
   }
 #if BUILDFLAG(IS_MAC)
   if (category.pane->IsPermissionPaneVisible()) {
-    permission_pane_was_shown_ = true;
     RecordPermissionButtonOpenedAction(category.type);
   }
 #endif
@@ -870,7 +894,7 @@ std::unique_ptr<views::View> DesktopMediaPickerDialogView::SetupPane(
       categories_.emplace_back(type, std::move(controller), audio_offered,
                                audio_checked, supports_reselect_button);
 
-  base::RepeatingCallback<void(void)> trigger_audio_permission_check;
+  base::RepeatingClosure trigger_audio_permission_check;
 #if BUILDFLAG(IS_MAC)
   if (audio_capture_permission_checker_ &&
       (type == DesktopMediaList::Type::kScreen ||
@@ -1113,11 +1137,9 @@ std::u16string DesktopMediaPickerDialogView::GetWindowTitle() const {
     return l10n_util::GetStringFUTF16(IDS_DISPLAY_MEDIA_PICKER_TITLE,
                                       app_name_);
   }
-#if BUILDFLAG(ENABLE_GLIC)
   if (request_source_ == RequestSource::kGlic) {
     return l10n_util::GetStringUTF16(IDS_GLIC_SCREEN_PICKER_HEADLINE);
   }
-#endif
 
   int title_id = IDS_DESKTOP_MEDIA_PICKER_TITLE;
 
@@ -1152,6 +1174,9 @@ views::View* DesktopMediaPickerDialogView::GetInitiallyFocusedView() {
 }
 
 bool DesktopMediaPickerDialogView::Accept() {
+#if BUILDFLAG(IS_WIN)
+  accepted_ = true;
+#endif
   CHECK(IsDialogButtonEnabled(ui::mojom::DialogButton::kOk));
 
   // Accept() can only be called if IsDialogButtonEnabled() for the OK button,
@@ -1289,10 +1314,6 @@ void DesktopMediaPickerDialogView::OnCanReselectChanged(
 void DesktopMediaPickerDialogView::OnPermissionUpdate(bool has_permission) {
   CHECK(screen_capture_permission_checker_);
 
-  if (!initial_permission_state_.has_value()) {
-    initial_permission_state_ = has_permission;
-  }
-
   if (has_permission) {
     // Avoid needless polling.
     // (A user who revokes permission while the media-picker is visible,
@@ -1305,26 +1326,7 @@ void DesktopMediaPickerDialogView::OnPermissionUpdate(bool has_permission) {
   }
 }
 
-void DesktopMediaPickerDialogView::RecordPermissionInteractionUma() const {
-  if (initial_permission_state_.value_or(true)) {
-    return;
-  }
 
-  bool permission_button_was_clicked = false;
-  for (auto& category : categories_) {
-    if (category.pane->WasPermissionButtonClicked()) {
-      permission_button_was_clicked = true;
-      break;
-    }
-  }
-
-  const PermissionInteraction permission_interaction =
-      permission_button_was_clicked ? PermissionInteraction::kClicked
-      : permission_pane_was_shown_  ? PermissionInteraction::kShown
-                                    : PermissionInteraction::kNotShown;
-
-  RecordUma(permission_interaction);
-}
 
 void DesktopMediaPickerDialogView::OnAudioSharingApprovedByUserUpdate() {
   const int index = GetSelectedTabIndex();

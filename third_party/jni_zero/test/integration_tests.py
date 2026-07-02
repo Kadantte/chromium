@@ -14,6 +14,7 @@ import collections
 import copy
 import difflib
 import glob
+import json
 import logging
 import os
 import pathlib
@@ -31,6 +32,7 @@ _EXTRA_INCLUDES = 'extra_include.h'
 _JAVA_SRC_DIR = os.path.join(_SCRIPT_DIR, 'java', 'src', 'org', 'jni_zero')
 _JAVA_BIN_DIR = os.path.join(_SCRIPT_DIR, os.pardir, os.pardir, 'jdk',
                              'current', 'bin')
+_JAVAP_PATH = os.path.normpath(os.path.join(_JAVA_BIN_DIR, 'javap'))
 
 # Set this environment variable in order to regenerate the golden text
 # files.
@@ -40,21 +42,34 @@ _accessed_goldens = set()
 
 
 class CliOptions:
-  def __init__(self, is_final=False, is_javap=False, **kwargs):
+
+  def __init__(self,
+               is_final=False,
+               is_javap=False,
+               is_gen_register_natives=False,
+               **kwargs):
     if is_final:
       self.action = 'generate-final'
     elif is_javap:
       self.action = 'from-jar'
+    elif is_gen_register_natives:
+      self.action = 'gen-register-natives'
     else:
       self.action = 'from-source'
 
     self.input_files = []
     self.jar_file = None
+    self.jar_files = []
     self.output_dir = None
-    self.output_files = None if is_final else []
+    self.shared_header_files = None if is_final else []
+    self.unshared_header_files = None if is_final else []
     self.header_path = None
+    self.linker_script_path = None
+    self.register_natives_name = None
+    self.class_blocklist = None
     self.enable_jni_multiplexing = False
-    self.enable_definition_macros = False
+    self.enable_definition_macros = self.action == 'from-source'
+    self.use_std_primitive_types = self.action.startswith('from')
     self.package_prefix = None
     self.package_prefix_filter = None
     self.use_proxy_hash = False
@@ -64,6 +79,7 @@ class CliOptions:
     self.include_test_only = False
     self.manual_jni_registration = False
     self.remove_uncalled_methods = False
+    self.needs_javap = is_javap or is_gen_register_natives
     self.__dict__.update(kwargs)
 
   def to_args(self):
@@ -71,12 +87,16 @@ class CliOptions:
         os.path.join(_SCRIPT_DIR, os.pardir, 'jni_zero.py'),
         self.action,
         '--include-path-prefix=overridden/',
-        '--enable-legacy-natives',
     ]
+    if self.action != 'gen-register-natives':
+      ret.append('--enable-legacy-natives')
+
     if self.enable_jni_multiplexing:
       ret.append('--enable-jni-multiplexing')
     if self.enable_definition_macros:
       ret.append('--enable-definition-macros')
+    if self.use_std_primitive_types:
+      ret.append('--use-std-primitive-types')
     if self.package_prefix:
       ret += ['--package-prefix', self.package_prefix]
     if self.package_prefix_filter:
@@ -88,9 +108,12 @@ class CliOptions:
     if self.input_files:
       for f in self.input_files:
         ret += ['--input-file', f]
-    if self.output_files:
-      for f in self.output_files:
-        ret += ['--output-name', f]
+    if self.shared_header_files:
+      for f in self.shared_header_files:
+        ret += ['--shared-header-name', f]
+    if self.unshared_header_files:
+      for f in self.unshared_header_files:
+        ret += ['--unshared-header-name', f]
     if self.jar_file:
       ret += ['--jar-file', self.jar_file]
     if self.extra_include:
@@ -99,6 +122,12 @@ class CliOptions:
       ret.append('--add-stubs-for-missing-native')
     if self.header_path:
       ret += ['--header-path', self.header_path]
+    if self.linker_script_path:
+      ret += ['--linker-script-path', self.linker_script_path]
+    if self.register_natives_name:
+      ret += ['--register-natives-name', self.register_natives_name]
+    if self.class_blocklist:
+      ret += ['--class-blocklist', self.class_blocklist]
     if self.include_test_only:
       ret.append('--include-test-only')
     if self.manual_jni_registration:
@@ -107,6 +136,10 @@ class CliOptions:
       ret += ['--module-name', self.module_name]
     if self.remove_uncalled_methods:
       ret.append('--remove-uncalled-methods')
+    if self.action == 'gen-register-natives':
+      ret += self.jar_files
+    if self.needs_javap:
+      ret += ['--javap', _JAVAP_PATH]
     return ret
 
 
@@ -118,6 +151,21 @@ def _MakePrefixes(options):
   if options.module_name:
     module_prefix = f'{options.module_name}_'
   return package_prefix, module_prefix
+
+
+def _WriteMetadataJson(path, sources):
+  modules = collections.defaultdict(list)
+  for src in sources:
+    module = 'module' if 'SampleModule.java' in src else ''
+    modules[module].append(src)
+
+  metadata = []
+  for module, files in modules.items():
+    m = {'java_files': files}
+    if module:
+      m['module_name'] = module
+    metadata.append(m)
+  path.write_text(json.dumps(metadata))
 
 
 class BaseTest(unittest.TestCase):
@@ -167,7 +215,8 @@ class BaseTest(unittest.TestCase):
       for i in input_files:
         basename_and_folder = os.path.splitext(i)[0]
         basename = os.path.basename(basename_and_folder)
-        options.output_files.append(f'{basename}_jni.h')
+        options.shared_header_files.append(f'{basename}_shared_jni.h')
+        options.unshared_header_files.append(f'{basename}_jni.h')
         if srcjar:
           name_to_goldens.update({
               f'org/jni_zero/{basename_and_folder}Jni.java':
@@ -199,13 +248,9 @@ class BaseTest(unittest.TestCase):
       if per_file_natives:
         cmd += ['--per-file-natives']
 
-      env = os.environ.copy()
-      if _JAVA_BIN_DIR not in env['PATH']:
-        env['PATH'] = os.pathsep.join([_JAVA_BIN_DIR, env['PATH']])
-
       logging.info('Running: %s', shlex.join(cmd))
-      subprocess.check_call(cmd, env=env)
-      for o in options.output_files:
+      subprocess.check_call(cmd)
+      for o in (options.shared_header_files + options.unshared_header_files):
         output_path = os.path.join(tdir, o)
         with open(output_path, 'r') as f:
           contents = f.read()
@@ -254,19 +299,19 @@ class BaseTest(unittest.TestCase):
 
       cmd = options.to_args()
 
-      java_sources_file = pathlib.Path(tdir) / 'java_sources.txt'
-      java_sources_file.write_text('\n'.join(java_sources))
+      java_sources_file = pathlib.Path(tdir) / 'java_sources.json'
+      _WriteMetadataJson(java_sources_file, java_sources)
       cmd += ['--java-sources-file', str(java_sources_file)]
       if native_sources:
-        native_sources_file = pathlib.Path(tdir) / 'native_sources.txt'
-        native_sources_file.write_text('\n'.join(native_sources))
+        native_sources_file = pathlib.Path(tdir) / 'native_sources.json'
+        _WriteMetadataJson(native_sources_file, native_sources)
         cmd += ['--native-sources-file', str(native_sources_file)]
       if priority_java_files:
         priority_java_sources = [
             os.path.join(_JAVA_SRC_DIR, f) for f in priority_java_files
         ]
-        priority_java_file = pathlib.Path(tdir) / 'java_priority_sources.txt'
-        priority_java_file.write_text('\n'.join(priority_java_sources))
+        priority_java_file = pathlib.Path(tdir) / 'java_priority_sources.json'
+        _WriteMetadataJson(priority_java_file, priority_java_sources)
         cmd += ['--priority-java-sources-file', str(priority_java_file)]
       if priority_java_files is not None:
         cmd += ['--never-omit-switch-num']
@@ -298,12 +343,16 @@ class BaseTest(unittest.TestCase):
       pathlib.Path(input_file).write_text(input_data)
       options = CliOptions()
       options.input_files = [input_file]
-      options.output_files = [f'{input_file}_jni.h']
+      options.shared_header_files = [f'{input_file}_shared_jni.h']
+      options.unshared_header_files = [f'{input_file}_jni.h']
       options.output_dir = tdir
       cmd = options.to_args()
 
       logging.info('Running: %s', shlex.join(cmd))
       result = subprocess.run(cmd, capture_output=True, check=False, text=True)
+      if 'Traceback' in result.stderr:
+        sys.stderr.write(result.stderr)
+        result.check_returncode()
       self.assertIn('MyFile.java', result.stderr)
       self.assertIn(error_snippet, result.stderr)
       self.assertEqual(result.returncode, 1)
@@ -364,12 +413,16 @@ class BaseTest(unittest.TestCase):
 
 @unittest.skipIf(os.name == 'nt', 'Not intended to work on Windows')
 class Tests(BaseTest):
+
+  def testGenerics(self):
+    self._TestEndToEndGeneration(['SampleGenerics.java'], srcjar=True)
+
   def testNonProxy(self):
     self._TestEndToEndGeneration(['SampleNonProxy.java'])
 
   def testBirectionalNonProxy(self):
     self._TestEndToEndGeneration(['SampleBidirectionalNonProxy.java'],
-                                 enable_definition_macros=True)
+                                 enable_definition_macros=False)
 
   def testBidirectionalClass(self):
     self._TestEndToEndGeneration(['SampleForTests.java'], srcjar=True)
@@ -377,6 +430,9 @@ class Tests(BaseTest):
 
   def testFromClassFile(self):
     self._TestEndToEndGeneration(['JavapClass.class'])
+
+  def testJavaUtilList(self):
+    self._TestEndToEndGeneration(['List.class'])
 
   def testUniqueAnnotations(self):
     self._TestEndToEndGeneration(['SampleUniqueAnnotations.java'], srcjar=True)
@@ -531,6 +587,49 @@ class Tests(BaseTest):
                                    enable_jni_multiplexing=True,
                                    manual_jni_registration=True)
 
+  def testGenRegisterNatives(self):
+    with tempfile.TemporaryDirectory() as tdir:
+      java_file = os.path.join(_JAVA_SRC_DIR, 'SampleForLinker.java')
+
+      javac_cmd = [
+          os.path.normpath(os.path.join(_JAVA_BIN_DIR, 'javac')), '-d', tdir,
+          java_file
+      ]
+      logging.info('Running: %s', shlex.join(javac_cmd))
+      subprocess.check_call(javac_cmd)
+
+      jar_path = os.path.join(tdir, 'test.jar')
+      class_relative_path = 'org/jni_zero/SampleForLinker.class'
+      class_absolute_path = os.path.join(tdir, class_relative_path)
+      with zipfile.ZipFile(jar_path, 'w') as z:
+        z.write(class_absolute_path, class_relative_path)
+
+      header_path = os.path.join(tdir, 'header.h')
+      linker_script_path = os.path.join(tdir, 'linker_script.txt')
+
+      options = CliOptions(is_gen_register_natives=True)
+      options.jar_files = [jar_path]
+      options.header_path = header_path
+      options.linker_script_path = linker_script_path
+      options.register_natives_name = 'RegisterNativesForTest'
+
+      cmd = options.to_args()
+
+      logging.info('Running: %s', shlex.join(cmd))
+      subprocess.check_call(cmd)
+
+      self.assertTrue(os.path.exists(header_path))
+      self.assertTrue(os.path.exists(linker_script_path))
+
+      header_content = pathlib.Path(header_path).read_text().replace(
+          tdir.replace('/', '_').upper(), 'TEMP_DIR')
+      linker_content = pathlib.Path(linker_script_path).read_text()
+
+      self.AssertGoldenTextEquals(
+          header_content, 'testGenRegisterNatives-Registration.h.golden')
+      self.AssertGoldenTextEquals(
+          linker_content, 'testGenRegisterNatives-LinkerScript.txt.golden')
+
   def testParseError_noPackage(self):
     data = """
 class MyFile {}
@@ -598,6 +697,16 @@ class MyFile {
 }
 """
     self._TestParseError('Found multiple @JNINamespace', data)
+
+  def testParseError_jniTypeInGenerics(self):
+    data = """
+package foo;
+class MyFile {
+  @CalledByNative
+  void foo(List<@JniType("bar") String> arg) {}
+}
+"""
+    self._TestParseError('@JniType not allowed within generics', data)
 
 
 def main():

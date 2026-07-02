@@ -28,7 +28,9 @@ import org.robolectric.RuntimeEnvironment;
 import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.ContextUtils;
-import org.chromium.chrome.browser.base.SplitCompatService;
+import org.chromium.base.FeatureOverrides;
+import org.chromium.base.SplitCompatService;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.media.ui.ChromeMediaNotificationControllerDelegate.ListenerServiceImpl;
 import org.chromium.chrome.browser.notifications.NotificationUmaTracker;
 import org.chromium.components.browser_ui.media.MediaNotificationController;
@@ -98,13 +100,17 @@ public class MediaNotificationTestBase {
     @Before
     @SuppressWarnings("DirectInvocationOnMock") // For mMockUmaTracker
     public void setUp() {
+        // By default, disable multiple notifications to avoid breaking legacy tests.
+        FeatureOverrides.newBuilder()
+                .disable(ChromeFeatureList.ALLOW_MULTIPLE_MEDIA_NOTIFICATIONS)
+                .applyWithoutOverwrite();
 
         mMockContext = spy(RuntimeEnvironment.application);
         ContextUtils.initApplicationContextForTests(mMockContext);
 
         mListener = mock(MediaNotificationListener.class);
 
-        ChromeMediaNotificationControllerDelegate.sMapNotificationIdToOptions.put(
+        ChromeMediaNotificationControllerDelegate.sMapMediaTypeIdToOptions.put(
                 getNotificationId(),
                 new ChromeMediaNotificationControllerDelegate.NotificationOptions(
                         MockListenerService.class, NOTIFICATION_GROUP_NAME));
@@ -114,7 +120,8 @@ public class MediaNotificationTestBase {
                 getNotificationId(),
                 spy(
                         new MockMediaNotificationController(
-                                new ChromeMediaNotificationControllerDelegate(getNotificationId()) {
+                                new ChromeMediaNotificationControllerDelegate(
+                                        getNotificationId(), getMediaTypeId()) {
                                     @Override
                                     public void logNotificationShown(
                                             NotificationWrapper notification) {
@@ -174,7 +181,8 @@ public class MediaNotificationTestBase {
 
     @After
     public void tearDown() {
-        MediaNotificationManager.clear(NOTIFICATION_ID);
+        MediaNotificationManager.hideForAllTabs(getNotificationId());
+        MediaNotificationManager.setService(getNotificationId(), null);
     }
 
     MediaNotificationController getController() {
@@ -234,6 +242,10 @@ public class MediaNotificationTestBase {
 
     int getNotificationId() {
         return NOTIFICATION_ID;
+    }
+
+    int getMediaTypeId() {
+        return getNotificationId();
     }
 
     void advanceTimeByMillis(int timeMillis) {

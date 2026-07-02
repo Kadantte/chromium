@@ -5,6 +5,24 @@
 #ifndef COMPONENTS_OPTIMIZATION_GUIDE_CORE_OPTIMIZATION_GUIDE_FEATURES_H_
 #define COMPONENTS_OPTIMIZATION_GUIDE_CORE_OPTIMIZATION_GUIDE_FEATURES_H_
 
+// Guidelines for adding new features:
+// 1. Don't add new features in this file. Put them somewhere near the thing
+//    they control or the interface they affect the behavior of.
+// 2. Features should be declared with a comment indicating what they are for
+//    and some reference that can be used to decide when they are no longer
+//    needed.
+//     a. Rollout gates should link a tracker bug for the rollout.
+//     b. Killswitches should link a playbook describing their usage scenarios.
+//     c. Speculative parameters and debugging flags should indicate that
+//        status, so they can be removed whenever they are inconvenient to keep.
+// 3. Parameters should not be added to existing features. In general, it's
+//    better to make an independent Feature for each parameter.
+// 4. See //docs/flag_guarding_guidelines.md and //docs/configuration.md for
+//    general best practices and advice for the Chromium repo.
+
+// TODO: crbug.com/514743962 - All of these constants should be moved to more
+// specific files and out of this file.  Do not add anything here.
+
 #include <map>
 #include <optional>
 #include <set>
@@ -103,10 +121,6 @@ extern const base::FeatureParam<std::string>
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 extern const base::FeatureParam<std::string> kPerformanceClassListForImageInput;
 
-// Comma-separated list of performance classes that have audio input enabled.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-extern const base::FeatureParam<std::string> kPerformanceClassListForAudioInput;
-
 // Whether on device models are downloaded in background prior to feature usage.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kOnDeviceModelBackgroundDownload);
@@ -140,6 +154,12 @@ BASE_DECLARE_FEATURE(kGetAIPageContentMainFrameTimeoutEnabled);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 extern const base::FeatureParam<base::TimeDelta>
     kGetAIPageContentMainFrameTimeoutParam;
+
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+BASE_DECLARE_FEATURE(kGetAIPageContentGetImageBytesTimeoutEnabled);
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+extern const base::FeatureParam<base::TimeDelta>
+    kGetAIPageContentGetImageBytesTimeoutParam;
 
 typedef base::EnumSet<proto::RequestContext,
                       proto::RequestContext_MIN,
@@ -372,12 +392,6 @@ bool ShouldUseTextSafetyClassifierModel();
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 double GetOnDeviceModelLanguageDetectionMinimumReliability();
 
-// Whether the newer generalized safety model is used instead of the ULM-based
-// model as the text safety model. Irrelevant if
-// `ShouldUseTextSafetyClassifierModel()` returns false;
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool ShouldUseGeneralizedSafetyModel();
-
 // These params configure the repetition checker. See HasRepeatingSuffix() in
 // repetition_checker.h for explanation. A value of 2 for num repeats and 16 for
 // min repeat chars would mean we will halt a response once it repeats at least
@@ -416,6 +430,11 @@ std::optional<base::TimeDelta> GetSubframeGetAIPageContentTimeout();
 // applied.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 std::optional<base::TimeDelta> GetMainFrameGetAIPageContentTimeout();
+
+// Returns what the timeout for calls to GetImageBytes should be.
+// An empty return value indicates no timeout should be applied.
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+std::optional<base::TimeDelta> GetAIPageContentGetImageBytesTimeout();
 
 }  // namespace features
 }  // namespace optimization_guide

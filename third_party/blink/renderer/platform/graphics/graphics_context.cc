@@ -254,9 +254,9 @@ DarkModeFilter* GraphicsContext::GetDarkModeFilterForImage(
   return dark_mode_filter;
 }
 
-void GraphicsContext::UpdateDarkModeSettingsForTest(
-    const DarkModeSettings& settings) {
-  dark_mode_filter_ = std::make_unique<DarkModeFilter>(settings);
+void GraphicsContext::SetDarkModeFilterForTest(
+    std::unique_ptr<DarkModeFilter> dark_mode_filter) {
+  dark_mode_filter_ = std::move(dark_mode_filter);
 }
 
 void GraphicsContext::Save() {
@@ -515,7 +515,7 @@ void GraphicsContext::DrawImage(
     SkBlendMode op,
     RespectImageOrientationEnum should_respect_image_orientation,
     Image::ImageClampingMode clamping_mode,
-    ImageNodeAnimationInfo image_node_animation_info) {
+    const ImageNodeAnimationInfo* image_node_animation_info) {
   const gfx::RectF src = src_ptr ? *src_ptr : gfx::RectF(image.Rect());
   cc::PaintFlags image_flags = ImmutableState()->FillFlags();
   image_flags.setBlendMode(op);
@@ -540,7 +540,7 @@ void GraphicsContext::DrawImageRRect(
     SkBlendMode op,
     RespectImageOrientationEnum respect_orientation,
     Image::ImageClampingMode clamping_mode,
-    ImageNodeAnimationInfo image_node_animation_info) {
+    const ImageNodeAnimationInfo* image_node_animation_info) {
   if (!dest.IsRounded()) {
     DrawImage(image, decode_mode, auto_dark_mode, paint_timing_info,
               dest.Rect(), &src_rect, op, respect_orientation, clamping_mode,
@@ -634,20 +634,17 @@ void GraphicsContext::DrawImageTiled(
     const ImageAutoDarkMode& auto_dark_mode,
     const ImagePaintTimingInfo& paint_timing_info,
     SkBlendMode op,
-    RespectImageOrientationEnum respect_orientation) {
+    RespectImageOrientationEnum respect_orientation,
+    const ImageNodeAnimationInfo* image_node_animation_info) {
   cc::PaintFlags image_flags = ImmutableState()->FillFlags();
   image_flags.setBlendMode(op);
   SkSamplingOptions sampling = ImageSamplingOptions();
   DarkModeFilter* dark_mode_filter = GetDarkModeFilterForImage(auto_dark_mode);
-  ImageDrawOptions draw_options(
-      dark_mode_filter, sampling, respect_orientation,
-      Image::kClampImageToSourceRect, Image::kSyncDecode,
-      auto_dark_mode.enabled, paint_timing_info.image_may_be_lcp_candidate,
-      // DrawPattern didn't use image animation information.
-      // An minor edge case exists - tiled image is updated when change
-      // image animation with border-image: round. That is neither
-      // a new case nor an intended use case.
-      ImageNodeAnimationInfo());
+  ImageDrawOptions draw_options(dark_mode_filter, sampling, respect_orientation,
+                                Image::kClampImageToSourceRect,
+                                Image::kSyncDecode, auto_dark_mode.enabled,
+                                paint_timing_info.image_may_be_lcp_candidate,
+                                image_node_animation_info);
   image.DrawPattern(*this, image_flags, dest_rect, tiling_info, draw_options);
   SetImagePainted(paint_timing_info.report_paint_timing);
 }

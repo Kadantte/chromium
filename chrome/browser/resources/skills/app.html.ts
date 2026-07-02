@@ -12,16 +12,17 @@ export function getHtml(this: SkillsAppElement) {
   // clang-format off
   return html`<!--_html_template_start_-->
 <cr-toolbar id="toolbar" page-name="$i18n{skillsTitle}"
-    clear-label="$i18n{delete}" ?autofocus="${true}"
+    clear-label="$i18n{delete}" autofocus
     search-prompt="$i18n{searchBarPlaceholderText}"
-    @cr-toolbar-menu-click="${this.onMenuButtonClick_}"
+    @cr-toolbar-menu-click="${this.onCrToolbarMenuClick_}"
     menu-label="$i18n{mainMenu}" @search-changed="${this.onSearchChanged_}"
     role="banner" .narrow="${this.narrow_}"
     @narrow-changed="${this.onNarrowChanged_}" narrow-threshold="980"
     ?show-menu="${this.shouldShowToolbarMenu_()}"
-    .showSearch="${!this.shouldShowErrorPage_}">
+    .showSearch="${this.getErrorType_() === null}">
 </cr-toolbar>
-${this.shouldShowErrorPage_ ? html`<error-page></error-page>` : html`
+${this.getErrorType_() !== null ? html`
+  <error-page error-type="${this.getErrorType_()!}"></error-page>` : html`
   <div id="content" class="no-outline cr-scrollable">
     <div id="left">
       <div role="navigation" id="sidebar" ?hidden="${this.narrow_}">

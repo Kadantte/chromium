@@ -26,9 +26,9 @@ import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import type {Time} from '//resources/mojo/mojo/public/mojom/base/time.mojom-webui.js';
 
-import {HistoryEmbeddingsBrowserProxyImpl} from './browser_proxy.js';
 import {getCss} from './history_embeddings.css.js';
 import {getHtml} from './history_embeddings.html.js';
+import {browserProxyFactory} from './history_embeddings.mojom-webui.js';
 import type {SearchQuery, SearchResult, SearchResultItem} from './history_embeddings.mojom-webui.js';
 import {AnswerStatus, UserFeedback} from './history_embeddings.mojom-webui.js';
 
@@ -92,10 +92,10 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
 
   static override get properties() {
     return {
-      clickedIndices_: {type: Array},
+      clickedIndices_: {type: Object},
       forceSuppressLogging: {type: Boolean},
       numCharsForQuery: {type: Number},
-      feedbackState_: {type: String},
+      feedbackState_: {type: Number},
       loadingAnswer_: {type: Boolean},
       loadingResults_: {type: Boolean},
       searchResult_: {type: Object},
@@ -130,7 +130,7 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
   private actionMenuItem_: SearchResultItem|null = null;
   protected accessor answerSource_: SearchResultItem|null = null;
   private answerLinkClicked_: boolean = false;
-  private browserProxy_ = HistoryEmbeddingsBrowserProxyImpl.getInstance();
+  private browserProxy_ = browserProxyFactory.getInstance();
   private accessor clickedIndices_: Set<number> = new Set();
   protected accessor enableAnswers_: boolean =
       loadTimeData.getBoolean('enableHistoryEmbeddingsAnswers');
@@ -352,26 +352,32 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
     this.feedbackState_ = e.detail.value;
     switch (e.detail.value) {
       case CrFeedbackOption.UNSPECIFIED:
-        this.browserProxy_.setUserFeedback(
+        this.browserProxy_.handler.setUserFeedback(
             UserFeedback.kUserFeedbackUnspecified);
         return;
       case CrFeedbackOption.THUMBS_UP:
-        this.browserProxy_.setUserFeedback(UserFeedback.kUserFeedbackPositive);
+        this.browserProxy_.handler.setUserFeedback(
+            UserFeedback.kUserFeedbackPositive);
         return;
       case CrFeedbackOption.THUMBS_DOWN:
-        this.browserProxy_.setUserFeedback(UserFeedback.kUserFeedbackNegative);
+        this.browserProxy_.handler.setUserFeedback(
+            UserFeedback.kUserFeedbackNegative);
         return;
       default:
         assertNotReachedCase(e.detail.value);
     }
   }
 
-  protected onAnswerLinkContextMenu_(e: MouseEvent) {
+  protected onAnswerLinkContextmenu_(e: MouseEvent) {
     this.fire('answer-context-menu', {
       item: this.answerSource_,
       x: e.clientX,
       y: e.clientY,
     });
+  }
+
+  protected onAnswerLinkAuxclick_(e: MouseEvent) {
+    this.onAnswerLinkClick_(e);
   }
 
   protected onAnswerLinkClick_(e: MouseEvent) {
@@ -417,7 +423,7 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
     this.$.sharedMenu.get().close();
   }
 
-  protected onResultContextMenu_(e: MouseEvent) {
+  protected onResultContextmenu_(e: MouseEvent) {
     assert(this.searchResult_);
     const index = Number((e.currentTarget as HTMLElement).dataset['index']);
     this.fire('result-context-menu', {
@@ -425,6 +431,10 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
       x: e.clientX,
       y: e.clientY,
     });
+  }
+
+  protected onResultAuxclick_(e: MouseEvent) {
+    this.onResultClick_(e);
   }
 
   protected onResultClick_(e: MouseEvent) {
@@ -445,7 +455,7 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
     });
 
     this.clickedIndices_.add(index);
-    this.browserProxy_.recordSearchResultsMetrics(
+    this.browserProxy_.handler.recordSearchResultsMetrics(
         /* nonEmptyResults= */ true, /* userClickedResult= */ true,
         /* answerShown= */ this.hasAnswer_(),
         /* answerCitationClicked= */ this.answerLinkClicked_,
@@ -474,7 +484,7 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
           this.timeRangeStart ? jsDateToMojoDate(this.timeRangeStart) : null,
     };
     this.searchTimestamp_ = performance.now();
-    this.browserProxy_.search(query);
+    this.browserProxy_.handler.search(query);
   }
 
   private searchResultChanged_(result: SearchResult) {
@@ -571,7 +581,7 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
     if (canLog && !userClickedResult) {
       const nonEmptyResults: boolean = !!this.searchResult_ &&
           this.searchResult_.items && this.searchResult_.items.length > 0;
-      this.browserProxy_.recordSearchResultsMetrics(
+      this.browserProxy_.handler.recordSearchResultsMetrics(
           nonEmptyResults, /* userClickedResult= */ false,
           /* answerShown= */ this.hasAnswer_(),
           /* answerCitationClicked= */ this.answerLinkClicked_,
@@ -580,7 +590,7 @@ export class HistoryEmbeddingsElement extends HistoryEmbeddingsElementBase {
     }
 
     if (!this.forceSuppressLogging && canLog) {
-      this.browserProxy_.sendQualityLog(
+      this.browserProxy_.handler.sendQualityLog(
           Array.from(this.clickedIndices_), this.numCharsForLastResultQuery_);
     }
 

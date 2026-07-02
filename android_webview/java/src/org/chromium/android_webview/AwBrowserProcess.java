@@ -16,12 +16,9 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
-import android.os.Process;
 import android.os.StrictMode;
 import android.os.SystemClock;
 import android.os.storage.StorageManager;
-import android.util.LruCache;
-import android.util.Pair;
 
 import androidx.annotation.IntDef;
 
@@ -72,8 +69,6 @@ import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskRunner;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.components.component_updater.ComponentLoaderPolicyBridge;
-import org.chromium.components.component_updater.EmbeddedComponentLoader;
 import org.chromium.components.minidump_uploader.CrashFileManager;
 import org.chromium.components.policy.CombinedPolicyProvider;
 import org.chromium.content_public.browser.BrowserStartupController;
@@ -81,20 +76,17 @@ import org.chromium.content_public.browser.BrowserStartupController.StartupCallb
 import org.chromium.content_public.browser.ChildProcessCreationParams;
 import org.chromium.content_public.browser.ChildProcessLauncherHelper;
 import org.chromium.net.NetworkChangeNotifier;
-import org.chromium.support_lib_boundary.util.BoundaryInterfaceReflectionUtil;
 import org.chromium.ui.display.DisplayAndroidManager;
 
 import java.io.File;
 import java.io.IOException;
-import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
-import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Consumer;
 
 /** Wrapper for the steps needed to initialize the java and native sides of webview chromium. */
 @JNINamespace("android_webview")
@@ -178,7 +170,7 @@ public final class AwBrowserProcess {
      * Configures child process launcher. This is required only if child services are used in
      * WebView.
      */
-    public static void configureChildProcessLauncher() {
+    public static void configureChildProcessLauncher(boolean isNativeWebViewZygoteEnabled) {
         final boolean isExternalService = true;
         final boolean bindToCaller = true;
         final boolean ignoreVisibilityForImportance = true;
@@ -188,7 +180,8 @@ public final class AwBrowserProcess {
                 isExternalService,
                 LibraryProcessType.PROCESS_WEBVIEW_CHILD,
                 bindToCaller,
-                ignoreVisibilityForImportance);
+                ignoreVisibilityForImportance,
+                isNativeWebViewZygoteEnabled);
 
         ChildProcessLauncherHelper.initialize();
     }
@@ -203,13 +196,15 @@ public final class AwBrowserProcess {
         final boolean isExternalService = false;
         final boolean bindToCaller = false;
         final boolean ignoreVisibilityForImportance = false;
+        final boolean isNativeWebViewZygoteEnabled = false;
         ChildProcessCreationParams.set(
                 ContextUtils.getApplicationContext().getPackageName(),
                 ContextUtils.getApplicationContext().getPackageName(),
                 isExternalService,
                 LibraryProcessType.PROCESS_WEBVIEW_CHILD,
                 bindToCaller,
-                ignoreVisibilityForImportance);
+                ignoreVisibilityForImportance,
+                isNativeWebViewZygoteEnabled);
     }
 
     /**
@@ -219,11 +214,8 @@ public final class AwBrowserProcess {
      * <p>Note: it is up to the caller to ensure this is only called once.
      *
      * @param callback This is triggered when the async startup completes.
-     * @param shouldScheduleFlushStartupTasks Whether to post a task to flush the startup tasks
-     *     instead of letting them complete asynchronously
      */
-    public static void triggerAsyncBrowserProcess(
-            StartupCallback callback, boolean shouldScheduleFlushStartupTasks) {
+    public static void triggerAsyncBrowserProcess(StartupCallback callback) {
         ThreadUtils.assertOnUiThread();
         try (DualTraceEvent e2 =
                 DualTraceEvent.scoped("AwBrowserProcess.startBrowserProcessAsync")) {
@@ -233,20 +225,8 @@ public final class AwBrowserProcess {
                             /* startGpuProcess= */ false,
                             /* startMinimalBrowser= */ false,
                             /* singleProcess= */ !isMultiProcess(),
-                            /* scheduleFlushStartupTasks= */ shouldScheduleFlushStartupTasks,
                             callback);
         }
-    }
-
-    public static boolean shouldDeferGmsCalls() {
-        return WebViewCachedFlags.get()
-                        .isCachedFeatureEnabled(
-                                AwFeatures.WEBVIEW_OPT_IN_TO_GMS_BIND_SERVICE_OPTIMIZATION)
-                || WebViewCachedFlags.get()
-                        .isCachedFeatureEnabled(AwFeatures.WEBVIEW_DEFER_STARTUP_GMS_CALLS)
-                || CommandLine.getInstance().hasSwitch(AwSwitches.WEBVIEW_DEFER_STARTUP_GMS_CALLS)
-                || CommandLine.getInstance()
-                        .hasSwitch(AwSwitches.WEBVIEW_OPT_IN_TO_GMS_BIND_SERVICE_OPTIMIZATION);
     }
 
     /**
@@ -278,40 +258,6 @@ public final class AwBrowserProcess {
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 AwContentsLifecycleNotifier.initialize();
-            }
-
-            if (!shouldDeferGmsCalls()) {
-                setupSupervisedUser();
-            }
-
-            if (AwFeatureMap.isEnabled(AwFeatures.WEBVIEW_CACHE_BOUNDARY_INTERFACE_METHODS)) {
-                // There are currently less than 200 methods in the boundary interfaces.
-                // This cache should only start evicting elements if the cache keys somehow don't
-                // have value semantics.
-                LruCache<Pair<Method, @Nullable ClassLoader>, @Nullable Method> cache =
-                        new LruCache<>(200) {
-                            @Override
-                            protected void entryRemoved(
-                                    boolean evicted,
-                                    Pair<Method, ClassLoader> key,
-                                    Method oldValue,
-                                    Method newValue) {
-                                super.entryRemoved(evicted, key, oldValue, newValue);
-                                // This is a counting histogram.
-                                RecordHistogram.recordBooleanHistogram(
-                                        "Android.WebView.AndroidX.MethodCacheEviction", true);
-                            }
-                        };
-
-                // The LruCache.get method is final, so we have to do logging of the lookup result
-                // as a separate consumer.
-                Consumer<Boolean> getResultLogger =
-                        gotCacheResult ->
-                                RecordHistogram.recordBooleanHistogram(
-                                        "Android.WebView.AndroidX.MethodCacheGetResult",
-                                        gotCacheResult);
-
-                BoundaryInterfaceReflectionUtil.setMethodCache(cache, getResultLogger);
             }
 
             PostTask.postTask(
@@ -354,9 +300,6 @@ public final class AwBrowserProcess {
                     DualTraceEvent.scoped("AwBrowserProcess.maybeEnableSafeBrowsingFromManifest")) {
                 AwSafeBrowsingConfigHelper.maybeEnableSafeBrowsingFromManifest();
             }
-            if (!shouldDeferGmsCalls()) {
-                maybeEnableSafeBrowsingFromGms();
-            }
         }
     }
 
@@ -395,6 +338,10 @@ public final class AwBrowserProcess {
     public static void setWebViewPackageName(String webViewPackageName) {
         assert sWebViewPackageName == null || sWebViewPackageName.equals(webViewPackageName);
         sWebViewPackageName = webViewPackageName;
+    }
+
+    public static void setNativeWebViewZygoteEnabled(boolean enabled) {
+        AwBrowserProcessJni.get().setNativeWebViewZygoteEnabled(enabled);
     }
 
     public static String getWebViewPackageName() {
@@ -545,7 +492,7 @@ public final class AwBrowserProcess {
         // because e.g. the disk is full, or the file system is corrupted.
         int fileCount = minidumpFiles.length;
         ParcelFileDescriptor[] minidumpFds = new ParcelFileDescriptor[fileCount];
-        Map<String, String>[] crashInfos = new Map[fileCount];
+        List<Map<String, String>> crashInfos = new ArrayList<>(fileCount);
         for (int i = 0; i < fileCount; ++i) {
             File file = minidumpFiles[i];
             ParcelFileDescriptor p = null;
@@ -554,12 +501,12 @@ public final class AwBrowserProcess {
             } catch (IOException e) {
             }
             minidumpFds[i] = p;
-            crashInfos[i] = crashesInfoMap.get(getCrashUuid(file));
+            crashInfos.add(crashesInfoMap.get(getCrashUuid(file)));
         }
 
         try {
             // AIDL does not support arrays of objects, so use a List here.
-            service.transmitCrashes(minidumpFds, Arrays.asList(crashInfos));
+            service.transmitCrashes(minidumpFds, crashInfos);
         } catch (Exception e) {
             // Exception can be RemoteException, or "RuntimeException: Too many open files".
             // https://crbug.com/1399777
@@ -727,6 +674,8 @@ public final class AwBrowserProcess {
         }
     }
 
+    // AIDL returns a raw List because List<byte[]> is not a supported AIDL type.
+    @SuppressWarnings("unchecked")
     private static void sendMetricsToService(IBinder service) {
         try {
             IMetricsBridgeService metricsService = IMetricsBridgeService.Stub.asInterface(service);
@@ -757,47 +706,6 @@ public final class AwBrowserProcess {
         }
     }
 
-    /**
-     * Load components files from {@link
-     * org.chromium.android_webview.services.ComponentsProviderService}.
-     */
-    public static void loadComponents() {
-        try (DualTraceEvent e = DualTraceEvent.scoped("AwBrowserProcess.loadComponents")) {
-            ComponentLoaderPolicyBridge[] componentPolicies =
-                    AwBrowserProcessJni.get().getComponentLoaderPolicies();
-            // Don't connect to the service if there are no components to load.
-            if (componentPolicies.length == 0) {
-                return;
-            }
-
-            // The origin trial component was the only component we were
-            // fetching, and we're in the process of disabling the component
-            // updater entirely. So, if fetching the origin trial component is
-            // disabled, we expect there to be no components to fetch, as no
-            // new ones should be being added to WebView.
-            // If we get here there was at least one component registered:
-            // crash on debug builds, otherwise no-op.
-            boolean componentLoadingAllowed =
-                    AwFeatureMap.isEnabled(AwFeatures.WEBVIEW_FETCH_ORIGIN_TRIALS_COMPONENT);
-            assert componentLoadingAllowed;
-            if (!componentLoadingAllowed) {
-                Log.w(TAG, "Components were registered but component loading is disabled!");
-                return;
-            }
-
-            EmbeddedComponentLoader loader =
-                    new EmbeddedComponentLoader(Arrays.asList(componentPolicies));
-            final Intent intent = new Intent();
-            intent.setClassName(
-                    getWebViewPackageName(),
-                    EmbeddedComponentLoader.AW_COMPONENTS_PROVIDER_SERVICE);
-            loader.connect(
-                    intent,
-                    AwFeatureMap.isEnabled(
-                            AwFeatures.WEBVIEW_CONNECT_TO_COMPONENT_PROVIDER_IN_BACKGROUND));
-        }
-    }
-
     /** Initialize the metrics uploader. */
     public static void initializeMetricsLogUploader() {
         try (DualTraceEvent e =
@@ -807,23 +715,29 @@ public final class AwBrowserProcess {
                             && AwFeatureMap.isEnabled(
                                     AwFeatures.WEBVIEW_USE_METRICS_UPLOAD_SERVICE_ONLY_SDK_RUNTIME);
 
+            boolean useCppFiltering =
+                    AwFeatureMap.isEnabled(AwFeatures.WEBVIEW_CPP_METRICS_FILTERING);
+
             if (metricServiceEnabledOnlySdkRuntime) {
-                boolean isAsync =
-                        AwFeatureMap.isEnabled(AwFeatures.ANDROID_METRICS_ASYNC_METRIC_LOGGING);
-                AwMetricsLogUploader uploader = new AwMetricsLogUploader(isAsync);
+                AwMetricsLogUploader uploader = new AwMetricsLogUploader();
                 // Open a connection during startup while connecting to other services such as
-                // ComponentsProviderService and VariationSeedServer to try to avoid spinning the
-                // nonembedded ":webview_service" twice.
+                // VariationSeedServer to try to avoid spinning the nonembedded ":webview_service"
+                // twice.
                 uploader.initialize();
-                AndroidMetricsLogUploader.setConsumer(new MetricsFilteringDecorator(uploader));
+                AndroidMetricsLogConsumer consumer =
+                        useCppFiltering ? uploader : new MetricsFilteringDecorator(uploader);
+                AndroidMetricsLogUploader.setConsumer(consumer);
             } else {
                 AndroidMetricsLogConsumer directUploader =
                         data -> {
                             PlatformServiceBridge.getInstance().logMetrics(data);
                             return HttpURLConnection.HTTP_OK;
                         };
-                AndroidMetricsLogUploader.setConsumer(
-                        new MetricsFilteringDecorator(directUploader));
+                AndroidMetricsLogConsumer consumer =
+                        useCppFiltering
+                                ? directUploader
+                                : new MetricsFilteringDecorator(directUploader);
+                AndroidMetricsLogUploader.setConsumer(consumer);
             }
         }
     }
@@ -831,17 +745,12 @@ public final class AwBrowserProcess {
     public static void doNetworkInitializations(Context applicationContext) {
         try (DualTraceEvent e =
                 DualTraceEvent.scoped("AwBrowserProcess.doNetworkInitializations")) {
-            boolean forceUpdateNetworkState =
-                    !AwFeatureMap.isEnabled(
-                            AwFeatures.WEBVIEW_USE_INITIAL_NETWORK_STATE_AT_STARTUP);
-            if (applicationContext.checkPermission(
-                            Manifest.permission.ACCESS_NETWORK_STATE,
-                            Process.myPid(),
-                            Process.myUid())
+            if (applicationContext.checkSelfPermission(Manifest.permission.ACCESS_NETWORK_STATE)
                     == PackageManager.PERMISSION_GRANTED) {
                 NetworkChangeNotifier.init();
                 NetworkChangeNotifier.setAutoDetectConnectivityState(
-                        new AwNetworkChangeNotifierRegistrationPolicy(), forceUpdateNetworkState);
+                        new AwNetworkChangeNotifierRegistrationPolicy(),
+                        /* forceUpdateNetworkState= */ false);
             }
         }
     }
@@ -1002,9 +911,9 @@ public final class AwBrowserProcess {
 
     @NativeMethods
     interface Natives {
-        void setProcessNameCrashKey(@JniType("std::string") String processName);
+        void setNativeWebViewZygoteEnabled(boolean enabled);
 
-        ComponentLoaderPolicyBridge[] getComponentLoaderPolicies();
+        void setProcessNameCrashKey(@JniType("std::string") String processName);
 
         void onStartupComplete();
 

@@ -19,13 +19,13 @@
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
+#include "chrome/browser/bookmarks/desktop_forcing_chrome_bookmark_test_client.h"
 #include "chrome/browser/bookmarks/managed_bookmark_service_factory.h"
 #include "chrome/browser/extensions/component_loader.h"
-#include "chrome/browser/extensions/crx_installer.h"
 #include "chrome/browser/extensions/extension_garbage_collector_factory.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/external_provider_manager.h"
-#include "chrome/browser/extensions/shared_module_service.h"
+#include "chrome/browser/extensions/shared_module_service_factory.h"
 #include "chrome/browser/extensions/test_extension_system.h"
 #include "chrome/browser/extensions/updater/extension_updater.h"
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
@@ -56,6 +56,7 @@
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/load_error_reporter.h"
 #include "extensions/browser/pref_names.h"
+#include "extensions/browser/shared_module_service.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/common/extensions_client.h"
@@ -93,7 +94,7 @@ std::unique_ptr<TestingProfile> BuildTestingProfile(
 
 #if BUILDFLAG(IS_MAC)
   // For tests, make sure we're working with the absolute profile path, so that
-  // path comparisons don't fail. See https://issues.chromium.org/40916874 for
+  // path comparisons don't fail. See https://crbug.com/40916874 for
   // details.
   if (!temp_dir.Set(base::MakeAbsoluteFilePath(temp_dir.Take()))) {
     return nullptr;
@@ -188,9 +189,15 @@ std::unique_ptr<TestingProfile> BuildTestingProfile(
   }
 
   if (params.enable_bookmark_model) {
-    profile_builder.AddTestingFactory(
-        BookmarkModelFactory::GetInstance(),
-        BookmarkModelFactory::GetDefaultFactory());
+    if (params.force_desktop_bookmark_behavior) {
+      profile_builder.AddTestingFactory(
+          BookmarkModelFactory::GetInstance(),
+          DesktopForcingChromeBookmarkTestClient::GetTestingFactory());
+    } else {
+      profile_builder.AddTestingFactory(
+          BookmarkModelFactory::GetInstance(),
+          BookmarkModelFactory::GetDefaultFactory());
+    }
     profile_builder.AddTestingFactory(
         ManagedBookmarkServiceFactory::GetInstance(),
         ManagedBookmarkServiceFactory::GetDefaultFactory());
@@ -524,7 +531,7 @@ void ExtensionServiceTestBase::CreateExtensionService(
 
   DelayedInstallManager::Get(profile())->RegisterInstallGate(
       ExtensionPrefs::DelayReason::kWaitForImports,
-      SharedModuleService::Get(profile()));
+      SharedModuleServiceFactory::GetForBrowserContext(profile()));
 
 #if BUILDFLAG(IS_CHROMEOS)
   if (!enable_install_limiter) {

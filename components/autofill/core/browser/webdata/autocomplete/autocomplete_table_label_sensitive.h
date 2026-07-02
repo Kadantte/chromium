@@ -9,8 +9,12 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_WEBDATA_AUTOCOMPLETE_AUTOCOMPLETE_TABLE_LABEL_SENSITIVE_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_WEBDATA_AUTOCOMPLETE_AUTOCOMPLETE_TABLE_LABEL_SENSITIVE_H_
 
+#include <stddef.h>
+
 #include <optional>
 #include <string>
+#include <string_view>
+#include <type_traits>
 #include <vector>
 
 #include "base/time/time.h"
@@ -125,7 +129,7 @@ class AutocompleteTableLabelSensitive : public WebDatabaseTable {
   // Records the form elements in `elements` in the database in the
   // autocomplete table.
   [[nodiscard]] bool AddFormFieldValues(
-      const std::vector<autofill::FormFieldData>& elements);
+      const std::vector<FormFieldData>& elements);
 
   // Retrieves a vector of all values which have been recorded in the
   // autocomplete table as the value in a form element with label `label`, name

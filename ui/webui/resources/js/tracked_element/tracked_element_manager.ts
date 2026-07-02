@@ -99,6 +99,7 @@
  */
 
 import type {InsetsF, RectF} from '//resources/mojo/ui/gfx/geometry/mojom/geometry.mojom-webui.js';
+import {TextEntryMode} from '//resources/mojo/ui/webui/resources/js/tracked_element/tracked_element.mojom-webui.js';
 import type {TrackedElementHandlerInterface} from '//resources/mojo/ui/webui/resources/js/tracked_element/tracked_element.mojom-webui.js';
 
 import {assert} from '../assert.js';
@@ -125,6 +126,13 @@ export interface Options {
    * are not in the regular flow of the document but they are always visible.
    */
   fixed?: boolean;
+
+  /**
+   * If this is set, this element will be marked as supporting anchor
+   * highlighting, and the method will be invoked when the highlight state
+   * (initially false) changes.
+   */
+  onHighlightChanged?: (highlighted: boolean) => void;
 }
 
 interface TrackedElement {
@@ -135,6 +143,7 @@ interface TrackedElement {
   visible: boolean;
   bounds: RectF;
   onVisibilityChanged?: (visible: boolean, bounds: RectF) => void;
+  onHighlightChanged?: (highlighted: boolean) => void;
 }
 
 function parseOptions(options?: Options) {
@@ -175,8 +184,14 @@ export class TrackedElementManager {
     return TrackedElementManager.instance_;
   }
 
+  static setInstance(instance: TrackedElementManager|null) {
+    TrackedElementManager.instance_ = instance;
+  }
+
   private trackedElementHandler_: TrackedElementHandlerInterface;
-  private trackedElements_: Map<HTMLElement, TrackedElement> = new Map();
+
+  // Mapped from native ID.
+  private trackedElements_: Map<string, TrackedElement> = new Map();
   private fixedElementObserver_: IntersectionObserver;
   private resizeObserver_: ResizeObserver;
   // Observes attribute changes (style/class) on tracked elements.
@@ -188,6 +203,18 @@ export class TrackedElementManager {
   private constructor() {
     this.trackedElementHandler_ =
         TrackedElementProxyImpl.getInstance().getHandler();
+    const callbackRouter = TrackedElementProxyImpl.getInstance().callbackRouter;
+    this.trackedElementHandler_.setManager(
+        callbackRouter.$.bindNewPipeAndPassRemote());
+    callbackRouter.onElementHighlightChanged.addListener(
+        this.onElementHighlightChanged_.bind(this));
+    callbackRouter.clickElement.addListener(this.clickElement_.bind(this));
+    callbackRouter.focusElement.addListener(this.focusElement_.bind(this));
+    callbackRouter.selectTab.addListener(this.selectTab_.bind(this));
+    callbackRouter.selectDropdownItem.addListener(
+        this.selectDropdownItem_.bind(this));
+    callbackRouter.enterText.addListener(this.enterText_.bind(this));
+    callbackRouter.confirm.addListener(this.confirm_.bind(this));
 
     this.debouncedUpdateAllBoundsCallback_ =
         debounceEnd(this.updateAllBounds_.bind(this), 50);
@@ -212,7 +239,7 @@ export class TrackedElementManager {
       for (const mutation of mutations) {
         // Style or class attribute changed on a tracked element.
         const target = mutation.target as HTMLElement;
-        if (this.trackedElements_.has(target)) {
+        if (this.getTrackedElement_(target)) {
           this.onElementVisibilityChanged_(target, computeIsVisible(target));
         }
       }
@@ -223,13 +250,13 @@ export class TrackedElementManager {
       nodes.forEach(node => {
         if (node instanceof HTMLElement) {
           // Check if the node is a tracked element.
-          if (this.trackedElements_.has(node)) {
+          if (this.getTrackedElement_(node)) {
             this.onElementVisibilityChanged_(node, computeIsVisible(node));
           }
           // Check if any descendants are tracked elements.
           node.querySelectorAll('*').forEach(descendant => {
             if (descendant instanceof HTMLElement &&
-                this.trackedElements_.has(descendant)) {
+                this.getTrackedElement_(descendant)) {
               this.onElementVisibilityChanged_(
                   descendant, computeIsVisible(descendant));
             }
@@ -253,6 +280,20 @@ export class TrackedElementManager {
     // Observe the entire document to catch detached elements being added.
     this.documentMutationObserver_.observe(
         document, {childList: true, subtree: true});
+  }
+
+  private getTrackedElement_(element: HTMLElement): TrackedElement|undefined {
+    const nativeId = element.dataset['nativeId'];
+    if (!nativeId) {
+      return undefined;
+    }
+    const maybeTrackedElement = this.trackedElements_.get(nativeId);
+    // Make sure this is what we're actually tracking and not an element with
+    // a stale data-native-id.
+    if (maybeTrackedElement?.element === element) {
+      return maybeTrackedElement;
+    }
+    return undefined;
   }
 
   reset() {
@@ -286,13 +327,12 @@ export class TrackedElementManager {
   startTracking(
       element: HTMLElement, nativeId: string, options?: Options,
       onVisibilityChanged?: (visible: boolean, bounds: RectF) => void) {
-    element.dataset['nativeId'] = nativeId;
-
     // Remove tracking of the old element before registering the nativeId to a
     // new element.
-    if (this.trackedElements_.has(element)) {
+    if (this.getTrackedElement_(element)) {
       this.stopTracking(element);
     }
+    element.dataset['nativeId'] = nativeId;
 
     const parsedOptions = parseOptions(options);
     const trackedElement: TrackedElement = {
@@ -303,8 +343,9 @@ export class TrackedElementManager {
       visible: false,
       bounds: {x: 0, y: 0, width: 0, height: 0},
       onVisibilityChanged,
+      onHighlightChanged: options?.onHighlightChanged,
     };
-    this.trackedElements_.set(element, trackedElement);
+    this.trackedElements_.set(nativeId, trackedElement);
 
     if (trackedElement.fixed) {
       this.fixedElementObserver_.observe(element);
@@ -315,8 +356,15 @@ export class TrackedElementManager {
     // Observe the element itself for style/class changes that affect position.
     this.attributeMutationObserver_.observe(element, {
       attributes: true,
-      attributeFilter: ['style', 'class'],
+      attributeFilter: ['style', 'class', 'hidden'],
     });
+
+    if (trackedElement.onHighlightChanged) {
+      this.trackedElementHandler_.trackedElementCanHighlightChanged(
+          nativeId, true);
+    }
+
+    this.onElementVisibilityChanged_(element, computeIsVisible(element));
   }
 
   /**
@@ -326,11 +374,15 @@ export class TrackedElementManager {
    * @param element The element to stop tracking.
    */
   stopTracking(element: HTMLElement) {
-    const trackedElement = this.trackedElements_.get(element);
+    const trackedElement = this.getTrackedElement_(element);
     if (!trackedElement) {
       return;
     }
 
+    if (trackedElement.onHighlightChanged) {
+      this.trackedElementHandler_.trackedElementCanHighlightChanged(
+          trackedElement.nativeId, false);
+    }
     this.onElementVisibilityChanged_(element, false);
     if (trackedElement.fixed) {
       this.fixedElementObserver_.unobserve(element);
@@ -342,9 +394,9 @@ export class TrackedElementManager {
     // attributeMutationObserver_ and documentMutationObserver_ will still be
     // observing, but since the element is no longer in trackedElements_,
     // callbacks won't trigger.
-    this.trackedElements_.delete(element);
+    this.trackedElements_.delete(trackedElement.nativeId);
 
-    element.dataset['nativeId'] = '';
+    delete element.dataset['nativeId'];
   }
 
   notifyElementActivated(element: HTMLElement) {
@@ -362,8 +414,12 @@ export class TrackedElementManager {
 
   private onElementVisibilityChanged_(
       element: HTMLElement, isVisible: boolean) {
-    const trackedElement = this.trackedElements_.get(element);
-    assert(trackedElement);
+    const trackedElement = this.getTrackedElement_(element);
+    if (!trackedElement) {
+      // When we stop tracking an element we continue to get events for it. Just
+      // ignore these events.
+      return;
+    }
 
     const bounds: RectF = isVisible ? this.getElementBounds_(element) :
                                       {x: 0, y: 0, width: 0, height: 0};
@@ -379,7 +435,8 @@ export class TrackedElementManager {
   }
 
   private updateAllBounds_() {
-    this.trackedElements_.forEach((_, element) => {
+    this.trackedElements_.forEach((trackedElement, _) => {
+      const element = trackedElement.element;
       this.onElementVisibilityChanged_(element, computeIsVisible(element));
     });
   }
@@ -392,7 +449,7 @@ export class TrackedElementManager {
     rect.width = bounds.width;
     rect.height = bounds.height;
 
-    const trackedElement = this.trackedElements_.get(element);
+    const trackedElement = this.getTrackedElement_(element);
     if (trackedElement) {
       const padding = trackedElement.padding;
       rect.x -= padding.left;
@@ -403,4 +460,278 @@ export class TrackedElementManager {
     return rect;
   }
 
+  /* Called from browser to add/remove highlights. */
+  private onElementHighlightChanged_(nativeId: string, highlighted: boolean) {
+    const trackedElement = this.trackedElements_.get(nativeId);
+    const maybeCallback = trackedElement?.onHighlightChanged;
+    if (maybeCallback) {
+      maybeCallback(highlighted);
+    }
+  }
+
+  private async waitUntilNotDisabled_(element: HTMLElement, nativeId: string):
+      Promise<void> {
+    if (!element.hasAttribute('disabled')) {
+      return;
+    }
+
+    console.info(
+        `TrackedElementManager: Element ${nativeId} is disabled, ` +
+        `waiting...`);
+
+    return new Promise((resolve) => {
+      const observer = new MutationObserver(() => {
+        if (!element.hasAttribute('disabled')) {
+          observer.disconnect();
+          console.info(
+              `TrackedElementManager: Element ${nativeId} is no ` +
+              `longer disabled.`);
+          resolve();
+        }
+      });
+      observer.observe(
+          element, {attributes: true, attributeFilter: ['disabled']});
+    });
+  }
+
+  private async clickElement_(nativeId: string): Promise<{success: boolean}> {
+    const trackedElement = this.trackedElements_.get(nativeId);
+    if (!trackedElement) {
+      console.error(`TrackedElementManager: Click failed, element not found: ${
+          nativeId}`);
+      return {success: false};
+    }
+
+    let target = trackedElement.element;
+
+    // If the element is a container with a shadow root, try to find the actual
+    // interactive element inside.
+    if (target.shadowRoot &&
+        !['BUTTON', 'INPUT', 'A', 'SELECT'].includes(target.tagName)) {
+      const inner = target.shadowRoot.querySelector(
+          'button, [role="button"], cr-icon-button, cr-button');
+      if (inner) {
+        target = inner as HTMLElement;
+      }
+    }
+
+    await this.waitUntilNotDisabled_(target, nativeId);
+
+    // Some components (like the reload button) listen to pointer events
+    // instead of click. We also need to fake pointer capture for some tests.
+    const oldPointerCapture = {
+      setPointerCapture: target.setPointerCapture,
+      hasPointerCapture: target.hasPointerCapture,
+      releasePointerCapture: target.releasePointerCapture,
+    };
+    {
+      let hasCapture: number|null = null;
+      target.setPointerCapture = (id) => {
+        hasCapture = id;
+      };
+      target.hasPointerCapture = (id) => {
+        return id === hasCapture;
+      };
+      target.releasePointerCapture = (id) => {
+        if (id === hasCapture) {
+          hasCapture = null;
+        }
+      };
+    }
+    const bounds = target.getBoundingClientRect();
+    target.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true,
+      composed: true,
+      button: 0,  // Left
+      pointerId: 1,
+      isPrimary: true,
+      buttons: 1,
+      clientX: bounds.left + bounds.width / 2,
+      clientY: bounds.top + bounds.height / 2,
+    }));
+    target.dispatchEvent(new PointerEvent('pointerup', {
+      bubbles: true,
+      composed: true,
+      button: 0,  // Left
+      pointerId: 1,
+      isPrimary: true,
+      buttons: 0,
+      clientX: bounds.left + bounds.width / 2,
+      clientY: bounds.top + bounds.height / 2,
+    }));
+    target.dispatchEvent(new MouseEvent('click', {
+      bubbles: true,
+      composed: true,
+      button: 0,  // Left
+      detail: 1,  // Single click
+      clientX: bounds.left + bounds.width / 2,
+      clientY: bounds.top + bounds.height / 2,
+    }));
+    target.setPointerCapture = oldPointerCapture.setPointerCapture;
+    target.hasPointerCapture = oldPointerCapture.hasPointerCapture;
+    target.releasePointerCapture = oldPointerCapture.releasePointerCapture;
+    return {success: true};
+  }
+
+  private focusElement_(nativeId: string): {success: boolean} {
+    const trackedElement = this.trackedElements_.get(nativeId);
+    if (!trackedElement) {
+      console.error(`TrackedElementManager: Focus failed, element not found: ${
+          nativeId}`);
+      return {success: false};
+    }
+    trackedElement.element.focus();
+    return {success: true};
+  }
+
+  private selectTab_(nativeId: string, index: number): {success: boolean} {
+    const trackedElement = this.trackedElements_.get(nativeId);
+    if (!trackedElement) {
+      console.error(
+          `TrackedElementManager: SelectTab failed, element not found: ${
+              nativeId}`);
+      return {success: false};
+    }
+
+    const element = trackedElement.element;
+
+    // Special handling for <cr-tabs>
+    if (element.tagName === 'CR-TABS') {
+      (element as unknown as {selected: number}).selected = index;
+      return {success: true};
+    }
+
+    // Try to find tabs by ARIA role.
+    const tabs = element.querySelectorAll('[role="tab"]');
+    if (tabs.length > index) {
+      (tabs[index] as HTMLElement).click();
+      return {success: true};
+    }
+
+    // Fallback: try to find child elements that look like tabs.
+    const childTabs = element.children;
+    if (childTabs.length > index) {
+      (childTabs[index] as HTMLElement).click();
+      return {success: true};
+    }
+
+    console.error(`TrackedElementManager: SelectTab failed, tab index ${
+        index} not found in ${nativeId}`);
+    return {success: false};
+  }
+
+  private selectDropdownItem_(nativeId: string, index: number):
+      {success: boolean} {
+    const trackedElement = this.trackedElements_.get(nativeId);
+    if (!trackedElement) {
+      console.error(
+          `TrackedElementManager: SelectDropdownItem failed, element not found: ${
+              nativeId}`);
+      return {success: false};
+    }
+
+    const element = trackedElement.element;
+
+    if (element instanceof HTMLSelectElement) {
+      if (index >= element.options.length) {
+        console.error(
+            `TrackedElementManager: SelectDropdownItem failed, index ${
+                index} out of bounds for ${nativeId}`);
+        return {success: false};
+      }
+      element.selectedIndex = index;
+      element.dispatchEvent(new Event('change', {bubbles: true}));
+      return {success: true};
+    }
+
+    // Special handling for <cr-select>
+    if (element.tagName === 'CR-SELECT') {
+      const select = element.shadowRoot?.querySelector('select');
+      if (select && index < select.options.length) {
+        select.selectedIndex = index;
+        select.dispatchEvent(new Event('change', {bubbles: true}));
+        return {success: true};
+      }
+    }
+
+    console.error(`TrackedElementManager: SelectDropdownItem failed for ${
+        nativeId}. Not a supported dropdown type or index ${
+        index} out of bounds.`);
+    return {success: false};
+  }
+
+  private enterText_(nativeId: string, text: string, mode: TextEntryMode):
+      {success: boolean} {
+    const trackedElement = this.trackedElements_.get(nativeId);
+    if (!trackedElement) {
+      console.error(
+          `TrackedElementManager: EnterText failed, element not found: ${
+              nativeId}`);
+      return {success: false};
+    }
+
+    const element = trackedElement.element;
+    if (!(element instanceof HTMLInputElement ||
+          element instanceof HTMLTextAreaElement)) {
+      // Check if it's a custom element wrapping an input (like <cr-input>)
+      const input = element.shadowRoot?.querySelector('input, textarea');
+      if (input instanceof HTMLInputElement ||
+          input instanceof HTMLTextAreaElement) {
+        return this.enterTextIntoInput_(input, text, mode);
+      }
+      console.error(
+          `TrackedElementManager: EnterText failed, element is not an input: ${
+              nativeId}`);
+      return {success: false};
+    }
+
+    return this.enterTextIntoInput_(element, text, mode);
+  }
+
+  private enterTextIntoInput_(
+      input: HTMLInputElement|HTMLTextAreaElement, text: string,
+      mode: TextEntryMode): {success: boolean} {
+    switch (mode) {
+      case TextEntryMode.kReplaceAll:
+        input.value = text;
+        break;
+      case TextEntryMode.kAppend:
+        input.value += text;
+        break;
+      case TextEntryMode.kInsertOrReplace:
+        const start = input.selectionStart || 0;
+        const end = input.selectionEnd || 0;
+        input.value =
+            input.value.substring(0, start) + text + input.value.substring(end);
+        input.selectionStart = input.selectionEnd = start + text.length;
+        break;
+      default:
+        console.error(`TrackedElementManager: Invalid TextEntryMode: ${mode}`);
+        return {success: false};
+    }
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    input.dispatchEvent(new Event('change', {bubbles: true}));
+    return {success: true};
+  }
+
+  private confirm_(nativeId: string): {success: boolean} {
+    const trackedElement = this.trackedElements_.get(nativeId);
+    if (!trackedElement) {
+      console.error(
+          `TrackedElementManager: Confirm failed, element not found: ${
+              nativeId}`);
+      return {success: false};
+    }
+
+    const element = trackedElement.element;
+    element.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      composed: true,
+    }));
+    return {success: true};
+  }
 }

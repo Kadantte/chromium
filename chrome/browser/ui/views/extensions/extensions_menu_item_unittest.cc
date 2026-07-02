@@ -7,10 +7,10 @@
 #include "base/test/metrics/user_action_tester.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/toolbar/test_toolbar_action_view_model.h"
+#include "chrome/browser/ui/views/controls/hover_button_controller.h"
 #include "chrome/browser/ui/views/extensions/extensions_menu_button.h"
 #include "chrome/browser/ui/views/extensions/extensions_menu_item_view.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_unittest.h"
-#include "chrome/browser/ui/views/hover_button_controller.h"
 #include "chrome/browser/ui/views/native_widget_factory.h"
 #include "ui/views/controls/styled_label.h"
 
@@ -51,7 +51,7 @@ void ExtensionMenuItemViewTest::SetUp() {
 
   widget_ = std::make_unique<views::Widget>();
   views::Widget::InitParams init_params(
-      views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
+      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
       views::Widget::InitParams::TYPE_POPUP);
 #if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_MAC)
   // This was copied from BookmarkBarViewTest:

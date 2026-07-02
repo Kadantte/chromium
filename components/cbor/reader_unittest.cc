@@ -122,6 +122,26 @@ TEST(CBORReaderTest, TestUintEncodedWithNonMinimumByteLength) {
   }
 }
 
+// Regression test for crbug.com/512821715.
+TEST(CBORReaderTest, MapErrorHandlingFirstError) {
+  // Map with 1 pair.
+  // Key: String of length 1, but 0x80 is invalid UTF-8.
+  // Value: Unsigned integer needing 1 more byte (0x18), but it's missing.
+  // This test ensures that the first error encountered (INVALID_UTF8 from the
+  // key) is preserved and not overwritten by a subsequent error (such as
+  // INCOMPLETE_CBOR_DATA from the value).
+  static constexpr uint8_t kMapWithErrors[] = {
+      0xa1,        // map with 1 pair
+      0x61, 0x80,  // key: invalid UTF-8 string
+      0x18         // value: incomplete unsigned integer
+  };
+
+  Reader::DecoderError error_code;
+  std::optional<Value> cbor = Reader::Read(kMapWithErrors, &error_code);
+  EXPECT_FALSE(cbor.has_value());
+  EXPECT_EQ(error_code, Reader::DecoderError::INVALID_UTF8);
+}
+
 TEST(CBORReaderTest, TestReadNegativeInt) {
   struct NegativeIntTestCase {
     const int64_t negative_int;
@@ -877,6 +897,7 @@ TEST(CBORReaderTest, TestReadFloatingPointNumbers) {
       {-0.0, {0xf9, 0x80, 0x00}},
       {std::numeric_limits<double>::infinity(), {0xf9, 0x7c, 0x00}},
       {-std::numeric_limits<double>::infinity(), {0xf9, 0xfc, 0x00}},
+      {std::numeric_limits<double>::quiet_NaN(), {0xf9, 0x7e, 0x00}},
       {std::scalbn(1023.0, -24), {0xf9, 0x03, 0xFF}},
       {65504, {0xf9, 0x7b, 0xff}},
       // 32 bit floating point value.
@@ -899,7 +920,11 @@ TEST(CBORReaderTest, TestReadFloatingPointNumbers) {
     std::optional<Value> cbor = Reader::Read(test_case.cbor_data, config);
     ASSERT_TRUE(cbor.has_value());
     ASSERT_EQ(cbor.value().type(), Value::Type::FLOAT_VALUE);
-    EXPECT_EQ(cbor.value().GetDouble(), test_case.value);
+    if (std::isnan(test_case.value)) {
+      EXPECT_TRUE(std::isnan(cbor.value().GetDouble()));
+    } else {
+      EXPECT_EQ(cbor.value().GetDouble(), test_case.value);
+    }
 
     config.error_code_out = &error_code;
     auto cbor_data_with_extra_byte = WithExtraneousData(test_case.cbor_data);
@@ -912,7 +937,11 @@ TEST(CBORReaderTest, TestReadFloatingPointNumbers) {
     cbor = Reader::Read(cbor_data_with_extra_byte, config);
     ASSERT_TRUE(cbor.has_value());
     ASSERT_EQ(cbor.value().type(), Value::Type::FLOAT_VALUE);
-    EXPECT_EQ(cbor.value().GetDouble(), test_case.value);
+    if (std::isnan(test_case.value)) {
+      EXPECT_TRUE(std::isnan(cbor.value().GetDouble()));
+    } else {
+      EXPECT_EQ(cbor.value().GetDouble(), test_case.value);
+    }
     EXPECT_EQ(error_code, Reader::DecoderError::CBOR_NO_ERROR);
     EXPECT_EQ(num_bytes_consumed, test_case.cbor_data.size());
   }
@@ -920,11 +949,24 @@ TEST(CBORReaderTest, TestReadFloatingPointNumbers) {
 
 TEST(CBORReaderTest, TestReadNonMinimalFloatingPointNumbers) {
   static const std::vector<uint8_t> test_case_inputs[] = {
+      // 32 bit floats.
       {0xfa, 0x00, 0x00, 0x00, 0x00},  // 0 as 32 bit float.
       {0xfa, 0x7f, 0x80, 0x00, 0x00},  // infinity as 32 bit float.
       {0xfa, 0xff, 0x80, 0x00, 0x00},  // -infinity as 32 bit float.
-      {0xfa, 0x7f, 0xC0, 0x00, 0x00},  // -NaN as 32 bit float.
+      {0xfa, 0x7f, 0xc0, 0x00, 0x00},  // NaN as 32 bit float.
       {0xfa, 0xff, 0xc0, 0x00, 0x00},  // -NaN as 32 bit float.
+
+      // 64 bit floats.
+      {0xfb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+       0x00},  // 0 as 64 bit double.
+      {0xfb, 0x7f, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00,
+       0x00},  // infinity as 64 bit double.
+      {0xfb, 0xff, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00,
+       0x00},  // -infinity as 64 bit double.
+      {0xfb, 0x7f, 0xf8, 0x00, 0x00, 0x00, 0x00, 0x00,
+       0x00},  // NaN as 64 bit double.
+      {0xfb, 0xff, 0xf8, 0x00, 0x00, 0x00, 0x00, 0x00,
+       0x00},  // -NaN as 64 bit double.
       // 3.1415927410125732 as 64 bit double (fits in 32 bits).
       {0xfb, 0x40, 0x09, 0x21, 0xfb, 0x60, 0x00, 0x00, 0x00},
   };
@@ -1170,20 +1212,6 @@ TEST(CBORReaderTest, TestOutOfOrderKeyError) {
       EXPECT_FALSE(cbor.has_value());
       EXPECT_EQ(error_code, Reader::DecoderError::OUT_OF_ORDER_KEY);
     }
-
-    // When `allow_and_canonicalize_out_of_order_keys` flag is set, expect
-    // `CBOR_NO_ERROR`.
-    {
-      Reader::DecoderError error_code;
-      Reader::Config config;
-      config.error_code_out = &error_code;
-      config.allow_and_canonicalize_out_of_order_keys = true;
-
-      std::optional<Value> cbor =
-          Reader::Read(unsorted_map, config);
-      EXPECT_TRUE(cbor);
-      EXPECT_EQ(error_code, Reader::DecoderError::CBOR_NO_ERROR);
-    }
   }
 }
 
@@ -1228,20 +1256,6 @@ TEST(CBORReaderTest, TestOutOfOrderKeyErrorWithDuplicateKeys) {
       EXPECT_FALSE(cbor.has_value());
       EXPECT_EQ(error_code, Reader::DecoderError::OUT_OF_ORDER_KEY);
     }
-
-    // When `allow_and_canonicalize_out_of_order_keys` flag is set, expect
-    // `DUPLICATE_KEY`.
-    {
-      Reader::DecoderError error_code;
-      Reader::Config config;
-      config.error_code_out = &error_code;
-      config.allow_and_canonicalize_out_of_order_keys = true;
-
-      std::optional<Value> cbor =
-          Reader::Read(unsorted_map, config);
-      EXPECT_FALSE(cbor);
-      EXPECT_EQ(error_code, Reader::DecoderError::DUPLICATE_KEY);
-    }
   }
 }
 
@@ -1272,17 +1286,6 @@ TEST(CBORReaderTest, TestDuplicateKeyError) {
   {
     Reader::DecoderError error_code;
     std::optional<Value> cbor = Reader::Read(kMapWithDuplicateKey, &error_code);
-    EXPECT_FALSE(cbor.has_value());
-    EXPECT_EQ(error_code, Reader::DecoderError::DUPLICATE_KEY);
-  }
-
-  {
-    Reader::DecoderError error_code;
-    Reader::Config config;
-    config.error_code_out = &error_code;
-    config.allow_and_canonicalize_out_of_order_keys = true;
-
-    std::optional<Value> cbor = Reader::Read(kMapWithDuplicateKey, config);
     EXPECT_FALSE(cbor.has_value());
     EXPECT_EQ(error_code, Reader::DecoderError::DUPLICATE_KEY);
   }

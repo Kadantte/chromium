@@ -13,6 +13,7 @@
 #include "chrome/browser/download/download_item_model.h"
 #include "chrome/browser/download/download_item_warning_data.h"
 #include "chrome/browser/download/download_ui_model.h"
+#include "chrome/browser/download/mock_download_core_service.h"
 #include "chrome/browser/download/offline_item_utils.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/download/download_bubble_contents_view_info.h"
@@ -133,29 +134,10 @@ class MockDownloadBubbleSecurityViewDelegate
   const raw_ptr<download::DownloadItem> download_item2_;
 };
 
-class MockDownloadCoreService : public DownloadCoreService {
- public:
-  MOCK_METHOD(ChromeDownloadManagerDelegate*, GetDownloadManagerDelegate, ());
-  MOCK_METHOD(DownloadUIController*, GetDownloadUIController, ());
-  MOCK_METHOD(DownloadHistory*, GetDownloadHistory, ());
-  MOCK_METHOD(extensions::ExtensionDownloadsEventRouter*,
-              GetExtensionEventRouter,
-              ());
-  MOCK_METHOD(bool, HasCreatedDownloadManager, ());
-  MOCK_METHOD(int, BlockingShutdownCount, (), (const));
-  MOCK_METHOD(void,
-              CancelDownloads,
-              (DownloadCoreService::CancelDownloadsTrigger));
-  MOCK_METHOD(void,
-              SetDownloadManagerDelegateForTesting,
-              (std::unique_ptr<ChromeDownloadManagerDelegate> delegate));
-  MOCK_METHOD(bool, IsDownloadUiEnabled, ());
-  MOCK_METHOD(bool, IsDownloadObservedByExtension, ());
-};
 
 std::unique_ptr<KeyedService> BuildMockDownloadCoreService(
     content::BrowserContext* browser_context) {
-  return std::make_unique<MockDownloadCoreService>();
+  return std::make_unique<testing::NiceMock<MockDownloadCoreService>>();
 }
 
 }  // namespace
@@ -196,7 +178,9 @@ class DownloadBubbleSecurityViewTest : public ChromeViewsTestBase {
     bubble_delegate_ = bubble_delegate.get();
     bubble_navigator_ = std::make_unique<MockDownloadBubbleNavigationHandler>(
         *security_view_info_);
-    views::BubbleDialogDelegate::CreateBubble(std::move(bubble_delegate));
+    views::BubbleDialogDelegate::CreateBubbleDeprecated(
+        std::move(bubble_delegate),
+        views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET);
     bubble_delegate_->GetWidget()->Show();
     bubble_controller_ =
         std::make_unique<DownloadBubbleUIController>(browser_.get());
@@ -668,7 +652,7 @@ TEST_F(DownloadBubbleSecurityViewTest, ReturnToPrimaryDialogNoSubpage) {
 }
 
 // Test validating a dangerous download, such that it goes from having
-// a UI info subpage to not having one. See crbug.com/1478390.
+// a UI info subpage to not having one. See crbug.com/40071190.
 TEST_F(DownloadBubbleSecurityViewTest, ValidateDangerousDownload) {
   security_view_info_->InitializeForDownload(*row1_model_);
   ASSERT_TRUE(security_view_info_->HasSubpage());

@@ -19,7 +19,7 @@
 #include "skia/ext/codec_utils.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/platform/bindings/buildflags.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_resource_provider.h"
+#include "third_party/blink/renderer/platform/graphics/canvas_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/memory_managed_paint_recorder.h"
 #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
 #include "third_party/blink/renderer/platform/graphics/web_graphics_context_3d_provider_util.h"
@@ -411,10 +411,16 @@ void CanvasHibernationHandler::Hibernate(
   TRACE_EVENT0("blink", __PRETTY_FUNCTION__);
   DCHECK(!IsHibernating());
 
-  CanvasResourceProvider* provider = delegate_->GetResourceProvider();
+  Canvas2DResourceProvider* provider = delegate_->GetSharedImageProvider();
   if (!provider) {
-    ReportHibernationEvent(
-        HibernationEvent::kHibernationAbortedBecauseNoSurface);
+    if (delegate_->HasResourceProvider()) {
+      ReportHibernationEvent(
+          HibernationEvent::
+              kHibernationAbortedDueToSwitchToUnacceleratedRendering);
+    } else {
+      ReportHibernationEvent(
+          HibernationEvent::kHibernationAbortedBecauseNoSurface);
+    }
     return;
   }
 
@@ -441,7 +447,7 @@ void CanvasHibernationHandler::Hibernate(
   // No HibernationEvent reported on success. This is on purppose to avoid
   // non-complementary stats. Each HibernationScheduled event is paired with
   // exactly one failure or exit event.
-  provider->FlushCanvas();
+  delegate_->FlushCanvas(FlushReason::kOther);
   scoped_refptr<StaticBitmapImage> snapshot = provider->Snapshot();
   if (!snapshot) {
     ReportHibernationEvent(
@@ -487,8 +493,8 @@ void CanvasHibernationHandler::InitiateHibernationIfNecessary() {
     // potentially blocking rendering for an extended-ish period of time. To
     // mitigate that, make the delay random.
     constexpr int max_delay_in_ms = kMaxHibernationDelay.InMilliseconds();
-    base::TimeDelta delay =
-        base::Milliseconds(base::RandInt(max_delay_in_ms / 2, max_delay_in_ms));
+    base::TimeDelta delay = base::Milliseconds(
+        base::RandIntInclusive(max_delay_in_ms / 2, max_delay_in_ms));
 
     base::PostDelayedMemoryReductionTask(
         GetMainThreadTaskRunner(), FROM_HERE,

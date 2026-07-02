@@ -5,6 +5,7 @@
 #include "base/strings/strcat.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
+#include "build/branding_buildflags.h"
 #include "build/buildflag.h"
 #include "chrome/browser/download/bubble/download_bubble_prefs.h"
 #include "chrome/browser/download/chrome_download_manager_delegate.h"
@@ -15,15 +16,14 @@
 #include "chrome/browser/ui/accelerator_utils.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_test.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/download/bubble/download_bubble_contents_view.h"
 #include "chrome/browser/ui/views/download/bubble/download_toolbar_ui_controller.h"
 #include "chrome/browser/ui/views/exclusive_access_bubble_views.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/toolbar/pinned_toolbar_actions_container.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/user_education/interactive_feature_promo_test.h"
 #include "components/feature_engagement/public/feature_constants.h"
@@ -150,12 +150,7 @@ class DownloadBubbleInteractiveUiTest
  public:
   DownloadBubbleInteractiveUiTest()
       : InteractiveFeaturePromoTestMixin(UseDefaultTrackerAllowingPromos(
-            {feature_engagement::kIPHDownloadEsbPromoFeature})) {
-#if BUILDFLAG(IS_MAC)
-    // TODO(chlily): Add test coverage for immersive fullscreen disabled on Mac.
-    test_features_.InitWithFeatures({features::kImmersiveFullscreen}, {});
-#endif  // BUILDFLAG(IS_MAC)
-  }
+            {feature_engagement::kIPHDownloadEsbPromoFeature})) {}
 
   void SetUpInProcessBrowserTestFixture() override {
     InteractiveFeaturePromoTestMixin::SetUpInProcessBrowserTestFixture();
@@ -173,7 +168,7 @@ class DownloadBubbleInteractiveUiTest
   }
 
   DownloadDisplay* GetDownloadDisplay() {
-      return browser()->GetFeatures().download_toolbar_ui_controller();
+    return DownloadToolbarUIController::From(browser());
   }
 
   auto DownloadBubbleIsShowingDetails(bool showing) {
@@ -186,19 +181,18 @@ class DownloadBubbleInteractiveUiTest
 
   // Whether the download bubble's widget is showing and active.
   auto DownloadBubbleIsActive(bool active) {
-      return base::BindOnce(
-          [](DownloadToolbarUIController* toolbar_ui_controller, bool active) {
-            if (!toolbar_ui_controller->IsShowingDetails() ||
-                !toolbar_ui_controller->bubble_contents_for_testing()
-                     ->GetWidget()) {
-              return false;
-            }
-            return active ==
-                   toolbar_ui_controller->bubble_contents_for_testing()
-                       ->GetWidget()
-                       ->IsActive();
-          },
-          browser()->GetFeatures().download_toolbar_ui_controller(), active);
+    return base::BindOnce(
+        [](DownloadToolbarUIController* toolbar_ui_controller, bool active) {
+          if (!toolbar_ui_controller->IsShowingDetails() ||
+              !toolbar_ui_controller->bubble_contents_for_testing()
+                   ->GetWidget()) {
+            return false;
+          }
+          return active == toolbar_ui_controller->bubble_contents_for_testing()
+                               ->GetWidget()
+                               ->IsActive();
+        },
+        DownloadToolbarUIController::From(browser()), active);
   }
 
   auto DownloadBubblePromoIsActive(bool active, const base::Feature& feature) {
@@ -307,9 +301,12 @@ class DownloadBubbleInteractiveUiTest
   }
 
   views::View* GetContainerView() {
-    return BrowserView::GetBrowserViewForBrowser(browser())
-        ->toolbar()
-        ->pinned_toolbar_actions_container();
+    CHECK(!features::IsWebUIPinnedToolbarActionsEnabled())
+        << "Test needs modification to support WebUIPinnedToolbarActions";
+    return static_cast<PinnedToolbarActionsContainer*>(
+        BrowserView::GetBrowserViewForBrowser(browser())
+            ->toolbar_button_provider()
+            ->GetPinnedToolbarActions());
   }
 
  private:
@@ -451,8 +448,10 @@ IN_PROC_BROWSER_TEST_F(
 
 // This test is only for Mac where we have immersive fullscreen.
 #if BUILDFLAG(IS_MAC)
-IN_PROC_BROWSER_TEST_F(DownloadBubbleInteractiveUiTest,
-                       ToolbarIconShownAfterImmersiveFullscreenDownload) {
+// TODO(crbug.com/514169818): Re-enable the test
+IN_PROC_BROWSER_TEST_F(
+    DownloadBubbleInteractiveUiTest,
+    DISABLED_ToolbarIconShownAfterImmersiveFullscreenDownload) {
   RunTestSequence(
       Do(EnterImmersiveFullscreen()), Check(IsInImmersiveFullscreen()),
       // No download toolbar icon should be present before the download.
@@ -510,19 +509,18 @@ IN_PROC_BROWSER_TEST_F(
       NavigateWebContents(kWebContentsElementId,
                           embedded_test_server()->GetURL("/empty.html")),
       // Enter tab fullscreen.
-      InParallel(
-          RunSubsequence(
-              ExecuteJs(kWebContentsElementId,
-                        "() => document.documentElement.requestFullscreen()")),
-          RunSubsequence(
-              InAnyContext(WaitForShow(kExclusiveAccessBubbleViewElementId))),
-          RunSubsequence(Do([&]() {
-            tab_fullscreen_waiter->Wait();
-            // Reset the fullscreen waiter to wait for exiting fullscreen next
-            // time.
-            tab_fullscreen_waiter = std::make_unique<FullscreenWaiter>(
-                browser(), FullscreenWaiter::kNoFullscreen);
-          }))),
+      InParallel(RunSubsequence(ExecuteJs(
+                     kWebContentsElementId,
+                     "() => document.documentElement.requestFullscreen()")),
+                 RunSubsequence(InAnyContext(
+                     WaitForShow(kExclusiveAccessBubbleViewElementId))),
+                 RunSubsequence(Do([&]() {
+                   tab_fullscreen_waiter->Wait();
+                   // Reset the fullscreen waiter to wait for exiting fullscreen
+                   // next time.
+                   tab_fullscreen_waiter = std::make_unique<FullscreenWaiter>(
+                       browser(), FullscreenWaiter::kNoFullscreen);
+                 }))),
       // The exclusive access bubble should notify about the fullscreen change.
       Check(IsExclusiveAccessBubbleDisplayed(true),
             "Exclusive access bubble is displayed upon entering fullscreen"),

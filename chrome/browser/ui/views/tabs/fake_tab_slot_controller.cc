@@ -25,6 +25,13 @@ void FakeTabSlotController::ToggleTabGroupCollapsedState(
     const tab_groups::TabGroupId group,
     ToggleTabGroupCollapsedStateOrigin origin) {}
 
+int FakeTabSlotController::GetTabCount() const {
+  if (tab_count_.has_value()) {
+    return tab_count_.value();
+  }
+  return tab_container_ ? tab_container_->GetTabCount() : 0;
+}
+
 bool FakeTabSlotController::IsActiveTab(const TabSlotView* tab) const {
   return active_tab_ == views::AsViewClass<Tab>(tab);
 }
@@ -33,12 +40,8 @@ bool FakeTabSlotController::IsTabSelected(const TabSlotView* tab) const {
   return false;
 }
 
-bool FakeTabSlotController::IsFocusInTabs() const {
+bool FakeTabSlotController::IsFocusInTabStrip() const {
   return false;
-}
-
-bool FakeTabSlotController::ShouldCompactLeadingEdge() const {
-  return true;
 }
 
 TabSlotController::Liveness FakeTabSlotController::ContinueDrag(
@@ -63,7 +66,8 @@ std::vector<Tab*> FakeTabSlotController::GetTabsInSplit(const Tab* tab) {
   return {};
 }
 
-bool FakeTabSlotController::HoverCardIsShowingForTab(Tab* tab) {
+bool FakeTabSlotController::HoverCardIsShowing(
+    HoverCardAnchorTarget* anchor_target) {
   return false;
 }
 

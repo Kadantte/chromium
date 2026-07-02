@@ -68,11 +68,12 @@ std::string image() {
   return std::string(50, 'a');
 }
 
-class FakeBinaryUploadService : public CloudBinaryUploadService {
+class FakeBinaryUploadService : public CloudBinaryUploadServiceBase {
  public:
   FakeBinaryUploadService()
-      : CloudBinaryUploadService(/*url_loader_factory=*/nullptr,
-                                 /*profile=*/nullptr) {}
+      : CloudBinaryUploadServiceBase(
+            /*url_loader_factory=*/nullptr,
+            std::make_unique<CloudBinaryUploadService>(nullptr)) {}
 
   // Sets whether the user is authorized to upload data for Deep Scanning.
   void SetAuthorized(bool authorized) {
@@ -183,6 +184,7 @@ class FakeBinaryUploadService : public CloudBinaryUploadService {
         case AnalysisConnector::ANALYSIS_CONNECTOR_UNSPECIFIED:
         case AnalysisConnector::FILE_DOWNLOADED:
         case AnalysisConnector::FILE_TRANSFER:
+        case AnalysisConnector::DATA_COPIED:
           NOTREACHED();
       }
     }
@@ -229,17 +231,6 @@ const std::set<std::string>* ExeMimeTypes() {
   return &set;
 }
 
-const std::set<std::string>* ZipMimeTypes() {
-  static std::set<std::string> set = {"application/zip",
-                                      "application/x-zip-compressed"};
-  return &set;
-}
-
-const std::set<std::string>* TextMimeTypes() {
-  static std::set<std::string> set = {"text/plain"};
-  return &set;
-}
-
 ContentMetaData::CopiedTextSource MakeClipboardSource(std::string url) {
   ContentMetaData::CopiedTextSource source;
   source.set_url(std::move(url));
@@ -254,11 +245,12 @@ class MinimalFakeContentAnalysisDelegate : public ContentAnalysisDelegate {
       base::RepeatingClosure quit_closure,
       content::WebContents* web_contents,
       ContentAnalysisDelegate::Data data,
-      ContentAnalysisDelegate::CompletionCallback callback)
+      ContentAnalysisDelegate::CompletionCallback callback,
+      DeepScanAccessPoint access_point)
       : ContentAnalysisDelegate(web_contents,
                                 std::move(data),
                                 std::move(callback),
-                                DeepScanAccessPoint::UPLOAD),
+                                access_point),
         quit_closure_(quit_closure) {}
 
   ~MinimalFakeContentAnalysisDelegate() override { quit_closure_.Run(); }
@@ -267,9 +259,11 @@ class MinimalFakeContentAnalysisDelegate : public ContentAnalysisDelegate {
       base::RepeatingClosure quit_closure,
       content::WebContents* web_contents,
       ContentAnalysisDelegate::Data data,
-      ContentAnalysisDelegate::CompletionCallback callback) {
+      ContentAnalysisDelegate::CompletionCallback callback,
+      DeepScanAccessPoint access_point) {
     return std::make_unique<MinimalFakeContentAnalysisDelegate>(
-        quit_closure, web_contents, std::move(data), std::move(callback));
+        quit_closure, web_contents, std::move(data), std::move(callback),
+        access_point);
   }
 
  private:
@@ -403,20 +397,13 @@ class ContentAnalysisDelegateBrowserTestBase
 
 class ContentAnalysisDelegateBrowserTest
     : public ContentAnalysisDelegateBrowserTestBase,
-      public testing::WithParamInterface<std::tuple<bool, bool>> {
+      public testing::WithParamInterface<bool> {
  public:
   ContentAnalysisDelegateBrowserTest()
-      : ContentAnalysisDelegateBrowserTestBase(std::get<0>(GetParam())) {
-    use_proto_format()
-        ? scoped_feature_list_.InitWithFeatures(
-              /*enabled_features=*/
-              {policy::kUploadRealtimeReportingEventsUsingProto,
-               kDlpScanPastedImages},
-              /*disabled_features=*/{})
-        : scoped_feature_list_.InitWithFeatures(
-              /*enabled_features=*/{kDlpScanPastedImages},
-              /*disabled_features=*/{
-                  policy::kUploadRealtimeReportingEventsUsingProto});
+      : ContentAnalysisDelegateBrowserTestBase(GetParam()) {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{kDlpScanPastedImages},
+        /*disabled_features=*/{});
   }
 
   content::ClipboardEndpoint SourceEndpoint() {
@@ -444,13 +431,9 @@ class ContentAnalysisDelegateBrowserTest
              ->GetActiveWebContents()
              ->GetPrimaryMainFrame());
   }
-
-  bool use_proto_format() const { return std::get<1>(GetParam()); }
 };
 
-INSTANTIATE_TEST_SUITE_P(,
-                         ContentAnalysisDelegateBrowserTest,
-                         testing::Combine(testing::Bool(), testing::Bool()));
+INSTANTIATE_TEST_SUITE_P(, ContentAnalysisDelegateBrowserTest, testing::Bool());
 
 IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBrowserTest, Unauthorized) {
   // The reading of the browser DM token is blocking and happens in this test
@@ -551,7 +534,6 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBrowserTest, Texts) {
 
   // The DLP verdict means an event should be reported. The content size is
   // equal to the length of the concatenated texts (2 * 100 * 'a').
-  if (use_proto_format()) {
     chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
     expected_event.set_url("about:blank");
     expected_event.set_tab_url("about:blank");
@@ -590,31 +572,10 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBrowserTest, Texts) {
     expected_event.set_profile_user_name(kUserName);
 
     validator.ExpectSensitiveDataEvent(std::move(expected_event));
-  } else {
-    validator.ExpectSensitiveDataEvent(
-        /*url*/ "about:blank",
-        /*tab_url*/ "about:blank",
-        /*source*/ "https://source.com/",
-        /*destination*/ "about:blank",
-        /*filename*/ "Text data",
-        // The hash should not be included for string requests.
-        /*sha*/ "",
-        /*trigger*/ kWebContentUploadDataTransferEventTrigger,
-        /*dlp_verdict*/ *result,
-        /*mimetype*/ TextMimeTypes(),
-        /*size*/ 200,
-        /*result*/
-        EventResultToString(EventResult::BLOCKED),
-        /*username*/ kUserName,
-        /*profile_identifier*/ GetProfileIdentifier(),
-        /*scan_id*/ kScanId1,
-        /*content_transfer_method*/ std::nullopt,
-        /*user_justification*/ std::nullopt);
-  }
 
   bool called = false;
   base::RunLoop run_loop;
-  SetQuitClosure(run_loop.QuitClosure());
+  validator.SetDoneClosure(run_loop.QuitClosure());
 
   ContentAnalysisDelegate::Data data;
   data.text.emplace_back(text());
@@ -694,7 +655,6 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBrowserTest,
 
   // The DLP verdict means an event should be reported. The content size is
   // equal to the length of the concatenated texts (2 * 100 * 'a').
-  if (use_proto_format()) {
     chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
     expected_event.set_url("about:blank");
     expected_event.set_tab_url("about:blank");
@@ -734,32 +694,10 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBrowserTest,
     expected_event.set_profile_user_name(kUserName);
 
     validator.ExpectSensitiveDataEvent(std::move(expected_event));
-  } else {
-    validator.ExpectSensitiveDataEvent(
-        /*url*/ "about:blank",
-        /*tab_url*/ "about:blank",
-        /*source*/ "",  // The source is omitted intentionally when it's
-                        // incognito.
-        /*destination*/ "about:blank",
-        /*filename*/ "Text data",
-        // The hash should not be included for string requests.
-        /*sha*/ "",
-        /*trigger*/ kWebContentUploadDataTransferEventTrigger,
-        /*dlp_verdict*/ *result,
-        /*mimetype*/ TextMimeTypes(),
-        /*size*/ 200,
-        /*result*/
-        EventResultToString(EventResult::BLOCKED),
-        /*username*/ kUserName,
-        /*profile_identifier*/ GetProfileIdentifier(),
-        /*scan_id*/ kScanId1,
-        /*content_transfer_method*/ std::nullopt,
-        /*user_justification*/ std::nullopt);
-  }
 
   bool called = false;
   base::RunLoop run_loop;
-  SetQuitClosure(run_loop.QuitClosure());
+  validator.SetDoneClosure(run_loop.QuitClosure());
 
   ContentAnalysisDelegate::Data data;
   data.text.emplace_back(text());
@@ -915,7 +853,6 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBrowserTest,
       kScanId2, ContentAnalysisAcknowledgement::BLOCK);
 
   test::EventReportValidator validator(client());
-  if (use_proto_format()) {
     chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
     expected_event.set_url("about:blank");
     expected_event.set_tab_url("about:blank");
@@ -948,31 +885,10 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBrowserTest,
     expected_event.set_profile_user_name(kUserName);
 
     validator.ExpectSensitiveDataEvent(std::move(expected_event));
-  } else {
-    validator.ExpectSensitiveDataEvent(
-        /*url*/ "about:blank",
-        /*tab_url*/ "about:blank",
-        /*source*/ "https://source.com/",
-        /*destination*/ "about:blank",
-        /*filename*/ "Text data",
-        // The hash should not be included for string requests.
-        /*sha*/ "",
-        /*trigger*/ kWebContentUploadDataTransferEventTrigger,
-        /*dlp_verdict*/ *text_result,
-        /*mimetype*/ TextMimeTypes(),
-        /*size*/ 100,
-        /*result*/
-        EventResultToString(EventResult::BLOCKED),
-        /*username*/ kUserName,
-        /*profile_identifier*/ GetProfileIdentifier(),
-        /*scan_id*/ kScanId1,
-        /*content_transfer_method*/ std::nullopt,
-        /*user_justification*/ std::nullopt);
-  }
 
   bool called = false;
   base::RunLoop run_loop;
-  SetQuitClosure(run_loop.QuitClosure());
+  validator.SetDoneClosure(run_loop.QuitClosure());
 
   ContentAnalysisDelegate::Data data;
   data.image = image();
@@ -1056,7 +972,6 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBrowserTest,
       kScanId2, ContentAnalysisAcknowledgement::BLOCK);
 
   test::EventReportValidator validator(client());
-  if (use_proto_format()) {
     chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
     expected_event.set_url("about:blank");
     expected_event.set_tab_url("about:blank");
@@ -1090,32 +1005,10 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBrowserTest,
     expected_event.set_profile_user_name(kUserName);
 
     validator.ExpectSensitiveDataEvent(std::move(expected_event));
-  } else {
-    validator.ExpectSensitiveDataEvent(
-        /*url*/ "about:blank",
-        /*tab_url*/ "about:blank",
-        /*source*/ "",  // The source is omitted intentionally when it's
-                        // incognito.
-        /*destination*/ "about:blank",
-        /*filename*/ "Text data",
-        // The hash should not be included for string requests.
-        /*sha*/ "",
-        /*trigger*/ kWebContentUploadDataTransferEventTrigger,
-        /*dlp_verdict*/ *text_result,
-        /*mimetype*/ TextMimeTypes(),
-        /*size*/ 100,
-        /*result*/
-        EventResultToString(EventResult::BLOCKED),
-        /*username*/ kUserName,
-        /*profile_identifier*/ GetProfileIdentifier(),
-        /*scan_id*/ kScanId1,
-        /*content_transfer_method*/ std::nullopt,
-        /*user_justification*/ std::nullopt);
-  }
 
   bool called = false;
   base::RunLoop run_loop;
-  SetQuitClosure(run_loop.QuitClosure());
+  validator.SetDoneClosure(run_loop.QuitClosure());
 
   ContentAnalysisDelegate::Data data;
   data.image = image();
@@ -1173,12 +1066,14 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBrowserTest, Throttled) {
   data.reason = ContentAnalysisRequest::FILE_PICKER_DIALOG;
   CreateFilesForTest({"a.exe", "b.exe", "c.exe"},
                      {"a content", "b content", "c content"}, &data);
+
+  std::vector<std::string> expected_scan_ids = {kScanId1, kScanId2, kScanId3};
+
   ASSERT_TRUE(ContentAnalysisDelegate::IsEnabled(
       browser()->profile(), GURL(kTestUrl), &data, FILE_ATTACHED));
 
   // The malware verdict means an event should be reported.
   test::EventReportValidator validator(client());
-  if (use_proto_format()) {
     chrome::cros::reporting::proto::UnscannedFileEvent expected_event;
     expected_event.set_url("about:blank");
     expected_event.set_tab_url("about:blank");
@@ -1199,6 +1094,11 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBrowserTest, Throttled) {
 
     expected_event.set_profile_identifier(GetProfileIdentifier());
     expected_event.set_profile_user_name(kUserName);
+
+    if (base::FeatureList::IsEnabled(safe_browsing::kEnhancedFieldsForSecOps)) {
+      auto* referrer = expected_event.add_referrers();
+      referrer->set_url("about:blank");
+    }
 
     std::vector<std::string> expected_file_names =
 #if BUILDFLAG(IS_CHROMEOS)
@@ -1221,45 +1121,19 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBrowserTest, Throttled) {
             // printf "c content" | sha256sum | tr '[:lower:]' '[:upper:]'
             "2E6D1C4A1F39A02562BF1505AD775C0323D7A04C0C37C9B29D25F532B9972080",
         },
-        ExeMimeTypes());
-  } else {
-    validator.ExpectUnscannedFileEvents(
-        /*url*/ "about:blank",
-        /*tab_url*/ "about:blank",
-        /*source*/ "",
-        /*destination*/ "",
-        {
-            machine_scope() ? created_file_paths()[0].AsUTF8Unsafe() : "a.exe",
-            machine_scope() ? created_file_paths()[1].AsUTF8Unsafe() : "b.exe",
-            machine_scope() ? created_file_paths()[2].AsUTF8Unsafe() : "c.exe",
-        },
-        {
-            // printf "a content" | sha256sum | tr '[:lower:]' '[:upper:]'
-            "D2D2ACF640179223BF9E1EB43C5FBF854C4E50FFB6733BC3A9279D3FF7DE9BE1",
-            // printf "b content" | sha256sum | tr '[:lower:]' '[:upper:]'
-            "93CB3641ADD6A9A6619D7E2F304EBCF5160B2DB016B27C6E3D641C5306897224",
-            // printf "c content" | sha256sum | tr '[:lower:]' '[:upper:]'
-            "2E6D1C4A1F39A02562BF1505AD775C0323D7A04C0C37C9B29D25F532B9972080",
-        },
-        /*trigger*/ kFileUploadDataTransferEventTrigger,
-        /*reason*/ "TOO_MANY_REQUESTS",
-        /*mimetypes*/ ExeMimeTypes(),
-        /*size*/ 9,
-        /*result*/
-        EventResultToString(EventResult::ALLOWED),
-        /*username*/ kUserName,
-        /*profile_identifier*/ GetProfileIdentifier(),
-        /*content_transfer_reason*/ "CONTENT_TRANSFER_METHOD_FILE_PICKER");
-  }
+        expected_scan_ids, ExeMimeTypes());
 
   // While only one file should reach the upload part and get a
   // TOO_MANY_REQUEST result, it can be any of them depending on how quickly
   // they are opened asynchronously. This means responses must be set up for
   // each of them.
+  auto content_analysis_reponses = std::vector<ContentAnalysisResponse>(3);
   for (size_t i = 0; i < 3; ++i) {
+    content_analysis_reponses[i].set_request_token(expected_scan_ids[i]);
     FakeBinaryUploadServiceStorage()->SetResponseForFile(
         created_file_paths()[i].AsUTF8Unsafe(),
-        ScanRequestUploadResult::kTooManyRequests, ContentAnalysisResponse());
+        ScanRequestUploadResult::kTooManyRequests,
+        content_analysis_reponses[i]);
   }
 
   bool called = false;
@@ -1300,27 +1174,18 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBrowserTest, Throttled) {
 // - block_large_files
 class ContentAnalysisDelegateBlockingSettingBrowserTest
     : public ContentAnalysisDelegateBrowserTestBase,
-      public testing::WithParamInterface<std::tuple<bool, bool, bool>> {
+      public testing::WithParamInterface<std::tuple<bool, bool>> {
  public:
   ContentAnalysisDelegateBlockingSettingBrowserTest()
       : ContentAnalysisDelegateBrowserTestBase(machine_scope()) {
-    use_proto_format()
-        ? scoped_feature_list_.InitWithFeatures(
-              /*enabled_features=*/
-              {policy::kUploadRealtimeReportingEventsUsingProto,
-               kDlpScanPastedImages},
-              /*disabled_features=*/{})
-        : scoped_feature_list_.InitWithFeatures(
-              /*enabled_features=*/{kDlpScanPastedImages},
-              /*disabled_features=*/{
-                  policy::kUploadRealtimeReportingEventsUsingProto});
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{kDlpScanPastedImages},
+        /*disabled_features=*/{});
   }
 
   bool machine_scope() const { return std::get<0>(GetParam()); }
 
   bool setting_param() const { return std::get<1>(GetParam()); }
-
-  bool use_proto_format() const { return std::get<2>(GetParam()); }
 
   const char* int_setting_value() const { return setting_param() ? "1" : "0"; }
 
@@ -1330,7 +1195,6 @@ class ContentAnalysisDelegateBlockingSettingBrowserTest
 INSTANTIATE_TEST_SUITE_P(,
                          ContentAnalysisDelegateBlockingSettingBrowserTest,
                          testing::Combine(testing::Bool(),
-                                          testing::Bool(),
                                           testing::Bool()));
 
 IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
@@ -1394,7 +1258,6 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
   base::RunLoop validator_run_loop;
   validator.SetDoneClosure(validator_run_loop.QuitClosure());
 
-  if (use_proto_format()) {
     chrome::cros::reporting::proto::UnscannedFileEvent expected_event;
     expected_event.set_url("about:blank");
     expected_event.set_tab_url("about:blank");
@@ -1416,6 +1279,7 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
             FILE_PASSWORD_PROTECTED);
     expected_event.set_trigger(
         chrome::cros::reporting::proto::DataTransferEventTrigger::FILE_UPLOAD);
+    expected_event.set_scan_id("");
     expected_result()
         ? expected_event.set_event_result(
               chrome::cros::reporting::proto::EventResult::EVENT_RESULT_ALLOWED)
@@ -1429,32 +1293,12 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
     expected_event.set_profile_identifier(GetProfileIdentifier());
     expected_event.set_profile_user_name(kUserName);
 
+    if (base::FeatureList::IsEnabled(safe_browsing::kEnhancedFieldsForSecOps)) {
+      auto* referrer = expected_event.add_referrers();
+      referrer->set_url("about:blank");
+    }
+
     validator.ExpectUnscannedFileEvent(std::move(expected_event));
-  } else {
-    validator.ExpectUnscannedFileEvent(
-        /*url*/ "about:blank",
-        /*tab_url*/ "about:blank",
-        /*source*/ "",
-        /*destination*/ "",
-        /*filename*/
-        machine_scope() ? test_zip.AsUTF8Unsafe() : "encrypted.zip",
-        // sha256sum < chrome/test/data/safe_browsing/download_protection/\
-      // encrypted.zip |  tr '[:lower:]' '[:upper:]'
-        /*sha*/
-        "701FCEA8B2112FFAB257A8A8DFD3382ABCF047689AB028D42903E3B3AA488D9A",
-        /*trigger*/ kFileUploadDataTransferEventTrigger,
-        /*reason*/ "FILE_PASSWORD_PROTECTED",
-        /*mimetypes*/ ZipMimeTypes(),
-        // du chrome/test/data/safe_browsing/download_protection/encrypted.zip
-        // -b
-        /*size*/ 20015,
-        /*result*/
-        expected_result() ? EventResultToString(EventResult::ALLOWED)
-                          : EventResultToString(EventResult::BLOCKED),
-        /*username*/ kUserName,
-        /*profile_identifier*/ GetProfileIdentifier(),
-        /*content_transfer_reason*/ "CONTENT_TRANSFER_METHOD_DRAG_AND_DROP");
-  }
 
   // Start test.
   ContentAnalysisDelegate::CreateForWebContents(
@@ -1539,7 +1383,6 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
   test::EventReportValidator validator(client());
   validator.SetDoneClosure(reporting_run_loop.QuitClosure());
 
-  if (use_proto_format()) {
     chrome::cros::reporting::proto::UnscannedFileEvent expected_event;
     expected_event.set_url("about:blank");
     expected_event.set_tab_url("about:blank");
@@ -1574,30 +1417,12 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
     expected_event.set_profile_identifier(GetProfileIdentifier());
     expected_event.set_profile_user_name(kUserName);
 
+    if (base::FeatureList::IsEnabled(safe_browsing::kEnhancedFieldsForSecOps)) {
+      auto* referrer = expected_event.add_referrers();
+      referrer->set_url("about:blank");
+    }
+
     validator.ExpectUnscannedFileEvent(std::move(expected_event));
-  } else {
-    validator.ExpectUnscannedFileEvent(
-        /*url*/ "about:blank",
-        /*tab_url*/ "about:blank",
-        /*source*/ "",
-        /*destination*/ "",
-        /*filename*/
-        machine_scope() ? created_file_paths()[0].AsUTF8Unsafe() : "large.doc",
-        // python3 -c "print('a' * (51 * 1024 * 1024), end='')" |\
-      // sha256sum |  tr '[:lower:]' '[:upper:]'
-        /*sha*/
-        "6F040FFDD67004CA3074BFB39936F553A49669427C477CC60DBE064C355EE1B1",
-        /*trigger*/ kFileUploadDataTransferEventTrigger,
-        /*reason*/ "FILE_TOO_LARGE",
-        /*mimetypes*/ DocMimeTypes(),
-        /*size*/ kLargeSize,
-        /*result*/
-        expected_result() ? EventResultToString(EventResult::ALLOWED)
-                          : EventResultToString(EventResult::BLOCKED),
-        /*username*/ kUserName,
-        /*profile_identifier*/ GetProfileIdentifier(),
-        /*content_transfer_method*/ "CONTENT_TRANSFER_METHOD_FILE_PICKER");
-  }
 
   bool called = false;
   base::RunLoop run_loop;
@@ -1678,7 +1503,6 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
 
   // The page should be reported as unscanned.
   test::EventReportValidator validator(client());
-  if (use_proto_format()) {
     chrome::cros::reporting::proto::UnscannedFileEvent expected_event;
     expected_event.set_url("about:blank");
     expected_event.set_tab_url("about:blank");
@@ -1691,6 +1515,7 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
         chrome::cros::reporting::proto::UnscannedFileEvent::FILE_TOO_LARGE);
     expected_event.set_trigger(
         chrome::cros::reporting::proto::DataTransferEventTrigger::PAGE_PRINT);
+    expected_event.set_scan_id("");
     expected_result()
         ? expected_event.set_event_result(
               chrome::cros::reporting::proto::EventResult::EVENT_RESULT_ALLOWED)
@@ -1702,28 +1527,12 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
     expected_event.set_profile_identifier(GetProfileIdentifier());
     expected_event.set_profile_user_name(kUserName);
 
+    if (base::FeatureList::IsEnabled(safe_browsing::kEnhancedFieldsForSecOps)) {
+      auto* referrer = expected_event.add_referrers();
+      referrer->set_url("about:blank");
+    }
+
     validator.ExpectUnscannedFileEvent(std::move(expected_event));
-  } else {
-    validator.ExpectUnscannedFileEvent(
-        /*url*/ "about:blank",
-        /*tab_url*/ "about:blank",
-        /*source*/ "",
-        /*destination*/ "",
-        /*filename*/ "about:blank",
-        // python3 -c "print('a' * (51 * 1024 * 1024), end='')" |\
-      // sha256sum |  tr '[:lower:]' '[:upper:]'
-        /*sha*/ "",
-        /*trigger*/ kPagePrintDataTransferEventTrigger,
-        /*reason*/ "FILE_TOO_LARGE",
-        /*mimetypes*/ DocMimeTypes(),
-        /*size*/ std::nullopt,
-        /*result*/
-        expected_result() ? EventResultToString(EventResult::ALLOWED)
-                          : EventResultToString(EventResult::BLOCKED),
-        /*username*/ kUserName,
-        /*profile_identifier*/ GetProfileIdentifier(),
-        /*content_transfer_method*/ std::nullopt);
-  }
 
   bool called = false;
   base::RunLoop run_loop;
@@ -1832,7 +1641,6 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
       response);
   FakeBinaryUploadServiceStorage()->SetExpectedFinalAction(
       kScanId1, ContentAnalysisAcknowledgement::BLOCK);
-  if (use_proto_format()) {
     chrome::cros::reporting::proto::SafeBrowsingDangerousDownloadEvent
         expected_download_event;
     expected_download_event.set_url("about:blank");
@@ -1915,33 +1723,6 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
     validator.ExpectDangerousDeepScanningResultAndSensitiveDataEvent(
         std::move(expected_download_event), std::move(expected_data_event),
         DocMimeTypes());
-  } else {
-    validator.ExpectDangerousDeepScanningResultAndSensitiveDataEvent(
-        /*url*/ "about:blank",
-        /*tab_url*/ "about:blank",
-        /*source*/ "",
-        /*destination*/ "",
-        /*filename*/
-        machine_scope() ? created_file_paths()[0].AsUTF8Unsafe() : "foo.doc",
-        // printf "foo content" | sha256sum  |  tr '[:lower:]' '[:upper:]'
-        /*sha*/
-        "B3A2E2EDBAA3C798B4FC267792B1641B94793DE02D870124E5CBE663750B4CFC",
-        /*threat_type*/ "DANGEROUS",
-        /*trigger*/
-        kFileUploadDataTransferEventTrigger,
-        /*dlp_verdict*/ *dlp_result,
-        /*mimetypes*/ DocMimeTypes(),
-        /*size*/ std::string("foo content").size(),
-        // If the policy allows immediate delivery of the file, then the result
-        // is ALLOWED even if the verdict obtained afterwards is BLOCKED.
-        /*result*/
-        EventResultToString(expected_result() ? EventResult::ALLOWED
-                                              : EventResult::BLOCKED),
-        /*username*/ kUserName,
-        /*profile_identifier*/ GetProfileIdentifier(),
-        /*scan_id*/ kScanId1,
-        /*content_transfer_method*/ "CONTENT_TRANSFER_METHOD_DRAG_AND_DROP");
-  }
 
   // Start test.
   ContentAnalysisDelegate::CreateForWebContents(
@@ -1964,7 +1745,7 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
   EXPECT_TRUE(called);
 
   // Expect 1 request for initial authentication (unspecified type, to be
-  // removed for crbug.com/1090088, then count should be 1), + 1 to scan the
+  // removed for crbug.com/40133594, then count should be 1), + 1 to scan the
   // file in all cases.
   ASSERT_EQ(FakeBinaryUploadServiceStorage()->requests_count(), 2);
   ASSERT_EQ(FakeBinaryUploadServiceStorage()->ack_count(), 1);
@@ -2030,7 +1811,6 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
   FakeBinaryUploadServiceStorage()->SetExpectedFinalAction(
       kScanId1, ContentAnalysisAcknowledgement::BLOCK);
 
-  if (use_proto_format()) {
     chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
     expected_event.set_url("about:blank");
     expected_event.set_tab_url("about:blank");
@@ -2067,41 +1847,13 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
     expected_event.set_profile_user_name(kUserName);
 
     validator.ExpectSensitiveDataEvent(std::move(expected_event));
-  } else {
-    validator.ExpectSensitiveDataEvent(
-        /*url*/ "about:blank",
-        /*tab_url*/ "about:blank",
-        /*source*/ "about:blank",
-        /*destination*/ "about:blank",
-        /*filename*/ "Text data",
-        // The hash should not be included for string requests.
-        /*sha*/ "",
-        /*trigger*/ kWebContentUploadDataTransferEventTrigger,
-        /*dlp_verdict*/ *dlp_result,
-        /*mimetypes*/ TextMimeTypes(),
-        /*size*/ 100,
-        // If the policy allows immediate delivery of the file, then the result
-        // is ALLOWED even if the verdict obtained afterwards is BLOCKED.
-        /*result*/
-        EventResultToString(expected_result() ? EventResult::ALLOWED
-                                              : EventResult::BLOCKED),
-        /*username*/ kUserName,
-        /*profile_identifier*/ GetProfileIdentifier(),
-        /*scan_id*/ kScanId1,
-        /*content_transfer_method*/ std::nullopt,
-        /*user_justification*/ std::nullopt);
-  }
 
   bool called = false;
   base::RunLoop run_loop;
 
   // If the delivery is not delayed, put the quit closure right after the events
   // are reported instead of when the dialog closes.
-  if (expected_result()) {
-    validator.SetDoneClosure(run_loop.QuitClosure());
-  } else {
-    SetQuitClosure(run_loop.QuitClosure());
-  }
+  validator.SetDoneClosure(run_loop.QuitClosure());
 
   // Start test.
   ContentAnalysisDelegate::CreateForWebContents(
@@ -2378,7 +2130,7 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateUnauthorizedBrowserTest, Files) {
 
   bool called = false;
   base::RunLoop run_loop;
-  std::optional<base::RepeatingClosure> quit_closure = std::nullopt;
+  std::optional<base::RepeatingClosure> quit_closure;
 
   // If the scan is blocking, we can call the quit closure when the dialog
   // closes. If it's not, call it at the end of the result callback.
@@ -2425,26 +2177,15 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateUnauthorizedBrowserTest, Files) {
 // This class tests if ContentAnalysisDelegate handles file uploads correctly.
 class ContentAnalysisDelegateFilesBrowserTest
     : public ContentAnalysisDelegateBrowserTestBase,
-      public testing::WithParamInterface<std::tuple<bool, bool>> {
+      public testing::WithParamInterface<bool> {
  public:
   ContentAnalysisDelegateFilesBrowserTest()
-      : ContentAnalysisDelegateBrowserTestBase(std::get<0>(GetParam())) {
-    use_proto_format()
-        ? scoped_feature_list_.InitWithFeatures(
-              /*enabled_features=*/
-              {policy::kUploadRealtimeReportingEventsUsingProto},
-              /*disabled_features=*/{})
-        : scoped_feature_list_.InitWithFeatures(
-              /*enabled_features=*/{},
-              /*disabled_features=*/{
-                  policy::kUploadRealtimeReportingEventsUsingProto});
-  }
-  bool use_proto_format() const { return std::get<1>(GetParam()); }
+      : ContentAnalysisDelegateBrowserTestBase(GetParam()) {}
 };
 
 INSTANTIATE_TEST_SUITE_P(,
                          ContentAnalysisDelegateFilesBrowserTest,
-                         testing::Combine(testing::Bool(), testing::Bool()));
+                         testing::Bool());
 
 IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateFilesBrowserTest, FilesUpload) {
   base::ScopedAllowBlockingForTesting allow_blocking;
@@ -2470,7 +2211,6 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateFilesBrowserTest, FilesUpload) {
   // The malware verdict means an event should be reported.
   test::EventReportValidator validator(client());
 
-  if (use_proto_format()) {
     chrome::cros::reporting::proto::SafeBrowsingDangerousDownloadEvent
         expected_event;
     expected_event.set_url("about:blank");
@@ -2508,27 +2248,6 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateFilesBrowserTest, FilesUpload) {
 
     validator.ExpectDangerousDownloadEvent(std::move(expected_event),
                                            ExeMimeTypes());
-  } else {
-    validator.ExpectDangerousDeepScanningResult(
-        /*url*/ "about:blank",
-        /*tab_url*/ "about:blank",
-        /*source*/ "",
-        /*destination*/ "",
-        /*filename*/
-        machine_scope() ? created_file_paths()[1].AsUTF8Unsafe() : "bad.exe",
-        // printf "bad file content" | sha256sum |  tr '[:lower:]' '[:upper:]'
-        /*sha*/
-        "77AE96C38386429D28E53F5005C46C7B4D8D39BE73D757CE61E0AE65CC1A5A5D",
-        /*threat_type*/ "DANGEROUS",
-        /*trigger*/ kFileUploadDataTransferEventTrigger,
-        /*mimetypes*/ ExeMimeTypes(),
-        /*size*/ std::string("bad file content").size(),
-        /*result*/
-        EventResultToString(EventResult::BLOCKED),
-        /*username*/ kUserName,
-        /*profile_identifier*/ GetProfileIdentifier(),
-        /*scan_id*/ kScanId2);
-  }
 
   ContentAnalysisResponse ok_response;
   ok_response.set_request_token(kScanId1);
@@ -2558,7 +2277,7 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateFilesBrowserTest, FilesUpload) {
 
   bool called = false;
   base::RunLoop run_loop;
-  SetQuitClosure(run_loop.QuitClosure());
+  validator.SetDoneClosure(run_loop.QuitClosure());
 
   // Start test.
   ContentAnalysisDelegate::CreateForWebContents(
@@ -2614,7 +2333,6 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateFilesBrowserTest,
 
   // The malware verdict means an event should be reported.
   test::EventReportValidator validator(client());
-  if (use_proto_format()) {
     chrome::cros::reporting::proto::SafeBrowsingDangerousDownloadEvent
         expected_event;
     expected_event.set_url("about:blank");
@@ -2652,27 +2370,6 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateFilesBrowserTest,
 
     validator.ExpectDangerousDownloadEvent(std::move(expected_event),
                                            ExeMimeTypes());
-  } else {
-    validator.ExpectDangerousDeepScanningResult(
-        /*url*/ "about:blank",
-        /*tab_url*/ "about:blank",
-        /*source*/ "",
-        /*destination*/ "",
-        /*filename*/
-        machine_scope() ? created_file_paths()[1].AsUTF8Unsafe() : "bad.exe",
-        // printf "bad file content" | sha256sum |  tr '[:lower:]' '[:upper:]'
-        /*sha*/
-        "77AE96C38386429D28E53F5005C46C7B4D8D39BE73D757CE61E0AE65CC1A5A5D",
-        /*threat_type*/ "DANGEROUS",
-        /*trigger*/ kFileUploadDataTransferEventTrigger,
-        /*mimetypes*/ ExeMimeTypes(),
-        /*size*/ std::string("bad file content").size(),
-        /*result*/
-        EventResultToString(EventResult::BLOCKED),
-        /*username*/ kUserName,
-        /*profile_identifier*/ GetProfileIdentifier(),
-        /*scan_id*/ kScanId2);
-  }
 
   {
     ContentAnalysisResponse ok_response;
@@ -2721,7 +2418,7 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateFilesBrowserTest,
 
   bool called = false;
   base::RunLoop run_loop;
-  SetQuitClosure(run_loop.QuitClosure());
+  validator.SetDoneClosure(run_loop.QuitClosure());
 
   // Start test.
   ContentAnalysisDelegate::CreateForFilesInWebContents(

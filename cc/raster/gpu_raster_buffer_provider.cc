@@ -14,7 +14,6 @@
 
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/rand_util.h"
 #include "base/trace_event/process_memory_dump.h"
 #include "base/trace_event/trace_event.h"
@@ -116,10 +115,15 @@ GpuRasterBufferProvider::GpuRasterBufferProvider(
   DCHECK(compositor_context_provider);
   CHECK(worker_context_provider);
 
-#if BUILDFLAG(IS_ANDROID)
   {
-    std::optional<viz::RasterContextProvider::ScopedRasterContextLock> lock;
-    lock.emplace(worker_context_provider);
+    viz::RasterContextProvider::ScopedRasterContextLock lock(
+        worker_context_provider);
+
+    should_flush_tile_raster_commands_ =
+        worker_context_provider->ContextCapabilities()
+            .use_deferred_graphite_submit;
+
+#if BUILDFLAG(IS_ANDROID)
     auto is_using_vulkan =
         worker_context_provider->ContextCapabilities().using_vulkan_context;
 
@@ -127,8 +131,8 @@ GpuRasterBufferProvider::GpuRasterBufferProvider(
     // kUseDMSAAForTiles.
     is_using_dmsaa_ = !is_using_vulkan ||
                       base::FeatureList::IsEnabled(features::kUseDMSAAForTiles);
-  }
 #endif
+  }
 }
 
 GpuRasterBufferProvider::~GpuRasterBufferProvider() = default;
@@ -193,6 +197,22 @@ uint64_t GpuRasterBufferProvider::SetReadyToDrawCallback(
 
 void GpuRasterBufferProvider::Shutdown() {}
 
+void GpuRasterBufferProvider::FlushTileRasterGraphiteCommands() {
+  if (!should_flush_tile_raster_commands_) {
+    return;
+  }
+
+  TRACE_EVENT0("cc",
+               "GpuRasterBufferProvider::FlushTileRasterGraphiteCommands");
+  viz::RasterContextProvider::ScopedRasterContextLock lock(
+      worker_context_provider_);
+  auto* ri = lock.RasterInterface();
+  ri->FlushTileRasterGraphiteCommandsCHROMIUM();
+  // This ensures that the next FlushPendingWork() will flush the
+  // FlushTileRasterGraphiteCommandsCHROMIUM command.
+  ri->OrderingBarrierCHROMIUM();
+}
+
 void GpuRasterBufferProvider::RasterBufferImpl::PlaybackOnWorkerThread(
     const RasterSource* raster_source,
     const gfx::Rect& raster_full_rect,
@@ -231,8 +251,8 @@ void GpuRasterBufferProvider::RasterBufferImpl::PlaybackOnWorkerThreadInternal(
       client_->worker_context_provider_->RasterInterface();
   DCHECK(ri);
 
-  const bool measure_raster_metric = client_->metrics_subsampler_.ShouldSample(
-      client_->raster_metric_probability_);
+  const bool measure_raster_metric =
+      base::ShouldRecordSubsampledMetric(client_->raster_metric_probability_);
 
   gfx::Rect playback_rect = raster_full_rect;
   if (resource_has_previous_content_) {
@@ -328,7 +348,8 @@ void GpuRasterBufferProvider::RasterBufferImpl::RasterizeSource(
       playback_rect, transform.translation(), recording_to_raster_scale,
       raster_source->requires_clear(),
       playback_settings.raster_inducing_scroll_offsets,
-      const_cast<RasterSource*>(raster_source)->max_op_size_hint());
+      const_cast<RasterSource*>(raster_source)->max_op_size_hint(),
+      base::RepeatingCallback<void(SkCanvas*, uint32_t)>());
   ri->EndRasterCHROMIUM();
   backing_->mailbox_sync_token =
       gpu::RasterScopedAccess::EndAccess(std::move(ri_access));

@@ -202,7 +202,7 @@ IN_PROC_BROWSER_TEST_F(FooterControllerExtensionTest, TabChanged) {
   NavigateCurrentTab(extension->url());
   EXPECT_TRUE(footer()->GetVisible());
 
-  OpenNewTab(GURL(chrome::kChromeUINewTabPageURL));
+  OpenNewTab(chrome::ChromeUINewTabPageURLAsGURL());
   EXPECT_FALSE(footer()->GetVisible());
 }
 
@@ -229,9 +229,7 @@ class FooterControllerEnterpriseTest
       public testing::WithParamInterface<bool> {
  public:
   FooterControllerEnterpriseTest() {
-    feature_list_.InitWithFeatureStates(
-        {{ntp_features::kNtpFooter, true},
-         {features::kEnterpriseBadgingForNtpFooter, true}});
+    feature_list_.InitWithFeatureStates({{ntp_features::kNtpFooter, true}});
   }
   ~FooterControllerEnterpriseTest() override = default;
 
@@ -251,11 +249,11 @@ IN_PROC_BROWSER_TEST_P(FooterControllerEnterpriseTest, NoticePolicyEnabled) {
   ASSERT_FALSE(footer()->GetVisible());
 
   // Default NTP
-  NavigateCurrentTab(GURL(chrome::kChromeUINewTabURL));
+  NavigateCurrentTab(chrome::ChromeUINewTabURLAsGURL());
   EXPECT_EQ(managed(), footer()->GetVisible());
 
   // 1P NTP
-  NavigateCurrentTab(GURL(chrome::kChromeUINewTabPageURL));
+  NavigateCurrentTab(chrome::ChromeUINewTabPageURLAsGURL());
   EXPECT_EQ(managed(), footer()->GetVisible());
 
   // 3P NTP
@@ -279,7 +277,7 @@ IN_PROC_BROWSER_TEST_P(FooterControllerEnterpriseTest, NoticePolicyDisabled) {
                 : policy::EnterpriseManagementAuthority::NONE);
   local_state()->SetBoolean(prefs::kNTPFooterManagementNoticeEnabled, false);
 
-  NavigateCurrentTab(GURL(chrome::kChromeUINewTabPageURL));
+  NavigateCurrentTab(chrome::ChromeUINewTabPageURLAsGURL());
   EXPECT_FALSE(footer()->GetVisible());
 }
 
@@ -290,7 +288,7 @@ IN_PROC_BROWSER_TEST_P(FooterControllerEnterpriseTest, NoticePolicyChanged) {
                 : policy::EnterpriseManagementAuthority::NONE);
   ASSERT_FALSE(footer()->GetVisible());
 
-  NavigateCurrentTab(GURL(chrome::kChromeUINewTabURL));
+  NavigateCurrentTab(chrome::ChromeUINewTabURLAsGURL());
   EXPECT_EQ(managed(), footer()->GetVisible());
 
   local_state()->SetBoolean(prefs::kNTPFooterManagementNoticeEnabled, false);
@@ -312,7 +310,7 @@ IN_PROC_BROWSER_TEST_P(FooterControllerEnterpriseTest,
       policy::EnterpriseManagementAuthority::DOMAIN_LOCAL);
   VerifyNoticeMetricsRecorded(0);
 
-  NavigateCurrentTab(GURL(chrome::kChromeUINewTabURL));
+  NavigateCurrentTab(chrome::ChromeUINewTabURLAsGURL());
   ASSERT_EQ(managed(), footer()->GetVisible());
   VerifyNoticeMetricsRecorded(/*total_count= */ 1, /*management_count= */ 1);
 
@@ -371,7 +369,7 @@ IN_PROC_BROWSER_TEST_F(FooterControllerSplitViewSingleTabTest, TabChanged) {
   NavigateCurrentTab(GURL(kNonNtpUrl));
   EXPECT_FALSE(footer()->GetVisible());
 
-  NavigateCurrentTab(GURL(chrome::kChromeUINewTabPageURL));
+  NavigateCurrentTab(chrome::ChromeUINewTabPageURLAsGURL());
   EXPECT_FALSE(footer()->GetVisible());
 
   OpenNewTab(GURL(extension->url()));

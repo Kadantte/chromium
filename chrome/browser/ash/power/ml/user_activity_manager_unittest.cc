@@ -24,12 +24,12 @@
 #include "chrome/browser/ash/power/ml/user_activity_event.pb.h"
 #include "chrome/browser/ash/power/ml/user_activity_ukm_logger.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/tabs/tab_activity_simulator.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/test_browser_window_aura.h"
 #include "chrome/test/base/testing_profile.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "chromeos/ash/components/install_attributes/stub_install_attributes.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "chromeos/dbus/power_manager/idle.pb.h"
@@ -166,8 +166,8 @@ class UserActivityManagerTest : public ChromeRenderViewHostTestHarness {
   }
 
   void ReportLidEvent(chromeos::PowerManagerClient::LidState state) {
-    chromeos::FakePowerManagerClient::Get()->SetLidState(
-        state, base::TimeTicks::UnixEpoch());
+    chromeos::FakePowerManagerClient::Get()->SetLidState(state,
+                                                         base::TimeTicks());
   }
 
   void ReportPowerChangeEvent(
@@ -180,8 +180,8 @@ class UserActivityManagerTest : public ChromeRenderViewHostTestHarness {
   }
 
   void ReportTabletModeEvent(chromeos::PowerManagerClient::TabletMode mode) {
-    chromeos::FakePowerManagerClient::Get()->SetTabletMode(
-        mode, base::TimeTicks::UnixEpoch());
+    chromeos::FakePowerManagerClient::Get()->SetTabletMode(mode,
+                                                           base::TimeTicks());
   }
 
   void ReportVideoStart() { activity_logger_->OnVideoActivityStarted(); }
@@ -242,9 +242,9 @@ class UserActivityManagerTest : public ChromeRenderViewHostTestHarness {
         chrome::CreateBrowserWithAuraTestWindowForParams(
             std::move(dummy_window), &params);
     if (is_focused) {
-      browser->window()->Activate();
+      browser->GetWindow()->Activate();
     } else {
-      browser->window()->Deactivate();
+      browser->GetWindow()->Deactivate();
     }
     return browser;
   }
@@ -1272,7 +1272,7 @@ TEST_F(UserActivityManagerTest, DISABLED_BasicTabs) {
 
   std::unique_ptr<Browser> browser =
       CreateTestBrowser(true /* is_visible */, true /* is_focused */);
-  BrowserList::GetInstance()->SetLastActive(browser.get());
+  ui_test_utils::DeprecatedFakeActivateBrowser(browser.get());
   TabStripModel* tab_strip_model = browser->tab_strip_model();
   const ukm::SourceId source_id1 = CreateTestWebContents(
       tab_strip_model, url1_, true /* is_active */, "application/pdf");
@@ -1313,9 +1313,9 @@ TEST_F(UserActivityManagerTest, DISABLED_MultiBrowsersAndTabs) {
   std::unique_ptr<Browser> browser3 =
       CreateTestBrowser(true /* is_visible */, false /* is_focused */);
 
-  BrowserList::GetInstance()->SetLastActive(browser3.get());
-  BrowserList::GetInstance()->SetLastActive(browser2.get());
-  BrowserList::GetInstance()->SetLastActive(browser1.get());
+  ui_test_utils::DeprecatedFakeActivateBrowser(browser3.get());
+  ui_test_utils::DeprecatedFakeActivateBrowser(browser2.get());
+  ui_test_utils::DeprecatedFakeActivateBrowser(browser1.get());
 
   TabStripModel* tab_strip_model1 = browser1->tab_strip_model();
   CreateTestWebContents(tab_strip_model1, url1_, false /* is_active */);
@@ -1352,7 +1352,7 @@ TEST_F(UserActivityManagerTest, Incognito) {
 
   std::unique_ptr<Browser> browser = CreateTestBrowser(
       true /* is_visible */, true /* is_focused */, true /* is_incognito */);
-  BrowserList::GetInstance()->SetLastActive(browser.get());
+  ui_test_utils::DeprecatedFakeActivateBrowser(browser.get());
 
   TabStripModel* tab_strip_model = browser->tab_strip_model();
   CreateTestWebContents(tab_strip_model, url1_, true /* is_active */);

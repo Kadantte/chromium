@@ -113,12 +113,33 @@ SharedImageRepresentation::~SharedImageRepresentation() {
   }
 }
 
+void SharedImageRepresentation::OnContextLost() {
+  has_context_ = false;
+  backing_->OnContextLost();
+}
+
 size_t SharedImageRepresentation::NumPlanesExpected() const {
   if (format().PrefersExternalSampler()) {
     return 1;
   }
 
   return static_cast<size_t>(format().NumberOfPlanes());
+}
+
+bool SharedImageRepresentation::IsCleared() const {
+  return ClearedRect() == gfx::Rect(size());
+}
+
+void SharedImageRepresentation::SetCleared() {
+  SetClearedRect(gfx::Rect(size()));
+}
+
+gfx::Rect SharedImageRepresentation::ClearedRect() const {
+  return backing_->ClearedRect();
+}
+
+void SharedImageRepresentation::SetClearedRect(const gfx::Rect& cleared_rect) {
+  backing_->SetClearedRect(cleared_rect);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -165,7 +186,7 @@ bool GLTextureImageRepresentationBase::SupportsMultipleConcurrentReadAccess() {
 // GLTextureImageRepresentation
 
 gpu::TextureBase* GLTextureImageRepresentation::GetTextureBase(
-    int plane_index) {
+    size_t plane_index) {
   return GetTexture(plane_index);
 }
 
@@ -198,7 +219,7 @@ void GLTextureImageRepresentation::UpdateClearedStateOnBeginAccess() {
 // GLTexturePassthroughImageRepresentation
 
 gpu::TextureBase* GLTexturePassthroughImageRepresentation::GetTextureBase(
-    int plane_index) {
+    size_t plane_index) {
   return GetTexturePassthrough(plane_index).get();
 }
 
@@ -218,8 +239,10 @@ bool GLTexturePassthroughImageRepresentation::
 
 SkiaImageRepresentation::SkiaImageRepresentation(SharedImageManager* manager,
                                                  SharedImageBacking* backing,
-                                                 MemoryTypeTracker* tracker)
-    : SharedImageRepresentation(manager, backing, tracker) {}
+                                                 MemoryTypeTracker* tracker,
+                                                 bool is_graphite)
+    : SharedImageRepresentation(manager, backing, tracker),
+      is_graphite_(is_graphite) {}
 
 SkiaImageRepresentation::~SkiaImageRepresentation() = default;
 
@@ -232,7 +255,14 @@ bool SkiaImageRepresentation::SupportsDeferredGraphiteSubmit() {
 }
 
 bool SkiaImageRepresentation::NeedGraphiteContextSubmitBeforeEndAccess() {
-  if (!features::kSkiaGraphiteEnableDeferredSubmit.Get()) {
+  // If this is not a Graphite representation, we don't need to submit to a
+  // Graphite context. It is important to not check the feature param here
+  // if we are not using Graphite to avoid unwanted feature study registration.
+  if (!is_graphite_) {
+    return false;
+  }
+
+  if (!features::SkiaGraphiteEnableDeferredSubmit()) {
     // If deferred submit is disabled, then a submit is always required.
     return true;
   }
@@ -313,7 +343,7 @@ SkiaGaneshImageRepresentation::SkiaGaneshImageRepresentation(
     SharedImageManager* manager,
     SharedImageBacking* backing,
     MemoryTypeTracker* tracker)
-    : SkiaImageRepresentation(manager, backing, tracker),
+    : SkiaImageRepresentation(manager, backing, tracker, /*is_graphite=*/false),
       gr_context_(gr_context) {}
 
 SkiaGaneshImageRepresentation::ScopedGaneshWriteAccess::ScopedGaneshWriteAccess(
@@ -515,7 +545,7 @@ SkiaGaneshImageRepresentation::ScopedGaneshReadAccess::CreateSkImage(
 
 sk_sp<SkImage>
 SkiaGaneshImageRepresentation::ScopedGaneshReadAccess::CreateSkImageForPlane(
-    int plane_index,
+    size_t plane_index,
     SharedContextState* context_state,
     SkImages::TextureReleaseProc texture_release_proc,
     SkImages::ReleaseContext release_context) {
@@ -588,7 +618,8 @@ SkiaGraphiteImageRepresentation::SkiaGraphiteImageRepresentation(
     SharedImageManager* manager,
     SharedImageBacking* backing,
     MemoryTypeTracker* tracker)
-    : SkiaImageRepresentation(manager, backing, tracker) {}
+    : SkiaImageRepresentation(manager, backing, tracker, /*is_graphite=*/true) {
+}
 
 SkiaGraphiteImageRepresentation::ScopedGraphiteWriteAccess::
     ScopedGraphiteWriteAccess(
@@ -754,7 +785,7 @@ SkiaGraphiteImageRepresentation::ScopedGraphiteReadAccess::CreateSkImage(
 }
 
 sk_sp<SkImage> SkiaGraphiteImageRepresentation::ScopedGraphiteReadAccess::
-    CreateSkImageForPlane(int plane_index,
+    CreateSkImageForPlane(size_t plane_index,
                           SharedContextState* context_state,
                           SkImages::TextureReleaseProc texture_release_proc,
                           SkImages::ReleaseContext release_context) {
@@ -864,6 +895,11 @@ Microsoft::WRL::ComPtr<ID3D12Resource>
 WebNNTensorRepresentation::GetD3D12Buffer() const {
   NOTREACHED();
 }
+
+base::win::ScopedHandle WebNNTensorRepresentation::GetD3D12HeapHandle() const {
+  NOTREACHED();
+}
+
 #endif
 
 #if BUILDFLAG(IS_APPLE)
@@ -1128,10 +1164,14 @@ RasterImageRepresentation::BeginScopedWriteAccess(
     const SkSurfaceProps& surface_props,
     const std::optional<SkColor4f>& clear_color,
     bool visible) {
-  return std::make_unique<ScopedWriteAccess>(
-      base::PassKey<RasterImageRepresentation>(), this,
+  auto* paint_op_buffer =
       BeginWriteAccess(std::move(context_state), final_msaa_count,
-                       surface_props, clear_color, visible));
+                       surface_props, clear_color, visible);
+  if (!paint_op_buffer) {
+    return nullptr;
+  }
+  return std::make_unique<ScopedWriteAccess>(
+      base::PassKey<RasterImageRepresentation>(), this, paint_op_buffer);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

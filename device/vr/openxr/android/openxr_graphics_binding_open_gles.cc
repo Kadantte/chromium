@@ -80,8 +80,8 @@ bool OpenXrGraphicsBindingOpenGLES::InitializeGl() {
   }
 
   // None of the other runtimes support ANGLE, so we disable it too for now.
-  // TODO(alcooper): Investigate if we can support ANGLE or if we'll run into
-  // similar problems as cardboard.
+  // TODO(crbug.com/529457533): Investigate if we can support ANGLE or if we'll
+  // run into similar problems as cardboard.
   gl::DisableANGLE();
 
   // Everything below is a hacky first pass at making a session and likely needs
@@ -160,7 +160,7 @@ bool OpenXrGraphicsBindingOpenGLES::Initialize(XrInstance instance,
     return false;
   }
 
-  // TODO(alcooper): Validate/set version based on the output here.
+  // TODO(crbug.com/529458212): Validate/set version based on the output here.
   XrGraphicsRequirementsOpenGLESKHR graphics_requirements = {
       XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_ES_KHR};
   if (XR_FAILED(get_graphics_requirements_fn(instance, system,
@@ -277,6 +277,11 @@ void OpenXrGraphicsBindingOpenGLES::ResizeSharedBuffer(
   gpu::SharedImageUsageSet shared_image_usage =
       gpu::SHARED_IMAGE_USAGE_SCANOUT | gpu::SHARED_IMAGE_USAGE_DISPLAY_READ |
       gpu::SHARED_IMAGE_USAGE_GLES2_READ | gpu::SHARED_IMAGE_USAGE_GLES2_WRITE;
+
+  if (layer.read_only_data().needs_raster_access) {
+    shared_image_usage |= gpu::SHARED_IMAGE_USAGE_RASTER_READ |
+                          gpu::SHARED_IMAGE_USAGE_RASTER_WRITE;
+  }
 
   // If the XRSession is producing frames with WebGPU then the appropriate usage
   // also needs to be added.
@@ -440,12 +445,16 @@ bool OpenXrGraphicsBindingOpenGLES::WaitOnFence(OpenXrCompositionLayer& layer,
 
 bool OpenXrGraphicsBindingOpenGLES::ShouldFlipSubmittedImage(
     OpenXrCompositionLayer& layer) const {
+  bool should_flip = layer.flip_y();
   // WebGPU produces textures that are y-flipped relative to WebGL, which needs
   // to be accounted for during frame submission.
-  return IsWebGPUSession();
+  if (IsWebGPUSession()) {
+    should_flip = !should_flip;
+  }
+  return should_flip;
 }
 
-void OpenXrGraphicsBindingOpenGLES::OnSwapchainImageActivated(
+void OpenXrGraphicsBindingOpenGLES::OnSwapchainImageReady(
     OpenXrCompositionLayer& layer,
     gpu::SharedImageInterface* sii) {
   OpenXrSwapchainInfo* swap_chain_info = layer.GetActiveSwapchainImage();

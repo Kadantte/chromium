@@ -62,8 +62,7 @@ namespace {
 
 AccessorySheetData::Builder PaymentMethodAccessorySheetDataBuilder() {
   return AccessorySheetData::Builder(AccessoryTabType::CREDIT_CARDS,
-                                     /*user_info_title=*/std::u16string(),
-                                     /*plus_address_title=*/std::u16string())
+                                     /*user_info_title=*/std::u16string())
       .AppendFooterCommand(
           l10n_util::GetStringUTF16(
               IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_ALL_ADDRESSES_LINK),
@@ -557,8 +556,7 @@ TEST_F(PaymentMethodAccessoryControllerTest,
   paydm().AddAutofillOfferData(promo_code_origin_mismatch);
   paydm().AddAutofillOfferData(promo_code_expired);
   AccessorySheetData result(autofill::AccessoryTabType::CREDIT_CARDS,
-                            /*user_info_title=*/std::u16string(),
-                            /*plus_address_title=*/std::u16string());
+                            /*user_info_title=*/std::u16string());
 
   EXPECT_CALL(filling_source_observer_,
               Run(controller(), IsFillingSourceAvailable(true)));
@@ -603,7 +601,7 @@ TEST_F(PaymentMethodAccessoryControllerTest,
 
   Iban iban;
   iban.set_value(std::u16string(test::kIbanValue16));
-  paydm().AddAsLocalIban(iban);
+  std::string guid = paydm().AddAsLocalIban(iban);
 
   EXPECT_CALL(filling_source_observer_,
               Run(controller(), IsFillingSourceAvailable(true)));
@@ -634,7 +632,7 @@ TEST_F(PaymentMethodAccessoryControllerTest,
           .AppendSimpleField(AccessorySuggestionType::kCreditCardCvc,
                              std::u16string())
           .AddIbanInfo(iban.GetIdentifierStringForAutofillDisplay(),
-                       iban.value(), /*id=*/"")
+                       iban.value(), /*id=*/guid)
           .Build());
 }
 
@@ -652,6 +650,7 @@ TEST_F(PaymentMethodAccessoryControllerTest, FetchLocalIban) {
           .SetSuggestionType(AccessorySuggestionType::kIban)
           .SetDisplayText(iban.GetIdentifierStringForAutofillDisplay())
           .SetTextToFill(iban.value())
+          .SetId(guid)
           .SetSelectable(true)
           .Build();
 
@@ -659,6 +658,12 @@ TEST_F(PaymentMethodAccessoryControllerTest, FetchLocalIban) {
   ASSERT_TRUE(rfh);
   FieldGlobalId field_id{.frame_token = LocalFrameToken(*rfh->GetFrameToken()),
                          .renderer_id = FieldRendererId(123)};
+
+  EXPECT_CALL(iban_access_manager(), FetchValue(_, _))
+      .WillOnce([&iban](const Suggestion::Payload& payload,
+                        IbanAccessManager::OnIbanFetchedCallback callback) {
+        std::move(callback).Run(iban.value());
+      });
 
   EXPECT_CALL(autofill_driver(),
               ApplyFieldAction(mojom::FieldActionType::kReplaceAll,
@@ -711,8 +716,7 @@ TEST_F(PaymentMethodAccessoryControllerTest,
           AccessoryTabType::CREDIT_CARDS,
           /*user_info_title=*/
           l10n_util::GetStringUTF16(
-              IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_EMPTY_MESSAGE),
-          /*plus_address_title=*/std::u16string())
+              IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_EMPTY_MESSAGE))
           .AddLoyaltyCardInfo(
               loyalty_card.merchant_name(), loyalty_card.program_logo(),
               base::UTF8ToUTF16(loyalty_card.loyalty_card_number()))
@@ -746,8 +750,7 @@ TEST_F(PaymentMethodAccessoryControllerTest, LoyaltyCardDataIsChangedBySync) {
           AccessoryTabType::CREDIT_CARDS,
           /*user_info_title=*/
           l10n_util::GetStringUTF16(
-              IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_EMPTY_MESSAGE),
-          /*plus_address_title=*/std::u16string())
+              IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_EMPTY_MESSAGE))
           .AppendFooterCommand(
               l10n_util::GetStringUTF16(
                   IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_ALL_ADDRESSES_LINK),
@@ -764,8 +767,7 @@ TEST_F(PaymentMethodAccessoryControllerTest, LoyaltyCardDataIsChangedBySync) {
           AccessoryTabType::CREDIT_CARDS,
           /*user_info_title=*/
           l10n_util::GetStringUTF16(
-              IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_EMPTY_MESSAGE),
-          /*plus_address_title=*/std::u16string())
+              IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_EMPTY_MESSAGE))
           .AddLoyaltyCardInfo(
               loyalty_card.merchant_name(), loyalty_card.program_logo(),
               base::UTF8ToUTF16(loyalty_card.loyalty_card_number()))
@@ -828,9 +830,10 @@ TEST_F(PaymentMethodAccessoryControllerTestForBnpl,
   autofill_manager().OnAskForValuesToFillTest(
       form, form.fields().front().global_id());
   autofill_manager().FillOrPreviewForm(
-      mojom::ActionPersistence::kFill, form, form.fields().front().global_id(),
-      FillingPayload(&bnpl_card),
-      AutofillTriggerSource::kKeyboardAccessoryOrBottomSheet);
+      mojom::ActionPersistence::kFill, form.global_id(),
+      form.fields().front().global_id(), FillingPayload(&bnpl_card),
+      AutofillTriggerSource::kKeyboardAccessoryOrBottomSheet,
+      /*blocked_fields=*/{});
 
   std::u16string cvc = u"123";
   autofill_manager().GetCreditCardAccessManager()->CacheUnmaskedCardInfo(

@@ -28,6 +28,11 @@ suite('AppContent', () => {
   let speech: TestSpeechBrowserProxy;
   let lineFocusController: LineFocusController;
 
+  function getLineFocusPadding(): number {
+    const val = app.style.getPropertyValue('--line-focus-padding');
+    return val ? parseInt(val) : 0;
+  }
+
   setup(async () => {
     // Clearing the DOM should always be done first.
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -69,7 +74,7 @@ suite('AppContent', () => {
   });
 
   test(
-      'menus close after toolbar mouse movement updates line focus',
+      'connected callback adds line focus mouse listener in toolbar',
       async () => {
         chrome.readingMode.isLineFocusEnabled = true;
         emitEvent(
@@ -79,22 +84,21 @@ suite('AppContent', () => {
             app, ToolbarEvent.LINE_FOCUS_STYLE,
             {detail: {data: LineFocusStyle.UNDERLINE}});
         await microtasksFinished();
-        const newPos = 202;
+        let mouseMoveInToolbar = false;
+        let mouseMove = false;
+        LineFocusController.getInstance().onMouseMove = () => {
+          mouseMove = true;
+        };
+        LineFocusController.getInstance().onMouseMoveInToolbar = () => {
+          mouseMoveInToolbar = true;
+        };
+
         app.connectedCallback();
         await microtasksFinished();
+        app.$.toolbar.dispatchEvent(new MouseEvent('mousemove', {clientY: 10}));
 
-        // Line focus should not move during toolbar movement.
-        app.$.toolbar.dispatchEvent(
-            new MouseEvent('mousemove', {clientY: newPos}));
-        await microtasksFinished();
-        const lineFocusY = app.style.getPropertyValue('--line-focus-y');
-        assertTrue(lineFocusY === '' || lineFocusY === '0px');
-
-        // After the menus close, then the line focus position should update.
-        emitEvent(app, ToolbarEvent.CLOSE_ALL_MENUS);
-        await microtasksFinished();
-        assertEquals(
-            `${newPos}px`, app.style.getPropertyValue('--line-focus-y'));
+        assertTrue(mouseMoveInToolbar);
+        assertFalse(mouseMove);
       });
 
   test('connected callback adds line focus mouse listener', async () => {
@@ -106,17 +110,27 @@ suite('AppContent', () => {
         app, ToolbarEvent.LINE_FOCUS_STYLE,
         {detail: {data: LineFocusStyle.UNDERLINE}});
     await microtasksFinished();
+    let mouseMoveInToolbar = false;
+    let mouseMove = false;
+    LineFocusController.getInstance().onMouseMove = () => {
+      mouseMove = true;
+    };
+    LineFocusController.getInstance().onMouseMoveInToolbar = () => {
+      mouseMoveInToolbar = true;
+    };
 
     app.connectedCallback();
     await microtasksFinished();
     app.$.containerParent.dispatchEvent(
         new MouseEvent('mousemove', {clientY: 10}));
 
-    assertEquals('10px', app.style.getPropertyValue('--line-focus-y'));
+    assertTrue(mouseMove);
+    assertFalse(mouseMoveInToolbar);
   });
 
   test('new content updates padding for line focus', async () => {
     chrome.readingMode.isLineFocusEnabled = true;
+    app.connectedCallback();
     emitEvent(
         app, ToolbarEvent.LINE_FOCUS_MOVEMENT,
         {detail: {data: LineFocusMovement.STATIC}});
@@ -124,21 +138,19 @@ suite('AppContent', () => {
         app, ToolbarEvent.LINE_FOCUS_STYLE,
         {detail: {data: LineFocusStyle.UNDERLINE}});
     await microtasksFinished();
-    assertEquals('', app.style.getPropertyValue('--line-focus-padding'));
+    assertEquals(0, getLineFocusPadding());
 
     app.updateContent();
-    await whenCheck(
-        app, () => app.style.getPropertyValue('--line-focus-padding') !== '');
+    await whenCheck(app, () => getLineFocusPadding() !== 0);
 
-    const actualPadding =
-        +app.style.getPropertyValue('--line-focus-padding').replace('px', '');
-    assertLT(0, actualPadding);
+    assertLT(0, getLineFocusPadding());
   });
 
   test(
       'new content does not update padding for line focus with flag disabled',
       async () => {
         chrome.readingMode.isLineFocusEnabled = false;
+        app.connectedCallback();
         emitEvent(
             app, ToolbarEvent.LINE_FOCUS_MOVEMENT,
             {detail: {data: LineFocusMovement.CURSOR}});
@@ -146,18 +158,19 @@ suite('AppContent', () => {
             app, ToolbarEvent.LINE_FOCUS_STYLE,
             {detail: {data: LineFocusStyle.UNDERLINE}});
         await microtasksFinished();
-        assertEquals('', app.style.getPropertyValue('--line-focus-padding'));
+        assertEquals(0, getLineFocusPadding());
 
         app.updateContent();
         await microtasksFinished();
 
-        assertEquals('', app.style.getPropertyValue('--line-focus-padding'));
+        assertEquals(0, getLineFocusPadding());
       });
 
   test(
       'new content does not update padding for line focus with line focus off',
       async () => {
         chrome.readingMode.isLineFocusEnabled = true;
+        app.connectedCallback();
         emitEvent(
             app, ToolbarEvent.LINE_FOCUS_MOVEMENT,
             {detail: {data: LineFocusMovement.STATIC}});
@@ -165,26 +178,136 @@ suite('AppContent', () => {
             app, ToolbarEvent.LINE_FOCUS_STYLE,
             {detail: {data: LineFocusStyle.OFF}});
         await microtasksFinished();
-        assertEquals('', app.style.getPropertyValue('--line-focus-padding'));
+        assertEquals(0, getLineFocusPadding());
 
         app.updateContent();
         await microtasksFinished();
 
-        assertEquals('', app.style.getPropertyValue('--line-focus-padding'));
+        assertEquals(0, getLineFocusPadding());
       });
 
   test('line focus shortcut toggles line focus', async () => {
     chrome.readingMode.isLineFocusEnabled = true;
     assertFalse(lineFocusController.isEnabled());
 
+    // 'l' toggle
     keyDownOn(app, 0, undefined, 'l');
     await microtasksFinished();
     assertTrue(lineFocusController.isEnabled());
 
-    keyDownOn(app, 0, undefined, 'l');
+    // 'L' toggle
+    keyDownOn(app, 0, undefined, 'L');
+    await microtasksFinished();
+    assertFalse(lineFocusController.isEnabled());
+
+    // Modifier check: Ctrl+l should not toggle
+    keyDownOn(app, 0, ['ctrl'], 'l');
     await microtasksFinished();
     assertFalse(lineFocusController.isEnabled());
   });
+
+  test('read aloud shortcut toggles playback', async () => {
+    let playPauseCalled = false;
+    speechController.onPlayPauseKeyPress = () => {
+      playPauseCalled = true;
+    };
+
+    // 'k' press
+    keyDownOn(app, 0, undefined, 'k');
+    await microtasksFinished();
+    assertTrue(playPauseCalled);
+
+    // 'K' press
+    playPauseCalled = false;
+    keyDownOn(app, 0, undefined, 'K');
+    await microtasksFinished();
+    assertTrue(playPauseCalled);
+
+    // Modifier check: Alt+k should not toggle
+    playPauseCalled = false;
+    keyDownOn(app, 0, ['alt'], 'k');
+    await microtasksFinished();
+    assertFalse(playPauseCalled);
+  });
+
+  test('line focus shortcut updates padding', async () => {
+    chrome.readingMode.isLineFocusEnabled = true;
+    // Ensure app is registered as a line focus listener.
+    app.connectedCallback();
+    await microtasksFinished();
+    // Start with static line focus on.
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_MOVEMENT,
+        {detail: {data: LineFocusMovement.STATIC}});
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_STYLE,
+        {detail: {data: LineFocusStyle.UNDERLINE}});
+    await microtasksFinished();
+    assertEquals(0, getLineFocusPadding());
+    // Ensure there's content so that padding can be added.
+    app.updateContent();
+    await whenCheck(app, () => getLineFocusPadding() !== 0);
+    assertLT(0, getLineFocusPadding());
+
+    // Toggling off should remove padding.
+    keyDownOn(app, 0, undefined, 'l');
+    await microtasksFinished();
+    assertEquals(0, getLineFocusPadding());
+
+    // Toggling on should remove padding.
+    keyDownOn(app, 0, undefined, 'l');
+    await microtasksFinished();
+    assertLT(0, getLineFocusPadding());
+  });
+
+  test('line focus only shows on content', async () => {
+    chrome.readingMode.isLineFocusEnabled = true;
+
+    contentController.setState(ContentType.NO_CONTENT);
+    await microtasksFinished();
+    assertTrue(app.$.lineFocus.hasAttribute('hidden'));
+
+    contentController.setState(ContentType.LOADING);
+    await microtasksFinished();
+    assertTrue(app.$.lineFocus.hasAttribute('hidden'));
+
+    contentController.setState(ContentType.HAS_CONTENT);
+    await microtasksFinished();
+    assertFalse(app.$.lineFocus.hasAttribute('hidden'));
+  });
+
+  test(
+      'onContentStateChange updates line focus style when enabled and ' +
+          'has content',
+      async () => {
+        chrome.readingMode.isLineFocusEnabled = true;
+        emitEvent(
+            app, ToolbarEvent.LINE_FOCUS_STYLE,
+            {detail: {data: LineFocusStyle.UNDERLINE}});
+        await microtasksFinished();
+
+        contentController.setState(ContentType.HAS_CONTENT);
+        await microtasksFinished();
+
+        assertEquals(
+            'block', app.style.getPropertyValue('--line-focus-display'));
+      });
+
+  test(
+      'onContentStateChange disables line focus style when no content',
+      async () => {
+        chrome.readingMode.isLineFocusEnabled = true;
+        emitEvent(
+            app, ToolbarEvent.LINE_FOCUS_STYLE,
+            {detail: {data: LineFocusStyle.UNDERLINE}});
+        await microtasksFinished();
+
+        contentController.setState(ContentType.NO_CONTENT);
+        await microtasksFinished();
+
+        assertEquals(
+            'none', app.style.getPropertyValue('--line-focus-display'));
+      });
 
   test('showLoading shows spinner', async () => {
     const spinner = 'throbber';
@@ -201,7 +324,6 @@ suite('AppContent', () => {
       async () => {
         chrome.readingMode.activeDistillationMethod =
             chrome.readingMode.distillationTypeReadability;
-        chrome.readingMode.isTsTextSegmentationEnabled = true;
 
         let resetCallCount = 0;
         speechController.resetForNewContent = () => {
@@ -219,7 +341,8 @@ suite('AppContent', () => {
       });
 
   test('showLoading clears read aloud state', () => {
-    setContent('My name is Regina George', readAloudModel);
+    const node = setContent('My name is Regina George', readAloudModel);
+    app.$.container.appendChild(node);
     emitEvent(app, ToolbarEvent.PLAY_PAUSE);
     assertTrue(speechController.isSpeechActive());
 
@@ -293,6 +416,34 @@ suite('AppContent', () => {
 
       assertTrue(contentController.hasContent());
       assertEquals(text, app.$.container.textContent);
+    });
+
+    test('adds has-selection class when valid selection', async () => {
+      // Create and append a nav element to test visibility
+      const nav = document.createElement('nav');
+      app.$.appFlexParent.appendChild(nav);
+
+      readingMode.hasValidSelection = true;
+      app.updateContent();
+      await microtasksFinished();
+
+      assertTrue(app.$.appFlexParent.classList.contains('has-selection'));
+      // Verify that the nav element is visible (display is not 'none')
+      assertTrue(window.getComputedStyle(nav).display !== 'none');
+    });
+
+    test('removes has-selection class when no valid selection', async () => {
+      // Create and append a nav element to test visibility
+      const nav = document.createElement('nav');
+      app.$.appFlexParent.appendChild(nav);
+
+      readingMode.hasValidSelection = false;
+      app.updateContent();
+      await microtasksFinished();
+
+      assertFalse(app.$.appFlexParent.classList.contains('has-selection'));
+      // Verify that the nav element is hidden by the CSS rule
+      assertEquals('none', window.getComputedStyle(nav).display);
     });
 
     test('sets empty if no new content', async () => {
@@ -376,6 +527,28 @@ suite('AppContent', () => {
               1, callCount,
               'updateContentForReadability() should have been called');
         });
+
+    test(
+        'sends rendered blocks after layout for readability selection',
+        async () => {
+          chrome.readingMode.isReadabilitySelectTextEnabled = true;
+          let blocksCalled = false;
+          contentController.onRenderedTextBlocksAvailable = (container) => {
+            assertEquals(app.$.container, container);
+            blocksCalled = true;
+          };
+
+          app.updateContent();
+
+          // Should NOT be called immediately because it's wrapped in
+          // requestAnimationFrame
+          assertFalse(blocksCalled, 'Should wait for requestAnimationFrame');
+
+          // Wait for the animation frame to ensure layout is done.
+          await new Promise(resolve => requestAnimationFrame(resolve));
+
+          assertTrue(blocksCalled, 'Should be called after layout');
+        });
   });
 
   suite('on links toggle', () => {
@@ -430,29 +603,25 @@ suite('AppContent', () => {
           '"><span class="parent-of-highlight"><span class="' +
           'current-read-highlight">Try</span> to keep it hidden</span></a>';
 
-      setup(() => {
-        const parent = document.createElement('a');
-        const text = document.createTextNode(linkText);
-        parent.href = url;
-        parent.appendChild(text);
-        nodeStore.setDomNode(parent, linkId);
-        nodeStore.setDomNode(text, textId);
-        const segments =
-            [{node: ReadAloudNode.create(text)!, start: 0, length: 3}];
+      setup(async () => {
         let calls = 0;
         readAloudModel.setInitialized(true);
         readAloudModel.setCurrentTextContent(linkText);
         readAloudModel.getCurrentTextSegments = () => {
           calls++;
           if (calls === 1) {
-            return segments;
+            return [{
+              node: ReadAloudNode.create(nodeStore.getDomNode(textId)!)!,
+              start: 0,
+              length: 3,
+            }];
           } else {
             return [];
           }
         };
 
-
-        return app.updateContent();
+        app.updateContent();
+        await microtasksFinished();
       });
 
       test('hides links when speech active', async () => {
@@ -511,33 +680,52 @@ suite('AppContent', () => {
 
   suite('on image toggle', () => {
     const altText = 'No man is worth the aggravation';
+    const textNodeContent = 'Some text';
 
     setup(() => {
-      readingMode.getHtmlTag = () => 'img';
+      readingMode.rootId = 1;
+      readingMode.getHtmlTag = (id) => {
+        if (id === 1) {
+          return 'div';
+        }
+        if (id === 2) {
+          return 'img';
+        }
+        return '';
+      };
       readingMode.getAltText = () => altText;
-      readingMode.getChildren = () => [];
+      readingMode.getChildren = (id) => {
+        if (id === 1) {
+          return [2, 3];
+        }
+        return [];
+      };
+      readingMode.getTextContent = (id) => id === 3 ? textNodeContent : '';
     });
 
     test('shows images when enabled', async () => {
       readingMode.imagesFeatureEnabled = true;
-      const expectedHtml = '<canvas dir="ltr" alt="' + altText +
-          '" class="downloaded-image" lang="en-us" style=""></canvas>';
       app.updateContent();
       await microtasksFinished();
       assertTrue(contentController.hasContent());
 
       readingMode.imagesEnabled = true;
+      const expectedHtmlWithImage =
+          '<div dir="ltr" lang="en-us"><canvas dir="ltr" alt="' + altText +
+          '" class="downloaded-image" lang="en-us" style=""></canvas>' +
+          textNodeContent + '</div>';
       emitEvent(app, ToolbarEvent.IMAGES);
       await microtasksFinished();
 
-      assertEquals(expectedHtml, app.$.container.innerHTML);
+      assertEquals(expectedHtmlWithImage, app.$.container.innerHTML);
     });
 
     test('hides images when disabled', async () => {
       readingMode.imagesFeatureEnabled = true;
-      const expectedHtml = '<canvas dir="ltr" alt="' + altText +
-          '" class="downloaded-image" lang="en-us" style="display: none;">' +
-          '</canvas>';
+      const expectedHtml =
+          '<div dir="ltr" lang="en-us"><canvas dir="ltr" alt="' + altText +
+          '" class="downloaded-image" lang="en-us" style="display: none;"></canvas>' +
+          textNodeContent + '</div>';
       app.updateContent();
       await microtasksFinished();
       assertTrue(contentController.hasContent());
@@ -551,9 +739,10 @@ suite('AppContent', () => {
 
     test('does not show images when feature flag disabled', async () => {
       readingMode.imagesFeatureEnabled = false;
-      const expectedHtml = '<canvas dir="ltr" alt="' + altText +
-          '" class="downloaded-image" lang="en-us" style="display: none;">' +
-          '</canvas>';
+      const expectedHtml =
+          '<div dir="ltr" lang="en-us"><canvas dir="ltr" alt="' + altText +
+          '" class="downloaded-image" lang="en-us" style="display: none;"></canvas>' +
+          textNodeContent + '</div>';
       app.updateContent();
       await microtasksFinished();
 
@@ -809,6 +998,14 @@ suite('AppContent', () => {
       let link = app.$.container.querySelector('a');
       assertTrue(!!link, '<a> should be present before speech');
 
+      readAloudModel.setInitialized(true);
+      readAloudModel.setCurrentTextContent(text);
+      readAloudModel.setCurrentTextSegments([{
+        node: ReadAloudNode.create(link.firstChild!)!,
+        start: 0,
+        length: text.length,
+      }]);
+
       // When speech becomes active, the link should be converted to a `<span>`.
       emitEvent(app, ToolbarEvent.PLAY_PAUSE);
       await microtasksFinished();
@@ -1004,6 +1201,655 @@ suite('AppContent', () => {
               app.$.containerScroller,
               () => !app.$.containerScroller.classList.contains('fade'));
           assertFalse(app.$.containerScroller.classList.contains('fade'));
+        });
+
+    test('applies immersive classes correctly to appFlexParent', async () => {
+      const flexParent = app.shadowRoot.querySelector('#appFlexParent');
+      assertTrue(!!flexParent);
+
+      assertTrue(flexParent.classList.contains('immersive'));
+      assertFalse(flexParent.classList.contains('full-page'));
+
+      app.isImmersiveMode = () => true;
+      app.requestUpdate();
+      await microtasksFinished();
+
+      assertTrue(flexParent.classList.contains('immersive'));
+      assertTrue(flexParent.classList.contains('full-page'));
+    });
+
+    suite('Immersive Scrollbar Hover', () => {
+      let scroller: HTMLElement;
+      setup(() => {
+        scroller = app.$.containerScroller;
+        assertTrue(!!scroller);
+        chrome.readingMode.onPresentationStateReceived(
+            chrome.readingMode.inImmersiveOverlayPresentationState);
+      });
+
+      test('mousemove toggles hover class', () => {
+        assertTrue(!!scroller);
+        scroller.getBoundingClientRect = () => {
+          return {
+            left: 0,
+            right: 100,
+            top: 0,
+            bottom: 100,
+            width: 100,
+            height: 100,
+            x: 0,
+            y: 0,
+            toJSON: () => {},
+          };
+        };
+        scroller.style.setProperty('--immersive-scrollbar-width', '14px');
+
+        // Mouse over center (x=50), shouldn't trigger hover (needs to be >= 86)
+        scroller.dispatchEvent(new MouseEvent('mousemove', {clientX: 50}));
+        assertFalse(scroller.classList.contains('scrollbar-hovered'));
+
+        // Mouse over right edge (x=90), should trigger hover
+        scroller.dispatchEvent(new MouseEvent('mousemove', {clientX: 90}));
+        assertTrue(scroller.classList.contains('scrollbar-hovered'));
+
+        // Mouse moves back to center, should remove hover
+        scroller.dispatchEvent(new MouseEvent('mousemove', {clientX: 80}));
+        assertFalse(scroller.classList.contains('scrollbar-hovered'));
+      });
+
+      test('mouseleave removes hover class', () => {
+        scroller.classList.add('scrollbar-hovered');
+        scroller.dispatchEvent(new MouseEvent('mouseleave'));
+
+        assertFalse(scroller.classList.contains('scrollbar-hovered'));
+      });
+
+      test('mousemove does nothing if not in full page immersive mode', () => {
+        chrome.readingMode.onPresentationStateReceived(
+            chrome.readingMode.inSidePanelPresentationState);
+        scroller.getBoundingClientRect = () => {
+          return {
+            left: 0,
+            right: 100,
+            top: 0,
+            bottom: 100,
+            width: 100,
+            height: 100,
+            x: 0,
+            y: 0,
+            toJSON: () => {},
+          };
+        };
+        scroller.style.setProperty('--immersive-scrollbar-width', '14px');
+
+        // Even if we hover the right edge, the class shouldn't be added
+        scroller.dispatchEvent(new MouseEvent('mousemove', {clientX: 90}));
+        assertFalse(scroller.classList.contains('scrollbar-hovered'));
+      });
+    });
+  });
+
+  suite('footnote navigation', () => {
+    test(
+        'buildSubtree_ sets element.id when getHtmlId is available',
+        async () => {
+          const divId = 10;
+          const textId = 11;
+          readingMode.rootId = divId;
+          readingMode.getHtmlTag = (id) => (id === divId) ? 'div' : '';
+          readingMode.getChildren = (id) => (id === divId) ? [textId] : [];
+          readingMode.getTextContent = (id) =>
+              (id === textId) ? 'Some text content' : '';
+          readingMode.htmlIds.set(divId, 'footnote-target');
+
+          app.updateContent();
+          await microtasksFinished();
+
+          const renderedDiv = app.$.container.querySelector('#footnote-target');
+          assertTrue(!!renderedDiv);
+          assertEquals('footnote-target', renderedDiv.id);
+        });
+
+    test(
+        'click handler intercepts same-page hash links and does not scroll immediately',
+        async () => {
+          const linkId = 10;
+          const textId = 11;
+          const targetId = 12;
+          const documentUrl = 'https://www.example.com/page.html';
+          const targetUrl = 'https://www.example.com/page.html#footnote-1';
+
+          readingMode.rootId = 1;
+          readingMode.getChildren = (id) => {
+            if (id === 1) {
+              return [linkId, targetId];
+            }
+            if (id === linkId) {
+              return [textId];
+            }
+            return [];
+          };
+          readingMode.getHtmlTag = (id) => {
+            if (id === 1) {
+              return 'div';
+            }
+            if (id === linkId) {
+              return 'a';
+            }
+            if (id === targetId) {
+              return 'p';
+            }
+            return '';
+          };
+          readingMode.getTextContent = (id) => {
+            if (id === textId) {
+              return 'Footnote Link';
+            }
+            if (id === targetId) {
+              return 'Footnote Target Content';
+            }
+            return '';
+          };
+          readingMode.getUrl = (id) => (id === linkId) ? targetUrl : '';
+          readingMode.htmlIds.set(targetId, 'footnote-1');
+          readingMode.documentUrl = documentUrl;
+
+          // Spies
+          let linkClickedId = -1;
+          readingMode.onLinkClicked = (id) => {
+            linkClickedId = id;
+          };
+
+          app.updateContent();
+          await microtasksFinished();
+
+          // Find the target element and mock its scrollIntoView
+          const targetElement =
+              app.$.container.querySelector<HTMLElement>('#footnote-1');
+          assertTrue(!!targetElement);
+          let scrollIntoViewCalled = false;
+          let scrollOptions: ScrollIntoViewOptions|undefined;
+          targetElement.scrollIntoView = (options) => {
+            scrollIntoViewCalled = true;
+            scrollOptions = options as ScrollIntoViewOptions;
+          };
+
+          // Find the link and click it
+          const linkElement =
+              app.$.container.querySelector<HTMLAnchorElement>('a');
+          assertTrue(!!linkElement);
+          linkElement.click();
+
+          // Clicking should notify C++ (onLinkClicked) but not scroll yet.
+          assertEquals(linkId, linkClickedId);
+          assertFalse(scrollIntoViewCalled);
+
+          // Triggering the callback from C++ navigation should execute the
+          // scroll.
+          chrome.readingMode.onMainFrameSameDocumentNavigation(targetUrl);
+          assertTrue(scrollIntoViewCalled);
+          assertTrue(!!scrollOptions);
+          assertEquals('smooth', scrollOptions.behavior);
+        });
+
+    test('click handler falls back to default for external links', async () => {
+      const linkId = 10;
+      const textId = 11;
+      const documentUrl = 'https://www.example.com/page.html';
+      const targetUrl = 'https://www.different-domain.com/page.html#footnote-1';
+
+      readingMode.rootId = 1;
+      readingMode.getChildren = (id) => (id === 1) ? [linkId] :
+          (id === linkId)                          ? [textId] :
+                                                     [];
+      readingMode.getHtmlTag = (id) => (id === 1) ? 'div' :
+          (id === linkId)                         ? 'a' :
+                                                    '';
+      readingMode.getTextContent = (id) =>
+          (id === textId) ? 'External Link' : '';
+      readingMode.getUrl = (id) => (id === linkId) ? targetUrl : '';
+      readingMode.documentUrl = documentUrl;
+
+      let linkClickedId = -1;
+      readingMode.onLinkClicked = (id) => {
+        linkClickedId = id;
+      };
+
+      app.updateContent();
+      await microtasksFinished();
+
+      // Setup a mock target in DOM that would scroll if it were same-document
+      const target = document.createElement('div');
+      target.id = 'footnote-1';
+      app.$.container.appendChild(target);
+      let scrollIntoViewCalled = false;
+      target.scrollIntoView = () => {
+        scrollIntoViewCalled = true;
+      };
+
+      // Find the link and click it
+      const linkElement = app.$.container.querySelector<HTMLAnchorElement>('a');
+      assertTrue(!!linkElement);
+      linkElement.click();
+
+      assertEquals(linkId, linkClickedId);
+      assertFalse(scrollIntoViewCalled);
+
+      // Clean up
+      app.$.container.removeChild(target);
+    });
+
+    test(
+        'click handler triggers real navigation for mailto links', async () => {
+          // <div>
+          //   <a href="mailto:test@example.com">Email Link</a>
+          // </div>
+          const linkId = 10;
+          const textId = 11;
+          const documentUrl = 'https://www.example.com/page.html';
+          const targetUrl = 'mailto:test@example.com';
+
+          readingMode.rootId = 1;
+          readingMode.getChildren = (id) => (id === 1) ? [linkId] :
+              (id === linkId)                          ? [textId] :
+                                                         [];
+          readingMode.getHtmlTag = (id) => (id === 1) ? 'div' :
+              (id === linkId)                         ? 'a' :
+                                                        '';
+          readingMode.getTextContent = (id) =>
+              (id === textId) ? 'Email Link' : '';
+          readingMode.getUrl = (id) => (id === linkId) ? targetUrl : '';
+          readingMode.documentUrl = documentUrl;
+
+          let linkClickedId = -1;
+          readingMode.onLinkClicked = (id) => {
+            linkClickedId = id;
+          };
+
+          // Mock containerScroller.scrollTo to verify we do not scroll
+          let scrollToCalled = false;
+          app.$.containerScroller.scrollTo = () => {
+            scrollToCalled = true;
+          };
+
+          app.updateContent();
+          await microtasksFinished();
+
+          // Find the link and click it
+          const linkElement =
+              app.$.container.querySelector<HTMLAnchorElement>('a');
+          assertTrue(!!linkElement);
+          linkElement.click();
+
+          // Confirm that onLinkClicked is called on the mailto link.
+          assertEquals(linkId, linkClickedId);
+          assertFalse(scrollToCalled, 'Should not scroll');
+        });
+
+    test(
+        'click handler falls back to default if target is missing',
+        async () => {
+          const linkId = 10;
+          const textId = 11;
+          const documentUrl = 'https://www.example.com/page.html';
+          const targetUrl =
+              'https://www.example.com/page.html#footnote-missing';
+
+          readingMode.rootId = 1;
+          readingMode.getChildren = (id) => (id === 1) ? [linkId] :
+              (id === linkId)                          ? [textId] :
+                                                         [];
+          readingMode.getHtmlTag = (id) => (id === 1) ? 'div' :
+              (id === linkId)                         ? 'a' :
+                                                        '';
+          readingMode.getTextContent = (id) =>
+              (id === textId) ? 'Missing Target Link' : '';
+          readingMode.getUrl = (id) => (id === linkId) ? targetUrl : '';
+          readingMode.documentUrl = documentUrl;
+
+          let linkClickedId = -1;
+          readingMode.onLinkClicked = (id) => {
+            linkClickedId = id;
+          };
+
+          // Mock containerScroller.scrollTo to verify we do not scroll to top
+          let scrollToCalled = false;
+          app.$.containerScroller.scrollTo = () => {
+            scrollToCalled = true;
+          };
+
+          app.updateContent();
+          await microtasksFinished();
+
+          // Find the link and click it
+          const linkElement =
+              app.$.container.querySelector<HTMLAnchorElement>('a');
+          assertTrue(!!linkElement);
+          linkElement.click();
+
+          assertEquals(linkId, linkClickedId);
+          assertFalse(scrollToCalled);
+        });
+
+    suite('scrollToAnchor', () => {
+      let root: ShadowRoot;
+
+      setup(() => {
+        root = app.shadowRoot;
+      });
+
+      test('scrolls to target', () => {
+        const targetId = 'footnote-1';
+        const target = document.createElement('div');
+        target.id = targetId;
+        app.$.container.appendChild(target);
+
+        let scrollIntoViewCalled = false;
+        let scrollOptions: ScrollIntoViewOptions|undefined;
+        target.scrollIntoView = (options) => {
+          scrollIntoViewCalled = true;
+          scrollOptions = options as ScrollIntoViewOptions;
+        };
+
+        chrome.readingMode.documentUrl = 'https://example.com/page.html';
+        const result = contentController.scrollToAnchor(
+            'https://example.com/page.html#footnote-1', root);
+
+        assertTrue(result);
+        assertTrue(scrollIntoViewCalled);
+        assertEquals('smooth', scrollOptions?.behavior);
+      });
+
+      test('scrolls to top on empty hash', () => {
+        let scrollToCalled = false;
+        let scrollToOptions: ScrollToOptions|undefined;
+        app.$.containerScroller.scrollTo = (options) => {
+          scrollToCalled = true;
+          scrollToOptions = options as ScrollToOptions;
+        };
+
+        chrome.readingMode.documentUrl = 'https://example.com/page.html';
+        const result = contentController.scrollToAnchor(
+            'https://example.com/page.html', root);
+
+        assertTrue(result);
+        assertTrue(scrollToCalled);
+        assertEquals(0, scrollToOptions?.top);
+        assertEquals('smooth', scrollToOptions?.behavior);
+      });
+
+      test('resolves relative links', () => {
+        const targetId = 'footnote-1';
+        const target = document.createElement('div');
+        target.id = targetId;
+        app.$.container.appendChild(target);
+
+        let scrollIntoViewCalled = false;
+        target.scrollIntoView = () => {
+          scrollIntoViewCalled = true;
+        };
+
+        chrome.readingMode.documentUrl = 'https://example.com/page.html';
+
+        // Test hash only
+        let result = contentController.scrollToAnchor('#footnote-1', root);
+        assertTrue(result);
+        assertTrue(scrollIntoViewCalled);
+
+        // Reset and test relative path
+        scrollIntoViewCalled = false;
+        result =
+            contentController.scrollToAnchor('./page.html#footnote-1', root);
+        assertTrue(result);
+        assertTrue(scrollIntoViewCalled);
+      });
+
+      test('ignores different page URLs', () => {
+        chrome.readingMode.documentUrl = 'https://example.com/page.html';
+        const result = contentController.scrollToAnchor(
+            'https://different.com/page.html#footnote-1', root);
+        assertFalse(result);
+      });
+
+      test('ignores different pathnames', () => {
+        chrome.readingMode.documentUrl = 'https://example.com/page.html';
+        const result = contentController.scrollToAnchor(
+            'https://example.com/other.html#footnote-1', root);
+        assertFalse(result);
+      });
+
+      test('ignores different search parameters', () => {
+        chrome.readingMode.documentUrl =
+            'https://example.com/page.html?query=1';
+        const result = contentController.scrollToAnchor(
+            'https://example.com/page.html?query=2#footnote-1', root);
+        assertFalse(result);
+      });
+
+      test('scrolls with identical search parameters', () => {
+        const targetId = 'footnote-1';
+        const target = document.createElement('div');
+        target.id = targetId;
+        app.$.container.appendChild(target);
+
+        let scrollIntoViewCalled = false;
+        target.scrollIntoView = () => {
+          scrollIntoViewCalled = true;
+        };
+
+        chrome.readingMode.documentUrl =
+            'https://example.com/page.html?query=1';
+        const result = contentController.scrollToAnchor(
+            'https://example.com/page.html?query=1#footnote-1', root);
+
+        assertTrue(result);
+        assertTrue(scrollIntoViewCalled);
+
+        // Clean up
+        app.$.container.removeChild(target);
+      });
+
+      test('handles invalid URLs gracefully', () => {
+        chrome.readingMode.documentUrl = 'https://example.com/page.html';
+        const result = contentController.scrollToAnchor('invalid://url', root);
+        assertFalse(result);
+      });
+
+      test('handles malformed URI percent-encoding gracefully', () => {
+        chrome.readingMode.documentUrl = 'https://example.com/page.html';
+
+        // Test hash only with malformed percent-encoding
+        let result = contentController.scrollToAnchor('#foo%2', root);
+        assertFalse(result);
+
+        // Test relative path with malformed percent-encoding
+        result = contentController.scrollToAnchor('./page.html#foo%2', root);
+        assertFalse(result);
+      });
+
+      test('falls back to top on #top hash if element is missing', () => {
+        let scrollToCalled = false;
+        let scrollToOptions: ScrollToOptions|undefined;
+        app.$.containerScroller.scrollTo = (options) => {
+          scrollToCalled = true;
+          scrollToOptions = options as ScrollToOptions;
+        };
+
+        chrome.readingMode.documentUrl = 'https://example.com/page.html';
+
+        // Test hash only
+        let result = contentController.scrollToAnchor('#top', root);
+        assertTrue(result);
+        assertTrue(scrollToCalled);
+        assertEquals(0, scrollToOptions?.top);
+        assertEquals('smooth', scrollToOptions?.behavior);
+
+        // Reset and test absolute URL
+        scrollToCalled = false;
+        result = contentController.scrollToAnchor(
+            'https://example.com/page.html#top', root);
+        assertTrue(result);
+        assertTrue(scrollToCalled);
+        assertEquals(0, scrollToOptions?.top);
+        assertEquals('smooth', scrollToOptions?.behavior);
+      });
+
+      test('scrolls to element on #top hash if element is present', () => {
+        const targetId = 'top';
+        const target = document.createElement('div');
+        target.id = targetId;
+        app.$.container.appendChild(target);
+
+        let scrollIntoViewCalled = false;
+        target.scrollIntoView = () => {
+          scrollIntoViewCalled = true;
+        };
+
+        chrome.readingMode.documentUrl = 'https://example.com/page.html';
+        const result = contentController.scrollToAnchor('#top', root);
+        assertTrue(result);
+        assertTrue(scrollIntoViewCalled);
+
+        // Clean up
+        app.$.container.removeChild(target);
+      });
+    });
+
+    test('onMainFrameSameDocumentNavigation scrolls to target', async () => {
+      const targetId = 12;
+      const textId = 13;
+      const documentUrl = 'https://www.example.com/page.html';
+      const targetUrl = 'https://www.example.com/page.html#footnote-1';
+
+      readingMode.rootId = 1;
+      readingMode.getChildren = (id) => {
+        if (id === 1) {
+          return [targetId];
+        }
+        if (id === targetId) {
+          return [textId];
+        }
+        return [];
+      };
+      readingMode.getHtmlTag = (id) => {
+        if (id === 1) {
+          return 'div';
+        }
+        if (id === targetId) {
+          return 'p';
+        }
+        return '';
+      };
+      readingMode.getTextContent = (id) =>
+          (id === textId) ? 'Footnote Target Content' : '';
+      readingMode.htmlIds.set(targetId, 'footnote-1');
+      readingMode.documentUrl = documentUrl;
+
+      app.updateContent();
+      await microtasksFinished();
+
+      // Find the target element and mock its scrollIntoView
+      const targetElement =
+          app.$.container.querySelector<HTMLElement>('#footnote-1');
+      assertTrue(!!targetElement);
+      let scrollIntoViewCalled = false;
+      let scrollOptions: ScrollIntoViewOptions|undefined;
+      targetElement.scrollIntoView = (options) => {
+        scrollIntoViewCalled = true;
+        scrollOptions = options as ScrollIntoViewOptions;
+      };
+
+      // Trigger same document navigation
+      chrome.readingMode.onMainFrameSameDocumentNavigation(targetUrl);
+
+      assertTrue(scrollIntoViewCalled);
+      assertTrue(!!scrollOptions);
+      assertEquals('smooth', scrollOptions.behavior);
+    });
+
+    test(
+        'onMainFrameSameDocumentNavigation scrolls to top on empty hash',
+        async () => {
+          const documentUrl = 'https://www.example.com/page.html';
+          const targetUrl = 'https://www.example.com/page.html';  // empty hash
+
+          readingMode.rootId = 1;
+          readingMode.getChildren = () => [];
+          readingMode.getHtmlTag = (id) => (id === 1) ? 'div' : '';
+          readingMode.getTextContent = (id) => (id === 1) ? 'Some content' : '';
+          readingMode.documentUrl = documentUrl;
+
+          app.updateContent();
+          await microtasksFinished();
+
+          // Mock scrollTo on containerScroller
+          const scroller = app.$.containerScroller;
+          assertTrue(!!scroller);
+          let scrollToCalled = false;
+          let scrollOptions: ScrollToOptions|undefined;
+          scroller.scrollTo = (options) => {
+            scrollToCalled = true;
+            scrollOptions = options as ScrollToOptions;
+          };
+
+          // Trigger same document navigation back to top
+          chrome.readingMode.onMainFrameSameDocumentNavigation(targetUrl);
+
+          assertTrue(scrollToCalled);
+          assertTrue(!!scrollOptions);
+          assertEquals(0, scrollOptions.top);
+          assertEquals('smooth', scrollOptions.behavior);
+        });
+
+    test(
+        'onMainFrameSameDocumentNavigation ignores different page URLs',
+        async () => {
+          const targetId = 12;
+          const textId = 13;
+          const documentUrl = 'https://www.example.com/page.html';
+          const targetUrl =
+              'https://www.different-domain.com/page.html#footnote-1';
+
+          readingMode.rootId = 1;
+          readingMode.getChildren = (id) => {
+            if (id === 1) {
+              return [targetId];
+            }
+            if (id === targetId) {
+              return [textId];
+            }
+            return [];
+          };
+          readingMode.getHtmlTag = (id) => {
+            if (id === 1) {
+              return 'div';
+            }
+            if (id === targetId) {
+              return 'p';
+            }
+            return '';
+          };
+          readingMode.getTextContent = (id) =>
+              (id === textId) ? 'Footnote Target Content' : '';
+          readingMode.htmlIds.set(targetId, 'footnote-1');
+          readingMode.documentUrl = documentUrl;
+
+          app.updateContent();
+          await microtasksFinished();
+
+          // Find the target element and mock its scrollIntoView
+          const targetElement =
+              app.$.container.querySelector<HTMLElement>('#footnote-1');
+          assertTrue(!!targetElement);
+          let scrollIntoViewCalled = false;
+          targetElement.scrollIntoView = () => {
+            scrollIntoViewCalled = true;
+          };
+
+          // Trigger same document navigation for different page
+          chrome.readingMode.onMainFrameSameDocumentNavigation(targetUrl);
+
+          assertFalse(scrollIntoViewCalled);
         });
   });
 });

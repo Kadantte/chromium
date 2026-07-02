@@ -16,6 +16,7 @@
 #include "base/test/run_until.h"
 #include "base/test/values_test_util.h"
 #include "base/values.h"
+#include "chrome/browser/pdf/pdf_extension_test_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
@@ -24,12 +25,12 @@
 #include "chrome/browser/ui/read_anything/read_anything_prefs.h"
 #include "chrome/browser/ui/read_anything/read_anything_side_panel_controller.h"
 #include "chrome/browser/ui/read_anything/read_anything_side_panel_controller_utils.h"
+#include "chrome/browser/ui/side_panel/side_panel_entry.h"
+#include "chrome/browser/ui/side_panel/side_panel_enums.h"
+#include "chrome/browser/ui/side_panel/side_panel_registry.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_entry.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_enums.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_registry.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "chrome/common/read_anything/read_anything.mojom-shared.h"
 #include "chrome/common/read_anything/read_anything.mojom.h"
@@ -41,9 +42,12 @@
 #include "components/translate/core/browser/translate_manager.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/public/test/test_web_ui.h"
+#include "extensions/browser/mime_handler/mime_handler_stream_manager.h"
 #include "mojo/public/mojom/base/values.mojom.h"
+#include "pdf/pdf_features.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/accessibility/accessibility_features.h"
@@ -53,6 +57,8 @@
 #include "ui/accessibility/mojom/ax_event.mojom.h"
 #include "ui/accessibility/mojom/ax_tree_id.mojom.h"
 #include "ui/accessibility/mojom/ax_tree_update.mojom.h"
+#include "ui/accessibility/platform/browser_accessibility.h"
+#include "ui/accessibility/platform/browser_accessibility_manager.h"
 #include "ui/gfx/geometry/size.h"
 #if BUILDFLAG(IS_CHROMEOS)
 #include "base/test/bind.h"
@@ -142,6 +148,10 @@ class MockPage : public read_anything::mojom::UntrustedPage {
               OnReadabilityDistillationStateChanged,
               (read_anything::mojom::ReadAnythingDistillationState state),
               (override));
+  MOCK_METHOD(void,
+              OnMainFrameSameDocumentNavigation,
+              (const GURL& url),
+              (override));
 
   mojo::Receiver<read_anything::mojom::UntrustedPage> receiver_{this};
 };
@@ -188,18 +198,6 @@ class TestReadAnythingUntrustedPageHandler
             test_web_ui,
             /*use_screen_ai_service=*/false) {}
 #endif
-  void OnImageDataRequested(const ui::AXTreeID& target_tree_id,
-                            ui::AXNodeID target_node_id) override {
-    OnImageDataDownloaded(target_tree_id, target_node_id, /*id=*/0,
-                          /*http_status_code=*/0, GURL(),
-                          /*bitmaps=*/{test_bitmap_},
-                          /*sizes=*/{gfx::Size(10, 10)});
-  }
-
-  void SetTestBitmap(SkBitmap bitmap) { test_bitmap_ = bitmap; }
-
- private:
-  SkBitmap test_bitmap_;
 };
 
 class FakeTtsEngineDelegate : public content::TtsEngineDelegate {
@@ -269,8 +267,8 @@ class ReadAnythingUntrustedPageHandlerTest
   }
 
   explicit ReadAnythingUntrustedPageHandlerTest(
-      std::vector<base::test::FeatureRef> enabled_features) {
-    std::vector<base::test::FeatureRef> disabled_features;
+      std::vector<base::test::FeatureRef> enabled_features,
+      std::vector<base::test::FeatureRef> disabled_features = {}) {
     if (IsImmersiveEnabled()) {
       enabled_features.push_back(features::kImmersiveReadAnything);
     } else {
@@ -342,10 +340,7 @@ class ReadAnythingUntrustedPageHandlerTest
   }
 
   SidePanelEntry* read_anything_entry() {
-    return browser()
-        ->GetActiveTabInterface()
-        ->GetTabFeatures()
-        ->side_panel_registry()
+    return SidePanelRegistry::From(browser()->GetActiveTabInterface())
         ->GetEntryForKey(
             SidePanelEntry::Key(SidePanelEntry::Id::kReadAnything));
   }
@@ -438,7 +433,10 @@ class ReadAnythingUntrustedPageHandlerTest
 
   void OnSpeechRateChange(double rate) { handler_->OnSpeechRateChange(rate); }
 
-  void OnTabWillDetach() { handler_->OnTabWillDetach(); }
+  void OnTabWillDetach() {
+    handler_->OnTabWillDetach(nullptr,
+                              tabs::TabInterface::DetachReason::kDelete);
+  }
 
   void OnEntryShown(SidePanelEntry* entry) {
     if (IsImmersiveEnabled()) {
@@ -571,7 +569,7 @@ IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
   const read_anything::mojom::LineFocus kLineFocus =
       read_anything::mojom::LineFocus::kSmallCursorWindow;
   handler_ = CreateHandler();
-  handler_->OnLineFocusChanged(kLineFocus);
+  handler_->OnLineFocusChanged(kLineFocus, kLineFocus);
 
 #if BUILDFLAG(IS_CHROMEOS)
   extension_wrapper_ptr_ = nullptr;
@@ -580,6 +578,57 @@ IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
 
   histogram_tester.ExpectUniqueSample("Accessibility.ReadAnything.LineFocus",
                                       kLineFocus, 1);
+}
+
+IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
+                       NavigateToPdfAfterHandlerCreated_NotifiesOfPdfChange) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  handler_ = CreateHandler();
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+
+  if (chrome_pdf::features::IsOopifPdfEnabled()) {
+    EXPECT_CALL(page_, OnActiveAXTreeIDChanged(_, _, /*is_pdf=*/false))
+        .Times(1);
+  } else {
+    EXPECT_CALL(page_, OnActiveAXTreeIDChanged(_, _, /*is_pdf=*/false))
+        .Times(2);
+  }
+  EXPECT_CALL(page_, OnActiveAXTreeIDChanged(_, _, /*is_pdf=*/true)).Times(1);
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/pdf/test.pdf")));
+  ASSERT_TRUE(pdf_extension_test_util::EnsurePDFHasLoaded(web_contents));
+  handler_->DidStopLoading();
+}
+
+IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
+                       NavigateToPdfBeforeHandlerCreated_NotifiesOfPdfChange) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/pdf/test.pdf")));
+  ASSERT_TRUE(pdf_extension_test_util::EnsurePDFHasLoaded(web_contents));
+
+  EXPECT_CALL(page_, OnActiveAXTreeIDChanged(_, _, /*is_pdf=*/true)).Times(1);
+  handler_ = CreateHandler();
+}
+
+IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
+                       OnActiveAXTreeIDChanged_NotifiesOfPdfChange) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/pdf/test.pdf")));
+  ASSERT_TRUE(pdf_extension_test_util::EnsurePDFHasLoaded(web_contents));
+
+  EXPECT_CALL(page_, OnActiveAXTreeIDChanged(_, _, /*is_pdf=*/true)).Times(2);
+
+  handler_ = CreateHandler();
+  handler_->OnActiveAXTreeIDChanged();
 }
 
 IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
@@ -665,12 +714,12 @@ IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
       read_anything::mojom::LineFocus::kOff;
   handler_ = CreateHandler();
 
-  handler_->OnLineFocusChanged(kLineFocus1);
+  handler_->OnLineFocusChanged(kLineFocus1, kLineFocus1);
   const int LineFocus1 = browser()->profile()->GetPrefs()->GetInteger(
       prefs::kAccessibilityReadAnythingLineFocus);
   ASSERT_EQ(LineFocus1, static_cast<int>(kLineFocus1));
 
-  handler_->OnLineFocusChanged(kLineFocus2);
+  handler_->OnLineFocusChanged(kLineFocus2, kLineFocus1);
   const int LineFocus2 = browser()->profile()->GetPrefs()->GetInteger(
       prefs::kAccessibilityReadAnythingLineFocus);
   ASSERT_EQ(LineFocus2, static_cast<int>(kLineFocus2));
@@ -684,13 +733,13 @@ IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
       read_anything::mojom::LineFocus::kOff;
   handler_ = CreateHandler();
 
-  handler_->OnLineFocusChanged(kLineFocus1);
+  handler_->OnLineFocusChanged(kLineFocus1, kLineFocus1);
   const int LineFocus1 = browser()->profile()->GetPrefs()->GetInteger(
       prefs::kAccessibilityReadAnythingLastNonDisabledLineFocus);
   ASSERT_EQ(LineFocus1, static_cast<int>(kLineFocus1));
 
   // When line focus changes to off, enabled mode should not change
-  handler_->OnLineFocusChanged(kLineFocus2);
+  handler_->OnLineFocusChanged(kLineFocus2, kLineFocus1);
   const int LineFocus2 = browser()->profile()->GetPrefs()->GetInteger(
       prefs::kAccessibilityReadAnythingLastNonDisabledLineFocus);
   ASSERT_EQ(LineFocus2, static_cast<int>(kLineFocus1));
@@ -945,6 +994,26 @@ IN_PROC_BROWSER_TEST_P(
 }
 
 IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
+                       Activate_RestoresSettingsFromPrefs) {
+  handler_ = CreateHandler();
+  page_.receiver_.FlushForTesting();
+
+  // Change a preference.
+  PrefService* prefs = browser()->profile()->GetPrefs();
+  prefs->SetInteger(prefs::kAccessibilityReadAnythingColorInfo,
+                    static_cast<int>(read_anything::mojom::Colors::kDark));
+
+  // Re-activating the handler should restore settings.
+  EXPECT_CALL(page_, OnSettingsRestoredFromPrefs(
+                         _, _, _, _, _, _, read_anything::mojom::Colors::kDark,
+                         _, _, _, _, _, _))
+      .Times(1);
+
+  Activate(true);
+  page_.receiver_.FlushForTesting();
+}
+
+IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
                        OnVoiceChange_StoresInPrefs) {
   const char kLang1[] = "hi";
   const char kLang2[] = "ja";
@@ -998,16 +1067,39 @@ IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
                   base::DictValue().Set(kLang1, kVoice).Set(kLang2, kVoice)));
 }
 
-IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest, BadImageData) {
-  auto test_handler_u_ptr = CreateHandler();
-  auto* test_handler = test_handler_u_ptr.get();
-  handler_ = std::move(test_handler_u_ptr);
+IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
+                       OnImageDataRequested_IgnoresBadTreeId) {
+  base::HistogramTester histogram_tester;
+  handler_ = CreateHandler();
   auto tree_id = ui::AXTreeID::CreateNewAXTreeID();
   ui::AXNodeID node_id = 1;
-  SkBitmap bitmap;
-  test_handler->SetTestBitmap(bitmap);
+
   OnImageDataRequested(tree_id, node_id);
-  EXPECT_CALL(page_, OnImageDataDownloaded(_, _, _)).Times(0);
+
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.ReadAnything.RendererRequestForImageDataDownload."
+      "IsFromObservedTree",
+      false, 1);
+}
+
+IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
+                       OnImageDataRequested_WithGoodTreeId) {
+  base::HistogramTester histogram_tester;
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      embedded_test_server()->GetURL("/downloads/large_image.html")));
+  handler_ = CreateHandler();
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  auto tree_id = web_contents->GetPrimaryMainFrame()->GetAXTreeID();
+
+  OnImageDataRequested(tree_id, 1);
+
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.ReadAnything.RendererRequestForImageDataDownload."
+      "IsFromObservedTree",
+      true, 1);
 }
 
 IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
@@ -1725,7 +1817,7 @@ IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
     ASSERT_NE(original_contents, nullptr);
 
     // Close reading mode without acknowledging it.
-    controller->CloseImmersiveUI();
+    controller->CloseImmersiveUI(ReadAnythingCloseReason::kClosedByUser);
     EXPECT_TRUE(base::test::RunUntil(
         [&]() { return handler_->ack_timed_out_for_testing(); }));
 
@@ -1735,7 +1827,7 @@ IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
     ASSERT_NE(new_contents, original_contents);
 
     // Close reading mode again and now acknowledge it.
-    controller->CloseImmersiveUI();
+    controller->CloseImmersiveUI(ReadAnythingCloseReason::kClosedByUser);
     handler_->AckReadingModeHidden();
     EXPECT_TRUE(base::test::RunUntil(
         [&]() { return !handler_->ack_timed_out_for_testing(); }));
@@ -1895,13 +1987,19 @@ IN_PROC_BROWSER_TEST_P(
 }
 
 IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
+                       CreationUpdatesMutingState) {
+  handler_ = CreateHandler();
+  EXPECT_CALL(page_, OnTabMuteStateChange(_)).Times(1);
+}
+
+IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
                        DidUpdateAudioMutingState) {
   handler_ = CreateHandler();
 
   handler_->DidUpdateAudioMutingState(true);
   EXPECT_CALL(page_, OnTabMuteStateChange(true)).Times(1);
   handler_->DidUpdateAudioMutingState(false);
-  EXPECT_CALL(page_, OnTabMuteStateChange(false)).Times(1);
+  EXPECT_CALL(page_, OnTabMuteStateChange(false)).Times(2);
 }
 
 IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerTest,
@@ -1976,9 +2074,80 @@ class ReadAnythingUntrustedPageHandlerDistillerTest
  public:
   ReadAnythingUntrustedPageHandlerDistillerTest()
       : ReadAnythingUntrustedPageHandlerTest(
-            {features::kReadAnythingWithReadability,
-             features::kReadAnythingReadAloudTSTextSegmentation}) {}
+            {features::kReadAnythingWithReadability},
+            {features::kReadAnythingReadAloudPhraseHighlighting}) {}
 };
+
+IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerDistillerTest,
+                       NavigateToPdfAfterHandlerCreated_NotifiesOfPdfChange) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  handler_ = CreateHandler();
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+
+  if (base::FeatureList::IsEnabled(chrome_pdf::features::kPdfOopif)) {
+    // Regression test for crbug.com/487308693. With kPdfOopif enabled, RM
+    // receives 3 sequential signals about the current page when it's a pdf.
+    // 1) Page is not a pdf
+    // 2) Page is a pdf but the frame is not loaded
+    // 3) Page is a pdf with the frame loaded
+    // OnReadabilityDistillationStateChanged should only be called on non-pdfs.
+    // Previously we were calling it in step 2 above, but we know it's a pdf at
+    // that point, so we shouldn't be. Now, Chrome
+    // detects the PDF frame immediately via MimeHandlerStreamManager which
+    // triggers an early return in `OnActiveAXTreeIDChanged`, bypassing the
+    // Readability distillation block entirely. The 2 expected calls come solely
+    // from the initial test setup on `about:blank` (once for
+    // kDistillationInProgress, once for kDistillationEmpty).
+    EXPECT_CALL(page_, OnReadabilityDistillationStateChanged).Times(2);
+  } else {
+    // When kPdfOopif is disabled, Chrome goes through a transient loading
+    // state where it briefly thinks the PDF is a regular webpage before
+    // the inner PDF frame initializes. During this transient phase, the
+    // Readability distillation block is (incorrectly) executed. The 5 expected
+    // calls are: 2 calls from the initial `about:blank` setup + 3 calls during
+    // the transient phase (kDistillationInProgress in OnActiveAXTreeIDChanged,
+    // the second kDistillationInProgress in RequestDomDistillerDistillation,
+    // and finally kDistillationEmpty).
+    EXPECT_CALL(page_, OnReadabilityDistillationStateChanged).Times(5);
+  }
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/pdf/test.pdf")));
+  ASSERT_TRUE(pdf_extension_test_util::EnsurePDFHasLoaded(web_contents));
+  handler_->DidStopLoading();
+}
+
+IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerDistillerTest,
+                       NavigateToPdfBeforeHandlerCreated_NotifiesOfPdfChange) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/pdf/test.pdf")));
+  ASSERT_TRUE(pdf_extension_test_util::EnsurePDFHasLoaded(web_contents));
+
+  EXPECT_CALL(page_, OnActiveAXTreeIDChanged(_, _, /*is_pdf=*/true)).Times(1);
+  EXPECT_CALL(page_, OnReadabilityDistillationStateChanged).Times(0);
+  handler_ = CreateHandler();
+}
+
+IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerDistillerTest,
+                       OnActiveAXTreeIDChanged_NotifiesOfPdfChange) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/pdf/test.pdf")));
+  ASSERT_TRUE(pdf_extension_test_util::EnsurePDFHasLoaded(web_contents));
+
+  EXPECT_CALL(page_, OnActiveAXTreeIDChanged(_, _, /*is_pdf=*/true)).Times(2);
+  EXPECT_CALL(page_, OnReadabilityDistillationStateChanged).Times(0);
+
+  handler_ = CreateHandler();
+  handler_->OnActiveAXTreeIDChanged();
+}
 
 IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerDistillerTest,
                        DistillationPopulatesContent) {
@@ -2063,6 +2232,54 @@ IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerDistillerTest,
   histogram_tester.ExpectTotalCount(histogram, 6);
 }
 
+IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerDistillerTest,
+                       OnActiveAXTreeIDChanged_ResetsWaitingForPdfFrame) {
+  handler_ = CreateHandler();
+  content::WebContents* contents = GetReadAnythingWebContents();
+  page_.receiver_.FlushForTesting();
+
+  // Manually attach a MimeHandlerStreamManager to the contents. This simulates
+  // the scenario where we identify the page as a PDF but the PDF frame has not
+  // loaded yet, setting is_waiting_for_pdf_frame_ to true.
+  extensions::mime_handler::MimeHandlerStreamManager::Create(contents);
+  handler_->OnActiveAXTreeIDChanged();
+
+  // Remove MimeHandlerStreamManager so  subsequent navigations are treated as
+  // normal pages.
+  contents->RemoveUserData(
+      extensions::mime_handler::MimeHandlerStreamManager::UserDataKey());
+
+  // Verify that navigating to a normal page correctly resets the PDF waiting
+  // state. If the state isn't reset, we would return early and be stuck in a
+  // waiting state.
+  if (base::FeatureList::IsEnabled(chrome_pdf::features::kPdfOopif)) {
+    EXPECT_CALL(page_, OnActiveAXTreeIDChanged(_, _, /*is_pdf=*/false))
+        .Times(1);
+  } else {
+    EXPECT_CALL(page_, OnActiveAXTreeIDChanged(_, _, /*is_pdf=*/false))
+        .Times(2);
+  }
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
+}
+
+IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerDistillerTest,
+                       RequestReadabilityDistillation_TriggersDistillation) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  handler_ = CreateHandler();
+
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), GURL(embedded_test_server()->GetURL("/simple.html")),
+      WindowOpenDisposition::CURRENT_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+
+  EXPECT_CALL(page_, OnReadabilityDistillationStateChanged(
+                         read_anything::mojom::ReadAnythingDistillationState::
+                             kDistillationInProgress))
+      .Times(testing::AtLeast(1));
+
+  handler_->RequestReadabilityDistillation();
+}
+
 // In order to test that Readability isn't used in automated tests,
 // an embedded_test_server needs to be set up in SetUpOnMainThread.
 // Since this isn't needed for the rest of the tests, this is handled
@@ -2092,13 +2309,16 @@ IN_PROC_BROWSER_TEST_P(ReadAnythingUntrustedPageHandlerAutomationTest,
 
   EXPECT_CALL(page_, OnReadabilityDistillationStateChanged(
                          read_anything::mojom::ReadAnythingDistillationState::
+                             kDistillationInProgress));
+  EXPECT_CALL(page_, OnReadabilityDistillationStateChanged(
+                         read_anything::mojom::ReadAnythingDistillationState::
                              kDistillationEmpty));
   EXPECT_CALL(page_, UpdateContent("", ""));
 
   handler_ = CreateHandler();
 
   // The call happens inside CreateHandler. Let's make sure it's processed.
-  base::RunLoop().RunUntilIdle();
+  page_.receiver_.FlushForTesting();
 
   // Ensure that no distillation occurs.
   EXPECT_FALSE(handler_->dom_distiller_title().has_value());

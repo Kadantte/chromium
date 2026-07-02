@@ -18,7 +18,6 @@
 #include "chrome/browser/web_applications/os_integration/mac/app_shim_registry.h"
 #include "chrome/browser/web_applications/os_integration/mac/web_app_shortcut_mac.h"
 #include "chrome/browser/web_applications/web_app_tab_helper.h"
-#include "chrome/common/chrome_features.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
 #include "services/device/public/cpp/geolocation/geolocation_system_permission_manager.h"
@@ -107,6 +106,20 @@ class PlatformHandleImpl : public PlatformHandle {
     }
   }
 
+  void IsDeniedFresh(ContentSettingsType type,
+                     SystemPermissionDeniedCallback callback) override {
+    if (type == ContentSettingsType::MEDIASTREAM_MIC ||
+        type == ContentSettingsType::MEDIASTREAM_CAMERA ||
+        type == ContentSettingsType::CAMERA_PAN_TILT_ZOOM) {
+      // TODO(crbug.com/524529903, andypaicu@): When the macOS implementation
+      // switches to async permission status checks, call here an async
+      // function which will be defined in system_permission_settings_mac.
+      std::move(callback).Run(IsDenied(type));
+      return;
+    }
+    std::move(callback).Run(IsDenied(type));
+  }
+
   void OpenSystemSettings(content::WebContents* web_contents,
                           ContentSettingsType type) override {
     switch (type) {
@@ -140,7 +153,7 @@ class PlatformHandleImpl : public PlatformHandle {
       case ContentSettingsType::CLIPBOARD_READ_WRITE: {
         // Open Privacy & Security settings for clipboard/pasteboard permissions
         base::mac::OpenSystemSettingsPane(
-            base::mac::SystemSettingsPane::kPrivacySecurity_Pasteboard);
+            base::mac::SystemSettingsPane::kPrivacySecurity_PasteFromOtherApps);
         return;
       }
       default:

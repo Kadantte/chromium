@@ -4,11 +4,14 @@
 
 #include "chrome/browser/ui/views/location_bar/lens_overlay_homework_page_action_icon_view.h"
 
+#include "build/branding_buildflags.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/lens/region_search/lens_region_search_controller.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search/search.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/call_to_action/call_to_action_lock.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/lens/lens_overlay_entry_point_controller.h"
 #include "chrome/browser/ui/lens/lens_search_controller.h"
@@ -26,12 +29,9 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/view_class_properties.h"
-
-#if BUILDFLAG(ENABLE_GLIC)
-#include "chrome/browser/glic/public/glic_enabling.h"
-#endif  // BUILDFLAG(ENABLE_GLIC)
 
 LensOverlayHomeworkPageActionIconView::LensOverlayHomeworkPageActionIconView(
     IconLabelBubbleView::Delegate* parent_delegate,
@@ -65,13 +65,14 @@ void LensOverlayHomeworkPageActionIconView::UpdateImpl() {
 
   if (should_show) {
     // UpdateImpl() can be called multiple times, so make sure we don't call
-    // ShowCallToAction() more than once while the chip is showing.
-    if (!scoped_window_call_to_action_ptr_) {
-      scoped_window_call_to_action_ptr_ = browser_->ShowCallToAction();
+    // AcquireLock() more than once while the chip is showing.
+    if (!scoped_call_to_action_lock_) {
+      scoped_call_to_action_lock_ =
+          CallToActionLock::From(browser_)->AcquireLock();
       lens::RecordLensOverlayEduActionChipShown(browser_->GetProfile());
     }
   } else {
-    scoped_window_call_to_action_ptr_.reset();
+    scoped_call_to_action_lock_.reset();
   }
 
   SetVisible(should_show);
@@ -87,17 +88,15 @@ bool LensOverlayHomeworkPageActionIconView::ShouldShow() {
     return false;
   }
 
-#if BUILDFLAG(ENABLE_GLIC)
   if (lens::features::IsLensOverlayEduActionChipDisabledByGlic() &&
       glic::GlicEnabling::IsEligibleForGlicTieredRollout(
           browser_->GetProfile())) {
     return false;
   }
-#endif  // BUILDFLAG(ENABLE_GLIC)
 
   // Hide the homework chip if the broader lens feature is disabled.
   const auto* controller =
-      browser_->GetFeatures().lens_overlay_entry_point_controller();
+      lens::LensOverlayEntryPointController::From(browser_);
   if (!controller || !controller->AreVisible()) {
     return false;
   }
@@ -124,10 +123,11 @@ bool LensOverlayHomeworkPageActionIconView::ShouldShow() {
   }
 
   // Treat the chip as a window-level call to action UI; only one such UI is
-  // allowed to show at a time. Check if scoped_window_call_to_action_ptr_ is
+  // allowed to show at a time. Check if scoped_call_to_action_lock_ is
   // already set (we are already showing the chip) before checking
-  // CanShowCallToAction().
-  if (!scoped_window_call_to_action_ptr_ && !browser_->CanShowCallToAction()) {
+  // CanAcquireLock().
+  if (!scoped_call_to_action_lock_ &&
+      !CallToActionLock::From(browser_)->CanAcquireLock()) {
     return false;
   }
 
@@ -163,21 +163,8 @@ void LensOverlayHomeworkPageActionIconView::OnExecuting(
       LensSearchController::FromTabWebContents(GetWebContents());
   CHECK(controller);
 
-  if (lens::features::IsLensOverlayStraightToSrpEnabled()) {
-    std::string query_text =
-        lens::features::GetStraightToSrpQuery().empty()
-            ? l10n_util::GetStringUTF8(IDS_LENS_CONTEXTUAL_SEARCH_DEFAULT_QUERY)
-            : lens::features::GetStraightToSrpQuery();
-    controller->IssueTextSearchRequest(
-        lens::LensOverlayInvocationSource::kHomeworkActionChip, query_text,
-        /*additional_query_parameters=*/{},
-        AutocompleteMatchType::Type::SEARCH_SUGGEST,
-        /*is_zero_prefix_suggestion=*/false,
-        /*suppress_contextualization=*/false);
-  } else {
-    controller->OpenLensOverlay(
-        lens::LensOverlayInvocationSource::kHomeworkActionChip);
-  }
+  controller->OpenLensOverlay(
+      lens::LensOverlayInvocationSource::kHomeworkActionChip);
   UserEducationService::MaybeNotifyNewBadgeFeatureUsed(
       GetWebContents()->GetBrowserContext(), lens::features::kLensOverlay);
 
@@ -198,7 +185,9 @@ const gfx::VectorIcon& LensOverlayHomeworkPageActionIconView::GetVectorIcon()
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   return vector_icons::kGoogleLensMonochromeLogoIcon;
 #else
-  return vector_icons::kSearchChromeRefreshIcon;
+  return features::IsRoundedIconsEnabled()
+             ? vector_icons::kSearchIcon
+             : vector_icons::kSearchChromeRefreshOldIcon;
 #endif
 }
 

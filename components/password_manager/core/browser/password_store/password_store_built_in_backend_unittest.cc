@@ -15,6 +15,7 @@
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/test/task_environment.h"
@@ -23,24 +24,30 @@
 #include "build/build_config.h"
 #include "components/affiliations/core/browser/fake_affiliation_service.h"
 #include "components/os_crypt/async/browser/test_utils.h"
+#include "components/os_crypt/async/common/encryptor.h"
 #include "components/password_manager/core/browser/affiliation/affiliated_match_helper.h"
 #include "components/password_manager/core/browser/affiliation/mock_affiliated_match_helper.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_manager_test_utils.h"
 #include "components/password_manager/core/browser/password_store/login_database.h"
 #include "components/password_manager/core/browser/password_store/login_database_async_helper.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/password_store_backend.h"
 #include "components/password_manager/core/browser/password_store/password_store_change.h"
 #include "components/password_manager/core/browser/password_store/password_store_consumer.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/sync/test/mock_sync_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using testing::ElementsAre;
 using testing::ElementsAreArray;
+using testing::Field;
 using testing::Optional;
+using testing::Property;
+using testing::Return;
 using testing::UnorderedElementsAreArray;
 using testing::VariantWith;
 
@@ -106,7 +113,7 @@ class BadLoginDatabase : public LoginDatabase {
   // LoginDatabase:
   bool Init(base::RepeatingCallback<void(password_manager::IsAccountStore)>
                 on_undecryptable_passwords_removed,
-            os_crypt_async::Encryptor encryptor) override {
+            scoped_refptr<os_crypt_async::Encryptor> encryptor) override {
     return false;
   }
 };
@@ -124,6 +131,16 @@ PasswordFormData CreateTestPasswordFormData() {
                            true,
                            1};
   return data;
+}
+
+MATCHER_P(MatchesFormsIgnoringPrimaryKey, expected_forms, "") {
+  std::vector<PasswordForm> actual_forms;
+  for (const auto& cred : arg) {
+    actual_forms.push_back(ToPasswordForm(cred));
+  }
+  return ExplainMatchResult(
+      UnorderedElementsAreArray(FormsIgnoringPrimaryKey(expected_forms)),
+      actual_forms, result_listener);
 }
 
 }  // anonymous namespace
@@ -148,11 +165,15 @@ class PasswordStoreBuiltInBackendBaseTest : public testing::Test {
   }
 
   void TearDown() override {
-    PasswordStoreBackend* backend = store_.get();
-    backend->Shutdown(base::BindOnce(
-        [](std::unique_ptr<PasswordStoreBackend> backend) { backend.reset(); },
-        std::move(store_)));
-    RunUntilIdle();
+    if (store_) {
+      PasswordStoreBackend* backend = store_.get();
+      backend->Shutdown(base::BindOnce(
+          [](std::unique_ptr<PasswordStoreBackend> backend) {
+            backend.reset();
+          },
+          std::move(store_)));
+      RunUntilIdle();
+    }
     ASSERT_TRUE(temp_dir_.Delete());
   }
 
@@ -173,6 +194,7 @@ class PasswordStoreBuiltInBackendBaseTest : public testing::Test {
   TestingPrefServiceSimple* pref_service() { return &pref_service_; }
 
   std::unique_ptr<PasswordStoreBuiltInBackend> store_;
+  affiliations::FakeAffiliationService fake_affiliation_service_;
 
  private:
   void SetupTempDir();
@@ -196,8 +218,10 @@ class PasswordStoreBuiltInBackendTest
         /*is_sync_for_unittests=*/true);
   }
 
-  PasswordStoreBackend* CreateBackend(
-      std::unique_ptr<LoginDatabase> database = nullptr) {
+  PasswordStoreBuiltInBackend* CreateBackend(
+      std::unique_ptr<LoginDatabase> database = nullptr,
+      std::unique_ptr<AffiliatedMatchHelper> affiliated_match_helper =
+          nullptr) {
     if (!database) {
       database = std::make_unique<LoginDatabase>(
           test_login_db_file_path(),
@@ -206,23 +230,192 @@ class PasswordStoreBuiltInBackendTest
 
     store_ = std::make_unique<PasswordStoreBuiltInBackend>(
         std::move(database), syncer::WipeModelUponSyncDisabledBehavior::kNever,
-        pref_service(), os_crypt_async_.get());
+        pref_service(), os_crypt_async_.get(),
+        std::move(affiliated_match_helper));
     return store_.get();
   }
 
-  void InitializeBackend(
-      PasswordStoreBackend* backend,
-      AffiliatedMatchHelper* affiliated_match_helper = nullptr) {
-    backend->InitBackend(affiliated_match_helper,
-                         /*remote_form_changes_received=*/base::DoNothing(),
+  void InitializeBackend(PasswordStoreBackend* backend) {
+    backend->InitBackend(/*remote_form_changes_received=*/base::DoNothing(),
                          /*sync_enabled_or_disabled_cb=*/base::DoNothing(),
                          /*completion=*/base::DoNothing());
+    RunUntilIdle();
+  }
+
+  void InitializeBackendWithSync(
+      PasswordStoreBackend* backend,
+      PasswordStoreBackend::RemoteChangesReceived remote_changes_callback,
+      base::RepeatingClosure sync_enabled_or_disabled_cb,
+      syncer::MockSyncService& sync_service) {
+    EXPECT_CALL(
+        sync_service,
+        AddObserver(static_cast<PasswordStoreBuiltInBackend*>(backend)));
+    backend->InitBackend(std::move(remote_changes_callback),
+                         std::move(sync_enabled_or_disabled_cb),
+                         /*completion=*/base::DoNothing());
+    backend->OnSyncServiceInitialized(&sync_service);
     RunUntilIdle();
   }
 
  private:
   std::unique_ptr<os_crypt_async::OSCryptAsync> os_crypt_async_;
 };
+
+TEST_P(PasswordStoreBuiltInBackendTest,
+       SyncServiceObservationUpdatesErrorState_NoErrorByDefault) {
+#if BUILDFLAG(IS_IOS)
+  if (!GetParam()) {
+    GTEST_SKIP() << "On iOS, sync service is observed only for account store";
+  }
+#endif
+  syncer::MockSyncService mock_sync_service;
+  base::MockCallback<PasswordStoreBackend::RemoteChangesReceived>
+      mock_remote_changes_callback;
+  base::MockCallback<base::RepeatingClosure> mock_sync_enabled_or_disabled_cb;
+  PasswordStoreBuiltInBackend* built_in_backend = CreateBackend();
+  // Shorthands to expose overrides without casts:
+  PasswordStoreBackend* as_backend = built_in_backend;
+  syncer::SyncServiceObserver* as_sync_observer = built_in_backend;
+  InitializeBackendWithSync(as_backend, mock_remote_changes_callback.Get(),
+                            mock_sync_enabled_or_disabled_cb.Get(),
+                            mock_sync_service);
+
+  // Initial state: no error.
+  EXPECT_CALL(mock_sync_service, GetUserActionableError())
+      .WillOnce(Return(syncer::SyncService::UserActionableError::kNone));
+  EXPECT_EQ(as_backend->GetError(), ActionableError::kNoError);
+
+  // Cleans up the observer before mock_sync_service is destroyed.
+  EXPECT_CALL(mock_sync_service, RemoveObserver(as_sync_observer));
+  built_in_backend->OnSyncShutdown(&mock_sync_service);
+}
+
+TEST_P(PasswordStoreBuiltInBackendTest,
+       SyncServiceObservationUpdatesErrorState_SignInNeeded) {
+#if BUILDFLAG(IS_IOS)
+  if (!GetParam()) {
+    GTEST_SKIP() << "On iOS, sync service is observed only for account store";
+  }
+#endif
+  syncer::MockSyncService mock_sync_service;
+  base::MockCallback<PasswordStoreBackend::RemoteChangesReceived>
+      mock_remote_changes_callback;
+  base::MockCallback<base::RepeatingClosure> mock_sync_enabled_or_disabled_cb;
+  PasswordStoreBuiltInBackend* built_in_backend = CreateBackend();
+  // Shorthands to expose overrides without casts:
+  PasswordStoreBackend* as_backend = built_in_backend;
+  syncer::SyncServiceObserver* as_sync_observer = built_in_backend;
+  InitializeBackendWithSync(as_backend, mock_remote_changes_callback.Get(),
+                            mock_sync_enabled_or_disabled_cb.Get(),
+                            mock_sync_service);
+  // Change state to error: kSignInNeedsUpdate.
+  EXPECT_CALL(mock_sync_service, GetUserActionableError())
+      .WillRepeatedly(
+          Return(syncer::SyncService::UserActionableError::kSignInNeedsUpdate));
+
+  EXPECT_CALL(mock_remote_changes_callback,
+              Run(VariantWith<PasswordStoreBackendError>(
+                  Field(&PasswordStoreBackendError::type,
+                        PasswordStoreBackendErrorType::kAuthErrorResolvable))));
+  EXPECT_CALL(mock_sync_enabled_or_disabled_cb, Run());
+  built_in_backend->OnStateChanged(&mock_sync_service);
+  EXPECT_EQ(as_backend->GetError(), ActionableError::kSignInNeeded);
+
+  EXPECT_CALL(mock_sync_service, RemoveObserver(as_sync_observer));
+  built_in_backend->OnSyncShutdown(&mock_sync_service);
+}
+
+TEST_P(PasswordStoreBuiltInBackendTest,
+       SyncServiceObservationUpdatesErrorState_NeedsPassphrase) {
+#if BUILDFLAG(IS_IOS)
+  if (!GetParam()) {
+    GTEST_SKIP() << "On iOS, sync service is observed only for account store";
+  }
+#endif
+  syncer::MockSyncService mock_sync_service;
+  base::MockCallback<PasswordStoreBackend::RemoteChangesReceived>
+      mock_remote_changes_callback;
+  base::MockCallback<base::RepeatingClosure> mock_sync_enabled_or_disabled_cb;
+  PasswordStoreBuiltInBackend* built_in_backend = CreateBackend();
+  // Shorthands to expose overrides without casts:
+  PasswordStoreBackend* as_backend = built_in_backend;
+  syncer::SyncServiceObserver* as_sync_observer = built_in_backend;
+  InitializeBackendWithSync(as_backend, mock_remote_changes_callback.Get(),
+                            mock_sync_enabled_or_disabled_cb.Get(),
+                            mock_sync_service);
+  EXPECT_CALL(mock_sync_service, GetUserActionableError())
+      .WillRepeatedly(
+          Return(syncer::SyncService::UserActionableError::kNeedsPassphrase));
+
+  EXPECT_CALL(mock_remote_changes_callback,
+              Run(VariantWith<PasswordStoreBackendError>(
+                  Field(&PasswordStoreBackendError::type,
+                        PasswordStoreBackendErrorType::kNeedsPassphrase))));
+  EXPECT_CALL(mock_sync_enabled_or_disabled_cb, Run());
+  built_in_backend->OnStateChanged(&mock_sync_service);
+
+  EXPECT_EQ(as_backend->GetError(), ActionableError::kNeedsPassphrase);
+
+  EXPECT_CALL(mock_sync_service, RemoveObserver(as_sync_observer));
+  built_in_backend->OnSyncShutdown(&mock_sync_service);
+}
+
+TEST_P(PasswordStoreBuiltInBackendTest,
+       SyncServiceObservationUpdatesErrorState_NeedsTrustedVaultKey) {
+#if BUILDFLAG(IS_IOS)
+  if (!GetParam()) {
+    GTEST_SKIP() << "On iOS, sync service is observed only for account store";
+  }
+#endif
+  syncer::MockSyncService mock_sync_service;
+  base::MockCallback<PasswordStoreBackend::RemoteChangesReceived>
+      mock_remote_changes_callback;
+  base::MockCallback<base::RepeatingClosure> mock_sync_enabled_or_disabled_cb;
+  PasswordStoreBuiltInBackend* built_in_backend = CreateBackend();
+  // Shorthands to expose overrides without casts:
+  PasswordStoreBackend* as_backend = built_in_backend;
+  syncer::SyncServiceObserver* as_sync_observer = built_in_backend;
+  InitializeBackendWithSync(as_backend, mock_remote_changes_callback.Get(),
+                            mock_sync_enabled_or_disabled_cb.Get(),
+                            mock_sync_service);
+  EXPECT_CALL(mock_sync_service, GetUserActionableError())
+      .WillRepeatedly(Return(syncer::SyncService::UserActionableError::
+                                 kNeedsTrustedVaultKeyForPasswords));
+
+  EXPECT_CALL(mock_remote_changes_callback,
+              Run(VariantWith<PasswordStoreBackendError>(Field(
+                  &PasswordStoreBackendError::type,
+                  PasswordStoreBackendErrorType::kKeyRetrievalRequired))));
+  EXPECT_CALL(mock_sync_enabled_or_disabled_cb, Run());
+  built_in_backend->OnStateChanged(&mock_sync_service);
+
+  EXPECT_EQ(as_backend->GetError(), ActionableError::kTrustedVaultKeyNeeded);
+
+  EXPECT_CALL(mock_sync_service, RemoveObserver(as_sync_observer));
+  built_in_backend->OnSyncShutdown(&mock_sync_service);
+}
+
+#if BUILDFLAG(IS_IOS)
+TEST_P(PasswordStoreBuiltInBackendTest,
+       DoesNotObserveSyncServiceForProfileStoreOnIos) {
+  if (GetParam()) {
+    GTEST_SKIP() << "This test is only for the profile store";
+  }
+  syncer::MockSyncService mock_sync_service;
+  PasswordStoreBuiltInBackend* built_in_backend = CreateBackend();
+  PasswordStoreBackend* as_backend = built_in_backend;
+
+  EXPECT_CALL(mock_sync_service, AddObserver(built_in_backend)).Times(0);
+
+  as_backend->InitBackend(base::DoNothing(), base::DoNothing(),
+                          base::DoNothing());
+  as_backend->OnSyncServiceInitialized(&mock_sync_service);
+  RunUntilIdle();
+
+  built_in_backend->OnSyncShutdown(&mock_sync_service);
+}
+
+#endif
 
 TEST_P(PasswordStoreBuiltInBackendTest, NonASCIIData) {
   PasswordStoreBackend* backend = CreateBackend();
@@ -242,11 +435,13 @@ TEST_P(PasswordStoreBuiltInBackendTest, NonASCIIData) {
                                              1};
 
   PasswordForm expected_form(*FillPasswordFormWithData(form_data, GetParam()));
-  backend->AddLoginAsync(expected_form, base::DoNothing());
+  backend->AddLoginAsync(FromPasswordForm(expected_form), base::DoNothing());
 
-  base::MockCallback<LoginsOrErrorReply> mock_reply;
-  EXPECT_CALL(mock_reply, Run(VariantWith<LoginsResult>(ElementsAre(
-                              HasPrimaryKeyAndEquals(expected_form)))));
+  base::MockCallback<BackendLoginsOrErrorReply> mock_reply;
+  EXPECT_CALL(
+      mock_reply,
+      Run(VariantWith<BackendLoginsResult>(MatchesFormsIgnoringPrimaryKey(
+          std::vector<PasswordForm>{expected_form}))));
   backend->GetAutofillableLoginsAsync(mock_reply.Get());
 
   RunUntilIdle();
@@ -255,58 +450,60 @@ TEST_P(PasswordStoreBuiltInBackendTest, NonASCIIData) {
 TEST_P(PasswordStoreBuiltInBackendTest, TestAddLoginAsync) {
   PasswordStoreBackend* backend = CreateBackend();
   InitializeBackend(backend);
-  PasswordForm form =
-      *FillPasswordFormWithData(CreateTestPasswordFormData(), GetParam());
+  StoredCredential cred =
+      FillStoredCredentialWithData(CreateTestPasswordFormData(), GetParam());
 
-  const PasswordStoreChange add_change =
-      PasswordStoreChange(PasswordStoreChange::ADD, form);
+  const PasswordStoreChange add_change = PasswordStoreChange(
+      PasswordStoreChange::ADD, CloneStoredCredential(cred));
 
   base::MockCallback<PasswordChangesOrErrorReply> mock_reply;
   EXPECT_CALL(
       mock_reply,
       Run(VariantWith<PasswordChanges>(Optional(ElementsAre(add_change)))));
-  backend->AddLoginAsync(form, mock_reply.Get());
+  backend->AddLoginAsync(std::move(cred), mock_reply.Get());
   RunUntilIdle();
 }
 
 TEST_P(PasswordStoreBuiltInBackendTest, TestUpdateLoginAsync) {
   PasswordStoreBackend* backend = CreateBackend();
   InitializeBackend(backend);
-  PasswordForm form =
-      *FillPasswordFormWithData(CreateTestPasswordFormData(), GetParam());
+  StoredCredential cred =
+      FillStoredCredentialWithData(CreateTestPasswordFormData(), GetParam());
 
-  backend->AddLoginAsync(form, base::DoNothing());
+  backend->AddLoginAsync(CloneStoredCredential(cred), base::DoNothing());
   RunUntilIdle();
 
-  form.password_value = u"a different password";
-  const PasswordStoreChange update_change =
-      PasswordStoreChange(PasswordStoreChange::UPDATE, form);
+  cred.password_value = u"a different password";
+  const PasswordStoreChange update_change = PasswordStoreChange(
+      PasswordStoreChange::UPDATE, CloneStoredCredential(cred),
+      /*password_changed=*/true);
 
   base::MockCallback<PasswordChangesOrErrorReply> mock_reply;
   EXPECT_CALL(
       mock_reply,
       Run(VariantWith<PasswordChanges>(Optional(ElementsAre(update_change)))));
-  backend->UpdateLoginAsync(form, mock_reply.Get());
+  backend->UpdateLoginAsync(std::move(cred), mock_reply.Get());
   RunUntilIdle();
 }
 
 TEST_P(PasswordStoreBuiltInBackendTest, TestRemoveLoginAsync) {
   PasswordStoreBackend* backend = CreateBackend();
   InitializeBackend(backend);
-  PasswordForm form =
-      *FillPasswordFormWithData(CreateTestPasswordFormData(), GetParam());
+  StoredCredential cred =
+      FillStoredCredentialWithData(CreateTestPasswordFormData(), GetParam());
 
-  backend->AddLoginAsync(form, base::DoNothing());
+  backend->AddLoginAsync(CloneStoredCredential(cred), base::DoNothing());
   RunUntilIdle();
 
-  PasswordStoreChange remove_change =
-      PasswordStoreChange(PasswordStoreChange::REMOVE, form);
+  PasswordStoreChange remove_change = PasswordStoreChange(
+      PasswordStoreChange::REMOVE, CloneStoredCredential(cred),
+      /*password_changed=*/true);
 
   base::MockCallback<PasswordChangesOrErrorReply> mock_reply;
   EXPECT_CALL(
       mock_reply,
       Run(VariantWith<PasswordChanges>(Optional(ElementsAre(remove_change)))));
-  backend->RemoveLoginAsync(FROM_HERE, form, mock_reply.Get());
+  backend->RemoveLoginAsync(FROM_HERE, std::move(cred), mock_reply.Get());
   RunUntilIdle();
 }
 
@@ -321,7 +518,8 @@ TEST_P(PasswordStoreBuiltInBackendTest, GetAllLoginsAsync) {
   for (const auto& test_credential : kTestCredentials) {
     all_credentials.push_back(
         FillPasswordFormWithData(test_credential, GetParam()));
-    backend->AddLoginAsync(*all_credentials.back(), reply.Get());
+    backend->AddLoginAsync(FromPasswordForm(*all_credentials.back()),
+                           reply.Get());
   }
   RunUntilIdle();
 
@@ -330,10 +528,10 @@ TEST_P(PasswordStoreBuiltInBackendTest, GetAllLoginsAsync) {
   for (const auto& credential : all_credentials) {
     expected_results.push_back(*credential);
   }
-  base::MockCallback<LoginsOrErrorReply> mock_reply;
+  base::MockCallback<BackendLoginsOrErrorReply> mock_reply;
   EXPECT_CALL(mock_reply,
-              Run(VariantWith<LoginsResult>(UnorderedElementsAreArray(
-                  FormsIgnoringPrimaryKey(expected_results)))));
+              Run(VariantWith<BackendLoginsResult>(
+                  MatchesFormsIgnoringPrimaryKey(expected_results))));
   backend->GetAllLoginsAsync(mock_reply.Get());
 
   RunUntilIdle();
@@ -350,17 +548,17 @@ TEST_P(PasswordStoreBuiltInBackendTest, GetAllLoginsAsyncMetrics) {
   InitializeBackend(backend);
 
   // Fill the store
-  PasswordForm form =
-      *FillPasswordFormWithData(CreateTestPasswordFormData(), GetParam());
+  StoredCredential cred =
+      FillStoredCredentialWithData(CreateTestPasswordFormData(), GetParam());
 
-  const PasswordStoreChange add_change =
-      PasswordStoreChange(PasswordStoreChange::ADD, form);
+  const PasswordStoreChange add_change = PasswordStoreChange(
+      PasswordStoreChange::ADD, CloneStoredCredential(cred));
 
   base::MockCallback<PasswordChangesOrErrorReply> mock_reply;
   EXPECT_CALL(
       mock_reply,
       Run(VariantWith<PasswordChanges>(Optional(ElementsAre(add_change)))));
-  backend->AddLoginAsync(form, mock_reply.Get());
+  backend->AddLoginAsync(std::move(cred), mock_reply.Get());
 
   // Get the logins
   backend->GetAllLoginsAsync(base::DoNothing());
@@ -412,17 +610,17 @@ TEST_P(PasswordStoreBuiltInBackendTest, GetAutofillableLoginsAsyncMetrics) {
   InitializeBackend(backend);
 
   // Fill the store
-  PasswordForm form =
-      *FillPasswordFormWithData(CreateTestPasswordFormData(), GetParam());
+  StoredCredential cred =
+      FillStoredCredentialWithData(CreateTestPasswordFormData(), GetParam());
 
-  const PasswordStoreChange add_change =
-      PasswordStoreChange(PasswordStoreChange::ADD, form);
+  const PasswordStoreChange add_change = PasswordStoreChange(
+      PasswordStoreChange::ADD, CloneStoredCredential(cred));
 
   base::MockCallback<PasswordChangesOrErrorReply> mock_reply;
   EXPECT_CALL(
       mock_reply,
       Run(VariantWith<PasswordChanges>(Optional(ElementsAre(add_change)))));
-  backend->AddLoginAsync(form, mock_reply.Get());
+  backend->AddLoginAsync(std::move(cred), mock_reply.Get());
 
   // Get the logins
   backend->GetAutofillableLoginsAsync(base::DoNothing());
@@ -463,9 +661,9 @@ TEST_P(PasswordStoreBuiltInBackendTest,
   InitializeBackend(bad_backend);
 
   // Fill the store
-  PasswordForm form =
-      *FillPasswordFormWithData(CreateTestPasswordFormData(), GetParam());
-  bad_backend->AddLoginAsync(form, base::DoNothing());
+  StoredCredential cred =
+      FillStoredCredentialWithData(CreateTestPasswordFormData(), GetParam());
+  bad_backend->AddLoginAsync(std::move(cred), base::DoNothing());
 
   // Get the logins
   bad_backend->GetAutofillableLoginsAsync(base::DoNothing());
@@ -496,21 +694,22 @@ TEST_P(PasswordStoreBuiltInBackendTest, UpdateLoginAsyncMetrics) {
 
   PasswordStoreBackend* backend = CreateBackend();
   InitializeBackend(backend);
-  PasswordForm form =
-      *FillPasswordFormWithData(CreateTestPasswordFormData(), GetParam());
+  StoredCredential cred =
+      FillStoredCredentialWithData(CreateTestPasswordFormData(), GetParam());
 
-  backend->AddLoginAsync(form, base::DoNothing());
+  backend->AddLoginAsync(CloneStoredCredential(cred), base::DoNothing());
   RunUntilIdle();
 
-  form.password_value = u"a different password";
-  const PasswordStoreChange update_change =
-      PasswordStoreChange(PasswordStoreChange::UPDATE, form);
+  cred.password_value = u"a different password";
+  const PasswordStoreChange update_change = PasswordStoreChange(
+      PasswordStoreChange::UPDATE, CloneStoredCredential(cred),
+      /*password_changed=*/true);
 
   base::MockCallback<PasswordChangesOrErrorReply> mock_reply;
   EXPECT_CALL(
       mock_reply,
       Run(VariantWith<PasswordChanges>(Optional(ElementsAre(update_change)))));
-  backend->UpdateLoginAsync(form, mock_reply.Get());
+  backend->UpdateLoginAsync(std::move(cred), mock_reply.Get());
 
   AdvanceClock(kLatencyDelta);
   RunUntilIdle();
@@ -534,7 +733,7 @@ TEST_P(PasswordStoreBuiltInBackendTest, UpdateLoginAsyncFailsMetrics) {
   PasswordForm form =
       *FillPasswordFormWithData(CreateTestPasswordFormData(), GetParam());
 
-  bad_backend->UpdateLoginAsync(form, base::DoNothing());
+  bad_backend->UpdateLoginAsync(FromPasswordForm(form), base::DoNothing());
 
   AdvanceClock(kLatencyDelta);
   RunUntilIdle();
@@ -557,13 +756,14 @@ TEST_P(PasswordStoreBuiltInBackendTest, RemoveLoginAsyncMetrics) {
   PasswordForm form =
       *FillPasswordFormWithData(CreateTestPasswordFormData(), GetParam());
 
-  backend->AddLoginAsync(form, base::DoNothing());
+  backend->AddLoginAsync(FromPasswordForm(form), base::DoNothing());
   RunUntilIdle();
 
   PasswordStoreChange remove_change =
-      PasswordStoreChange(PasswordStoreChange::REMOVE, form);
+      PasswordStoreChange(PasswordStoreChange::REMOVE, FromPasswordForm(form));
 
-  backend->RemoveLoginAsync(FROM_HERE, form, base::DoNothing());
+  backend->RemoveLoginAsync(FROM_HERE, FromPasswordForm(form),
+                            base::DoNothing());
 
   AdvanceClock(kLatencyDelta);
   RunUntilIdle();
@@ -585,13 +785,14 @@ TEST_P(PasswordStoreBuiltInBackendTest, RemoveLoginAsyncFailsMetrics) {
   PasswordForm form =
       *FillPasswordFormWithData(CreateTestPasswordFormData(), GetParam());
 
-  bad_backend->AddLoginAsync(form, base::DoNothing());
+  bad_backend->AddLoginAsync(FromPasswordForm(form), base::DoNothing());
   RunUntilIdle();
 
   PasswordStoreChange remove_change =
-      PasswordStoreChange(PasswordStoreChange::REMOVE, form);
+      PasswordStoreChange(PasswordStoreChange::REMOVE, FromPasswordForm(form));
 
-  bad_backend->RemoveLoginAsync(FROM_HERE, form, base::DoNothing());
+  bad_backend->RemoveLoginAsync(FROM_HERE, FromPasswordForm(form),
+                                base::DoNothing());
 
   AdvanceClock(kLatencyDelta);
   RunUntilIdle();
@@ -617,11 +818,11 @@ TEST_P(PasswordStoreBuiltInBackendTest,
   PasswordForm form =
       *FillPasswordFormWithData(CreateTestPasswordFormData(), GetParam());
   form.date_created = base::Time::FromTimeT(1500);
-  backend->AddLoginAsync(form, base::DoNothing());
+  backend->AddLoginAsync(FromPasswordForm(form), base::DoNothing());
   RunUntilIdle();
 
-  backend->RemoveLoginsCreatedBetweenAsync(
-      FROM_HERE, kStart, kEnd, base::DoNothing(), base::DoNothing());
+  backend->RemoveLoginsCreatedBetweenAsync(FROM_HERE, kStart, kEnd,
+                                           base::DoNothing());
 
   AdvanceClock(kLatencyDelta);
   RunUntilIdle();
@@ -649,11 +850,11 @@ TEST_P(PasswordStoreBuiltInBackendTest,
   PasswordForm form =
       *FillPasswordFormWithData(CreateTestPasswordFormData(), GetParam());
   form.date_created = base::Time::FromTimeT(300);
-  backend->AddLoginAsync(form, base::DoNothing());
+  backend->AddLoginAsync(FromPasswordForm(form), base::DoNothing());
   RunUntilIdle();
 
-  backend->RemoveLoginsCreatedBetweenAsync(
-      FROM_HERE, kStart, kEnd, base::DoNothing(), base::DoNothing());
+  backend->RemoveLoginsCreatedBetweenAsync(FROM_HERE, kStart, kEnd,
+                                           base::DoNothing());
 
   AdvanceClock(kLatencyDelta);
   RunUntilIdle();
@@ -680,8 +881,8 @@ TEST_P(PasswordStoreBuiltInBackendTest,
       CreateBackend(std::make_unique<BadLoginDatabase>(GetParam()));
   InitializeBackend(bad_backend);
 
-  bad_backend->RemoveLoginsCreatedBetweenAsync(
-      FROM_HERE, kStart, kEnd, base::DoNothing(), base::DoNothing());
+  bad_backend->RemoveLoginsCreatedBetweenAsync(FROM_HERE, kStart, kEnd,
+                                               base::DoNothing());
 
   AdvanceClock(kLatencyDelta);
   RunUntilIdle();
@@ -708,7 +909,7 @@ TEST_P(PasswordStoreBuiltInBackendTest, FillMatchingLoginsAsyncMetrics) {
   PasswordForm form =
       *FillPasswordFormWithData(CreateTestPasswordFormData(), GetParam());
   const std::string kTestPasswordFormURL = form.signon_realm;
-  backend->AddLoginAsync(std::move(form), base::DoNothing());
+  backend->AddLoginAsync(FromPasswordForm(std::move(form)), base::DoNothing());
   RunUntilIdle();
 
   std::vector<PasswordFormDigest> forms;
@@ -760,17 +961,20 @@ TEST_P(PasswordStoreBuiltInBackendTest,
 }
 
 TEST_P(PasswordStoreBuiltInBackendTest, GetLoginsWithAffiliations) {
-  affiliations::FakeAffiliationService fake_affiliation_service;
-  MockAffiliatedMatchHelper mock_affiliated_match_helper(
-      &fake_affiliation_service);
-  PasswordStoreBackend* backend = CreateBackend();
-  InitializeBackend(backend, &mock_affiliated_match_helper);
+  auto owning_mock_match_helper =
+      std::make_unique<MockAffiliatedMatchHelper>(&fake_affiliation_service_);
+  MockAffiliatedMatchHelper* mock_affiliated_match_helper =
+      owning_mock_match_helper.get();
+  PasswordStoreBackend* backend =
+      CreateBackend(nullptr, std::move(owning_mock_match_helper));
+  InitializeBackend(backend);
 
   std::vector<std::unique_ptr<PasswordForm>> all_credentials;
   for (const auto& test_credential : kTestCredentials) {
     all_credentials.push_back(
         FillPasswordFormWithData(test_credential, GetParam()));
-    backend->AddLoginAsync(*all_credentials.back(), base::DoNothing());
+    backend->AddLoginAsync(FromPasswordForm(*all_credentials.back()),
+                           base::DoNothing());
     RunUntilIdle();
   }
 
@@ -793,14 +997,14 @@ TEST_P(PasswordStoreBuiltInBackendTest, GetLoginsWithAffiliations) {
   std::vector<std::string> grouped_realms;
   grouped_realms.push_back(kTestWebRealm3);
 
-  mock_affiliated_match_helper.ExpectCallToGetAffiliatedAndGrouped(
+  mock_affiliated_match_helper->ExpectCallToGetAffiliatedAndGrouped(
       observed_form, affiliated_android_realms, grouped_realms);
   mock_affiliated_match_helper
-      .ExpectCallToInjectAffiliationAndBrandingInformation({});
-  base::MockCallback<LoginsOrErrorReply> mock_reply;
+      ->ExpectCallToInjectAffiliationAndBrandingInformation({});
+  base::MockCallback<BackendLoginsOrErrorReply> mock_reply;
   EXPECT_CALL(mock_reply,
-              Run(VariantWith<LoginsResult>(UnorderedElementsAreArray(
-                  FormsIgnoringPrimaryKey(expected_results)))));
+              Run(VariantWith<BackendLoginsResult>(
+                  MatchesFormsIgnoringPrimaryKey(expected_results))));
 
   backend->GetGroupedMatchingLoginsAsync(observed_form, mock_reply.Get());
   RunUntilIdle();
@@ -808,17 +1012,20 @@ TEST_P(PasswordStoreBuiltInBackendTest, GetLoginsWithAffiliations) {
 
 TEST_P(PasswordStoreBuiltInBackendTest,
        GetAllLoginsWithAffiliationAndBrandingInformation) {
-  affiliations::FakeAffiliationService fake_affiliation_service;
-  MockAffiliatedMatchHelper mock_affiliated_match_helper(
-      &fake_affiliation_service);
-  PasswordStoreBackend* backend = CreateBackend();
-  InitializeBackend(backend, &mock_affiliated_match_helper);
+  auto owning_mock_match_helper =
+      std::make_unique<MockAffiliatedMatchHelper>(&fake_affiliation_service_);
+  MockAffiliatedMatchHelper* mock_affiliated_match_helper =
+      owning_mock_match_helper.get();
+  PasswordStoreBackend* backend =
+      CreateBackend(nullptr, std::move(owning_mock_match_helper));
+  InitializeBackend(backend);
 
   std::vector<std::unique_ptr<PasswordForm>> all_credentials;
   for (const auto& test_credential : kTestCredentials) {
     all_credentials.push_back(FillPasswordFormWithData(
         test_credential, /*is_account_store=*/GetParam()));
-    backend->AddLoginAsync(*all_credentials.back(), base::DoNothing());
+    backend->AddLoginAsync(FromPasswordForm(*all_credentials.back()),
+                           base::DoNothing());
     RunUntilIdle();
   }
 
@@ -837,7 +1044,7 @@ TEST_P(PasswordStoreBuiltInBackendTest,
           {/* Pretend affiliation or branding info is unavailable. */}};
 
   mock_affiliated_match_helper
-      .ExpectCallToInjectAffiliationAndBrandingInformation(
+      ->ExpectCallToInjectAffiliationAndBrandingInformation(
           affiliation_info_for_results);
 
   for (size_t i = 0; i < expected_results.size(); ++i) {
@@ -849,10 +1056,10 @@ TEST_P(PasswordStoreBuiltInBackendTest,
         affiliation_info_for_results[i].app_icon_url;
   }
 
-  base::MockCallback<LoginsOrErrorReply> mock_reply;
+  base::MockCallback<BackendLoginsOrErrorReply> mock_reply;
   EXPECT_CALL(mock_reply,
-              Run(VariantWith<LoginsResult>(UnorderedElementsAreArray(
-                  FormsIgnoringPrimaryKey(expected_results)))));
+              Run(VariantWith<BackendLoginsResult>(
+                  MatchesFormsIgnoringPrimaryKey(expected_results))));
 
   backend->GetAllLoginsWithAffiliationAndBrandingAsync(mock_reply.Get());
   RunUntilIdle();
@@ -863,7 +1070,7 @@ TEST_P(PasswordStoreBuiltInBackendTest, NotAbleSavePasswordsWhenDatabaseIsBad) {
       CreateBackend(std::make_unique<BadLoginDatabase>(GetParam()));
   InitializeBackend(bad_backend);
 
-  EXPECT_FALSE(bad_backend->IsAbleToSavePasswords());
+  EXPECT_EQ(bad_backend->GetError(), ActionableError::kInactionable);
 }
 
 INSTANTIATE_TEST_SUITE_P(, PasswordStoreBuiltInBackendTest, ::testing::Bool());
@@ -889,18 +1096,17 @@ class PasswordStoreBuiltInBackendPasswordLossMetricsTest
         test_login_db_file_path(),
         password_manager::IsAccountStore(GetParam().is_account_store));
 
-    affiliations::FakeAffiliationService fake_affiliation_service;
-    MockAffiliatedMatchHelper mock_affiliated_match_helper(
-        &fake_affiliation_service);
+    auto mock_match_helper =
+        std::make_unique<MockAffiliatedMatchHelper>(&fake_affiliation_service_);
 
     store_ = std::make_unique<PasswordStoreBuiltInBackend>(
         std::move(database), syncer::WipeModelUponSyncDisabledBehavior::kNever,
-        pref_service(), os_crypt_async_.get());
+        pref_service(), os_crypt_async_.get(), std::move(mock_match_helper));
     PasswordStoreBackend* backend = store_.get();
-    backend->InitBackend(&mock_affiliated_match_helper,
-                         /*remote_form_changes_received=*/base::DoNothing(),
-                         /*sync_enabled_or_disabled_cb=*/base::DoNothing(),
-                         /*completion=*/base::DoNothing());
+    backend->InitBackend(
+        /*remote_form_changes_received=*/base::DoNothing(),
+        /*sync_enabled_or_disabled_cb=*/base::DoNothing(),
+        /*completion=*/base::DoNothing());
     RunUntilIdle();
     return backend;
   }
@@ -922,11 +1128,13 @@ TEST_P(PasswordStoreBuiltInBackendPasswordLossMetricsTest,
   PasswordForm form = *FillPasswordFormWithData(CreateTestPasswordFormData(),
                                                 test_case.is_account_store);
 
-  backend->AddLoginAsync(form, /*callback=*/base::DoNothing());
+  backend->AddLoginAsync(FromPasswordForm(form),
+                         /*callback=*/base::DoNothing());
   RunUntilIdle();
 
   PasswordStoreChangeList changes;
-  changes.emplace_back(test_case.change_type, std::move(form));
+  changes.emplace_back(test_case.change_type,
+                       FromPasswordForm(std::move(form)));
   (static_cast<PasswordStoreBuiltInBackend*>(backend))
       ->NotifyCredentialsChangedForTesting(pass_key, changes);
   RunUntilIdle();

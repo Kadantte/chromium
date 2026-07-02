@@ -9,10 +9,13 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/flat_set.h"
 #include "base/containers/span.h"
-#include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
+#include "base/types/optional_ref.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
+#include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "url/origin.h"
 
@@ -115,6 +118,10 @@ struct ProfileImportMetadata {
   base::flat_set<std::string> unedited_autofilled_profile_guids;
   // Tracks if the submitted form contained non-empty split zip fields.
   bool observed_split_zip = false;
+  // The source of submission that triggered the current profile import. In the
+  // case of multi-step import, this would be the source of the last submission
+  // that occurred so far.
+  mojom::SubmissionSource submission_source = mojom::SubmissionSource::NONE;
 };
 
 // This class holds the state associated with the import of an AutofillProfile
@@ -327,6 +334,10 @@ class ProfileImportProcess {
 
   // Records Home and Work superset metrics after the import was applied.
   void LogHomeAndWorkSupersetMetrics() const;
+
+  // Records details about silent profile updates.
+  void LogSilentUpdateMergeCategory(
+      const std::vector<const AutofillProfile*>& existing_profiles) const;
 
   // Indicates if the user is already prompted.
   bool prompt_shown_{false};

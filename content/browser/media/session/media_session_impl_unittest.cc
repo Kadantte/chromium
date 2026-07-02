@@ -18,9 +18,9 @@
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/common/content_client.h"
 #include "content/public/test/test_browser_context.h"
+#include "content/public/test/test_content_browser_client.h"
 #include "content/public/test/test_media_session_client.h"
 #include "content/public/test/test_renderer_host.h"
-#include "content/test/test_content_browser_client.h"
 #include "content/test/test_web_contents.h"
 #include "media/base/media_content_type.h"
 #include "media/base/media_switches.h"
@@ -1034,7 +1034,7 @@ TEST_F(MediaSessionImplTest, AutoPictureInPictureInfoChanged) {
 }
 
 TEST_F(MediaSessionImplTest,
-       DoesNotEntersBrowserInitiatedAutoPip_MoreThanOnePlayer) {
+       DoesNotEnterBrowserInitiatedAutoPip_MoreThanOnePlayer) {
   MockMediaSessionMojoObserver observer(*GetMediaSession());
   FlushForTesting(GetMediaSession());
 
@@ -1067,7 +1067,7 @@ TEST_F(MediaSessionImplTest,
 }
 
 TEST_F(MediaSessionImplTest,
-       DoesNotEntersBrowserInitiatedAutoPip_SinglePlayerNotPlaying) {
+       DoesNotEnterBrowserInitiatedAutoPip_SinglePlayerNotPlaying) {
   MockMediaSessionMojoObserver observer(*GetMediaSession());
   FlushForTesting(GetMediaSession());
 
@@ -1142,6 +1142,57 @@ TEST_F(MediaSessionImplTest,
 
   GetMediaSession()->EnterAutoPictureInPicture();
   EXPECT_EQ(1, player_observer_->received_enter_picture_in_picture_calls());
+}
+
+TEST_F(MediaSessionImplTest,
+       DoesNotEnterBrowserInitiatedAutoPip_TransitionToPaused) {
+  MockMediaSessionMojoObserver observer(*GetMediaSession());
+  FlushForTesting(GetMediaSession());
+
+  int player = player_observer_->StartNewPlayer();
+  player_observer_->SetIsPictureInPictureAvailable(player, true);
+  GetMediaSession()->AddPlayer(player_observer_.get(), player);
+  FlushForTesting(GetMediaSession());
+
+  // Auto-pip should be possible when playing.
+  EXPECT_TRUE(observer.actions().contains(
+      MediaSessionAction::kEnterAutoPictureInPicture));
+
+  // Pause the player.
+  player_observer_->SetPlaying(player, false);
+  GetMediaSession()->OnPlayerPaused(player_observer_.get(), player);
+  FlushForTesting(GetMediaSession());
+
+  // Verify that kEnterAutoPictureInPicture action is no longer available.
+  EXPECT_FALSE(observer.actions().contains(
+      MediaSessionAction::kEnterAutoPictureInPicture));
+}
+
+TEST_F(MediaSessionImplTest,
+       EntersBrowserInitiatedAutoPip_TransitionToPlaying) {
+  MockMediaSessionMojoObserver observer(*GetMediaSession());
+  FlushForTesting(GetMediaSession());
+
+  int player = player_observer_->StartNewPlayer();
+  player_observer_->SetIsPictureInPictureAvailable(player, true);
+  GetMediaSession()->AddPlayer(player_observer_.get(), player);
+  FlushForTesting(GetMediaSession());
+
+  // Pause the player.
+  player_observer_->SetPlaying(player, false);
+  GetMediaSession()->OnPlayerPaused(player_observer_.get(), player);
+  FlushForTesting(GetMediaSession());
+
+  EXPECT_FALSE(observer.actions().contains(
+      MediaSessionAction::kEnterAutoPictureInPicture));
+
+  // Resume the session.
+  GetMediaSession()->Resume(MediaSession::SuspendType::kUI);
+  FlushForTesting(GetMediaSession());
+
+  // Verify that kEnterAutoPictureInPicture action is available again.
+  EXPECT_TRUE(observer.actions().contains(
+      MediaSessionAction::kEnterAutoPictureInPicture));
 }
 
 TEST_F(MediaSessionImplTest,

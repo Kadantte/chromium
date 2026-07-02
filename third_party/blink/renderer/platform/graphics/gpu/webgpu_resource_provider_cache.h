@@ -15,22 +15,23 @@
 #include "third_party/skia/include/core/SkImageInfo.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/hdr_metadata.h"
 
 namespace blink {
 
-class CanvasNon2DResourceProviderSharedImage;
+class CanvasNon2DResourceProvider;
 class WebGPURecyclableResourceCache;
 class WebGraphicsContext3DProviderWrapper;
 
 class PLATFORM_EXPORT RecyclableCanvasResource {
  public:
   RecyclableCanvasResource(
-      std::unique_ptr<CanvasNon2DResourceProviderSharedImage> resource_provider,
+      std::unique_ptr<CanvasNon2DResourceProvider> resource_provider,
       base::WeakPtr<WebGPURecyclableResourceCache> cache);
 
   ~RecyclableCanvasResource();
 
-  CanvasNon2DResourceProviderSharedImage* resource_provider() {
+  CanvasNon2DResourceProvider* resource_provider() {
     return resource_provider_.get();
   }
 
@@ -39,7 +40,7 @@ class PLATFORM_EXPORT RecyclableCanvasResource {
   }
 
  private:
-  std::unique_ptr<CanvasNon2DResourceProviderSharedImage> resource_provider_;
+  std::unique_ptr<CanvasNon2DResourceProvider> resource_provider_;
   base::WeakPtr<WebGPURecyclableResourceCache> cache_;
   gpu::SyncToken completion_sync_token_;
 };
@@ -52,12 +53,16 @@ class PLATFORM_EXPORT WebGPURecyclableResourceCache {
   ~WebGPURecyclableResourceCache() = default;
 
   std::unique_ptr<RecyclableCanvasResource> GetOrCreateCanvasResource(
-      const SkImageInfo& info);
+      viz::SharedImageFormat format,
+      gfx::Size size,
+      const gfx::ColorSpace& color_space,
+      const gfx::HDRMetadata& hdr_metadata,
+      SkAlphaType alpha_type);
 
   // When the holder is destroyed, move the resource provider to
   // |unused_providers_| if the cache is not full.
   void OnDestroyRecyclableResource(
-      std::unique_ptr<CanvasNon2DResourceProviderSharedImage> resource_provider,
+      std::unique_ptr<CanvasNon2DResourceProvider> resource_provider,
       const gpu::SyncToken& completion_sync_token);
 
   wtf_size_t CleanUpResourcesAndReturnSizeForTesting();
@@ -88,23 +93,22 @@ class PLATFORM_EXPORT WebGPURecyclableResourceCache {
       kCleanUpDelayInSeconds / kTimerDurationInSeconds;
 
   struct PLATFORM_EXPORT Resource {
-    Resource(std::unique_ptr<CanvasNon2DResourceProviderSharedImage>
-                 resource_provider,
+    Resource(std::unique_ptr<CanvasNon2DResourceProvider> resource_provider,
              unsigned int timer_id,
-             int resource_size);
+             size_t resource_size);
     Resource(Resource&& that) noexcept;
     ~Resource();
 
-    std::unique_ptr<CanvasNon2DResourceProviderSharedImage> resource_provider_;
+    std::unique_ptr<CanvasNon2DResourceProvider> resource_provider_;
     unsigned int timer_id_;
-    int resource_size_;
+    size_t resource_size_;
   };
 
   using DequeResourceProvider = Deque<Resource>;
 
   // Search |unused_providers_| and acquire the canvas resource provider with
   // the same cache key for re-use.
-  std::unique_ptr<CanvasNon2DResourceProviderSharedImage> AcquireCachedProvider(
+  std::unique_ptr<CanvasNon2DResourceProvider> AcquireCachedProvider(
       const gfx::Size& size,
       const viz::SharedImageFormat& format,
       SkAlphaType alpha_type,

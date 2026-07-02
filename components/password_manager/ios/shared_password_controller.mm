@@ -14,6 +14,7 @@
 #import <vector>
 
 #import "base/apple/foundation_util.h"
+#import "base/check_deref.h"
 #import "base/check_op.h"
 #import "base/containers/to_vector.h"
 #import "base/debug/crash_logging.h"
@@ -65,6 +66,7 @@
 #import "components/password_manager/ios/password_manager_java_script_feature.h"
 #import "components/password_manager/ios/shared_password_controller+private.h"
 #import "components/strings/grit/components_strings.h"
+#import "components/webauthn/ios/ios_webauthn_credentials_delegate_factory.h"
 #import "components/webauthn/ios/passkey_suggestion_utils.h"
 #import "ios/web/common/url_scheme_util.h"
 #import "ios/web/public/js_messaging/web_frame.h"
@@ -522,7 +524,7 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
       [self propagatePredictionsToPasswordManagerFrom:manager
                                           forFormData:renderer_form
                                          globalFormId:formId
-                                              inFrame:child_frame
+                                              inFrame:*child_frame
                                            fromSource:source];
     }
   } else {
@@ -535,7 +537,7 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
     [self propagatePredictionsToPasswordManagerFrom:manager
                                         forFormData:form_data
                                        globalFormId:formId
-                                            inFrame:frame
+                                            inFrame:*frame
                                          fromSource:source];
   }
 }
@@ -775,9 +777,16 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
           kFillDataRetrievalStatusHistogram,
           password_manager::FillDataRetrievalStatus::kSuccess);
 
+      BOOL triggerSubmission =
+          suggestion.metadata.should_trigger_submission &&
+          suggestion.metadata.accepts_auto_submit &&
+          password_manager::features::kAutoSubmissionTypeParam.Get() ==
+              password_manager::features::AutoSubmissionType::kScriptSubmit;
+
       [self.formHelper fillPasswordFormWithFillData:*fill_data_result.value()
                                             inFrame:frame
                                    triggeredOnField:fieldRendererID
+                                  triggerSubmission:triggerSubmission
                                   completionHandler:^(BOOL success) {
                                     completion();
                                   }];
@@ -989,7 +998,7 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
 
   std::u16string generatedPassword =
       [_driverHelper PasswordGenerationHelper:frame]->GeneratePassword(
-          [self lastCommittedURL],
+          frame->GetSecurityOrigin().GetURL(),
           isManuallyTriggered ? PasswordGenerationType::kManual
                               : PasswordGenerationType::kAutomatic,
           formSignature, fieldSignature, maxLength);
@@ -1211,19 +1220,19 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
 - (void)propagatePredictionsToPasswordManagerFrom:(AutofillManager&)manager
                                       forFormData:(FormData)form
                                      globalFormId:(FormGlobalId)globalFormId
-                                          inFrame:(web::WebFrame*)frame
+                                          inFrame:(web::WebFrame&)frame
                                        fromSource:(AutofillManager::Observer::
                                                        FieldTypeSource)source {
   PasswordManagerDriver* driver =
       IOSPasswordManagerDriverFactory::FromWebStateAndWebFrame(_webState,
-                                                               frame);
+                                                               &frame);
   std::vector<autofill::FieldGlobalId> field_ids =
       base::ToVector(form.fields(), &autofill::FormFieldData::global_id);
   switch (source) {
     case AutofillManager::Observer::FieldTypeSource::kAutofillServer:
     case AutofillManager::Observer::FieldTypeSource::kAutofillAiModel:
       _passwordManager->ProcessAutofillPredictions(
-          driver, form,
+          CHECK_DEREF(driver), form,
           manager.GetServerPredictionsForForm(globalFormId, field_ids));
       break;
     case AutofillManager::Observer::FieldTypeSource::kHeuristicsOrAutocomplete:
@@ -1244,15 +1253,8 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
 // for the given `frame`.
 - (WebAuthnCredentialsDelegate*)retrieveWebAuthnCredentialsDelegateForFrame:
     (web::WebFrame*)frame {
-  PasswordManagerClient* passwordManagerClient =
-      self.delegate.passwordManagerClient;
-  CHECK(passwordManagerClient);
-
-  IOSPasswordManagerDriver* driver =
-      [_driverHelper PasswordManagerDriver:frame];
-  CHECK(driver);
-
-  return passwordManagerClient->GetWebAuthnCredentialsDelegateForDriver(driver);
+  return webauthn::IOSWebAuthnCredentialsDelegateFactory::GetFactory(_webState)
+      ->GetDelegateForFrameId(frame->GetFrameId());
 }
 
 // Retrieves passkey suggestions for the provided `frame`.

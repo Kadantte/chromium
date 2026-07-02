@@ -7,36 +7,25 @@
 #include <memory>
 #include <utility>
 
-#include "ash/public/ash_interfaces.h"
 #include "base/dcheck_is_on.h"
 #include "base/feature_list.h"
 #include "base/functional/callback.h"
 #include "base/notimplemented.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
-#include "chrome/browser/ash/crosapi/document_scan_ash.h"
-#include "chrome/browser/ash/crosapi/local_printer_ash.h"
 #include "chrome/browser/ash/login/quick_unlock/quick_unlock_factory.h"
-#include "chrome/browser/ash/printing/print_preview/print_preview_webcontents_adapter_ash.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
 #include "chromeos/ash/components/account_manager/account_manager_factory.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
-#include "chromeos/ash/components/telemetry_extension/diagnostics/diagnostics_service_ash.h"
-#include "chromeos/ash/components/telemetry_extension/management/telemetry_management_service_ash.h"
-#include "chromeos/ash/components/telemetry_extension/routines/telemetry_diagnostic_routine_service_ash.h"
-#include "chromeos/ash/components/telemetry_extension/telemetry/probe_service_ash.h"
 #include "chromeos/components/cdm_factory_daemon/cdm_factory_daemon_proxy_ash.h"
 #include "chromeos/components/in_session_auth/in_process_instances.h"
 #include "chromeos/components/in_session_auth/in_session_auth.h"
 #include "chromeos/components/sensors/ash/sensor_hal_dispatcher.h"
 #include "chromeos/constants/chromeos_features.h"
-#include "chromeos/crosapi/mojom/local_printer.mojom.h"
-#include "chromeos/crosapi/mojom/telemetry_diagnostic_routine_service.mojom.h"
 #include "chromeos/services/chromebox_for_meetings/public/cpp/service_connection.h"
 #include "chromeos/services/chromebox_for_meetings/public/mojom/cfm_service_manager.mojom.h"
 #include "chromeos/services/machine_learning/public/cpp/service_connection.h"
@@ -74,18 +63,7 @@ Profile* GetAshProfile() {
 
 }  // namespace
 
-CrosapiAsh::CrosapiAsh()
-    : diagnostics_service_ash_(std::make_unique<ash::DiagnosticsServiceAsh>()),
-      document_scan_ash_(std::make_unique<DocumentScanAsh>()),
-      local_printer_ash_(std::make_unique<LocalPrinterAsh>()),
-      telemetry_diagnostic_routine_service_ash_(
-          std::make_unique<ash::TelemetryDiagnosticsRoutineServiceAsh>()),
-      telemetry_management_service_ash_(
-          std::make_unique<ash::TelemetryManagementServiceAsh>()),
-      probe_service_ash_(std::make_unique<ash::ProbeServiceAsh>()),
-      print_preview_webcontents_adapter_ash_(
-          std::make_unique<
-              ash::printing::PrintPreviewWebcontentsAdapterAsh>()) {
+CrosapiAsh::CrosapiAsh() {
   receiver_set_.set_disconnect_handler(base::BindRepeating(
       &CrosapiAsh::OnDisconnected, weak_factory_.GetWeakPtr()));
 }
@@ -104,10 +82,8 @@ void CrosapiAsh::BindAccountManager(
   // `AccountManagerMojoService` that can/should be contacted - the one attached
   // to the regular `Profile` in ash-chrome for the active `User`.
   crosapi::AccountManagerMojoService* const account_manager_mojo_service =
-      g_browser_process->platform_part()
-          ->GetAccountManagerFactory()
-          ->GetAccountManagerMojoService(
-              /*profile_path=*/GetAshProfile()->GetPath().value());
+      ash::AccountManagerFactory::Get()->GetAccountManagerMojoService(
+          /*profile_path=*/GetAshProfile()->GetPath().value());
   account_manager_mojo_service->BindReceiver(std::move(receiver));
 }
 
@@ -123,21 +99,6 @@ void CrosapiAsh::BindCfmServiceContext(
       std::move(receiver));
 }
 
-void CrosapiAsh::BindCrosDisplayConfigController(
-    mojo::PendingReceiver<mojom::CrosDisplayConfigController> receiver) {
-  ash::BindCrosDisplayConfigController(std::move(receiver));
-}
-
-void CrosapiAsh::BindDiagnosticsService(
-    mojo::PendingReceiver<mojom::DiagnosticsService> receiver) {
-  diagnostics_service_ash_->BindReceiver(std::move(receiver));
-}
-
-void CrosapiAsh::BindDocumentScan(
-    mojo::PendingReceiver<mojom::DocumentScan> receiver) {
-  document_scan_ash_->BindReceiver(std::move(receiver));
-}
-
 void CrosapiAsh::BindHidManager(
     mojo::PendingReceiver<device::mojom::HidManager> receiver) {
   content::GetDeviceService().BindHidManager(std::move(receiver));
@@ -146,11 +107,6 @@ void CrosapiAsh::BindHidManager(
 void CrosapiAsh::BindInSessionAuth(
     mojo::PendingReceiver<chromeos::auth::mojom::InSessionAuth> receiver) {
   chromeos::auth::BindToInSessionAuthService(std::move(receiver));
-}
-
-void CrosapiAsh::BindLocalPrinter(
-    mojo::PendingReceiver<crosapi::mojom::LocalPrinter> receiver) {
-  local_printer_ash_->BindReceiver(std::move(receiver));
 }
 
 void CrosapiAsh::BindMachineLearningService(
@@ -194,21 +150,6 @@ void CrosapiAsh::BindSensorHalClient(
     mojo::PendingRemote<chromeos::sensors::mojom::SensorHalClient> remote) {
   chromeos::sensors::SensorHalDispatcher::GetInstance()->RegisterClient(
       std::move(remote));
-}
-
-void CrosapiAsh::BindTelemetryDiagnosticRoutinesService(
-    mojo::PendingReceiver<mojom::TelemetryDiagnosticRoutinesService> receiver) {
-  telemetry_diagnostic_routine_service_ash_->BindReceiver(std::move(receiver));
-}
-
-void CrosapiAsh::BindTelemetryManagementService(
-    mojo::PendingReceiver<mojom::TelemetryManagementService> receiver) {
-  telemetry_management_service_ash_->BindReceiver(std::move(receiver));
-}
-
-void CrosapiAsh::BindTelemetryProbeService(
-    mojo::PendingReceiver<mojom::TelemetryProbeService> receiver) {
-  probe_service_ash_->BindReceiver(std::move(receiver));
 }
 
 void CrosapiAsh::OnDisconnected() {

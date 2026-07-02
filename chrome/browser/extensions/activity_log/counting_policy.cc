@@ -41,6 +41,7 @@
 #include "base/functional/callback.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_string_value_serializer.h"
+#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/strings/cstring_view.h"
@@ -623,7 +624,7 @@ void CountingPolicy::DoRemoveURLs(const std::vector<GURL>& restrict_urls) {
   }
 
   // Clean up unused strings from the strings and urls table to really delete
-  // the urls and page titles. Should be called even if an error occured when
+  // the urls and page titles. Should be called even if an error occurred when
   // removing a URL as there may some things to clean up.
   CleanStringTables(db);
 }

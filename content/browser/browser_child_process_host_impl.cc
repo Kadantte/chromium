@@ -291,6 +291,7 @@ void BrowserChildProcessHostImpl::LaunchWithoutExtraCommandLineSwitches(
       switches::kDisableBestEffortTasks,
       switches::kIPCConnectionTimeout,
       switches::kLogBestEffortTasks,
+      switches::kPartitionAllocSchedulerLoopQuarantine,
       switches::kPerfettoDisableInterning,
   };
   cmd_line->CopySwitchesFrom(browser_command_line, kForwardSwitches);
@@ -410,6 +411,10 @@ void BrowserChildProcessHostImpl::BindChildHistogramFetcherFactory(
     mojo::PendingReceiver<metrics::mojom::ChildHistogramFetcherFactory>
         factory) {
   GetHost()->BindReceiver(std::move(factory));
+}
+
+bool BrowserChildProcessHostImpl::IsWebiumRenderer() const {
+  return false;
 }
 
 void BrowserChildProcessHostImpl::TerminateOnBadMessageReceived(

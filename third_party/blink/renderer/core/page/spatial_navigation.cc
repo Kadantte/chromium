@@ -258,7 +258,8 @@ bool IsUnobscured(const FocusCandidate& candidate) {
     return false;
 
   PhysicalRect viewport_rect(
-      local_main_frame->GetPage()->GetVisualViewport().VisibleContentRect());
+      local_main_frame->GetPage()->GetVisualViewport().VisibleContentRect(
+          kExcludeScrollbars));
   PhysicalRect interesting_rect =
       Intersection(candidate.rect_in_root_frame, viewport_rect);
 
@@ -340,7 +341,7 @@ bool ScrollInDirection(Node* container, SpatialNavigationDirection direction) {
   // TODO(crbug.com/914775): Use UserScroll() instead. UserScroll() does a
   // smooth, animated scroll which might make it easier for users to understand
   // spatnav's moves. Another advantage of using ScrollableArea::UserScroll() is
-  // that it returns a ScrollResult so we don't need to call
+  // that it returns a ScrollConsumption so we don't need to call
   // CanScrollInDirection(). Regular arrow-key scrolling (without
   // --enable-spatial-navigation) already uses smooth scrolling by default.
   ScrollableArea* scroller = ScrollableAreaFor(container);
@@ -351,7 +352,7 @@ bool ScrollInDirection(Node* container, SpatialNavigationDirection direction) {
   return true;
 }
 
-bool IsScrollableNode(const Node* node) {
+bool IsScrollableNode(const Node* node, SpatialNavigationDirection direction) {
   if (!node)
     return false;
 
@@ -359,12 +360,22 @@ bool IsScrollableNode(const Node* node) {
     return true;
 
   if (auto* box = DynamicTo<LayoutBox>(node->GetLayoutObject())) {
-    return box->IsUserScrollable();
+    switch (direction) {
+      case SpatialNavigationDirection::kLeft:
+      case SpatialNavigationDirection::kRight:
+        return box->HasScrollableOverflowX();
+      case SpatialNavigationDirection::kUp:
+      case SpatialNavigationDirection::kDown:
+        return box->HasScrollableOverflowY();
+      case SpatialNavigationDirection::kNone:
+        return box->IsUserScrollable();
+    }
   }
   return false;
 }
 
-Node* ScrollableAreaOrDocumentOf(Node* node) {
+Node* ScrollableAreaOrDocumentOf(Node* node,
+                                 SpatialNavigationDirection direction) {
   DCHECK(node);
   Node* parent = node;
   do {
@@ -373,18 +384,19 @@ Node* ScrollableAreaOrDocumentOf(Node* node) {
       parent = document->GetFrame()->DeprecatedLocalOwner();
     else
       parent = parent->ParentOrShadowHostNode();
-  } while (parent && !IsScrollableAreaOrDocument(parent));
+  } while (parent && !IsScrollableAreaOrDocument(parent, direction));
 
   return parent;
 }
 
-bool IsScrollableAreaOrDocument(const Node* node) {
+bool IsScrollableAreaOrDocument(const Node* node,
+                                SpatialNavigationDirection direction) {
   if (!node)
     return false;
 
   auto* frame_owner_element = DynamicTo<HTMLFrameOwnerElement>(node);
   return (frame_owner_element && frame_owner_element->ContentFrame()) ||
-         IsScrollableNode(node);
+         IsScrollableNode(node, direction);
 }
 
 bool CanScrollInDirection(const Node* container,
@@ -393,39 +405,38 @@ bool CanScrollInDirection(const Node* container,
   if (auto* document = DynamicTo<Document>(container))
     return CanScrollInDirection(document->GetFrame(), direction);
 
-  if (!IsScrollableNode(container))
+  if (!IsScrollableNode(container, direction)) {
     return false;
+  }
 
   const Element* container_element = DynamicTo<Element>(container);
   if (!container_element)
     return false;
   LayoutBox* box = container_element->GetLayoutBoxForScrolling();
-  if (!box)
+  if (!box || !box->GetScrollableArea()->ScrollableAxes()) {
     return false;
+  }
   auto* scrollable_area = box->GetScrollableArea();
   if (!scrollable_area)
     return false;
 
   DCHECK(container->GetLayoutObject());
+  const ComputedStyle& style = container->GetLayoutObject()->StyleRef();
   switch (direction) {
     case SpatialNavigationDirection::kLeft:
-      return (container->GetLayoutObject()->Style()->OverflowX() !=
-                  EOverflow::kHidden &&
+      return (style.OverflowX() != EOverflow::kHidden &&
               scrollable_area->GetScrollOffset().x() >
                   scrollable_area->MinimumScrollOffset().x());
     case SpatialNavigationDirection::kUp:
-      return (container->GetLayoutObject()->Style()->OverflowY() !=
-                  EOverflow::kHidden &&
+      return (style.OverflowY() != EOverflow::kHidden &&
               scrollable_area->GetScrollOffset().y() >
                   scrollable_area->MinimumScrollOffset().y());
     case SpatialNavigationDirection::kRight:
-      return (container->GetLayoutObject()->Style()->OverflowX() !=
-                  EOverflow::kHidden &&
+      return (style.OverflowX() != EOverflow::kHidden &&
               scrollable_area->GetScrollOffset().x() <
                   scrollable_area->MaximumScrollOffset().x());
     case SpatialNavigationDirection::kDown:
-      return (container->GetLayoutObject()->Style()->OverflowY() !=
-                  EOverflow::kHidden &&
+      return (style.OverflowY() != EOverflow::kHidden &&
               scrollable_area->GetScrollOffset().y() <
                   scrollable_area->MaximumScrollOffset().y());
     default:
@@ -927,7 +938,8 @@ PhysicalRect SearchOrigin(const PhysicalRect& viewport_rect_of_root_frame,
     return visible_part;
   }
 
-  Node* container = ScrollableAreaOrDocumentOf(focus_node);
+  Node* container =
+      ScrollableAreaOrDocumentOf(focus_node, SpatialNavigationDirection::kNone);
   while (container) {
     if (!IsOffscreen(container)) {
       // The first scroller that encloses focus and is [partially] visible.
@@ -935,7 +947,8 @@ PhysicalRect SearchOrigin(const PhysicalRect& viewport_rect_of_root_frame,
       return OppositeEdge(direction, Intersection(box_in_root_frame,
                                                   viewport_rect_of_root_frame));
     }
-    container = ScrollableAreaOrDocumentOf(container);
+    container = ScrollableAreaOrDocumentOf(container,
+                                           SpatialNavigationDirection::kNone);
   }
   return OppositeEdge(direction, viewport_rect_of_root_frame);
 }

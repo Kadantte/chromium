@@ -16,6 +16,7 @@
 #include "chrome/browser/extensions/api/notifications/extension_notification_display_helper_factory.h"
 #include "chrome/browser/extensions/api/notifications/extension_notification_handler.h"
 #include "chrome/browser/extensions/api/notifications/notifications_api.h"
+#include "chrome/browser/extensions/chrome_app_deprecation.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/notifications/notification_display_service_tester.h"
 #include "chrome/browser/notifications/notification_handler.h"
@@ -51,7 +52,6 @@
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 #include "base/auto_reset.h"
-#include "chrome/browser/web_applications/extension_status_utils.h"
 #endif
 
 #if BUILDFLAG(ENABLE_PLATFORM_APPS)
@@ -130,8 +130,9 @@ class NotificationsApiTest : public extensions::ExtensionApiTest {
         AppWindowRegistry::Get(profile())->GetAppWindowsForApp(app_id);
 
     AppWindowRegistry::const_iterator iter = app_windows.begin();
-    if (iter != app_windows.end())
+    if (iter != app_windows.end()) {
       return *iter;
+    }
 
     return nullptr;
   }
@@ -169,8 +170,9 @@ class NotificationsApiTest : public extensions::ExtensionApiTest {
 
     std::set<std::string> notifications =
         GetDisplayHelper()->GetNotificationIdsForExtension(extension->url());
-    if (notifications.size() != 1)
+    if (notifications.size() != 1) {
       return nullptr;
+    }
 
     return GetDisplayHelper()->GetByNotificationId(*notifications.begin());
   }
@@ -206,7 +208,7 @@ using NotificationsApiTestWithServiceWorker = NotificationsApiTest;
 
 }  // namespace
 
-// Flaky on TSan, see crbug.com/1304777.
+// Flaky on TSan, see crbug.com/40826670.
 #if BUILDFLAG(IS_LINUX) && defined(THREAD_SANITIZER)
 #define MAYBE_TestEvents DISABLED_TestEvents
 #else

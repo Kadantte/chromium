@@ -3,12 +3,14 @@
 // found in the LICENSE file.
 
 #include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/web_app_browsertest_base.h"
 #include "chrome/browser/web_applications/external_install_options.h"
 #include "chrome/browser/web_applications/externally_managed_app_manager.h"
+#include "chrome/browser/web_applications/model/migration_behavior.h"
 #include "chrome/browser/web_applications/proto/web_app_install_state.pb.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/test/web_app_test_utils.h"
@@ -23,6 +25,7 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/test/browser_test.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "third_party/blink/public/common/features.h"
 
 namespace web_app {
 
@@ -60,9 +63,9 @@ class ReplaceMigrationSuggestedAppBrowserTest
     web_app_info->title = u"Test App";
     web_app_info->user_display_mode = mojom::UserDisplayMode::kStandalone;
 
-    web_app::proto::WebAppMigrationSource source;
-    source.set_manifest_id(start_url.GetWithoutFilename().spec());
-    web_app_info->migration_sources.push_back(std::move(source));
+    web_app_info->migration_sources.emplace_back(
+        webapps::ManifestId(GURL(start_url.GetWithoutFilename().spec())),
+        MigrationBehavior::kSuggest);
 
     base::test::TestFuture<const webapps::AppId&, webapps::InstallResultCode>
         install_future;
@@ -100,12 +103,16 @@ class ReplaceMigrationSuggestedAppBrowserTest
 #endif  // BUILDFLAG(IS_CHROMEOS)
     }
   }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_{
+      blink::features::kWebAppMigrationApi};
 };
 
 IN_PROC_BROWSER_TEST_P(ReplaceMigrationSuggestedAppBrowserTest,
                        PerInstallFlow) {
   const GURL start_url =
-      https_server()->GetURL("/banners/manifest_test_page.html");
+      embedded_https_test_server().GetURL("/banners/manifest_test_page.html");
   const webapps::AppId app_id = InstallSuggestedFromMigrationApp(start_url);
 
   // Verify initial state.
@@ -125,6 +132,7 @@ IN_PROC_BROWSER_TEST_P(ReplaceMigrationSuggestedAppBrowserTest,
           install_future.GetCallback(),
           FallbackBehavior::kAllowFallbackDataAlways);
       ASSERT_TRUE(install_future.Wait());
+      provider().command_manager().AwaitAllCommandsCompleteForTesting();
       EXPECT_EQ(install_future.Get<webapps::InstallResultCode>(),
                 webapps::InstallResultCode::kSuccessNewInstall);
       EXPECT_EQ(install_future.Get<webapps::AppId>(), app_id);
@@ -182,7 +190,7 @@ IN_PROC_BROWSER_TEST_P(ReplaceMigrationSuggestedAppBrowserTest,
       sync_proto.set_start_url(start_url.spec());
       sync_proto.set_relative_manifest_id(RelativeManifestIdPath(manifest_id));
       sync_proto.set_scope(start_url.GetWithoutFilename().spec());
-      auto app = test::CreateWebAppFromSyncProto(std::move(sync_proto));
+      auto app = test::CreateWebAppFromSyncProto(sync_proto);
       app->SetName("Test App");
       app->SetUserDisplayMode(mojom::UserDisplayMode::kStandalone);
       app->SetInstallState(
@@ -208,11 +216,12 @@ IN_PROC_BROWSER_TEST_P(ReplaceMigrationSuggestedAppBrowserTest,
       base::test::TestFuture<const webapps::AppId&, webapps::InstallResultCode>
           install_future;
       provider().scheduler().InstallAppFromUrl(
-          start_url, GenerateManifestIdFromStartUrlOnly(start_url),
+          start_url, GenerateManifestIdFromStartUrlOnly(start_url).value(),
           browser()->tab_strip_model()->GetActiveWebContents()->GetWeakPtr(),
           start_url, base::BindOnce(test::TestAcceptDialogCallback),
           install_future.GetCallback());
       ASSERT_TRUE(install_future.Wait());
+      provider().command_manager().AwaitAllCommandsCompleteForTesting();
       EXPECT_EQ(install_future.Get<webapps::InstallResultCode>(),
                 webapps::InstallResultCode::kSuccessNewInstall);
       EXPECT_EQ(install_future.Get<webapps::AppId>(), app_id);

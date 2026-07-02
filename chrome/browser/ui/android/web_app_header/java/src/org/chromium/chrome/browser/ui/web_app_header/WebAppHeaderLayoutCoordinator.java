@@ -36,16 +36,15 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
 import org.chromium.chrome.browser.browser_controls.BrowserStateBrowserControlsVisibilityDelegate;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.IncognitoStateProvider;
 import org.chromium.chrome.browser.theme.ThemeColorProvider;
 import org.chromium.chrome.browser.toolbar.back_button.BackButtonCoordinator;
 import org.chromium.chrome.browser.toolbar.menu_button.MenuButtonCoordinator;
-import org.chromium.chrome.browser.toolbar.menu_button.MenuButtonState;
 import org.chromium.chrome.browser.toolbar.reload_button.ReloadButtonCoordinator;
 import org.chromium.chrome.browser.toolbar.top.NavigationPopup;
+import org.chromium.chrome.browser.ui.actions.appmenu.MenuButtonState;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuCoordinator;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.chrome.browser.web_app_header.R;
@@ -255,10 +254,10 @@ public class WebAppHeaderLayoutCoordinator extends EmptyTabObserver
         onAndroidControlsVisibilityChanged(
                 mBrowserControlsStateProvider.getAndroidControlsVisibility());
 
-        if (mIsTWA
-                && ChromeFeatureList.sAndroidTwaOriginDisplay.isEnabled()
-                && mClientPackageName != null) {
+        if (mIsTWA && mClientPackageName != null) {
             // Show origin only for TWA Installer installed apps.
+            // TODO: WebappsUtils.isTwaInstallerPackage is an async call, so if navigation finishes
+            // before this completes, we might miss showing the origin on the first navigation
             WebappsUtils.isTwaInstallerPackage(
                     mClientPackageName,
                     (isTwaInstallerPackage) -> {
@@ -373,7 +372,7 @@ public class WebAppHeaderLayoutCoordinator extends EmptyTabObserver
         mBackButtonCoordinator =
                 new BackButtonCoordinator(
                         backButton,
-                        (ignored) -> {
+                        (metaState, buttonState) -> {
                             if (mMediator != null) mMediator.goBack();
                         },
                         mThemeColorProvider,
@@ -395,9 +394,8 @@ public class WebAppHeaderLayoutCoordinator extends EmptyTabObserver
         assert mMenuButtonCoordinator == null;
         if (!mIsTWA) return;
         if (mDisplayMode == DisplayMode.MINIMAL_UI
-                || (ChromeFeatureList.sAndroidTwaOriginDisplay.isEnabled()
-                        && (mDisplayMode == DisplayMode.STANDALONE
-                                || mDisplayMode == DisplayMode.WINDOW_CONTROLS_OVERLAY))) {
+                || mDisplayMode == DisplayMode.STANDALONE
+                || mDisplayMode == DisplayMode.WINDOW_CONTROLS_OVERLAY) {
             mMenuButtonContainer = mView.findViewById(R.id.web_app_menu_button_wrapper);
             mMenuButtonContainer.setVisibility(View.VISIBLE);
 
@@ -409,7 +407,7 @@ public class WebAppHeaderLayoutCoordinator extends EmptyTabObserver
                             mAppMenuCoordinatorSupplier,
                             mBrowserStateBrowserControlsVisibilityDelegate,
                             mActivityWindowAndroid,
-                            /* setUrlBarFocusFunction= */ (should, reason) -> {},
+                            /* clearOmniboxFocus= */ () -> {},
                             mRequestRenderRunnable,
                             /* canShowAppUpdateBadge= */ false,
                             /* isInOverviewModeSupplier= */ () -> false,

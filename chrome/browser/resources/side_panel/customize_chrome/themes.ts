@@ -80,7 +80,7 @@ export class ThemesElement extends ThemesElementBase {
   override connectedCallback() {
     super.connectedCallback();
     this.setThemeListenerId_ =
-        this.apiProxy_.callbackRouter.setTheme.addListener((theme: Theme) => {
+        this.apiProxy_.callbackRouter.setTheme.addListener(theme => {
           this.theme_ = theme;
         });
     this.apiProxy_.handler.updateTheme();
@@ -180,11 +180,11 @@ export class ThemesElement extends ThemesElementBase {
     }
   }
 
-  protected onBackClick_() {
+  protected onBackButtonClick_() {
     this.dispatchEvent(new Event('back-click'));
   }
 
-  protected onSelectTheme_(e: Event) {
+  protected onThemeClick_(e: Event) {
     const index = Number((e.currentTarget as HTMLElement).dataset['index']);
     const theme = this.themes_[index]!;
 

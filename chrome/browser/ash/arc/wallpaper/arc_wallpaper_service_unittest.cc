@@ -19,7 +19,6 @@
 #include "chrome/browser/ash/wallpaper_handlers/test_wallpaper_fetcher_delegate.h"
 #include "chrome/browser/ui/ash/wallpaper/test_wallpaper_controller.h"
 #include "chrome/browser/ui/ash/wallpaper/wallpaper_controller_client_impl.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/cryptohome/system_salt_getter.h"
@@ -168,7 +167,7 @@ TEST_F(ArcWallpaperServiceTest, SetWallpaperFailure) {
   ASSERT_EQ(0, test_wallpaper_controller_.get_third_party_wallpaper_count());
 }
 
-// For crbug.com/1325863
+// For crbug.com/40840090
 TEST_F(ArcWallpaperServiceTest, GetEmptyWallpaper) {
   test_wallpaper_controller_.ShowWallpaperImage(gfx::ImageSkia{});
 

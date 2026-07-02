@@ -8,6 +8,8 @@
 #include <atomic>
 #include <memory>
 
+#include "base/containers/heap_array.h"
+#include "base/memory/raw_span.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_buffer.h"
@@ -97,9 +99,39 @@ class AudioBufferSourceHandler final : public AudioScheduledSourceHandler {
                         uint32_t number_of_frames,
                         double start_time_offset);
 
+  // Handles wrapping the virtual_read_index around the loop boundaries if
+  // necessary. Returns true if rendering has finished (because we reached the
+  // end of the buffer and are not looping), in which case the caller should
+  // stop processing. Returns false if rendering should continue.
+  bool HandleLoopWrapping(double virtual_start_frame,
+                          double virtual_end_frame,
+                          double virtual_delta_frames,
+                          double computed_playback_rate,
+                          unsigned write_index,
+                          uint32_t frames_remaining,
+                          double& virtual_read_index);
+
+  void ProcessFastPath(double virtual_delta_frames,
+                       double virtual_end_frame,
+                       uint32_t buffer_length,
+                       size_t destination_length,
+                       unsigned number_of_channels,
+                       int& frames_to_process,
+                       unsigned& write_index,
+                       double& virtual_read_index);
+
+  void ProcessInterpolatedPath(double virtual_start_frame,
+                               double virtual_delta_frames,
+                               double virtual_end_frame,
+                               uint32_t buffer_length,
+                               unsigned number_of_channels,
+                               double computed_playback_rate,
+                               int& frames_to_process,
+                               unsigned& write_index,
+                               double& virtual_read_index);
+
   // Render silence starting from "index" frame in AudioBus.
-  inline bool RenderSilenceAndFinishIfNotLooping(AudioBus*,
-                                                 unsigned index,
+  inline bool RenderSilenceAndFinishIfNotLooping(unsigned index,
                                                  uint32_t frames_to_process);
 
   // Clamps grain parameters to the duration of the given AudioBuffer.
@@ -125,9 +157,9 @@ class AudioBufferSourceHandler final : public AudioScheduledSourceHandler {
   // accessed from the audio thread.
   std::unique_ptr<SharedAudioBuffer> shared_buffer_;
 
-  // Pointers for the buffer and destination.
-  std::unique_ptr<const float*[]> source_channels_;
-  std::unique_ptr<float*[]> destination_channels_;
+  // Channel views for the source buffer and render destination.
+  base::HeapArray<base::raw_span<const float>> source_channels_;
+  base::HeapArray<base::raw_span<float>> destination_channels_;
 
   scoped_refptr<AudioParamHandler> playback_rate_;
   scoped_refptr<AudioParamHandler> detune_;
@@ -159,10 +191,14 @@ class AudioBufferSourceHandler final : public AudioScheduledSourceHandler {
   double grain_offset_ = 0.0;  // in seconds
   double grain_duration_;      // in seconds
   // True if `grain_duration_` is given explicitly (via 3 arg start method).
-  bool is_duration_given_;
+  bool is_duration_given_ = false;
 
   // The minimum playbackRate value ever used for this source.
   double min_playback_rate_ = 1.0;
+
+  // The number of source frames currently output by this node.
+  // This is used for keeping track of the rate invariate duration of the node.
+  double buffer_played_frames_ = 0.0;
 
   // True if the `buffer` attribute has ever been set to a non-null
   // value.  Defaults to false.

@@ -21,6 +21,7 @@ import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -66,7 +67,7 @@ public class ObservableSupplierImplTest {
         Callback<String> supplierObserver = ignored -> called.set(true);
 
         mSupplier.addSyncObserverAndPostIfNonNull(supplierObserver);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         assertTrue(called.get());
     }
 
@@ -78,11 +79,11 @@ public class ObservableSupplierImplTest {
         Callback<String> supplierObserver = ignored -> called.set(true);
 
         mSupplier.addSyncObserver(supplierObserver);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         assertFalse(called.get());
 
         mSupplier.set(TEST_STRING_2);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         assertTrue(called.get());
     }
 
@@ -92,11 +93,11 @@ public class ObservableSupplierImplTest {
         Callback<String> supplierObserver = ignored -> called.set(true);
 
         mSupplier.addSyncObserverAndCallIfNonNull(supplierObserver);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         assertFalse(called.get());
 
         mSupplier.set(TEST_STRING_2);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         assertTrue(called.get());
     }
 
@@ -107,7 +108,7 @@ public class ObservableSupplierImplTest {
         Callback<String> supplierObserver = ignored -> called.set(true);
 
         mSupplier.addSyncObserverAndPostIfNonNull(supplierObserver);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         assertTrue(called.get());
     }
 
@@ -327,6 +328,49 @@ public class ObservableSupplierImplTest {
         // set() should be ignored.
         mSupplier.set("bar");
         assertNull(mSupplier.get());
+    }
+
+    @Test
+    public void testUpcast_Nullable() {
+        SettableNullableObservableSupplier<String> stringSupplier =
+                ObservableSuppliers.createNullable();
+        NullableObservableSupplier<CharSequence> charSequenceSupplier =
+                SupplierUtils.upcast(stringSupplier, CharSequence.class);
+
+        assertEquals(stringSupplier, charSequenceSupplier);
+
+        stringSupplier.set("foo");
+        assertEquals("foo", charSequenceSupplier.get());
+
+        stringSupplier.set(null);
+        assertNull(charSequenceSupplier.get());
+    }
+
+    @Test
+    public void testUpcast_Monotonic() {
+        SettableMonotonicObservableSupplier<String> stringSupplier =
+                ObservableSuppliers.createMonotonic();
+        MonotonicObservableSupplier<CharSequence> charSequenceSupplier =
+                SupplierUtils.upcast(stringSupplier, CharSequence.class);
+
+        assertEquals(stringSupplier, charSequenceSupplier);
+
+        stringSupplier.set("foo");
+        assertEquals("foo", charSequenceSupplier.get());
+    }
+
+    @Test
+    public void testUpcast_NonNull() {
+        SettableNonNullObservableSupplier<String> stringSupplier =
+                ObservableSuppliers.createNonNull("initial");
+        NonNullObservableSupplier<CharSequence> charSequenceSupplier =
+                SupplierUtils.upcast(stringSupplier, CharSequence.class);
+
+        assertEquals(stringSupplier, charSequenceSupplier);
+        assertEquals("initial", charSequenceSupplier.get());
+
+        stringSupplier.set("foo");
+        assertEquals("foo", charSequenceSupplier.get());
     }
 
     private void checkState(

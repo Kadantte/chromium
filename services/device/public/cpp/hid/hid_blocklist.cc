@@ -8,8 +8,12 @@
 #include <array>
 #include <string_view>
 
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/command_line.h"
+#include "base/logging.h"
 #include "base/no_destructor.h"
+#include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "components/variations/variations_associated_data.h"
@@ -281,6 +285,9 @@ std::vector<uint8_t> HidBlocklist::GetProtectedReportIds(
 
 // static
 bool HidBlocklist::IsKnownSecurityKey(uint16_t vendor_id, uint16_t product_id) {
+#if BUILDFLAG(IS_ANDROID)
+  return false;
+#else   // BUILDFLAG(IS_ANDROID)
   if (!base::FeatureList::IsEnabled(
           features::kSecurityKeyHidInterfacesAreFido)) {
     return false;
@@ -291,6 +298,7 @@ bool HidBlocklist::IsKnownSecurityKey(uint16_t vendor_id, uint16_t product_id) {
   // if the device has no FIDO collection.
   return std::ranges::contains(kKnownSecurityKeys,
                                VendorProduct{vendor_id, product_id});
+#endif  // BUILDFLAG(IS_ANDROID)
 }
 
 // static
@@ -393,6 +401,7 @@ HidBlocklist::HidBlocklist() {
   for (const auto& entry : kStaticEntries)
     DCHECK(IsValidBlocklistEntry(entry));
 #endif
+  PopulateWithServerProvidedValues();
 }
 
 }  // namespace device

@@ -55,6 +55,7 @@
 #include "extensions/browser/process_manager_factory.h"
 #include "extensions/browser/service_worker/worker_id.h"
 #include "extensions/common/api/messaging/messaging_endpoint.h"
+#include "extensions/common/api/messaging/messaging_util.h"
 #include "extensions/common/api/messaging/port_context.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_id.h"
@@ -62,6 +63,7 @@
 #include "extensions/common/manifest_handlers/background_info.h"
 #include "extensions/common/manifest_handlers/externally_connectable.h"
 #include "extensions/common/manifest_handlers/incognito_info.h"
+#include "extensions/common/manifest_handlers/message_serialization_info.h"
 #include "extensions/common/mojom/message_port.mojom-shared.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "ipc/constants.mojom.h"
@@ -83,6 +85,9 @@ namespace {
 
 const char kReceivingEndDoesntExistError[] =
     "Could not establish connection. Receiving end does not exist.";
+const char kReceivingEndIncompatibleMessageSerializationFormat[] =
+    "Could not establish connection. Receiving end uses different message "
+    "serialization format.";
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
     BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
 const char kMissingPermissionError[] =
@@ -519,8 +524,8 @@ void MessageService::OpenChannelToExtension(
     // We don't currently because we don't synthesize externally-connectable
     // information (so that it's always present, even for extensions that don't
     // have an explicit key); we should.
-    ExternallyConnectableInfo* externally_connectable =
-        static_cast<ExternallyConnectableInfo*>(
+    const ExternallyConnectableInfo* externally_connectable =
+        static_cast<const ExternallyConnectableInfo*>(
             target_extension->GetManifestData(
                 manifest_keys::kExternallyConnectable));
     bool is_externally_connectable = false;
@@ -537,9 +542,13 @@ void MessageService::OpenChannelToExtension(
         DCHECK_EQ(MessagingEndpoint::Relationship::kExternalWebPage,
                   relationship);
 
-        // Check that the web page URL matches.
-        is_externally_connectable = externally_connectable->matches.MatchesURL(
-            source_render_frame_host->GetLastCommittedURL());
+        // Check that the web page URL matches. Skip error pages, whose last
+        // committed URL reflects the failed navigation target rather than a
+        // document the source process actually hosts.
+        is_externally_connectable =
+            !source_render_frame_host->IsErrorDocument() &&
+            externally_connectable->matches.MatchesURL(
+                source_render_frame_host->GetLastCommittedURL());
       }
     } else {
       // Default behaviour. Any extension or content script, no webpages.
@@ -559,6 +568,30 @@ void MessageService::OpenChannelToExtension(
       }
       return;
     }
+  }
+
+  // Ensure the sender isn't using a serialization format that the receiver
+  // doesn't support.
+  mojom::SerializationFormat receiver_format =
+      MessageSerializationInfo::UsesStructuredClone(target_extension)
+          ? mojom::SerializationFormat::kStructuredClone
+          : mojom::SerializationFormat::kJson;
+
+  // We strictly enforce that the sender and receiver must use the same
+  // serialization format. This prevents ambiguity and potential security/data
+  // issues where a sender might think it's sending JSON but the receiver treats
+  // it as a structured clone (or vice versa), even if the data payload happens
+  // to be compatible.
+  if (source_port_id.serialization_format != receiver_format) {
+    opener_port->DispatchOnDisconnect(
+        kReceivingEndIncompatibleMessageSerializationFormat);
+    for (const auto& tracking_id : open_channel_tracking_ids) {
+      message_tracker->StopTrackingMessagingStage(
+          tracking_id,
+          MessageTracker::OpenChannelMessagePipelineResult::
+              kOpenChannelFailIncompatibleMessageSerializationFormat);
+    }
+    return;
   }
 
   WebContents* source_contents = nullptr;
@@ -592,6 +625,9 @@ void MessageService::OpenChannelToExtension(
     if (is_web_view &&
         Manifest::IsComponentLocation(target_extension->location())) {
       include_guest_process_info = true;
+      // Temporarily allow to populate source_frame for webview.
+      source_frame = ExtensionApiFrameIdMap::Get()->GetFrameData(
+          source_render_frame_host->GetGlobalId());
     }
 #endif
   }

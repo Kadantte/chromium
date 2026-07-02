@@ -2192,20 +2192,20 @@ TEST_P(ScrollbarAppearanceTest, NativeScrollbarChangeToMobileByEmulator) {
             div_scrollable->VerticalScrollbar()->IsOverlayScrollbar());
   DCHECK(!div_scrollable->VerticalScrollbar()->GetTheme().IsMockTheme());
 
-  // Turn on mobile emulator.
+  // Force scrollbars to overlay theme.
   DeviceEmulationParams params;
-  params.screen_type = mojom::EmulatedScreenType::kMobile;
+  params.force_android_overlay_scrollbar = true;
   WebView().EnableDeviceEmulation(params);
 
-  // For root Scrollbar, mobile emulator will change them to page VisualViewport
+  // For root Scrollbar, device emulator will change them to page VisualViewport
   // scrollbar layer.
   EXPECT_TRUE(viewport.LayerForHorizontalScrollbar());
 
-  // Ensure div scrollbar also change to mobile overlay theme.
+  // Ensure div scrollbar also change to overlay theme.
   EXPECT_TRUE(div_scrollable->VerticalScrollbar()->IsOverlayScrollbar());
   EXPECT_TRUE(div_scrollable->VerticalScrollbar()->IsSolidColor());
 
-  // Turn off mobile emulator.
+  // Turn off device emulator.
   WebView().DisableDeviceEmulation();
 
   EXPECT_TRUE(root_scrollable->VerticalScrollbar());
@@ -2719,7 +2719,11 @@ TEST_P(ScrollbarsTest, AutosizeAlmostRemovableScrollbar) {
     Compositor().BeginFrame();
     EXPECT_TRUE(layout_viewport->VerticalScrollbar());
     EXPECT_FALSE(layout_viewport->HorizontalScrollbar());
-    EXPECT_EQ(445, frame_view->Width());
+    EXPECT_EQ(
+        RuntimeEnabledFeatures::AutoSizeUsesScrollWidthForOverflowEnabled()
+            ? 430
+            : 445,
+        frame_view->Width());
     EXPECT_EQ(600, frame_view->Height());
   }
 }
@@ -3759,6 +3763,9 @@ TEST_P(ScrollbarsTestWithMacScrollbarAnimatorProxy,
   EXPECT_EQ(0, counters_.tried_stop_deferring_fade_out);
 
   feature_list.Reset();
+  feature_list.InitAndEnableFeatureWithParameters(
+      blink::features::kFadeInScrollbarWhenMouseWheelMayBegin,
+      {{"defer_fade_out", "true"}});
 
   ENABLE_OVERLAY_SCROLLBARS(false);
   ClearCounters();
@@ -3841,10 +3848,51 @@ TEST_P(ScrollbarsTestWithMacScrollbarAnimatorProxy,
   EXPECT_EQ(1, counters_.tried_fade_in_scrollbar);
   EXPECT_EQ(1, counters_.did_fade_in_scrollbar_and_begin_deferring_fade_out);
   EXPECT_EQ(1, counters_.tried_stop_deferring_fade_out);
+
+  feature_list.Reset();
+  feature_list.InitAndEnableFeatureWithParameters(
+      blink::features::kFadeInScrollbarWhenMouseWheelMayBegin,
+      {{"defer_fade_out", "false"}});
+
+  ENABLE_OVERLAY_SCROLLBARS(true);
+  ClearCounters();
+
+  HandleWheelEvent(100, 100, 0, 0, WebMouseWheelEvent::kPhaseMayBegin);
+  EXPECT_EQ(1, counters_.tried_fade_in_scrollbar);
+  EXPECT_EQ(1, counters_.did_fade_in_scrollbar_and_begin_deferring_fade_out);
+  // Deferring is disabled, so therer are no deferred scrollbar fade-out.
+  EXPECT_EQ(0, counters_.tried_stop_deferring_fade_out);
+
+  HandleWheelEvent(100, 100, 0, 0, WebMouseWheelEvent::kPhaseCancelled);
+  EXPECT_EQ(1, counters_.tried_fade_in_scrollbar);
+  EXPECT_EQ(1, counters_.did_fade_in_scrollbar_and_begin_deferring_fade_out);
+  EXPECT_EQ(0, counters_.tried_stop_deferring_fade_out);
+
+  ClearCounters();
+
+  HandleWheelEvent(100, 100, 0, 0, WebMouseWheelEvent::kPhaseMayBegin);
+  EXPECT_EQ(1, counters_.tried_fade_in_scrollbar);
+  EXPECT_EQ(1, counters_.did_fade_in_scrollbar_and_begin_deferring_fade_out);
+  EXPECT_EQ(0, counters_.tried_stop_deferring_fade_out);
+
+  HandleWheelEvent(100, 100, 0, 0, WebMouseWheelEvent::kPhaseBegan);
+  EXPECT_EQ(1, counters_.tried_fade_in_scrollbar);
+  EXPECT_EQ(1, counters_.did_fade_in_scrollbar_and_begin_deferring_fade_out);
+  EXPECT_EQ(0, counters_.tried_stop_deferring_fade_out);
+
+  HandleWheelEvent(100, 100, 0, 0, WebMouseWheelEvent::kPhaseEnded);
+  EXPECT_EQ(1, counters_.tried_fade_in_scrollbar);
+  EXPECT_EQ(1, counters_.did_fade_in_scrollbar_and_begin_deferring_fade_out);
+  EXPECT_EQ(0, counters_.tried_stop_deferring_fade_out);
 }
 
 TEST_P(ScrollbarsTestWithMacScrollbarAnimatorProxy,
        FadeInOverlayScrollbarWhenMouseWheelEventMayBeginPhaseOnSlottedText) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      blink::features::kFadeInScrollbarWhenMouseWheelMayBegin,
+      {{"defer_fade_out", "true"}});
+
   ENABLE_OVERLAY_SCROLLBARS(true);
 
   WebView().MainFrameViewWidget()->Resize(gfx::Size(200, 200));
@@ -3968,6 +4016,9 @@ TEST_P(ScrollbarsTestWithMacScrollbarAnimatorProxy,
   EXPECT_EQ(0, counters_.tried_stop_deferring_fade_out);
 
   feature_list.Reset();
+  feature_list.InitAndEnableFeatureWithParameters(
+      blink::features::kFadeInScrollbarWhenMouseWheelMayBegin,
+      {{"defer_fade_out", "true"}});
 
   ENABLE_OVERLAY_SCROLLBARS(false);
   ClearCounters();
@@ -4151,6 +4202,9 @@ TEST_P(ScrollbarsTestWithMacScrollbarAnimatorProxy,
   EXPECT_EQ(0, counters_.tried_stop_deferring_fade_out);
 
   feature_list.Reset();
+  feature_list.InitAndEnableFeatureWithParameters(
+      blink::features::kFadeInScrollbarWhenMouseWheelMayBegin,
+      {{"defer_fade_out", "true"}});
 
   ENABLE_OVERLAY_SCROLLBARS(false);
   ClearCounters();
@@ -4265,6 +4319,11 @@ TEST_P(ScrollbarsTestWithMacScrollbarAnimatorProxy,
 
 TEST_P(ScrollbarsTestWithMacScrollbarAnimatorProxy,
        FadeInAllPossiblyChainedOverlayScrollbarsWithMacScrollbarAnimatorImpl) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      blink::features::kFadeInScrollbarWhenMouseWheelMayBegin,
+      {{"defer_fade_out", "true"}});
+
   ENABLE_OVERLAY_SCROLLBARS(true);
 
   WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
@@ -4374,6 +4433,11 @@ TEST_P(ScrollbarsTestWithMacScrollbarAnimatorProxy,
 
 TEST_P(ScrollbarsTestWithMacScrollbarAnimatorProxy,
        FadeInAllPossiblyChainedOverlayScrollbarsCrossingDocumentBoundaries) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      blink::features::kFadeInScrollbarWhenMouseWheelMayBegin,
+      {{"defer_fade_out", "true"}});
+
   WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
   SimRequest request("https://example.com/test.html", "text/html");
   SimRequest child_request_1("https://example.com/subframe1.html", "text/html");
@@ -4584,6 +4648,11 @@ TEST_P(ScrollbarsTestWithMacScrollbarAnimatorProxy,
 
 TEST_P(ScrollbarsTestWithMacScrollbarAnimatorProxy,
        FadeInOutOverlayScrollbarWhenMouseWheelEventWithScrollbarAnimatorImpl) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      blink::features::kFadeInScrollbarWhenMouseWheelMayBegin,
+      {{"defer_fade_out", "true"}});
+
   ENABLE_OVERLAY_SCROLLBARS(true);
 
   WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
@@ -4843,10 +4912,10 @@ TEST_P(ScrollbarTrackMarginsTest,
       margin-bottom: 40.8px;
     })CSS");
 
-  EXPECT_EQ(10, horizontal_track_->MarginLeft());
-  EXPECT_EQ(31, horizontal_track_->MarginRight());
-  EXPECT_EQ(20, vertical_track_->MarginTop());
-  EXPECT_EQ(41, vertical_track_->MarginBottom());
+  EXPECT_EQ(10, horizontal_track_->MarginOutsets().left);
+  EXPECT_EQ(31, horizontal_track_->MarginOutsets().right);
+  EXPECT_EQ(20, vertical_track_->MarginOutsets().top);
+  EXPECT_EQ(41, vertical_track_->MarginOutsets().bottom);
 }
 
 TEST_P(ScrollbarTrackMarginsTest,
@@ -4861,10 +4930,10 @@ TEST_P(ScrollbarTrackMarginsTest,
       margin-bottom: 41px;
     })CSS");
 
-  EXPECT_EQ(14, horizontal_track_->MarginLeft());
-  EXPECT_EQ(39, horizontal_track_->MarginRight());
-  EXPECT_EQ(26, vertical_track_->MarginTop());
-  EXPECT_EQ(51, vertical_track_->MarginBottom());
+  EXPECT_EQ(14, horizontal_track_->MarginOutsets().left);
+  EXPECT_EQ(39, horizontal_track_->MarginOutsets().right);
+  EXPECT_EQ(26, vertical_track_->MarginOutsets().top);
+  EXPECT_EQ(51, vertical_track_->MarginOutsets().bottom);
 }
 
 class ScrollbarColorSchemeTest : public ScrollbarAppearanceTest {};

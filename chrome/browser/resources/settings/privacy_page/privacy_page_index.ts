@@ -138,6 +138,11 @@ export class SettingsPrivacyPageIndexElement extends
               'enableSmartCardReadersContentSetting');
         },
       },
+
+      enableWebPrintingContentSetting_: {
+        type: Boolean,
+        value: () => loadTimeData.getBoolean('enableWebPrintingContentSetting'),
+      },
       // </if>
 
       enableSafeBrowsingSubresourceFilter_: {
@@ -156,11 +161,6 @@ export class SettingsPrivacyPageIndexElement extends
         type: Boolean,
         value: () => loadTimeData.getBoolean('enableLocalNetworkAccessSetting'),
       },
-      enableLocalNetworkAccessSplitPermissions_: {
-        type: Boolean,
-        value: () =>
-            loadTimeData.getBoolean('enableLocalNetworkAccessSplitPermissions'),
-      },
 
       enableWebAppInstallation_: {
         type: Boolean,
@@ -173,25 +173,19 @@ export class SettingsPrivacyPageIndexElement extends
             loadTimeData.getBoolean('enableWebBluetoothNewPermissionsBackend'),
       },
 
-      enableWebPrintingContentSetting_: {
-        type: Boolean,
-        value: () => loadTimeData.getBoolean('enableWebPrintingContentSetting'),
-      },
-
       isAdPrivacyAvailable_: {
         type: Boolean,
         readOnly: true,
-        value: () => {
-          return !loadTimeData.getBoolean('isPrivacySandboxRestricted') ||
-              loadTimeData.getBoolean(
-                  'isPrivacySandboxRestrictedNoticeEnabled');
-        },
+        value: () => loadTimeData.getBoolean('isAdPrivacyAvailable'),
       },
 
-      isPrivacySandboxRestricted_: {
+      isPrivacySandboxTopicsAndFledgeAvailable_: {
         type: Boolean,
         readOnly: true,
-        value: () => loadTimeData.getBoolean('isPrivacySandboxRestricted'),
+        value: () => {
+          return loadTimeData.getBoolean('isAdPrivacyAvailable') &&
+              !loadTimeData.getBoolean('isPrivacySandboxRestricted');
+        },
       },
     };
   }
@@ -202,7 +196,7 @@ export class SettingsPrivacyPageIndexElement extends
     ];
   }
 
-  declare prefs: {[key: string]: any};
+  declare prefs: Record<string, unknown>;
   declare private pageVisibility_: PageVisibility;
   declare private routes_: SettingsRoutes;
   declare private showPrivacyGuidePromo_: boolean;
@@ -213,19 +207,18 @@ export class SettingsPrivacyPageIndexElement extends
   declare private enableHandTrackingContentSetting_: boolean;
   // <if expr="is_chromeos">
   declare private enableSmartCardReadersContentSetting_: boolean;
+  declare private enableWebPrintingContentSetting_: boolean;
   // </if>
   declare private enableSafeBrowsingSubresourceFilter_: boolean;
   declare private enableKeyboardLockPrompt_: boolean;
   declare private enableLocalNetworkAccessSetting_: boolean;
-  declare private enableLocalNetworkAccessSplitPermissions_: boolean;
   declare private enablePaymentHandlerContentSetting_: boolean;
   declare private enablePersistentPermissions_: boolean;
   declare private enableSecurityKeysSubpage_: boolean;
   declare private enableWebAppInstallation_: boolean;
   declare private enableWebBluetoothNewPermissionsBackend_: boolean;
-  declare private enableWebPrintingContentSetting_: boolean;
   declare private isAdPrivacyAvailable_: boolean;
-  declare private isPrivacySandboxRestricted_: boolean;
+  declare private isPrivacySandboxTopicsAndFledgeAvailable_: boolean;
 
   private pendingViewSwitching_: PromiseResolver<void> = new PromiseResolver();
   private privacyGuidePromoWasShown_: boolean;

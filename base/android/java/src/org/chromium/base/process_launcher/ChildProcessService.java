@@ -12,6 +12,7 @@ import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.os.Binder;
 import android.os.Build;
+import android.os.Debug;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -22,6 +23,7 @@ import android.text.TextUtils;
 import android.util.SparseArray;
 
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.AndroidInfo;
@@ -322,7 +324,7 @@ public class ChildProcessService {
             }
 
             if (CommandLine.getInstance().hasSwitch(BaseSwitches.RENDERER_WAIT_FOR_JAVA_DEBUGGER)) {
-                android.os.Debug.waitForDebugger();
+                Debug.waitForDebugger();
             }
 
             EarlyTraceEvent.onCommandLineAvailableInChildProcess();
@@ -332,6 +334,7 @@ public class ChildProcessService {
                 mLibraryInitialized = true;
                 mLibraryInitializedLock.notifyAll();
             }
+            RecordHistogram.recordBooleanHistogram("Android.ChildProcess.JavalessStarted", false);
             sendBuildInfoToNative();
             SparseArray<String> idsToKeys = mDelegate.getFileDescriptorsIdsToKeys();
 
@@ -451,7 +454,12 @@ public class ChildProcessService {
          * FileDescriptorStore. This includes the IPC channel, the crash dump signals and resource
          * related files.
          */
-        void registerFileDescriptors(String[] keys, int[] id, int[] fd, long[] offset, long[] size);
+        void registerFileDescriptors(
+                @JniType("std::vector<std::optional<std::string>>") String[] keys,
+                @JniType("std::vector<int32_t>") int[] id,
+                @JniType("std::vector<int32_t>") int[] fd,
+                @JniType("std::vector<int64_t>") long[] offset,
+                @JniType("std::vector<int64_t>") long[] size);
 
         /** Force the child process to exit. */
         void exitChildProcess();

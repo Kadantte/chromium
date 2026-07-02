@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/check_is_test.h"
+#include "base/logging.h"
 #include "components/viz/common/resources/shared_image_format_utils.h"
 #include "gpu/command_buffer/service/graphite_shared_context.h"
 #include "gpu/command_buffer/service/service_utils.h"
@@ -236,7 +237,7 @@ void SkiaOutputDeviceOffscreen::ReadbackForTesting(
   ReadPixelsContext context;
   if (auto* graphite_shared_context =
           context_state_->graphite_shared_context()) {
-    context_state_->FlushAndSubmit(true);
+    context_state_->FlushGraphiteRecorder();
     // asyncRescaleAndReadPixels is a context operation that inserts its own
     // recording internally.
     graphite_shared_context->asyncRescaleAndReadPixelsAndSubmit(

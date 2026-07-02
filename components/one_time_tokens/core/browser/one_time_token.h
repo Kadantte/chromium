@@ -6,6 +6,7 @@
 #define COMPONENTS_ONE_TIME_TOKENS_CORE_BROWSER_ONE_TIME_TOKEN_H_
 
 #include <string>
+#include <string_view>
 
 #include "base/time/time.h"
 #include "components/one_time_tokens/core/browser/one_time_token_type.h"
@@ -14,9 +15,17 @@ namespace one_time_tokens {
 
 class OneTimeToken {
  public:
+  static constexpr int kMinOtpLength = 4;
+  static constexpr int kMaxOtpLength = 6;
+
+  // Returns true if `value` has the format of a potential OTP (i.e. it consists
+  // only of digits and its length is between `kMinOtpLength` and
+  // `kMaxOtpLength`).
+  static bool IsPotentialOtp(std::u16string_view value);
+
   OneTimeToken(OneTimeTokenType type,
                const std::string& value,
-               base::Time on_device_arrival_time);
+               base::TimeTicks on_device_arrival_time);
   OneTimeToken(const OneTimeToken&);
   OneTimeToken& operator=(const OneTimeToken&);
   OneTimeToken(OneTimeToken&&);
@@ -25,7 +34,7 @@ class OneTimeToken {
 
   [[nodiscard]] OneTimeTokenType type() const { return type_; }
   [[nodiscard]] const std::string& value() const { return value_; }
-  [[nodiscard]] base::Time on_device_arrival_time() const {
+  [[nodiscard]] base::TimeTicks on_device_arrival_time() const {
     return on_device_arrival_time_;
   }
 
@@ -37,7 +46,7 @@ class OneTimeToken {
  private:
   OneTimeTokenType type_;
   std::string value_;
-  base::Time on_device_arrival_time_;
+  base::TimeTicks on_device_arrival_time_;
 };
 
 }  // namespace one_time_tokens

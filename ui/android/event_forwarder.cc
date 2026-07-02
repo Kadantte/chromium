@@ -37,23 +37,25 @@ EventForwarder::EventForwarder(ViewAndroid* view)
           kSendTouchMovesToEventForwarderObservers)) {}
 
 EventForwarder::~EventForwarder() {
-  if (!java_obj_.is_uninitialized()) {
-    JNIEnv* env = jni_zero::AttachCurrentThread();
-    ScopedJavaLocalRef<jobject> java_obj = java_obj_.get(env);
-    DCHECK(!java_obj.is_null());
+  JNIEnv* env = jni_zero::AttachCurrentThread();
+  ScopedJavaLocalRef<jobject> java_obj = GetJavaObject(env);
+  if (!java_obj.is_null()) {
     Java_EventForwarder_destroy(env, java_obj);
-    java_obj_.reset();
   }
 }
 
-ScopedJavaLocalRef<jobject> EventForwarder::GetJavaObject() {
-  JNIEnv* env = jni_zero::AttachCurrentThread();
-  if (java_obj_.is_uninitialized()) {
-    java_obj_ = JavaObjectWeakGlobalRef(
-        env, Java_EventForwarder_create(env, reinterpret_cast<intptr_t>(this),
-                                        features::IsTouchDragAndDropEnabled()));
+ScopedJavaLocalRef<jobject> EventForwarder::GetJavaObject(JNIEnv* env) {
+  return Java_EventForwarder_getJavaObject(env,
+                                           reinterpret_cast<int64_t>(this));
+}
+
+ScopedJavaLocalRef<jobject> EventForwarder::GetOrCreateJavaObject(JNIEnv* env) {
+  ScopedJavaLocalRef<jobject> java_obj = GetJavaObject(env);
+  if (java_obj.is_null()) {
+    java_obj =
+        Java_EventForwarder_create(env, reinterpret_cast<int64_t>(this),
+                                   features::IsTouchDragAndDropEnabled());
   }
-  ScopedJavaLocalRef<jobject> java_obj = java_obj_.get(env);
   DCHECK(!java_obj.is_null());
   return java_obj;
 }
@@ -229,7 +231,9 @@ void EventForwarder::OnDragEvent(JNIEnv* env,
                                  const JavaRef<jobjectArray>& j_filenames,
                                  const JavaRef<jstring>& j_text,
                                  const JavaRef<jstring>& j_html,
-                                 const JavaRef<jstring>& j_url) {
+                                 const JavaRef<jstring>& j_url,
+                                 const JavaRef<jstring>& j_customData,
+                                 const JavaRef<jstring>& j_effectAllowed) {
   float dip_scale = view_->GetDipScale();
   gfx::PointF location(x / dip_scale, y / dip_scale);
   gfx::PointF root_location(screen_x / dip_scale, screen_y / dip_scale);
@@ -237,7 +241,8 @@ void EventForwarder::OnDragEvent(JNIEnv* env,
   AppendJavaStringArrayToStringVector(env, j_mimeTypes, &mime_types);
 
   DragEventAndroid event(env, action, location, root_location, mime_types,
-                         j_content, j_filenames, j_text, j_html, j_url);
+                         j_content, j_filenames, j_text, j_html, j_url,
+                         j_customData, j_effectAllowed);
   view_->OnDragEvent(event);
 }
 
@@ -304,6 +309,7 @@ bool EventForwarder::OnGenericMotionEvent(JNIEnv* env,
 void EventForwarder::OnMouseWheelEvent(JNIEnv* env,
                                        const JavaRef<jobject>& motion_event,
                                        int64_t time_ns,
+                                       int32_t action,
                                        float x,
                                        float y,
                                        float raw_x,
@@ -326,7 +332,7 @@ void EventForwarder::OnMouseWheelEvent(JNIEnv* env,
       /*ticks_y=*/delta_y / pixels_per_tick,
       /*tick_multiplier=*/pixels_per_tick,
       /*oldest_event_time=*/base::TimeTicks::FromJavaNanoTime(time_ns),
-      /*android_action=*/0,
+      /*android_action=*/action,
       /*pointer_count=*/1, /*history_size=*/0, /*action_index=*/0,
       /*android_action_button=*/0, /*android_gesture_classification=*/0,
       /*android_button_state=*/0,
@@ -421,12 +427,13 @@ void EventForwarder::RemoveObserver(Observer* observer) {
   observers_.RemoveObserver(observer);
 }
 
-float EventForwarder::GetCurrentTouchSequenceYOffset() {
-  CHECK(!java_obj_.is_uninitialized());
+gfx::PointF EventForwarder::GetCurrentTouchSequenceOffset() {
   JNIEnv* env = jni_zero::AttachCurrentThread();
-  auto java_obj = java_obj_.get(env);
-  DCHECK(!java_obj.is_null());
-  return Java_EventForwarder_getWebContentsOffsetYInWindow(env, java_obj);
+  auto java_obj = GetJavaObject(env);
+  CHECK(!java_obj.is_null());
+  return gfx::PointF(
+      Java_EventForwarder_getWebContentsOffsetXInWindow(env, java_obj),
+      Java_EventForwarder_getWebContentsOffsetYInWindow(env, java_obj));
 }
 
 }  // namespace ui

@@ -127,6 +127,14 @@ base::expected<std::unique_ptr<Session>, SessionError> Session::CreateIfValid(
         SessionError{SessionError::kScopeOriginSameSiteMismatch});
   }
 
+  // Cross-origin registrations must specify `include_site = true`.
+  const bool is_same_origin =
+      url::Origin::Create(params.fetcher_url).IsSameOriginWith(scope_origin);
+  if (!is_same_origin && !params.scope.include_site) {
+    return base::unexpected(
+        SessionError{SessionError::kCrossOriginRegistrationSiteNotIncluded});
+  }
+
   // The refresh endpoint can be a full URL (samesite with request origin)
   // or a relative URL, starting with a "/" to make it origin-relative,
   // and starting with anything else making it current-path-relative to
@@ -170,6 +178,8 @@ base::expected<std::unique_ptr<Session>, SessionError> Session::CreateIfValid(
   session->set_creation_date(base::Time::Now());
   session->set_expiry_date(base::Time::Now() + kSessionTtl);
   session->set_unexportable_key_id(std::move(params.key_id));
+  session->set_unexportable_attestation_key_id(
+      std::move(params.attestation_key_id));
 
   for (const std::string& initiator : params.allowed_refresh_initiators) {
     if (!IsValidHostPattern(initiator)) {
@@ -337,10 +347,13 @@ base::TimeDelta Session::MinimumBoundCookieLifetime(
   // The below is all copied from AddCookieHeaderAndStart. We should refactor
   // it.
   CookieStore* cookie_store = request.context()->cookie_store();
-  bool force_ignore_site_for_cookies = request.force_ignore_site_for_cookies();
+  bool force_ignore_site_for_cookies =
+      request.ShouldForceIgnoreSiteForCookies();
   if (cookie_store->cookie_access_delegate() &&
       cookie_store->cookie_access_delegate()->ShouldIgnoreSameSiteRestrictions(
-          request.url(), request.site_for_cookies())) {
+          request.url(), request.site_for_cookies(),
+          request.isolation_info().top_frame_origin().value_or(
+              url::Origin()))) {
     force_ignore_site_for_cookies = true;
   }
 
@@ -497,7 +510,6 @@ void Session::InformOfRefreshResult(bool was_proactive,
       backoff_.InformOfRequest(/*succeeded=*/true);
       break;
     // Fatal errors, no backoff needed
-    case kKeyError:
     case kSigningError:
     case kServerRequestedTermination:
     case kInvalidConfigJson:
@@ -556,10 +568,13 @@ void Session::InformOfRefreshResult(bool was_proactive,
     case kSigningQuotaExceeded:
       break;
     case kTransientHttpError:
+    case kTransientSigningError:
     case kBoundCookieSetForbidden:
       backoff_.InformOfRequest(/*succeeded=*/false);
       break;
     // Registration-only errors
+    case kSigningKeyGenerationError:
+    case kAttestationKeyGenerationError:
     case kSubdomainRegistrationWellKnownUnavailable:
     case kSubdomainRegistrationUnauthorized:
     case kSubdomainRegistrationWellKnownMalformed:
@@ -576,6 +591,7 @@ void Session::InformOfRefreshResult(bool was_proactive,
     case kRegistrationAttemptedChallenge:
     case kInvalidFederatedSessionProviderFailedToRestoreKey:
     case kFailedToUnwrapKey:
+    case kCrossOriginRegistrationSiteNotIncluded:
       NOTREACHED();
   }
 
@@ -600,10 +616,13 @@ bool Session::CanSetBoundCookie(
     return false;
   }
 
-  bool force_ignore_site_for_cookies = request.force_ignore_site_for_cookies();
+  bool force_ignore_site_for_cookies =
+      request.ShouldForceIgnoreSiteForCookies();
   if (cookie_store->cookie_access_delegate() &&
       cookie_store->cookie_access_delegate()->ShouldIgnoreSameSiteRestrictions(
-          request.url(), request.site_for_cookies())) {
+          request.url(), request.site_for_cookies(),
+          request.isolation_info().top_frame_origin().value_or(
+              url::Origin()))) {
     force_ignore_site_for_cookies = true;
   }
   bool is_main_frame_navigation =

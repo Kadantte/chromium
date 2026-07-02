@@ -27,7 +27,6 @@
 #import "ios/chrome/common/ui/util/button_util.h"
 #import "ios/chrome/common/ui/util/chrome_button.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
-#import "ios/chrome/common/ui/util/device_util.h"
 #import "ios/chrome/common/ui/util/image_util.h"
 #import "ios/chrome/common/ui/util/pointer_interaction_util.h"
 #import "ios/chrome/common/ui/util/text_view_util.h"
@@ -483,6 +482,11 @@ UIImage* ArrowDownImage() {
   [self scaleBannerWithCurrentImage:self.bannerImageView.image
                              toSize:[self computeBannerImageSize]];
   _calculatingImageSize = NO;
+
+  // Re-evaluate the scroll position after a layout pass to ensure the button
+  // state matches the actual layout.
+  [self updateViewsOnScrollViewUpdate];
+
   if (_shouldScrollToBottom) {
     _shouldScrollToBottom = NO;
     dispatch_async(dispatch_get_main_queue(), ^{

@@ -6,7 +6,6 @@
 
 #include "base/byte_count.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/power_monitor/cpu_frequency_utils.h"
 #include "base/process/process_metrics.h"
@@ -26,6 +25,7 @@
 #include "ui/accessibility/platform/ax_platform_node.h"
 
 #if BUILDFLAG(IS_WIN)
+#include "base/time/time.h"
 #include "base/win/registry.h"
 #endif
 
@@ -524,7 +524,7 @@ void MetricsProviderDesktop::RecordCpuFrequencyMetrics(
   base::UmaHistogramBoolean("CPU.Experimental.CpuEstimationTaskMigrated",
                             cpu_throughput->migrated);
 
-  std::optional<double> cpu_frequency_percent = std::nullopt;
+  std::optional<double> cpu_frequency_percent;
   if (!cpu_throughput->migrated) {
     // Don't record frequency metrics if the code migrated from one CPU to
     // another in the middle of the estimation loop. This is because the nominal

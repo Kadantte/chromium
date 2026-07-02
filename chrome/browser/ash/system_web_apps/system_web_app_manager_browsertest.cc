@@ -14,7 +14,6 @@
 #include "ash/constants/ash_pref_names.h"
 #include "ash/public/cpp/shelf_item_delegate.h"
 #include "ash/public/cpp/shelf_model.h"
-#include "ash/webui/system_apps/public/system_web_app_type.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -25,7 +24,6 @@
 #include "base/task/thread_pool.h"
 #include "base/test/bind.h"
 #include "base/test/gtest_tags.h"
-#include "base/test/scoped_feature_list.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/apps/app_service/app_icon/app_icon_factory.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
@@ -50,7 +48,6 @@
 #include "chrome/browser/renderer_context_menu/render_view_context_menu_test_util.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller_util.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/web_applications/proto/web_app.pb.h"
@@ -66,9 +63,9 @@
 #include "chrome/browser/web_applications/web_app_tab_helper.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "components/permissions/permission_util.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/scoped_user_pref_update.h"
@@ -127,7 +124,8 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerBrowserTestBasicInstall, Install) {
   Browser* app_browser;
   LaunchAppWithoutWaiting(GetAppType(), &app_browser);
 
-  webapps::AppId app_id = app_browser->app_controller()->app_id();
+  webapps::AppId app_id =
+      web_app::AppBrowserController::From(app_browser)->app_id();
   EXPECT_EQ(GetManager().GetAppIdForSystemApp(GetAppType()), app_id);
   EXPECT_TRUE(GetManager().IsSystemWebApp(app_id));
 
@@ -166,14 +164,16 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerBrowserTest,
   LaunchAppWithoutWaiting(GetAppType(), &app_browser);
 
   // In scope, the toolbar should not be visible.
-  EXPECT_FALSE(app_browser->app_controller()->ShouldShowCustomTabBar());
+  EXPECT_FALSE(web_app::AppBrowserController::From(app_browser)
+                   ->ShouldShowCustomTabBar());
 
   // Out of scope chrome:// URL.
   GURL out_of_scope_chrome_page("chrome://foo");
   content::NavigateToURLBlockUntilNavigationsComplete(
       app_browser->tab_strip_model()->GetActiveWebContents(),
       out_of_scope_chrome_page, 1);
-  EXPECT_TRUE(app_browser->app_controller()->ShouldShowCustomTabBar());
+  EXPECT_TRUE(web_app::AppBrowserController::From(app_browser)
+                  ->ShouldShowCustomTabBar());
 
   // Even though the url is secure it is not being served over chrome:// so a
   // toolbar should be shown.
@@ -181,14 +181,16 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerBrowserTest,
   content::NavigateToURLBlockUntilNavigationsComplete(
       app_browser->tab_strip_model()->GetActiveWebContents(), off_scheme_page,
       1);
-  EXPECT_TRUE(app_browser->app_controller()->ShouldShowCustomTabBar());
+  EXPECT_TRUE(web_app::AppBrowserController::From(app_browser)
+                  ->ShouldShowCustomTabBar());
 
   // URL has been added to be within scope for the SWA.
   GURL in_scope_for_swa_page("https://example.com/in-scope");
   content::NavigateToURLBlockUntilNavigationsComplete(
       app_browser->tab_strip_model()->GetActiveWebContents(),
       in_scope_for_swa_page, 1);
-  EXPECT_FALSE(app_browser->app_controller()->ShouldShowCustomTabBar());
+  EXPECT_FALSE(web_app::AppBrowserController::From(app_browser)
+                   ->ShouldShowCustomTabBar());
 }
 
 IN_PROC_BROWSER_TEST_P(SystemWebAppManagerBrowserTest, LaunchMetricsWork) {
@@ -292,12 +294,11 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerLaunchWithUrlBrowserTest,
   params.launch_source = apps::LaunchSource::kFromOtherApp;
   params.url = GetStartUrl();
   bool is_called = false;
-  LaunchSystemWebAppAsync(
-      browser()->profile(), GetAppType(), params, nullptr,
-      base::BindLambdaForTesting(
-          [&is_called](apps::LaunchResult&& callback_result) {
-            is_called = true;
-          }));
+  LaunchSystemWebAppAsync(browser()->profile(), GetAppType(), params, nullptr,
+                          base::BindLambdaForTesting(
+                              [&is_called](apps::LaunchResult callback_result) {
+                                is_called = true;
+                              }));
   navigation_observer.Wait();
   EXPECT_TRUE(is_called);
 }
@@ -927,8 +928,9 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerHasTabStripWithNewTabButtonTest,
 
   Browser* browser;
   EXPECT_TRUE(LaunchApp(GetAppType(), &browser));
-  EXPECT_TRUE(browser->app_controller()->has_tab_strip());
-  EXPECT_FALSE(browser->app_controller()->ShouldHideNewTabButton());
+  EXPECT_TRUE(web_app::AppBrowserController::From(browser)->has_tab_strip());
+  EXPECT_FALSE(
+      web_app::AppBrowserController::From(browser)->ShouldHideNewTabButton());
 }
 
 class SystemWebAppManagerHasTabStripWithHiddenNewTabButtonTest
@@ -947,8 +949,9 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerHasTabStripWithHiddenNewTabButtonTest,
 
   Browser* browser;
   EXPECT_TRUE(LaunchApp(GetAppType(), &browser));
-  EXPECT_TRUE(browser->app_controller()->has_tab_strip());
-  EXPECT_TRUE(browser->app_controller()->ShouldHideNewTabButton());
+  EXPECT_TRUE(web_app::AppBrowserController::From(browser)->has_tab_strip());
+  EXPECT_TRUE(
+      web_app::AppBrowserController::From(browser)->ShouldHideNewTabButton());
 }
 
 class SystemWebAppManagerHasNoTabStripWithNewTabButtonTest
@@ -967,8 +970,9 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerHasNoTabStripWithNewTabButtonTest,
 
   Browser* browser;
   EXPECT_TRUE(LaunchApp(GetAppType(), &browser));
-  EXPECT_FALSE(browser->app_controller()->has_tab_strip());
-  EXPECT_TRUE(browser->app_controller()->ShouldHideNewTabButton());
+  EXPECT_FALSE(web_app::AppBrowserController::From(browser)->has_tab_strip());
+  EXPECT_TRUE(
+      web_app::AppBrowserController::From(browser)->ShouldHideNewTabButton());
 }
 
 class SystemWebAppManagerHasNoTabStripWithHiddenNewTabButtonTest
@@ -988,8 +992,9 @@ IN_PROC_BROWSER_TEST_P(
 
   Browser* browser;
   EXPECT_TRUE(LaunchApp(GetAppType(), &browser));
-  EXPECT_FALSE(browser->app_controller()->has_tab_strip());
-  EXPECT_TRUE(browser->app_controller()->ShouldHideNewTabButton());
+  EXPECT_FALSE(web_app::AppBrowserController::From(browser)->has_tab_strip());
+  EXPECT_TRUE(
+      web_app::AppBrowserController::From(browser)->ShouldHideNewTabButton());
 }
 
 // We only support custom bounds on Chrome OS.
@@ -1011,8 +1016,9 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerDefaultBoundsTest, HasDefaultBounds) {
 
   Browser* browser;
   EXPECT_TRUE(LaunchApp(GetAppType(), &browser));
-  EXPECT_EQ(kDefaultBounds, browser->app_controller()->GetDefaultBounds());
-  EXPECT_EQ(kDefaultBounds, browser->window()->GetBounds());
+  EXPECT_EQ(kDefaultBounds,
+            web_app::AppBrowserController::From(browser)->GetDefaultBounds());
+  EXPECT_EQ(kDefaultBounds, browser->GetWindow()->GetBounds());
 }
 
 // Tests that SWA are correctly uninstalled across restarts.
@@ -1071,7 +1077,7 @@ using SystemWebAppManagerInstallAllAppsBrowserTest =
 IN_PROC_BROWSER_TEST_P(SystemWebAppManagerInstallAllAppsBrowserTest,
                        BasicConsistencyCheck) {
   // Wait for apps to install before performing assertions, otherwise the test
-  // might flake. See https://crbug.com/1286600#c6.
+  // might flake. See https://crbug.com/40210918#comment7.
   GetManager().InstallSystemAppsForTesting();
 
   const auto& app_map = GetManager().system_app_delegates();
@@ -1093,7 +1099,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerInstallAllAppsBrowserTest,
     // OS Settings uses a different install_url origin (by mistake) which are
     // persisted to disk. We can't fix it until the above crbug is fixed.
     // Without fixing the above bug, non-fresh profiles will run into
-    // https://crbug.com/1220354.
+    // https://crbug.com/40186435.
     if (type_and_info.first != SystemWebAppType::SETTINGS) {
       EXPECT_TRUE(url::IsSameOriginWith(
           type_and_info.second->GetInstallUrl(),
@@ -1219,7 +1225,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppManagerChromeUntrustedTest, Install) {
 
   webapps::AppId app_id =
       GetManager().GetAppIdForSystemApp(GetAppType()).value();
-  EXPECT_EQ(app_id, app_browser->app_controller()->app_id());
+  EXPECT_EQ(app_id, web_app::AppBrowserController::From(app_browser)->app_id());
   EXPECT_TRUE(GetManager().IsSystemWebApp(app_id));
 
   Profile* profile = app_browser->profile();
@@ -1806,7 +1812,7 @@ IN_PROC_BROWSER_TEST_P(SystemWebAppAccessibilityTest,
 
   chromevox_test_utils.sm()->Call([&]() {
     LaunchApp(GetAppType(), &app_browser);
-    app_window = app_browser->window()->GetNativeWindow();
+    app_window = app_browser->GetWindow()->GetNativeWindow();
     // F6 to switch pane.
     ui::test::EventGenerator generator(app_window->GetRootWindow(), app_window);
     generator.PressAndReleaseKey(ui::VKEY_F6, ui::EF_FINAL);
@@ -1874,10 +1880,6 @@ class SystemWebAppIconHealthMetricsTest
         .Post(FROM_HERE, run_loop.QuitClosure());
     run_loop.Run();
   }
-
- private:
-  base::test::ScopedFeatureList feature_list_{
-      ::features::kWebAppUsePrimaryIcon};
 };
 
 IN_PROC_BROWSER_TEST_P(SystemWebAppIconHealthMetricsTest, ReportsMetrics) {

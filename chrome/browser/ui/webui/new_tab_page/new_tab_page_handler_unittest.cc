@@ -13,6 +13,7 @@
 
 #include "base/hash/hash.h"
 #include "base/json/json_writer.h"
+#include "base/json/values_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/ref_counted_memory.h"
@@ -22,21 +23,22 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
 #include "base/token.h"
+#include "chrome/browser/desktop_to_mobile_promos/promos_pref_names.h"
 #include "chrome/browser/new_tab_page/microsoft_auth/microsoft_auth_service.h"
 #include "chrome/browser/new_tab_page/microsoft_auth/microsoft_auth_service_factory.h"
 #include "chrome/browser/new_tab_page/microsoft_auth/microsoft_auth_service_observer.h"
 #include "chrome/browser/new_tab_page/modules/modules_constants.h"
 #include "chrome/browser/new_tab_page/modules/new_tab_page_modules.h"
+#include "chrome/browser/new_tab_page/ntp_pref_names.h"
 #include "chrome/browser/new_tab_page/promos/promo_data.h"
 #include "chrome/browser/new_tab_page/promos/promo_service.h"
 #include "chrome/browser/new_tab_page/promos/promo_service_factory.h"
 #include "chrome/browser/new_tab_page/promos/promo_service_observer.h"
 #include "chrome/browser/optimization_guide/mock_optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
-#include "chrome/browser/promos/promos_pref_names.h"
 #include "chrome/browser/search/background/ntp_custom_background_service.h"
-#include "chrome/browser/search/background/ntp_custom_background_service_observer.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/themes/theme_helper.h"
 #include "chrome/browser/themes/theme_properties.h"
@@ -47,9 +49,8 @@
 #include "chrome/browser/ui/hats/mock_hats_service.h"
 #include "chrome/browser/ui/views/side_panel/customize_chrome/side_panel_controller_views.h"
 #include "chrome/browser/ui/webui/new_tab_page/new_tab_page.mojom.h"
-#include "chrome/browser/ui/webui/new_tab_page/ntp_pref_names.h"
 #include "chrome/browser/ui/webui/side_panel/customize_chrome/customize_chrome_section.h"
-#include "chrome/browser/ui/webui/webui_util_desktop.h"
+#include "chrome/browser/ui/webui/util/webui_util_desktop.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
@@ -73,6 +74,7 @@
 #include "components/sync/test/test_sync_service.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "components/themes/ntp_background_data.h"
+#include "components/themes/ntp_custom_background_service_observer.h"
 #include "components/user_education/common/feature_promo/feature_promo_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_task_environment.h"
@@ -90,6 +92,7 @@
 #include "ui/color/color_provider_source.h"
 #include "ui/color/color_recipe.h"
 #include "ui/color/color_transform.h"
+#include "ui/gfx/animation/animation.h"
 #include "ui/gfx/color_palette.h"
 #include "url/gurl.h"
 
@@ -135,7 +138,9 @@ class MockPage : public new_tab_page::mojom::Page {
 
 class MockLogoService : public search_provider_logos::LogoService {
  public:
-  MOCK_METHOD(void, GetLogo, (search_provider_logos::LogoCallbacks, bool));
+  MOCK_METHOD(void,
+              GetLogo,
+              (search_provider_logos::LogoCallbacks, bool, bool));
   MOCK_METHOD(void, GetLogo, (search_provider_logos::LogoObserver*));
 };
 
@@ -357,11 +362,11 @@ class NewTabPageHandlerTest : public testing::Test {
   new_tab_page::mojom::DoodlePtr GetDoodle(
       const search_provider_logos::EncodedLogo& logo) {
     search_provider_logos::EncodedLogoCallback on_cached_encoded_logo_available;
-    EXPECT_CALL(mock_logo_service_, GetLogo(testing::_, testing::_))
+    EXPECT_CALL(mock_logo_service_, GetLogo(testing::_, testing::_, testing::_))
         .Times(1)
         .WillOnce([&on_cached_encoded_logo_available](
                       search_provider_logos::LogoCallbacks callbacks,
-                      bool for_webui_ntp) {
+                      bool for_webui_ntp, bool enable_animated_logo) {
           on_cached_encoded_logo_available =
               std::move(callbacks.on_cached_encoded_logo_available);
         });
@@ -810,6 +815,52 @@ TEST_F(NewTabPageHandlerTest, Histograms) {
       1);
 }
 
+TEST_F(NewTabPageHandlerTest, GetDoodleAnimatedDoodlesFlagEnabled) {
+  base::test::ScopedFeatureList features;
+  features.InitAndEnableFeature(ntp_features::kNtpAnimatedDoodles);
+  gfx::Animation::SetPrefersReducedMotionForTesting(false);
+
+  EXPECT_CALL(mock_logo_service_, GetLogo(testing::_, testing::_, true))
+      .Times(1);
+  base::MockCallback<NewTabPageHandler::GetDoodleCallback> callback;
+  handler_->GetDoodle(callback.Get());
+}
+
+TEST_F(NewTabPageHandlerTest,
+       GetDoodleAnimatedDoodlesFlagEnabledAndPrefersReducedMotion) {
+  base::test::ScopedFeatureList features;
+  features.InitAndEnableFeature(ntp_features::kNtpAnimatedDoodles);
+  gfx::Animation::SetPrefersReducedMotionForTesting(true);
+
+  EXPECT_CALL(mock_logo_service_, GetLogo(testing::_, testing::_, false))
+      .Times(1);
+  base::MockCallback<NewTabPageHandler::GetDoodleCallback> callback;
+  handler_->GetDoodle(callback.Get());
+}
+
+TEST_F(NewTabPageHandlerTest, GetDoodleAnimatedDoodlesFlagDisabled) {
+  base::test::ScopedFeatureList features;
+  features.InitAndDisableFeature(ntp_features::kNtpAnimatedDoodles);
+  gfx::Animation::SetPrefersReducedMotionForTesting(false);
+
+  EXPECT_CALL(mock_logo_service_, GetLogo(testing::_, testing::_, false))
+      .Times(1);
+  base::MockCallback<NewTabPageHandler::GetDoodleCallback> callback;
+  handler_->GetDoodle(callback.Get());
+}
+
+TEST_F(NewTabPageHandlerTest,
+       GetDoodleAnimatedDoodlesFlagDisabledAndPrefersReducedMotion) {
+  base::test::ScopedFeatureList features;
+  features.InitAndDisableFeature(ntp_features::kNtpAnimatedDoodles);
+  gfx::Animation::SetPrefersReducedMotionForTesting(true);
+
+  EXPECT_CALL(mock_logo_service_, GetLogo(testing::_, testing::_, false))
+      .Times(1);
+  base::MockCallback<NewTabPageHandler::GetDoodleCallback> callback;
+  handler_->GetDoodle(callback.Get());
+}
+
 TEST_F(NewTabPageHandlerTest, GetAnimatedDoodle) {
   search_provider_logos::EncodedLogo logo;
   logo.encoded_image =
@@ -838,7 +889,6 @@ TEST_F(NewTabPageHandlerTest, GetAnimatedDoodle) {
 
   ASSERT_TRUE(doodle);
   ASSERT_TRUE(doodle->image);
-  ASSERT_FALSE(doodle->interactive);
   EXPECT_EQ("data:light_mime_type;base64,bGlnaHQgaW1hZ2U=",
             doodle->image->light->image_url);
   EXPECT_EQ("https://doodle.com/light_animation",
@@ -863,22 +913,6 @@ TEST_F(NewTabPageHandlerTest, GetAnimatedDoodle) {
             doodle->image->dark->animation_impression_log_url);
   EXPECT_EQ("https://doodle.com/on_click_url", doodle->image->on_click_url);
   EXPECT_EQ("https://doodle.com/short_link", doodle->image->share_url);
-  EXPECT_EQ("alt text", doodle->description);
-}
-
-TEST_F(NewTabPageHandlerTest, GetInteractiveDoodle) {
-  search_provider_logos::EncodedLogo logo;
-  logo.metadata.type = search_provider_logos::LogoType::INTERACTIVE;
-  logo.metadata.full_page_url = GURL("https://doodle.com/full_page_url");
-  logo.metadata.iframe_width_px = 1;
-  logo.metadata.iframe_height_px = 2;
-  logo.metadata.alt_text = "alt text";
-
-  auto doodle = GetDoodle(logo);
-
-  EXPECT_EQ("https://doodle.com/full_page_url", doodle->interactive->url);
-  EXPECT_EQ(1u, doodle->interactive->width);
-  EXPECT_EQ(2u, doodle->interactive->height);
   EXPECT_EQ("alt text", doodle->description);
 }
 
@@ -936,17 +970,26 @@ TEST_F(NewTabPageHandlerTest, UpdatePromoData) {
   EXPECT_EQ("blub", text->text);
 }
 
-TEST_F(NewTabPageHandlerTest, OnDoodleImageClicked) {
+TEST_F(NewTabPageHandlerTest, OnStaticDoodleImageClicked) {
   handler_->OnDoodleImageClicked(
-      /*type=*/new_tab_page::mojom::DoodleImageType::kCta,
+      /*type=*/new_tab_page::mojom::DoodleImageType::kStatic,
+      /*log_url=*/std::nullopt);
+
+  histogram_tester_.ExpectBucketCount("NewTabPage.LogoClick", 0, 1);
+  EXPECT_EQ(0, test_url_loader_factory_.NumPending());
+}
+
+TEST_F(NewTabPageHandlerTest, OnAnimatedDoodleImageClicked) {
+  handler_->OnDoodleImageClicked(
+      /*type=*/new_tab_page::mojom::DoodleImageType::kAnimation,
       /*log_url=*/GURL("https://doodle.com/log"));
 
-  histogram_tester_.ExpectTotalCount("NewTabPage.LogoClick", 1);
+  histogram_tester_.ExpectBucketCount("NewTabPage.LogoClick", 2, 1);
   EXPECT_TRUE(test_url_loader_factory_.SimulateResponseForPendingRequest(
       "https://doodle.com/log", ""));
 }
 
-TEST_F(NewTabPageHandlerTest, OnDoodleImageRendered) {
+TEST_F(NewTabPageHandlerTest, OnStaticDoodleImageRendered) {
   base::MockCallback<NewTabPageHandler::OnDoodleImageRenderedCallback> callback;
   std::optional<std::string> image_click_params;
   std::optional<GURL> interaction_log_url;
@@ -975,8 +1018,42 @@ TEST_F(NewTabPageHandlerTest, OnDoodleImageRendered) {
   EXPECT_THAT(interaction_log_url,
               Optional(GURL("https://www.google.com/bar_log")));
   EXPECT_THAT(shared_id, Optional(std::string("baz ei")));
-  histogram_tester_.ExpectTotalCount("NewTabPage.LogoShown", 1);
-  histogram_tester_.ExpectTotalCount("NewTabPage.LogoShown.FromCache", 1);
+  histogram_tester_.ExpectBucketCount("NewTabPage.LogoShown", 0, 1);
+  histogram_tester_.ExpectBucketCount("NewTabPage.LogoShown.FromCache", 0, 1);
+  histogram_tester_.ExpectTotalCount("NewTabPage.LogoShownTime2", 1);
+}
+
+TEST_F(NewTabPageHandlerTest, OnAnimatedDoodleImageRendered) {
+  base::MockCallback<NewTabPageHandler::OnDoodleImageRenderedCallback> callback;
+  std::optional<std::string> image_click_params;
+  std::optional<GURL> interaction_log_url;
+  std::optional<std::string> shared_id;
+  EXPECT_CALL(callback, Run(_, _, _))
+      .Times(1)
+      .WillOnce(DoAll(SaveArg<0>(&image_click_params),
+                      SaveArg<1>(&interaction_log_url),
+                      SaveArg<2>(&shared_id)));
+
+  handler_->OnDoodleImageRendered(
+      /*type=*/new_tab_page::mojom::DoodleImageType::kAnimation,
+      /*time=*/0,
+      /*log_url=*/GURL("https://doodle.com/log"), callback.Get());
+
+  EXPECT_TRUE(test_url_loader_factory_.SimulateResponseForPendingRequest(
+      "https://doodle.com/log", R"()]}'
+  {
+    "ddllog": {
+      "target_url_params": "foo params",
+      "interaction_log_url": "/bar_log",
+      "encoded_ei": "baz ei"
+    }
+  })"));
+  EXPECT_THAT(image_click_params, Optional(std::string("foo params")));
+  EXPECT_THAT(interaction_log_url,
+              Optional(GURL("https://www.google.com/bar_log")));
+  EXPECT_THAT(shared_id, Optional(std::string("baz ei")));
+  histogram_tester_.ExpectBucketCount("NewTabPage.LogoShown", 2, 1);
+  histogram_tester_.ExpectBucketCount("NewTabPage.LogoShown.FromCache", 2, 1);
   histogram_tester_.ExpectTotalCount("NewTabPage.LogoShownTime2", 1);
 }
 
@@ -1785,7 +1862,7 @@ TEST_F(NewTabPageHandlerHaTSTest, ModuleInteractionTriggersHaTS) {
         .Times(1)
         .WillOnce(DoAll(SaveArg<2>(&timeout_ms),
                         SaveArg<8>(&supplied_trigger_id),
-                        testing::Return(true)));
+                        testing::Return(HatsService::LaunchError::kNone)));
 
     if (interaction == "disable") {
       handler_->SetModulesDisabled({kSampleModuleId}, /*disabled=*/true,
@@ -1826,7 +1903,7 @@ TEST_F(NewTabPageHandlerHaTSTest, IgnoredModuleTriggersHaTS) {
                                                 _, _, _, _))
       .Times(1)
       .WillOnce(DoAll(SaveArg<2>(&timeout_ms), SaveArg<8>(&supplied_trigger_id),
-                      testing::Return(true)));
+                      testing::Return(HatsService::LaunchError::kNone)));
   const std::vector<std::string> module_ids = {
       NewTabPageHandlerHaTSTest::kSampleModuleId};
   handler_->OnModulesLoadedWithData(module_ids);
@@ -1857,4 +1934,119 @@ TEST_F(NewTabPageHandlerHaTSTest, InteractedModuleDoesNotTriggerIgnoredHaTS) {
       kSampleIgnoreCriteriaThreshold,
       GetDictPrefKeyCount(profile_.get(), prefs::kNtpModulesLoadedCountDict,
                           NewTabPageHandlerHaTSTest::kSampleModuleId));
+}
+
+TEST_F(NewTabPageHandlerTest, RealboxContextMenuAnimation) {
+  PrefService* prefs = profile_->GetPrefs();
+
+  // 1. Initially allowed, counts are 0.
+  {
+    base::test::TestFuture<bool> future;
+    handler_->CanShowRealboxContextMenuAnimation(future.GetCallback());
+    EXPECT_TRUE(future.Take());
+
+    const base::DictValue& dict =
+        prefs->GetDict(prefs::kContextMenuAnimationState);
+    EXPECT_EQ(std::nullopt, dict.FindInt("realbox_daily_count"));
+    EXPECT_EQ(std::nullopt, dict.FindInt("realbox_lifetime_count"));
+  }
+
+  // 2. Record 1st impression.
+  {
+    handler_->RecordRealboxContextMenuAnimationImpression();
+
+    const base::DictValue& dict =
+        prefs->GetDict(prefs::kContextMenuAnimationState);
+    EXPECT_THAT(dict.FindInt("realbox_daily_count"), testing::Optional(1));
+    EXPECT_THAT(dict.FindInt("realbox_lifetime_count"), testing::Optional(1));
+  }
+
+  // 3. Play 4 more times (total 5 daily impressions recorded).
+  for (int i = 0; i < 4; ++i) {
+    base::test::TestFuture<bool> future;
+    handler_->CanShowRealboxContextMenuAnimation(future.GetCallback());
+    EXPECT_TRUE(future.Take());
+    handler_->RecordRealboxContextMenuAnimationImpression();
+  }
+
+  // Verify counts are now 5 daily and 5 lifetime.
+  {
+    const base::DictValue& dict =
+        prefs->GetDict(prefs::kContextMenuAnimationState);
+    EXPECT_THAT(dict.FindInt("realbox_daily_count"), testing::Optional(5));
+    EXPECT_THAT(dict.FindInt("realbox_lifetime_count"), testing::Optional(5));
+  }
+
+  // 4. The 6th time, it should not be allowed and record should do nothing.
+  {
+    base::test::TestFuture<bool> future;
+    handler_->CanShowRealboxContextMenuAnimation(future.GetCallback());
+    EXPECT_FALSE(future.Take());
+
+    handler_->RecordRealboxContextMenuAnimationImpression();
+
+    const base::DictValue& dict =
+        prefs->GetDict(prefs::kContextMenuAnimationState);
+    EXPECT_THAT(dict.FindInt("realbox_daily_count"), testing::Optional(5));
+    EXPECT_THAT(dict.FindInt("realbox_lifetime_count"), testing::Optional(5));
+  }
+
+  // 5. Simulate a new day (change the date string in prefs).
+  {
+    ScopedDictPrefUpdate update(profile_->GetPrefs(),
+                                prefs::kContextMenuAnimationState);
+    update->Set("realbox_last_impression_time",
+                base::TimeToValue(base::Time::Now() - base::Days(1)));
+  }
+
+  // 6. Requesting now should reset daily count and allow more impressions.
+  {
+    base::test::TestFuture<bool> future;
+    handler_->CanShowRealboxContextMenuAnimation(future.GetCallback());
+    EXPECT_TRUE(future.Take());
+
+    handler_->RecordRealboxContextMenuAnimationImpression();
+
+    const base::DictValue& dict =
+        prefs->GetDict(prefs::kContextMenuAnimationState);
+    EXPECT_THAT(dict.FindInt("realbox_daily_count"), testing::Optional(1));
+    EXPECT_THAT(dict.FindInt("realbox_lifetime_count"), testing::Optional(6));
+  }
+
+  // 7. Bring lifetime count to 19 and verify it caps after 20.
+  {
+    ScopedDictPrefUpdate update(profile_->GetPrefs(),
+                                prefs::kContextMenuAnimationState);
+    update->Set("realbox_lifetime_count", 19);
+    update->Set("realbox_daily_count",
+                0);  // Reset daily for today so we don't hit daily cap.
+  }
+
+  // 20th lifetime impression should still play.
+  {
+    base::test::TestFuture<bool> future;
+    handler_->CanShowRealboxContextMenuAnimation(future.GetCallback());
+    EXPECT_TRUE(future.Take());
+
+    handler_->RecordRealboxContextMenuAnimationImpression();
+
+    const base::DictValue& dict =
+        prefs->GetDict(prefs::kContextMenuAnimationState);
+    EXPECT_THAT(dict.FindInt("realbox_daily_count"), testing::Optional(1));
+    EXPECT_THAT(dict.FindInt("realbox_lifetime_count"), testing::Optional(20));
+  }
+
+  // 21st lifetime impression should be blocked.
+  {
+    base::test::TestFuture<bool> future;
+    handler_->CanShowRealboxContextMenuAnimation(future.GetCallback());
+    EXPECT_FALSE(future.Take());
+
+    handler_->RecordRealboxContextMenuAnimationImpression();
+
+    const base::DictValue& dict =
+        prefs->GetDict(prefs::kContextMenuAnimationState);
+    EXPECT_THAT(dict.FindInt("realbox_daily_count"), testing::Optional(1));
+    EXPECT_THAT(dict.FindInt("realbox_lifetime_count"), testing::Optional(20));
+  }
 }

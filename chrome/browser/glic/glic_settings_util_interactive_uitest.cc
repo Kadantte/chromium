@@ -3,13 +3,13 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/compose/compose_enabling.h"
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/glic_settings_util.h"
 #include "chrome/browser/glic/test_support/interactive_glic_test.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/chrome_pages.h"
-#include "chrome/browser/ui/tabs/organization/tab_organization_utils.h"
 #include "chrome/browser/user_education/user_education_service.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/webui_url_constants.h"
@@ -198,34 +198,10 @@ IN_PROC_BROWSER_TEST_F(GlicSettingsUtilUiTest, OpenSettingsFromGlicUi) {
           kSettingsTab, chrome::GetSettingsUrl(chrome::kGlicSettingsSubpage)));
 }
 
-// Following SettingsUI test assumes there is chrome://settings/ai page
-// which requires some (at least one) AI feature to be enabled.
-// TabOrganization is used for the purpose.
-// kAiSettingsPageForceAvailable feature flag cannot be used for the purpose
-// in the test, because it forces to show glic settings page, too, but
-// we'd like to make sure that is invisible until glic FRE is completed.
-class GlicSettingsUtilSettingsUiTest : public GlicSettingsUtilUiTest {
- public:
-  GlicSettingsUtilSettingsUiTest() = default;
-  ~GlicSettingsUtilSettingsUiTest() override = default;
-
-  void SetUp() override {
-    TabOrganizationUtils::GetInstance()->SetIgnoreOptGuideForTesting(true);
-    GlicSettingsUtilUiTest::SetUp();
-  }
-
-  void TearDown() override {
-    GlicSettingsUtilUiTest::TearDown();
-    TabOrganizationUtils::GetInstance()->SetIgnoreOptGuideForTesting(false);
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_{
-      features::kTabOrganization};
-};
-
-IN_PROC_BROWSER_TEST_F(GlicSettingsUtilSettingsUiTest,
+IN_PROC_BROWSER_TEST_F(GlicSettingsUtilUiTest,
                        RefreshSettingsAfterAcceptingFRE) {
+  auto scoped_compose_enabled =
+      ComposeEnabling::ScopedEnableComposeForTesting();
   const DeepQuery kPathToAiPageIndex{"settings-ui", "settings-main",
                                      "settings-ai-page-index"};
   const DeepQuery kPathToGlicPage{"settings-ui", "settings-main",

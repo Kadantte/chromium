@@ -71,7 +71,7 @@ bool ValidatePseudoElement(String& pseudo, ExceptionState& exception_state) {
   }
 
   AtomicString pseudo_argument = g_null_atom;
-  PseudoId pseudo_id = pseudo.StartsWith(":")
+  PseudoId pseudo_id = pseudo.starts_with(':')
                            ? CSSSelectorParser::ParsePseudoElement(
                                  pseudo, /*parent=*/nullptr, pseudo_argument)
                            : kPseudoIdInvalid;
@@ -98,13 +98,13 @@ bool ValidatePseudoElement(String& pseudo, ExceptionState& exception_state) {
 
     default:
       // Convert to canonical form.
-      if (!pseudo.StartsWith("::")) {
+      if (!pseudo.starts_with("::")) {
         StringBuilder sb;
         sb.Append(":");
         sb.Append(pseudo);
         pseudo = sb.ToString();
       }
-      pseudo = pseudo.LowerASCII();
+      pseudo = pseudo.ToAsciiLower();
       return true;
   }
 }
@@ -286,12 +286,11 @@ KeyframeEffect::KeyframeEffect(Element* target,
   DCHECK(model_);
 
   // fix target for css animations and transitions
-  if (target && target->IsPseudoElement()) {
+  if (auto* pseudo_element = DynamicTo<PseudoElement>(target)) {
     // The |target_element_| is used to target events in script when
     // animating pseudo-elements. This requires using the DOM element that the
     // pseudo-element originates from.
-    target_element_ =
-        &DynamicTo<PseudoElement>(target)->UltimateOriginatingElement();
+    target_element_ = &pseudo_element->UltimateOriginatingElement();
     DCHECK(!target_element_->IsPseudoElement());
     target_pseudo_ = PseudoElement::PseudoElementNameForEvents(target);
   }
@@ -340,6 +339,13 @@ void KeyframeEffect::RefreshTarget() {
     AttachTarget(GetAnimation());
     InvalidateAndNotifyOwner();
   }
+}
+
+void KeyframeEffect::UpdateEffectTarget(PseudoElement* new_effect_target) {
+  DetachTarget(GetAnimation());
+  effect_target_ = new_effect_target;
+  AttachTarget(GetAnimation());
+  InvalidateAndNotifyOwner();
 }
 
 V8CompositeOperation KeyframeEffect::composite() const {
@@ -455,6 +461,7 @@ CompositorAnimations::FailureReasons
 KeyframeEffect::CheckCanStartAnimationOnCompositor(
     const PaintArtifactCompositor* paint_artifact_compositor,
     double animation_playback_rate,
+    StartOnCompositorReason start_reason,
     PropertyHandleSet* unsupported_properties_for_tracing) const {
   CompositorAnimations::FailureReasons reasons =
       CompositorAnimations::kNoFailure;
@@ -468,7 +475,8 @@ KeyframeEffect::CheckCanStartAnimationOnCompositor(
   // no visual result.
   if (!effect_target_) {
     reasons |= CompositorAnimations::kInvalidAnimationOrEffect;
-  } else if (IsCurrent()) {
+  } else if (IsCurrent() ||
+             start_reason == StartOnCompositorReason::kAnimationTrigger) {
     if (effect_target_->GetComputedStyle() &&
         effect_target_->GetComputedStyle()->HasOffset())
       reasons |= CompositorAnimations::kTargetHasCSSOffset;
@@ -489,7 +497,7 @@ KeyframeEffect::CheckCanStartAnimationOnCompositor(
 void KeyframeEffect::StartAnimationOnCompositor(
     int group,
     std::optional<double> start_time,
-    base::TimeDelta time_offset,
+    std::optional<base::TimeDelta> hold_time,
     double animation_playback_rate,
     CompositorAnimation* compositor_animation,
     bool is_monotonic_timeline,
@@ -506,7 +514,7 @@ void KeyframeEffect::StartAnimationOnCompositor(
   DCHECK(Model());
 
   CompositorAnimations::StartAnimationOnCompositor(
-      *effect_target_, group, start_time, time_offset, SpecifiedTiming(),
+      *effect_target_, group, start_time, hold_time, SpecifiedTiming(),
       NormalizedTiming(), GetAnimation(), *compositor_animation, *Model(),
       compositor_keyframe_model_ids_, animation_playback_rate,
       is_monotonic_timeline, is_boundary_aligned);
@@ -539,11 +547,11 @@ bool KeyframeEffect::CancelAnimationOnCompositor(
   }
 
   DCHECK(Model());
-  for (const auto& compositor_keyframe_model_id :
-       compositor_keyframe_model_ids_) {
-    CompositorAnimations::CancelAnimationOnCompositor(
-        *effect_target_, compositor_animation, compositor_keyframe_model_id,
-        *Model());
+  if (compositor_animation) {
+    for (const auto& compositor_keyframe_model_id :
+         compositor_keyframe_model_ids_) {
+      compositor_animation->RemoveKeyframeModel(compositor_keyframe_model_id);
+    }
   }
   compositor_keyframe_model_ids_.clear();
   return true;
@@ -558,7 +566,7 @@ void KeyframeEffect::CancelIncompatibleAnimationsOnCompositor() {
 }
 
 void KeyframeEffect::PauseAnimationForTestingOnCompositor(
-    base::TimeDelta pause_time) {
+    base::TimeDelta hold_time) {
   DCHECK(!compositor_keyframe_model_ids_.empty());
   if (!effect_target_ || !effect_target_->GetLayoutObject())
     return;
@@ -568,7 +576,7 @@ void KeyframeEffect::PauseAnimationForTestingOnCompositor(
        compositor_keyframe_model_ids_) {
     CompositorAnimations::PauseAnimationForTestingOnCompositor(
         *effect_target_, *GetAnimation(), compositor_keyframe_model_id,
-        pause_time, *Model());
+        hold_time, *Model());
   }
 }
 
@@ -703,7 +711,8 @@ void KeyframeEffect::ApplyEffects() {
     return;
 
   if (GetAnimation() && HasIncompatibleStyle()) {
-    GetAnimation()->CancelAnimationOnCompositor();
+    GetAnimation()->SetCompositorPending(
+        Animation::CompositorPendingReason::kPendingCancel);
   }
 
   std::optional<double> iteration = CurrentIteration();
@@ -830,11 +839,16 @@ AnimationTimeDelta KeyframeEffect::CalculateTimeToEffectChange(
     case Timing::kPhaseNone:
       return AnimationTimeDelta::Max();
     case Timing::kPhaseBefore:
+      if (!forwards) {
+        // If the animation is reversed and we have a start delay, we need an
+        // additional tick to ensure the finished promise is resolved.
+        return start_time > local_time
+                   ? std::max(local_time.value(), AnimationTimeDelta())
+                   : AnimationTimeDelta::Max();
+      }
       // Return value is clamped at 0 to prevent unexpected results that could
       // be caused by returning negative values.
-      return forwards ? std::max(start_time - local_time.value(),
-                                 AnimationTimeDelta())
-                      : AnimationTimeDelta::Max();
+      return std::max(start_time - local_time.value(), AnimationTimeDelta());
     case Timing::kPhaseActive:
       if (forwards) {
         // Need service to apply fill / fire events.

@@ -11,10 +11,10 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/public/cpp/app_list/app_list_config.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/feature_list.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/to_string.h"
@@ -45,7 +45,6 @@
 #include "chrome/browser/icon_transcoder/svg_icon_transcoder.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/grit/chromeos_app_icon_resources.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/dbus/vm_applications/apps.pb.h"
 #include "components/crx_file/id_util.h"
 #include "components/prefs/pref_registry_simple.h"
@@ -424,28 +423,6 @@ std::string GuestOsRegistryService::Registration::PackageId() const {
   return GetString(guest_os::prefs::kAppPackageIdKey);
 }
 
-bool GuestOsRegistryService::Registration::CanUninstall() const {
-  if (!pref_.is_dict()) {
-    return false;
-  }
-  // We can uninstall if and only if there is a package that owns the
-  // application. If no package owns the application, we don't know how to
-  // uninstall the app.
-  //
-  // We don't check other things that might prevent us from uninstalling the
-  // app. In particular, we don't check if there are other packages which
-  // depend on the owning package. This should be rare for packages that have
-  // desktop files, and it's better to show an error message (which the user can
-  // then Google to learn more) than to just not have an uninstall option at
-  // all.
-  const std::string* package_id =
-      pref_.GetDict().FindString(guest_os::prefs::kAppPackageIdKey);
-  if (package_id) {
-    return !package_id->empty();
-  }
-  return false;
-}
-
 guest_os::GuestId GuestOsRegistryService::Registration::ToGuestId() const {
   return guest_os::GuestId(VmType(), VmName(), ContainerName());
 }
@@ -701,7 +678,7 @@ void GuestOsRegistryService::LoadIcon(const std::string& app_id,
 
   // There are paths where nothing higher up the call stack will resize so
   // we need to ensure that returned icons are always resized to be
-  // size_hint_in_dip big. crbug/1170455 is an example.
+  // size_hint_in_dip big. crbug.com/40744529 is an example.
   apps::IconEffects icon_effects = static_cast<apps::IconEffects>(
       icon_key.icon_effects | apps::IconEffects::kMdIconStyle);
   auto scale_factor = apps_util::GetPrimaryDisplayUIScaleFactor();

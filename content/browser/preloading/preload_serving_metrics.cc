@@ -4,12 +4,16 @@
 
 #include "content/browser/preloading/preload_serving_metrics.h"
 
+#include <sstream>
+
 #include "base/debug/dump_without_crashing.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
+#include "content/browser/preloading/prefetch/prefetch_features.h"
 #include "content/browser/preloading/prefetch/prefetch_match_resolver.h"
 #include "content/browser/preloading/prefetch/prefetch_servable_state.h"
 #include "content/browser/preloading/preload_serving_metrics_holder.h"
+#include "net/http/http_no_vary_search_data.h"
 
 namespace content {
 
@@ -309,8 +313,6 @@ void PreloadServingMetrics::RecordMetricsForNonPrerenderNavigationCommitted()
 
 void PreloadServingMetrics::RecordMetricsForPrerenderInitialNavigationFailed()
     const {
-  CHECK(PreloadServingMetricsCapsule::IsFeatureEnabled());
-
   RecordMetricsInternal(
       *this, "PreloadServingMetrics.ForPrerenderInitialNavigationFailed.",
       /*is_prerender_initial_navigation=*/true);
@@ -374,6 +376,7 @@ void PreloadServingMetrics::RecordMetricsForPrerenderInitialNavigationFailed()
           /*is_prerender_initial_navigation=*/true,
           /*prefetch_match_metrics_force_use=*/&prefetch_match_metrics);
 
+      // See https://crbug.com/479983093 for more details.
       if (prefetch_match_metrics.prerender_debug_metrics &&
           prefetch_match_metrics.prerender_debug_metrics
               ->prefetch_ahead_of_prerender_debug_metrics) {
@@ -407,7 +410,22 @@ void PreloadServingMetrics::RecordMetricsForPrerenderInitialNavigationFailed()
               "PreloadServingMetrics", "non_urls_same",
               debug_metrics.prefetch_key_navigated.NonUrlPartIsSame(
                   debug_metrics.prefetch_key_ahead_of_prerender));
-          base::debug::DumpWithoutCrashing();
+          SCOPED_CRASH_KEY_STRING256(
+              "PreloadServingMetrics", "prefetch_url",
+              debug_metrics.prefetch_key_ahead_of_prerender.url().spec());
+          std::string nvs_string;
+          if (debug_metrics.prefetch_nvs_hint_ahead_of_prerender.has_value()) {
+            std::ostringstream oss;
+            oss << debug_metrics.prefetch_nvs_hint_ahead_of_prerender.value();
+            nvs_string = oss.str();
+          }
+          SCOPED_CRASH_KEY_STRING256("PreloadServingMetrics", "nvs_hint",
+                                     nvs_string);
+          // Temporarily disable `DumpWithoutCrashing` as we collected data.
+          // Reenable it when we need it.
+          //
+          // Removal is managed by https://crbug.com/479983093.
+          // base::debug::DumpWithoutCrashing();
         }
       }
     }
@@ -436,11 +454,23 @@ void PreloadServingMetrics::RecordFirstContentfulPaint(
                     "NavigationToFirstContentfulPaint",
                     suffix}),
       corrected_first_contentful_paint);
+
+  if (is_prefetch_actual_match &&
+      base::FeatureList::IsEnabled(features::kPrefetchOffTheMainThread)) {
+    CHECK(meaningful_prefetch_match_metrics->prefetch_container_metrics);
+    PAGE_LOAD_HISTOGRAM(
+        base::StrCat(
+            {"PreloadServingMetrics.PageLoad.Clients.PaintTiming."
+             "NavigationToFirstContentfulPaint.WithPrefetch",
+             meaningful_prefetch_match_metrics->prefetch_container_metrics
+                     ->is_constructed_from_pre_prefetch
+                 ? ".WithPrePrefetch"
+                 : ".WithoutPrePrefetch"}),
+        corrected_first_contentful_paint);
+  }
 }
 
-PreloadServingMetrics::PreloadServingMetrics() {
-  CHECK(PreloadServingMetricsCapsule::IsFeatureEnabled());
-}
+PreloadServingMetrics::PreloadServingMetrics() = default;
 
 PreloadServingMetrics::~PreloadServingMetrics() = default;
 
@@ -448,8 +478,6 @@ PreloadServingMetrics::~PreloadServingMetrics() = default;
 std::unique_ptr<PreloadServingMetricsCapsule>
 PreloadServingMetricsCapsuleImpl::TakeFromNavigationHandle(
     NavigationHandle& navigation_handle) {
-  CHECK(PreloadServingMetricsCapsule::IsFeatureEnabled());
-
   return base::WrapUnique(new PreloadServingMetricsCapsuleImpl(
       PreloadServingMetricsHolder::GetOrCreateForNavigationHandle(
           navigation_handle)
@@ -458,9 +486,7 @@ PreloadServingMetricsCapsuleImpl::TakeFromNavigationHandle(
 
 PreloadServingMetricsCapsuleImpl::PreloadServingMetricsCapsuleImpl(
     std::unique_ptr<PreloadServingMetrics> preload_serving_metrics)
-    : preload_serving_metrics_(std::move(preload_serving_metrics)) {
-  CHECK(PreloadServingMetricsCapsule::IsFeatureEnabled());
-}
+    : preload_serving_metrics_(std::move(preload_serving_metrics)) {}
 
 PreloadServingMetricsCapsuleImpl::~PreloadServingMetricsCapsuleImpl() = default;
 

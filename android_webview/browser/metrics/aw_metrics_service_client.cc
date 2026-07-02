@@ -34,6 +34,7 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "cc/base/switches.h"
+#include "components/language/core/browser/locale_util.h"
 #include "components/metrics/android_metrics_provider.h"
 #include "components/metrics/call_stacks/call_stack_profile_metrics_provider.h"
 #include "components/metrics/content/content_stability_metrics_provider.h"
@@ -45,6 +46,7 @@
 #include "components/metrics/drive_metrics_provider.h"
 #include "components/metrics/entropy_state_provider.h"
 #include "components/metrics/file_metrics_provider.h"
+#include "components/metrics/metrics_features.h"
 #include "components/metrics/metrics_pref_names.h"
 #include "components/metrics/metrics_service.h"
 #include "components/metrics/metrics_state_manager.h"
@@ -72,6 +74,44 @@ namespace android_webview {
 using InstallerPackageType = AwMetricsServiceClient::InstallerPackageType;
 
 namespace {
+
+// Note: This feature and params parallel the ones in metrics_service_client.cc
+// to provide AW-specific limits for the thresholds.
+BASE_FEATURE(kAwMetricsLogTrimming, base::FEATURE_ENABLED_BY_DEFAULT);
+
+const base::FeatureParam<size_t> kInitialLogCountTrimThreshold{
+    &kAwMetricsLogTrimming, "initial_log_count_trim_threshold", 20};
+const base::FeatureParam<size_t> kOngoingLogCountTrimThreshold{
+    &kAwMetricsLogTrimming, "ongoing_log_count_trim_threshold", 8};
+const base::FeatureParam<size_t> kLogBytesTrimThreshold{
+    &kAwMetricsLogTrimming, "log_bytes_trim_threshold",
+    300 * 1024  // 300 KiB
+};
+const base::FeatureParam<size_t> kMaxInitialLogSizeBytes{
+    &kAwMetricsLogTrimming, "max_initial_log_size_bytes",
+    0  // Initial logs can be of any size.
+};
+const base::FeatureParam<size_t> kMaxOngoingLogSizeBytes{
+    &kAwMetricsLogTrimming, "max_ongoing_log_size_bytes",
+    100 * 1024  // 100 KiB
+};
+
+metrics::MetricsLogStore::StorageLimits GetStorageLimitsImpl() {
+  return {
+      .initial_log_queue_limits =
+          metrics::UnsentLogStore::UnsentLogStoreLimits{
+              .min_log_count = kInitialLogCountTrimThreshold.Get(),
+              .min_queue_size_bytes = kLogBytesTrimThreshold.Get(),
+              .max_log_size_bytes = kMaxInitialLogSizeBytes.Get(),
+          },
+      .ongoing_log_queue_limits =
+          metrics::UnsentLogStore::UnsentLogStoreLimits{
+              .min_log_count = kOngoingLogCountTrimThreshold.Get(),
+              .min_queue_size_bytes = kLogBytesTrimThreshold.Get(),
+              .max_log_size_bytes = kMaxOngoingLogSizeBytes.Get(),
+          },
+  };
+}
 
 // This specifies the amount of time to wait for all renderers to send their
 // data.
@@ -267,14 +307,14 @@ AwMetricsServiceClient::AwMetricsServiceClient(
 
 AwMetricsServiceClient::~AwMetricsServiceClient() = default;
 
-void AwMetricsServiceClient::Initialize(PrefService* pref_service) {
+void AwMetricsServiceClient::Initialize(PrefService* local_state) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(!init_finished_);
 
-  pref_service_ = pref_service;
+  local_state_ = local_state;
 
   metrics_state_manager_ = metrics::MetricsStateManager::Create(
-      pref_service_, this,
+      local_state_, this,
       // Pass an empty file path since the path is for Extended Variations Safe
       // Mode, which is N/A to Android embedders.
       std::wstring(), base::FilePath(), metrics::StartupVisibility::kUnknown,
@@ -302,7 +342,7 @@ void AwMetricsServiceClient::Initialize(PrefService* pref_service) {
   // Create the MetricsService immediately so that other code can make use of
   // it. Chrome always creates the MetricsService as well.
   metrics_service_ = std::make_unique<metrics::MetricsService>(
-      metrics_state_manager_.get(), this, pref_service_);
+      metrics_state_manager_.get(), this, local_state_);
 
   // Registration of providers has to wait until consent is determined. To
   // do otherwise means the providers would always be configured with reporting
@@ -352,12 +392,17 @@ void AwMetricsServiceClient::MaybeStartMetrics() {
     // Even though reporting is not enabled, CreateFileMetricsProvider() is
     // called. This ensures on disk state is removed.
     metrics_service_->RegisterMetricsProvider(
-        CreateFileMetricsProvider(pref_service_, metrics_dir_, old_metrics_dir_,
+        CreateFileMetricsProvider(local_state_, metrics_dir_, old_metrics_dir_,
                                   /* metrics_reporting_enabled */ false));
-    pref_service_->ClearPref(metrics::prefs::kMetricsClientID);
-    pref_service_->ClearPref(metrics::prefs::kMetricsProvisionalClientID);
-    pref_service_->ClearPref(metrics::prefs::kMetricsLogRecordId);
+    local_state_->ClearPref(metrics::prefs::kMetricsClientID);
+    local_state_->ClearPref(metrics::prefs::kMetricsProvisionalClientID);
+    local_state_->ClearPref(metrics::prefs::kMetricsLogRecordId);
   }
+}
+
+PrefService* AwMetricsServiceClient::GetLocalState() const {
+  CHECK(init_finished_);
+  return local_state_;
 }
 
 void AwMetricsServiceClient::RegisterMetricsProvidersAndInitState() {
@@ -369,13 +414,13 @@ void AwMetricsServiceClient::RegisterMetricsProvidersAndInitState() {
   metrics_service_->RegisterMetricsProvider(
       std::make_unique<metrics::CPUMetricsProvider>());
   metrics_service_->RegisterMetricsProvider(
-      std::make_unique<metrics::EntropyStateProvider>(pref_service_));
+      std::make_unique<metrics::EntropyStateProvider>(local_state_));
   metrics_service_->RegisterMetricsProvider(
       std::make_unique<metrics::ScreenInfoMetricsProvider>());
   metrics_service_->RegisterMetricsProvider(
       std::make_unique<metrics::FormFactorMetricsProvider>());
   metrics_service_->RegisterMetricsProvider(CreateFileMetricsProvider(
-      pref_service_, metrics_dir_, old_metrics_dir_,
+      local_state_, metrics_dir_, old_metrics_dir_,
       metrics_state_manager_->IsMetricsReportingEnabled()));
   metrics_service_->RegisterMetricsProvider(
       std::make_unique<metrics::CallStackProfileMetricsProvider>());
@@ -383,7 +428,7 @@ void AwMetricsServiceClient::RegisterMetricsProvidersAndInitState() {
       std::make_unique<metrics::AndroidMetricsProvider>());
   metrics_service_->RegisterMetricsProvider(
       std::make_unique<metrics::DriveMetricsProvider>(
-          base::DIR_ANDROID_APP_DATA));
+          base::DIR_ANDROID_APP_DATA, local_state_));
   metrics_service_->RegisterMetricsProvider(
       std::make_unique<metrics::GPUMetricsProvider>());
   metrics_service_->RegisterMetricsProvider(
@@ -391,7 +436,7 @@ void AwMetricsServiceClient::RegisterMetricsProvidersAndInitState() {
           GetUnfilteredSampleRatePerMille()));
   metrics_service_->RegisterMetricsProvider(
       std::make_unique<metrics::ContentStabilityMetricsProvider>(
-          pref_service_, /*extensions_helper=*/nullptr));
+          local_state_, /*extensions_helper=*/nullptr));
   delegate_->RegisterAdditionalMetricsProviders(metrics_service_.get());
 
   // The file metrics provider performs IO.
@@ -465,6 +510,10 @@ int32_t AwMetricsServiceClient::GetProduct() {
 }
 
 std::string AwMetricsServiceClient::GetApplicationLocale() {
+  if (base::FeatureList::IsEnabled(
+          metrics::features::kConsolidateMetricsServiceLocales)) {
+    return language::GetApplicationLocale(local_state_);
+  }
   return base::i18n::GetConfiguredLocale();
 }
 
@@ -577,6 +626,11 @@ base::TimeDelta AwMetricsServiceClient::GetStandardUploadInterval() {
 bool AwMetricsServiceClient::ShouldStartUpFast() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return fast_startup_for_testing_;
+}
+
+metrics::MetricsLogStore::StorageLimits
+AwMetricsServiceClient::GetStorageLimits() const {
+  return GetStorageLimitsImpl();
 }
 
 void AwMetricsServiceClient::OnRenderProcessHostCreated(
@@ -790,17 +844,19 @@ void AwMetricsServiceClient::OnAppStateChanged(
 
   bool foreground = state == WebViewAppStateObserver::State::kForeground;
 
-  if (foreground == app_in_foreground_)
+  if (foreground == app_in_foreground_) {
     return;
+  }
 
   app_in_foreground_ = foreground;
   if (app_in_foreground_) {
-    GetMetricsService()->OnAppEnterForeground();
+    GetMetricsService()->OnAppEnterForeground(
+        /*force_open_new_log=*/false, /*emit_uma_action=*/false);
   } else {
     // TODO(crbug.com/40118864): Turn on the background recording.
     // Not recording in background, this matches Chrome's behavior.
     GetMetricsService()->OnAppEnterBackground(
-        /* keep_recording_in_background = false */);
+        /*keep_recording_in_background=*/false, /*emit_uma_action=*/false);
   }
 }
 

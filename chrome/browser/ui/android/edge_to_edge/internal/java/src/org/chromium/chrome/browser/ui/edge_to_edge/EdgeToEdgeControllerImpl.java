@@ -271,7 +271,7 @@ public class EdgeToEdgeControllerImpl
         mIsBottomChinEnabled = isSupportedByConfiguration(mActivity, mInsetObserver);
 
         mEdgeToEdgeStateProvider = mEdgeToEdgeManager.getEdgeToEdgeStateProvider();
-        mEdgeToEdgeToken = mEdgeToEdgeStateProvider.acquireSetDecorFitsSystemWindowToken();
+        mEdgeToEdgeToken = mEdgeToEdgeStateProvider.acquireEdgeToEdgeToken();
 
         // Any padding to make the content fit the window insets has not yet been applied, so by
         // default, the content is not yet fitting the window insets. The signal should be set to
@@ -695,7 +695,7 @@ public class EdgeToEdgeControllerImpl
         @LayoutType
         int currentLayoutType =
                 mLayoutManager != null ? mLayoutManager.getActiveLayoutType() : LayoutType.NONE;
-        if (mBottomControlsAreVisible && currentLayoutType != LayoutType.TAB_SWITCHER) return false;
+        if (mBottomControlsAreVisible && currentLayoutType != LayoutType.HUB) return false;
 
         // Pad the adjusters if drawing to edge.
         return isDrawingToEdge();
@@ -803,7 +803,7 @@ public class EdgeToEdgeControllerImpl
         if (mFullscreenManager != null) {
             mFullscreenManager.removeObserver(this);
         }
-        mEdgeToEdgeStateProvider.releaseSetDecorFitsSystemWindowToken(mEdgeToEdgeToken);
+        mEdgeToEdgeStateProvider.releaseEdgeToEdgeToken(mEdgeToEdgeToken);
     }
 
     static void recordConfigurationSwitchScenario(

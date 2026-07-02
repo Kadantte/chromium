@@ -102,6 +102,12 @@ class PromoCardsHandlerTest : public ChromeRenderViewHostTestHarness {
 
   void TearDown() override {
     static_cast<content::WebUIMessageHandler*>(handler_)->DisallowJavascript();
+    handler_ = nullptr;
+    card1_ = nullptr;
+    card2_ = nullptr;
+    // Explicitly clear handlers to destroy them before the Profile is destroyed
+    // in ChromeRenderViewHostTestHarness::TearDown().
+    web_ui_.GetHandlersForTesting()->clear();
     ChromeRenderViewHostTestHarness::TearDown();
   }
 
@@ -164,7 +170,8 @@ TEST_F(PromoCardsHandlerTest, GetAllPromoCards) {
 #endif
   };
 
-#if BUILDFLAG(ENABLE_DICE_SUPPORT) && BUILDFLAG(GOOGLE_CHROME_BRANDING)
+#if (BUILDFLAG(ENABLE_DICE_SUPPORT) || BUILDFLAG(IS_CHROMEOS)) && \
+    BUILDFLAG(GOOGLE_CHROME_BRANDING)
   promo_cards.emplace_back("move_passwords_promo");
 #endif
 

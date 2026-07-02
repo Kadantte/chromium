@@ -9,15 +9,16 @@
 #include <string_view>
 #include <utility>
 
-#include "arc_policy_util.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/constants/chrome_pref_names.h"
 #include "base/command_line.h"
+#include "base/containers/fixed_flat_set.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_string_value_serializer.h"
 #include "base/logging.h"
-#include "base/memory/singleton.h"
+#include "base/no_destructor.h"
 #include "base/uuid.h"
 #include "base/values.h"
 #include "chrome/browser/ash/arc/enterprise/cert_store/cert_store_service.h"
@@ -31,7 +32,6 @@
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/experiences/arc/arc_browser_context_keyed_service_factory_base.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
@@ -250,10 +250,6 @@ void AddRequiredKeyPairs(const CertStoreService* cert_store_service,
                          std::move(cert_names));
 }
 
-bool LooksLikeAndroidPackageName(const std::string& name) {
-  return name.find(".") != std::string::npos;
-}
-
 void AddChoosePrivateKeyRuleToPolicy(
     policy::PolicyService* const policy_service,
     const CertStoreService* cert_store_service,
@@ -263,12 +259,10 @@ void AddChoosePrivateKeyRuleToPolicy(
   }
 
   auto app_ids = chromeos::platform_keys::ExtensionKeyPermissionsService::
-      GetCorporateKeyUsageAllowedAppIds(policy_service);
+      GetCorporateKeyUsageAllowedAndroidAppIds(policy_service);
   base::ListValue arc_app_ids;
   for (const auto& app_id : app_ids) {
-    if (LooksLikeAndroidPackageName(app_id)) {
-      arc_app_ids.Append(app_id);
-    }
+    arc_app_ids.Append(app_id);
   }
   if (arc_app_ids.empty() ||
       cert_store_service->get_required_cert_names().empty()) {
@@ -307,9 +301,7 @@ void ReplaceManagedConfigurationVariables(const Profile* profile,
   }
 }
 
-void FilterAppsOnReven(
-    base::DictValue* arc_policy,
-    const std::unordered_set<std::string>& allowed_packages) {
+void FilterAppsOnReven(base::DictValue* arc_policy) {
   base::ListValue* applications =
       arc_policy->FindList(policy_util::kArcPolicyKeyApplications);
 
@@ -317,7 +309,7 @@ void FilterAppsOnReven(
     return;
   }
 
-  applications->EraseIf([&allowed_packages](const base::Value& val) {
+  applications->EraseIf([](const base::Value& val) {
     const base::DictValue& application = val.GetDict();
     const std::string* package_name =
         application.FindString(ArcPolicyBridge::kPackageName);
@@ -325,8 +317,23 @@ void FilterAppsOnReven(
       return true;
     }
 
-    bool is_allowed = allowed_packages.contains(*package_name);
-    bool is_zscaler = package_name->find("zscaler.com.") == 0;
+    // Define a set of certified package names for Android VPN apps on Reven.
+    static constexpr auto kAllowedPackages =
+        base::MakeFixedFlatSet<std::string_view>({
+            "com.paloaltonetworks.globalprotect",
+            "com.cisco.anyconnect.vpn.android.avf",
+            "zscaler.com.zschromeosapp",
+            "com.f5.edge.client_ics",
+            "com.netskope.netskopeclient",
+            "com.zimperium.zips",
+            "com.fortinet.forticlient_vpn",
+            "com.fortinet.forticlient_fa",
+            "com.forcepoint.sslvpn",
+            "com.cloudflare.cloudflareoneagent",
+        });
+
+    bool is_allowed = kAllowedPackages.contains(*package_name);
+    bool is_zscaler = package_name->starts_with("zscaler.com.");
     return !is_allowed && !is_zscaler;
   });
 }
@@ -337,19 +344,7 @@ void ConfigureRevenPolicies(base::DictValue* arc_policy) {
   arc_policy->Set(policy_util::kArcPolicyKeyPlayStoreMode,
                   kPolicyPlayStoreModeAllowList);
 
-  // Define a set of certified package names for Android VPN apps on Reven.
-  const std::unordered_set<std::string> allowed_packages = {
-      "com.paloaltonetworks.globalprotect",
-      "com.cisco.anyconnect.vpn.android.avf",
-      "zscaler.com.zschromeosapp",
-      "com.f5.edge.client_ics",
-      "com.netskope.netskopeclient",
-      "com.zimperium.zips",
-      "com.fortinet.forticlient_vpn",
-      "com.fortinet.forticlient_fa",
-      "com.forcepoint.sslvpn"};
-
-  FilterAppsOnReven(arc_policy, allowed_packages);
+  FilterAppsOnReven(arc_policy);
 }
 
 base::DictValue ParseArcPoliciesToDict(const policy::PolicyMap& policy_map) {
@@ -396,9 +391,9 @@ void MapChromeToArcPolicies(base::DictValue& filtered_policies,
   // policies.
   MapManagedIntPrefToBool(
       policy_util::kArcPolicyKeyDebuggingFeaturesDisabled,
-      ::prefs::kDevToolsAvailability, profile_prefs,
+      ash::chrome_prefs::kDevToolsAvailability, profile_prefs,
       static_cast<int>(
-          policy::DeveloperToolsPolicyHandler::Availability::kDisallowed),
+          policy::DeveloperToolsAvailability::kDisallowed),
       &filtered_policies);
   MapBoolToBool(policy_util::kArcPolicyKeyPrintingDisabled,
                 policy::key::kPrintingEnabled, policy_map,
@@ -530,11 +525,12 @@ class ArcPolicyBridgeFactory
   static constexpr const char* kName = "ArcPolicyBridgeFactory";
 
   static ArcPolicyBridgeFactory* GetInstance() {
-    return base::Singleton<ArcPolicyBridgeFactory>::get();
+    static base::NoDestructor<ArcPolicyBridgeFactory> instance;
+    return instance.get();
   }
 
  private:
-  friend base::DefaultSingletonTraits<ArcPolicyBridgeFactory>;
+  friend base::NoDestructor<ArcPolicyBridgeFactory>;
 
   ArcPolicyBridgeFactory() = default;
   ~ArcPolicyBridgeFactory() override = default;
@@ -663,10 +659,10 @@ void ArcPolicyBridge::ReportCompliance(const std::string& request,
       is_dpc_first_compliance_reported_ = true;
   }
 
-  data_decoder::DataDecoder::ParseJsonIsolated(
-      request,
-      base::BindOnce(&ArcPolicyBridge::OnReportComplianceParse,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+  // JSONReader is now safe for rule of 2.
+  OnReportComplianceParse(
+      std::move(callback),
+      base::JSONReader::Read(request, base::JSON_PARSE_RFC));
 }
 
 void ArcPolicyBridge::ReportDPCVersion(const std::string& version) {
@@ -771,7 +767,7 @@ std::string ArcPolicyBridge::GetCurrentJSONPolicies() const {
 
 void ArcPolicyBridge::OnReportComplianceParse(
     base::OnceCallback<void(const std::string&)> callback,
-    data_decoder::DataDecoder::ValueOrError result) {
+    std::optional<base::Value> result) {
   std::move(callback).Run(kPolicyCompliantJson);
   if (!result.has_value()) {
     DLOG(ERROR) << "Can't parse policy compliance report";

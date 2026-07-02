@@ -43,7 +43,6 @@
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
-#include "chrome/browser/web_applications/isolated_web_apps/key_distribution/features.h"
 #include "chrome/browser/web_applications/isolated_web_apps/policy/isolated_web_app_cache_client.h"
 #include "chrome/browser/web_applications/isolated_web_apps/policy/isolated_web_app_cache_manager.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/fake_iwa_runtime_data_provider_mixin.h"
@@ -75,7 +74,7 @@ namespace em = enterprise_management;
 
 using base::test::TestFuture;
 using web_package::SignedWebBundleId;
-using DiscoveryTask = IsolatedWebAppUpdateDiscoveryTask;
+using DiscoveryTask = IsolatedWebAppUpdateCheckAndPrepareTask;
 using ApplyTask = IsolatedWebAppUpdateApplyTask;
 using UpdateDiscoveryTaskFuture = TestFuture<DiscoveryTask::CompletionStatus>;
 using UpdateApplyTaskFuture =
@@ -256,8 +255,7 @@ class IwaCacheBaseTest : public ash::LoginManagerTest {
         session_mixin_(CreateSessionMixin(session_type_)) {
     scoped_feature_list_.InitWithFeatures(
         {features::kIsolatedWebAppBundleCache,
-         features::kIsolatedWebAppManagedGuestSessionInstall,
-         features::kIsolatedWebAppManagedAllowlist},
+         features::kIsolatedWebAppManagedGuestSessionInstall},
         /*disabled_features=*/{});
   }
 
@@ -485,14 +483,15 @@ class IwaCacheBaseTest : public ash::LoginManagerTest {
     UpdateDiscoveryTaskResultWaiter discovery_update_waiter(
         provider(), GetAppId(bundle_id), discovery_update_future.GetCallback());
 
-    DiscoverUpdatesNow();
+    DiscoverAndPrepareUpdatesNow();
     return discovery_update_future.Get();
   }
 
-  void DiscoverUpdatesNow() {
-    EXPECT_THAT(
-        provider().isolated_web_app_update_manager().DiscoverUpdatesNow(),
-        Eq(1ul));
+  void DiscoverAndPrepareUpdatesNow() {
+    EXPECT_THAT(provider()
+                    .isolated_web_app_update_manager()
+                    .DiscoverAndPrepareUpdatesNow(),
+                Eq(1u));
   }
 
   void DestroyCacheDir() { cache_root_dir_override_.reset(); }
@@ -929,7 +928,7 @@ IN_PROC_BROWSER_TEST_F(IwaCacheMgsTest, UpdateAppWhenAppNotOpened) {
   UpdateApplyTaskFuture apply_update_future;
   UpdateApplyTaskResultWaiter apply_update_waiter(
       provider(), GetAppId(kWebBundleId1), apply_update_future.GetCallback());
-  DiscoverUpdatesNow();
+  DiscoverAndPrepareUpdatesNow();
 
   EXPECT_THAT(apply_update_future.Get(), HasValue());
   AssertAppInstalledAtVersion(kWebBundleId1, GetUpdateVersion(),
@@ -955,7 +954,7 @@ IN_PROC_BROWSER_TEST_F(IwaCacheMgsTest, UpdateApplyTaskWhenAppClosed) {
   UpdateApplyTaskFuture apply_update_future;
   UpdateApplyTaskResultWaiter apply_update_waiter(
       provider(), GetAppId(kWebBundleId1), apply_update_future.GetCallback());
-  DiscoverUpdatesNow();
+  DiscoverAndPrepareUpdatesNow();
 
   EXPECT_THAT(apply_update_future.Get(), HasValue());
   AssertAppInstalledAtVersion(kWebBundleId1, GetUpdateVersion(),

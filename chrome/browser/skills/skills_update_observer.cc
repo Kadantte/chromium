@@ -15,16 +15,17 @@
 #include "components/optimization_guide/core/hints/optimization_metadata.h"
 #include "components/skills/features.h"
 #include "components/skills/proto/skill.pb.h"
+#include "components/skills/public/skills_features.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 
 namespace {
-std::vector<glic::mojom::SkillPtr> ConvertSkillsListToSkills(
+std::vector<glic::mojom::SkillPreviewPtr> ConvertSkillsListToSkillPreviews(
     const skills::proto::SkillsList* skills_list) {
-  std::vector<glic::mojom::SkillPtr> skills;
+  std::vector<glic::mojom::SkillPreviewPtr> skill_previews;
   if (!skills_list) {
-    return skills;
+    return skill_previews;
   }
   for (const skills::proto::Skill& skill_proto : skills_list->skills()) {
     glic::mojom::SkillPreviewPtr skill_preview =
@@ -33,13 +34,10 @@ std::vector<glic::mojom::SkillPtr> ConvertSkillsListToSkills(
     skill_preview->name = skill_proto.name();
     skill_preview->icon = skill_proto.icon();
     skill_preview->source = glic::mojom::SkillSource::kFirstParty;
-
-    glic::mojom::SkillPtr skill = glic::mojom::Skill::New();
-    skill->preview = std::move(skill_preview);
-    skill->prompt = skill_proto.prompt();
-    skills.push_back(std::move(skill));
+    skill_preview->description = skill_proto.description();
+    skill_previews.push_back(std::move(skill_preview));
   }
-  return skills;
+  return skill_previews;
 }
 }  // namespace
 
@@ -68,7 +66,9 @@ SkillsUpdateObserver* SkillsUpdateObserver::From(tabs::TabInterface* tab) {
 
 void SkillsUpdateObserver::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
-  if (!base::FeatureList::IsEnabled(features::kSkillsEnabled)) {
+  Profile* profile =
+      Profile::FromBrowserContext(tab_->GetContents()->GetBrowserContext());
+  if (!skills::IsSkillsEnabled(profile->GetPrefs())) {
     return;
   }
 
@@ -77,8 +77,7 @@ void SkillsUpdateObserver::DidFinishNavigation(
   }
 
   if (!navigation_handle->HasCommitted() ||
-      !navigation_handle->IsInPrimaryMainFrame() ||
-      navigation_handle->IsSameDocument()) {
+      !navigation_handle->IsInPrimaryMainFrame()) {
     return;
   }
 
@@ -114,13 +113,13 @@ void SkillsUpdateObserver::MaybeUpdateContextualSkills() {
   }
   if (glic::GlicInstance* instance =
           glic_keyed_service->GetInstanceForTab(&(*tab_))) {
-    instance->host().skills_manager().UpdateSkillPreviews(&(*tab_));
+    instance->UpdateSkillPreviews(&(*tab_));
   }
 }
 
-std::vector<glic::mojom::SkillPtr>
-SkillsUpdateObserver::GetContextualSkills() const {
-  return ConvertSkillsListToSkills(contextual_skills_.get());
+std::vector<glic::mojom::SkillPreviewPtr>
+SkillsUpdateObserver::GetContextualSkillPreviews() const {
+  return ConvertSkillsListToSkillPreviews(contextual_skills_.get());
 }
 
 }  // namespace skills

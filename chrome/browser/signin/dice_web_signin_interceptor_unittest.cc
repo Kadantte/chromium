@@ -22,6 +22,7 @@
 #include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
+#include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/signin/chrome_signin_client_factory.h"
 #include "chrome/browser/signin/chrome_signin_client_test_util.h"
 #include "chrome/browser/signin/chrome_signin_pref_names.h"
@@ -32,10 +33,10 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/pref_names.h"
-#include "chrome/test/base/browser_with_test_window_test.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "components/metrics/profile_metrics_service.h"
 #include "components/policy/core/browser/signin/profile_separation_policies.h"
 #include "components/policy/core/common/management/scoped_management_service_override_for_testing.h"
 #include "components/prefs/pref_service.h"
@@ -48,12 +49,14 @@
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/signin/public/identity_manager/tribool.h"
+#include "content/public/test/browser_task_environment.h"
+#include "content/public/test/test_renderer_host.h"
+#include "content/public/test/web_contents_tester.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
-
 
 namespace {
 
@@ -130,7 +133,7 @@ MatchBubbleParameters(
 }
 
 void MakeValidAccountCapabilities(AccountInfo* info) {
-  AccountCapabilitiesTestMutator mutator(&info->capabilities);
+  AccountCapabilitiesTestMutator mutator(info);
   mutator.set_is_subject_to_parental_controls(true);
   bool is_managed = info->IsManaged() == signin::Tribool::kTrue;
   mutator.set_is_subject_to_enterprise_features(is_managed);
@@ -170,13 +173,17 @@ std::string ParamToTestSuffixForInterceptionAndSyncPromo(
   return interception_enabled ? "Intercept" : "NoIntercept";
 }
 
+class TestScopedWebSigninInterceptionBubbleHandle
+    : public ScopedWebSigninInterceptionBubbleHandle {
+ public:
+  ~TestScopedWebSigninInterceptionBubbleHandle() override = default;
+};
+
 }  // namespace
 
-class DiceWebSigninInterceptorTest : public BrowserWithTestWindowTest {
+class DiceWebSigninInterceptorTest : public testing::Test {
  public:
-  DiceWebSigninInterceptorTest()
-      : BrowserWithTestWindowTest(
-            base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
+  DiceWebSigninInterceptorTest() = default;
   ~DiceWebSigninInterceptorTest() override = default;
 
   DiceWebSigninInterceptor* interceptor() {
@@ -187,9 +194,13 @@ class DiceWebSigninInterceptorTest : public BrowserWithTestWindowTest {
     return mock_delegate_.get();
   }
 
-  content::WebContents* web_contents() {
-    return browser()->tab_strip_model()->GetActiveWebContents();
+  TestingProfile* profile() { return profile_; }
+  TestingProfileManager* profile_manager() { return &profile_manager_; }
+  content::BrowserTaskEnvironment* task_environment() {
+    return &task_environment_;
   }
+
+  content::WebContents* web_contents() { return web_contents_.get(); }
 
   ProfileAttributesStorage* profile_attributes_storage() {
     return profile_manager()->profile_attributes_storage();
@@ -264,24 +275,33 @@ class DiceWebSigninInterceptorTest : public BrowserWithTestWindowTest {
  protected:
   // testing::Test:
   void SetUp() override {
-    BrowserWithTestWindowTest::SetUp();
+    ASSERT_TRUE(profile_manager_.SetUp());
+    profile_ =
+        profile_manager_.CreateTestingProfile("Default", GetTestingFactories());
+
+    web_contents_ =
+        content::WebContentsTester::CreateTestWebContents(profile(), nullptr);
 
     identity_test_env_profile_adaptor_ =
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile());
     identity_test_env_profile_adaptor_->identity_test_env()
         ->SetTestURLLoaderFactory(&test_url_loader_factory_);
 
-    // Create the first tab so that web_contents() exists.
-    AddTab(browser(), GURL("http://foo/1"));
     disclaimer_service_resetter_ =
         enterprise_util::DisableAutomaticManagementDisclaimerUntilReset(
             profile());
+
+    // Creating the interceptor is necessary for setting the
+    // mock_delegate_, so we can't rely on it being lazily initialized.
+    DiceWebSigninInterceptorFactory::GetForProfile(profile());
   }
 
  private:
   void TearDown() override {
     identity_test_env_profile_adaptor_.reset();
-    BrowserWithTestWindowTest::TearDown();
+    web_contents_.reset();
+    profile_ = nullptr;
+    profile_manager_.DeleteAllTestingProfiles();
   }
 
   std::unique_ptr<KeyedService> BuildDiceWebSigninInterceptor(
@@ -291,11 +311,11 @@ class DiceWebSigninInterceptorTest : public BrowserWithTestWindowTest {
     auto delegate = std::make_unique<
         testing::StrictMock<MockDiceWebSigninInterceptorDelegate>>();
     mock_delegate_ = delegate->GetWeakPtr();
-    return std::make_unique<DiceWebSigninInterceptor>(profile(),
-                                                      std::move(delegate));
+    return std::make_unique<DiceWebSigninInterceptor>(
+        profile(), std::move(delegate), &profile_metrics_service_);
   }
 
-  TestingProfile::TestingFactories GetTestingFactories() override {
+  TestingProfile::TestingFactories GetTestingFactories() {
     TestingProfile::TestingFactories factories =
         IdentityTestEnvironmentProfileAdaptor::
             GetIdentityTestEnvironmentFactories();
@@ -303,6 +323,12 @@ class DiceWebSigninInterceptorTest : public BrowserWithTestWindowTest {
         {ChromeSigninClientFactory::GetInstance(),
          base::BindRepeating(&BuildChromeSigninClientWithURLLoader,
                              &test_url_loader_factory_)});
+
+    // TemplateURLService is required by ProceedWithProfileCreation which copies
+    // search engine choice presets, otherwise it crashes in unit tests.
+    factories.push_back(
+        {TemplateURLServiceFactory::GetInstance(),
+         base::BindRepeating(&TemplateURLServiceFactory::BuildInstanceFor)});
 
     factories.push_back(
         {DiceWebSigninInterceptorFactory::GetInstance(),
@@ -313,8 +339,15 @@ class DiceWebSigninInterceptorTest : public BrowserWithTestWindowTest {
     return factories;
   }
 
+  content::BrowserTaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+  content::RenderViewHostTestEnabler rvh_test_enabler_;
+  TestingProfileManager profile_manager_{TestingBrowserProcess::GetGlobal()};
+  raw_ptr<TestingProfile> profile_ = nullptr;
+  std::unique_ptr<content::WebContents> web_contents_;
+
   // Force local machine to be unmanaged, so that variations in try bots and
-  // developer machines don't affect the tests. See https://crbug.com/1445255.
+  // developer machines don't affect the tests. See https://crbug.com/40268091.
   policy::ScopedManagementServiceOverrideForTesting platform_browser_mgmt_ = {
       policy::ManagementServiceFactory::GetForPlatform(),
       policy::EnterpriseManagementAuthority::NONE};
@@ -323,6 +356,7 @@ class DiceWebSigninInterceptorTest : public BrowserWithTestWindowTest {
       identity_test_env_profile_adaptor_;
   base::WeakPtr<MockDiceWebSigninInterceptorDelegate> mock_delegate_;
   base::ScopedClosureRunner disclaimer_service_resetter_;
+  metrics::ProfileMetricsService profile_metrics_service_;
 };
 
 TEST_F(DiceWebSigninInterceptorTest, ShouldShowProfileSwitchBubble) {
@@ -400,7 +434,7 @@ TEST_F(DiceWebSigninInterceptorTest, ShouldShowEnterpriseBubble) {
   other_account_info = AccountInfo::Builder(other_account_info)
                            .SetHostedDomain("example.com")
                            .Build();
-  AccountCapabilitiesTestMutator(&other_account_info.capabilities)
+  AccountCapabilitiesTestMutator(&other_account_info)
       .set_is_subject_to_account_level_enterprise_policies(true);
   identity_test_env()->UpdateAccountInfoForAccount(other_account_info);
   AccountInfo account_info =
@@ -420,7 +454,7 @@ TEST_F(DiceWebSigninInterceptorTest, ShouldShowEnterpriseBubble) {
   EXPECT_FALSE(interceptor()->ShouldShowEnterpriseBubble(account_info));
   account_info =
       AccountInfo::Builder(account_info).SetHostedDomain("example.com").Build();
-  AccountCapabilitiesTestMutator(&account_info.capabilities)
+  AccountCapabilitiesTestMutator(&account_info)
       .set_is_subject_to_account_level_enterprise_policies(true);
   identity_test_env()->UpdateAccountInfoForAccount(account_info);
   EXPECT_TRUE(interceptor()->ShouldShowEnterpriseBubble(account_info));
@@ -433,7 +467,7 @@ TEST_F(DiceWebSigninInterceptorTest, ShouldShowEnterpriseBubble) {
   // Two consumer accounts.
   account_info =
       AccountInfo::Builder(account_info).SetHostedDomain(std::string()).Build();
-  AccountCapabilitiesTestMutator(&account_info.capabilities)
+  AccountCapabilitiesTestMutator(&account_info)
       .set_is_subject_to_account_level_enterprise_policies(false);
   identity_test_env()->UpdateAccountInfoForAccount(account_info);
   EXPECT_FALSE(interceptor()->ShouldShowEnterpriseBubble(account_info));
@@ -441,7 +475,7 @@ TEST_F(DiceWebSigninInterceptorTest, ShouldShowEnterpriseBubble) {
   primary_account_info = AccountInfo::Builder(primary_account_info)
                              .SetHostedDomain("example.com")
                              .Build();
-  AccountCapabilitiesTestMutator(&account_info.capabilities)
+  AccountCapabilitiesTestMutator(&account_info)
       .set_is_subject_to_account_level_enterprise_policies(true);
   identity_test_env()->UpdateAccountInfoForAccount(primary_account_info);
   EXPECT_TRUE(interceptor()->ShouldShowEnterpriseBubble(account_info));
@@ -466,7 +500,7 @@ TEST_F(DiceWebSigninInterceptorTest, ShouldEnforceEnterpriseProfileSeparation) {
   other_account_info = AccountInfo::Builder(other_account_info)
                            .SetHostedDomain("example.com")
                            .Build();
-  AccountCapabilitiesTestMutator(&other_account_info.capabilities)
+  AccountCapabilitiesTestMutator(&other_account_info)
       .set_is_subject_to_account_level_enterprise_policies(true);
   identity_test_env()->UpdateAccountInfoForAccount(other_account_info);
   AccountInfo account_info =
@@ -482,7 +516,7 @@ TEST_F(DiceWebSigninInterceptorTest, ShouldEnforceEnterpriseProfileSeparation) {
       interceptor()->ShouldEnforceEnterpriseProfileSeparation(account_info));
   account_info =
       AccountInfo::Builder(account_info).SetHostedDomain("example.com").Build();
-  AccountCapabilitiesTestMutator(&account_info.capabilities)
+  AccountCapabilitiesTestMutator(&account_info)
       .set_is_subject_to_account_level_enterprise_policies(true);
   identity_test_env()->UpdateAccountInfoForAccount(account_info);
   // Managed account intercepted.
@@ -499,7 +533,7 @@ TEST_F(DiceWebSigninInterceptorTest,
   AccountInfo account_info_1 =
       identity_test_env()->MakeAccountAvailable("bob@example.com");
   MakeValidAccountInfo(&account_info_1, "example.com");
-  AccountCapabilitiesTestMutator(&account_info_1.capabilities)
+  AccountCapabilitiesTestMutator(&account_info_1)
       .set_is_subject_to_account_level_enterprise_policies(true);
   identity_test_env()->UpdateAccountInfoForAccount(account_info_1);
 
@@ -519,7 +553,7 @@ TEST_F(DiceWebSigninInterceptorTest,
       identity_test_env()->MakePrimaryAccountAvailable(
           "alice@example.com", signin::ConsentLevel::kSignin);
   MakeValidAccountInfo(&primary_account_info, "example.com");
-  AccountCapabilitiesTestMutator(&primary_account_info.capabilities)
+  AccountCapabilitiesTestMutator(&primary_account_info)
       .set_is_subject_to_account_level_enterprise_policies(true);
   identity_test_env()->UpdateAccountInfoForAccount(primary_account_info);
 
@@ -1045,7 +1079,7 @@ TEST_F(DiceWebSigninInterceptorTest, ShouldShowEnterpriseBubbleWithoutUPA) {
                        .SetHostedDomain("example.com")
                        .Build();
   {
-    AccountCapabilitiesTestMutator(&account_info_1.capabilities)
+    AccountCapabilitiesTestMutator(&account_info_1)
         .set_is_subject_to_account_level_enterprise_policies(true);
   }
   identity_test_env()->UpdateAccountInfoForAccount(account_info_1);
@@ -1055,7 +1089,7 @@ TEST_F(DiceWebSigninInterceptorTest, ShouldShowEnterpriseBubbleWithoutUPA) {
   account_info_2 = AccountInfo::Builder(account_info_2)
                        .SetHostedDomain("example.com")
                        .Build();
-  AccountCapabilitiesTestMutator(&account_info_2.capabilities)
+  AccountCapabilitiesTestMutator(&account_info_2)
       .set_is_subject_to_account_level_enterprise_policies(true);
   identity_test_env()->UpdateAccountInfoForAccount(account_info_2);
 
@@ -1353,7 +1387,7 @@ TEST_F(DiceWebSigninInterceptorTest, DeclineCreationRepeatedly) {
   EXPECT_EQ(interceptor()->is_interception_in_progress(), true);
 }
 
-// Regression test for https://crbug.com/1309647
+// Regression test for https://crbug.com/40829908
 TEST_F(DiceWebSigninInterceptorTest,
        DeclineCreationRepeatedlyWithPolicyFetcher) {
   base::HistogramTester histogram_tester;
@@ -1844,7 +1878,7 @@ TEST_F(DiceWebSigninInterceptorTest,
   primary_account_info = AccountInfo::Builder(primary_account_info)
                              .SetHostedDomain("example.com")
                              .Build();
-  AccountCapabilitiesTestMutator(&primary_account_info.capabilities)
+  AccountCapabilitiesTestMutator(&primary_account_info)
       .set_is_subject_to_account_level_enterprise_policies(true);
   identity_test_env()->UpdateAccountInfoForAccount(primary_account_info);
 
@@ -1973,8 +2007,7 @@ TEST_P(DiceWebSigninInterceptorTestSupervisionMetrics, RecordMetrics) {
   MakeValidAccountInfoWithoutCapabilities(&intercepted_account_info);
 
   // Set supervised user capabilities and expectations.
-  AccountCapabilitiesTestMutator mutator(
-      &intercepted_account_info.capabilities);
+  AccountCapabilitiesTestMutator mutator(&intercepted_account_info);
   mutator.set_is_subject_to_account_level_enterprise_policies(false);
   SinginInterceptSupervisionState expected_state;
   switch (IsSupervisedUser()) {
@@ -2251,7 +2284,7 @@ TEST_F(DiceWebSigninInterceptorTest,
       .Times(0);
   interceptor()->MaybeInterceptWebSignin(web_contents(),
                                          account_info.GetAccountId(),
-                                         signin_metrics::AccessPoint::kUnknown,
+                                         signin_metrics::AccessPoint::kSettings,
                                          /*is_new_account=*/true,
                                          /*is_sync_signin=*/false);
   // Delegate was not called yet.
@@ -2263,6 +2296,8 @@ TEST_F(DiceWebSigninInterceptorTest,
       SigninInterceptionHeuristicOutcome::kAbortAccountInfoNotCompatible;
   EXPECT_EQ(interceptor()->is_interception_in_progress(),
             SigninInterceptionHeuristicOutcomeIsSuccess(expected_outcome));
+  histogram_tester.ExpectUniqueSample("Signin.Intercept.HeuristicOutcome",
+                                      expected_outcome, 1);
 }
 
 TEST_F(DiceWebSigninInterceptorTest, NoInterceptionIfPrimaryAccountAlreadySet) {
@@ -2312,4 +2347,295 @@ TEST_F(DiceWebSigninInterceptorTest, NoInterceptionIfPrimaryAccountAlreadySet) {
 
   EXPECT_EQ(interceptor()->is_interception_in_progress(),
             SigninInterceptionHeuristicOutcomeIsSuccess(expected_outcome));
+}
+
+TEST_F(DiceWebSigninInterceptorTest,
+       MultiAccountInterception_UserAcceptsBeforeCompletion) {
+  base::HistogramTester histogram_tester;
+  AccountInfo primary_account_info =
+      identity_test_env()->MakePrimaryAccountAvailable(
+          "primary@example.com", signin::ConsentLevel::kSignin);
+  AccountInfo initiator_info =
+      identity_test_env()->MakeAccountAvailable("alice@example.com");
+  MakeValidAccountInfo(&initiator_info);
+  initiator_info =
+      AccountInfo::Builder(initiator_info).SetGivenName("Alice").Build();
+  identity_test_env()->UpdateAccountInfoForAccount(initiator_info);
+
+  AccountInfo secondary_info =
+      identity_test_env()->MakeAccountAvailable("bob@example.com");
+  MakeValidAccountInfo(&secondary_info);
+  secondary_info =
+      AccountInfo::Builder(secondary_info).SetGivenName("Bob").Build();
+  identity_test_env()->UpdateAccountInfoForAccount(secondary_info);
+
+  // Setup mock delegate to capture the bubble callback.
+  base::OnceCallback<void(SigninInterceptionResult)> bubble_callback;
+  EXPECT_CALL(*mock_delegate(), ShowSigninInterceptionBubble(
+                                    web_contents(), testing::_, testing::_))
+      .WillOnce(testing::WithArg<2>(
+          [&bubble_callback](
+              base::OnceCallback<void(SigninInterceptionResult)> callback) {
+            bubble_callback = std::move(callback);
+            return std::make_unique<
+                TestScopedWebSigninInterceptionBubbleHandle>();
+          }));
+
+  // Start interception.
+  interceptor()->MaybeInterceptWebSignin(
+      web_contents(), initiator_info.account_id,
+      signin_metrics::AccessPoint::kWebSignin, /*is_new_account=*/true,
+      /*is_sync_signin=*/false);
+
+  ASSERT_TRUE(bubble_callback);
+  ASSERT_TRUE(interceptor()->is_interception_in_progress());
+
+  // Simulate user accepting the bubble.
+  // Since the background multi-account token fetches (DICE session) are not yet
+  // complete, this should not trigger the profile creator yet.
+  std::move(bubble_callback).Run(SigninInterceptionResult::kAccepted);
+  EXPECT_FALSE(interceptor()->has_dice_signed_in_profile_creator_for_testing());
+  EXPECT_TRUE(interceptor()->is_interception_in_progress());
+
+  // Now simulate session completion.
+  // This should trigger ProceedWithProfileCreation and create the creator.
+  std::vector<CoreAccountId> secondary_ids = {secondary_info.account_id};
+  interceptor()->OnDiceSigninSessionComplete(initiator_info.account_id,
+                                             secondary_ids);
+  EXPECT_TRUE(interceptor()->has_dice_signed_in_profile_creator_for_testing());
+  EXPECT_THAT(
+      interceptor()->dice_signed_in_profile_creator_accounts_for_testing(),
+      testing::ElementsAre(initiator_info.account_id,
+                           secondary_info.account_id));
+  EXPECT_TRUE(interceptor()->is_interception_in_progress());
+}
+
+TEST_F(DiceWebSigninInterceptorTest,
+       MultiAccountInterception_UserAcceptsAfterCompletion) {
+  base::HistogramTester histogram_tester;
+  AccountInfo primary_account_info =
+      identity_test_env()->MakePrimaryAccountAvailable(
+          "primary@example.com", signin::ConsentLevel::kSignin);
+  AccountInfo initiator_info =
+      identity_test_env()->MakeAccountAvailable("alice@example.com");
+  MakeValidAccountInfo(&initiator_info);
+  initiator_info =
+      AccountInfo::Builder(initiator_info).SetGivenName("Alice").Build();
+  identity_test_env()->UpdateAccountInfoForAccount(initiator_info);
+
+  AccountInfo secondary_info =
+      identity_test_env()->MakeAccountAvailable("bob@example.com");
+  MakeValidAccountInfo(&secondary_info);
+  secondary_info =
+      AccountInfo::Builder(secondary_info).SetGivenName("Bob").Build();
+  identity_test_env()->UpdateAccountInfoForAccount(secondary_info);
+
+  base::OnceCallback<void(SigninInterceptionResult)> bubble_callback;
+  EXPECT_CALL(*mock_delegate(), ShowSigninInterceptionBubble(
+                                    web_contents(), testing::_, testing::_))
+      .WillOnce(testing::WithArg<2>(
+          [&bubble_callback](
+              base::OnceCallback<void(SigninInterceptionResult)> callback) {
+            bubble_callback = std::move(callback);
+            return std::make_unique<
+                TestScopedWebSigninInterceptionBubbleHandle>();
+          }));
+
+  interceptor()->MaybeInterceptWebSignin(
+      web_contents(), initiator_info.account_id,
+      signin_metrics::AccessPoint::kWebSignin, /*is_new_account=*/true,
+      /*is_sync_signin=*/false);
+
+  ASSERT_TRUE(bubble_callback);
+  ASSERT_TRUE(interceptor()->is_interception_in_progress());
+
+  // Simulate session completion first.
+  // This should NOT trigger profile creator because user hasn't accepted yet.
+  std::vector<CoreAccountId> secondary_ids = {secondary_info.account_id};
+  interceptor()->OnDiceSigninSessionComplete(initiator_info.account_id,
+                                             secondary_ids);
+  EXPECT_FALSE(interceptor()->has_dice_signed_in_profile_creator_for_testing());
+  EXPECT_TRUE(interceptor()->is_interception_in_progress());
+
+  // Now simulate user accepting.
+  // This should immediately trigger ProceedWithProfileCreation.
+  std::move(bubble_callback).Run(SigninInterceptionResult::kAccepted);
+  EXPECT_TRUE(interceptor()->has_dice_signed_in_profile_creator_for_testing());
+
+  EXPECT_THAT(
+      interceptor()->dice_signed_in_profile_creator_accounts_for_testing(),
+      testing::ElementsAre(initiator_info.account_id,
+                           secondary_info.account_id));
+  EXPECT_TRUE(interceptor()->is_interception_in_progress());
+}
+
+TEST_F(DiceWebSigninInterceptorTest,
+       MultiAccountInterception_SecondaryFailure) {
+  base::HistogramTester histogram_tester;
+  AccountInfo primary_account_info =
+      identity_test_env()->MakePrimaryAccountAvailable(
+          "primary@example.com", signin::ConsentLevel::kSignin);
+  AccountInfo initiator_info =
+      identity_test_env()->MakeAccountAvailable("alice@example.com");
+  MakeValidAccountInfo(&initiator_info);
+  initiator_info =
+      AccountInfo::Builder(initiator_info).SetGivenName("Alice").Build();
+  identity_test_env()->UpdateAccountInfoForAccount(initiator_info);
+
+  // Secondary 1: Bob has no refresh token in the source profile (simulates a
+  // failed background fetch of a new account).
+  // We only need a valid CoreAccountId for him, no extended setup needed.
+  CoreAccountId secondary_bob_id = CoreAccountId::FromString("bob_id");
+
+  // Secondary 2: Charlie has a valid refresh token in the source profile
+  // (simulates an account with a pre-existing token).
+  AccountInfo secondary_charlie =
+      identity_test_env()->MakeAccountAvailable("charlie@example.com");
+  MakeValidAccountInfo(&secondary_charlie);
+  secondary_charlie =
+      AccountInfo::Builder(secondary_charlie).SetGivenName("Charlie").Build();
+  identity_test_env()->UpdateAccountInfoForAccount(secondary_charlie);
+  identity_test_env()->SetRefreshTokenForAccount(secondary_charlie.account_id);
+
+  // Setup mock delegate.
+  base::OnceCallback<void(SigninInterceptionResult)> bubble_callback;
+  EXPECT_CALL(*mock_delegate(), ShowSigninInterceptionBubble(
+                                    web_contents(), testing::_, testing::_))
+      .WillOnce(testing::WithArg<2>(
+          [&bubble_callback](
+              base::OnceCallback<void(SigninInterceptionResult)> callback) {
+            bubble_callback = std::move(callback);
+            return std::make_unique<
+                TestScopedWebSigninInterceptionBubbleHandle>();
+          }));
+
+  // Start interception.
+  interceptor()->MaybeInterceptWebSignin(
+      web_contents(), initiator_info.account_id,
+      signin_metrics::AccessPoint::kWebSignin, /*is_new_account=*/true,
+      /*is_sync_signin=*/false);
+
+  ASSERT_TRUE(bubble_callback);
+  ASSERT_TRUE(interceptor()->is_interception_in_progress());
+
+  // User accepts immediately.
+  std::move(bubble_callback).Run(SigninInterceptionResult::kAccepted);
+  EXPECT_FALSE(interceptor()->has_dice_signed_in_profile_creator_for_testing());
+
+  // Simulate session completion.
+  // Bob has no refresh token, while Charlie has a valid token.
+  // Expected: Both are passed to the creator, which will filter out Bob.
+  std::vector<CoreAccountId> secondary_ids = {secondary_bob_id,
+                                              secondary_charlie.account_id};
+
+  interceptor()->OnDiceSigninSessionComplete(initiator_info.account_id,
+                                             secondary_ids);
+
+  EXPECT_TRUE(interceptor()->has_dice_signed_in_profile_creator_for_testing());
+
+  // Alice, Bob, and Charlie are passed to the creator. Only Alice and Charlie
+  // are actually moved, while Bob is skipped inside the creator.
+  // Note: The actual moving of tokens and verification of the target profile's
+  // database is tested in `dice_signed_in_profile_creator_unittest.cc`. In this
+  // file, we verify that the interceptor correctly gathers and delegates the
+  // expected list of accounts to the creator.
+  EXPECT_THAT(
+      interceptor()->dice_signed_in_profile_creator_accounts_for_testing(),
+      testing::ElementsAre(initiator_info.account_id, secondary_bob_id,
+                           secondary_charlie.account_id));
+  EXPECT_TRUE(interceptor()->is_interception_in_progress());
+}
+
+TEST_F(DiceWebSigninInterceptorTest,
+       MultiAccountInterception_LateSignalFromDifferentAccountIsIgnored) {
+  base::HistogramTester histogram_tester;
+  AccountInfo primary_account_info =
+      identity_test_env()->MakePrimaryAccountAvailable(
+          "primary@example.com", signin::ConsentLevel::kSignin);
+
+  // Account 1: Alice (Initiator 1)
+  AccountInfo initiator_alice =
+      identity_test_env()->MakeAccountAvailable("alice@example.com");
+  MakeValidAccountInfo(&initiator_alice);
+  initiator_alice =
+      AccountInfo::Builder(initiator_alice).SetGivenName("Alice").Build();
+  identity_test_env()->UpdateAccountInfoForAccount(initiator_alice);
+
+  // Account 2: Bob (Initiator 2)
+  AccountInfo initiator_bob =
+      identity_test_env()->MakeAccountAvailable("bob@example.com");
+  MakeValidAccountInfo(&initiator_bob);
+  initiator_bob =
+      AccountInfo::Builder(initiator_bob).SetGivenName("Bob").Build();
+  identity_test_env()->UpdateAccountInfoForAccount(initiator_bob);
+
+  // 1. Start Alice's interception.
+  base::OnceCallback<void(SigninInterceptionResult)> alice_bubble_callback;
+  EXPECT_CALL(*mock_delegate(), ShowSigninInterceptionBubble(
+                                    web_contents(), testing::_, testing::_))
+      .WillOnce(testing::WithArg<2>(
+          [&alice_bubble_callback](
+              base::OnceCallback<void(SigninInterceptionResult)> callback) {
+            alice_bubble_callback = std::move(callback);
+            return std::make_unique<
+                TestScopedWebSigninInterceptionBubbleHandle>();
+          }));
+
+  interceptor()->MaybeInterceptWebSignin(
+      web_contents(), initiator_alice.account_id,
+      signin_metrics::AccessPoint::kWebSignin, /*is_new_account=*/true,
+      /*is_sync_signin=*/false);
+
+  ASSERT_TRUE(alice_bubble_callback);
+  ASSERT_TRUE(interceptor()->is_interception_in_progress());
+
+  // 2. Alice's interception is declined (Reset is called).
+  std::move(alice_bubble_callback).Run(SigninInterceptionResult::kDeclined);
+  EXPECT_FALSE(interceptor()->is_interception_in_progress());
+  EXPECT_FALSE(interceptor()->has_dice_signed_in_profile_creator_for_testing());
+
+  // 3. Start Bob's interception.
+  base::OnceCallback<void(SigninInterceptionResult)> bob_bubble_callback;
+  EXPECT_CALL(*mock_delegate(), ShowSigninInterceptionBubble(
+                                    web_contents(), testing::_, testing::_))
+      .WillOnce(testing::WithArg<2>(
+          [&bob_bubble_callback](
+              base::OnceCallback<void(SigninInterceptionResult)> callback) {
+            bob_bubble_callback = std::move(callback);
+            return std::make_unique<
+                TestScopedWebSigninInterceptionBubbleHandle>();
+          }));
+
+  interceptor()->MaybeInterceptWebSignin(
+      web_contents(), initiator_bob.account_id,
+      signin_metrics::AccessPoint::kWebSignin, /*is_new_account=*/true,
+      /*is_sync_signin=*/false);
+
+  ASSERT_TRUE(bob_bubble_callback);
+  ASSERT_TRUE(interceptor()->is_interception_in_progress());
+
+  // 4. Now, Alice's late session completion signal arrives!
+  // This must be safely ignored because the active interception is for Bob.
+  std::vector<CoreAccountId> alice_secondaries = {};
+  interceptor()->OnDiceSigninSessionComplete(initiator_alice.account_id,
+                                             alice_secondaries);
+
+  // Verify that Alice's late signal did NOT trigger profile creation or change
+  // the active state.
+  EXPECT_FALSE(interceptor()->has_dice_signed_in_profile_creator_for_testing());
+  EXPECT_TRUE(interceptor()->is_interception_in_progress());
+
+  // 5. Bob's session completion signal arrives.
+  std::vector<CoreAccountId> bob_secondaries = {};
+  interceptor()->OnDiceSigninSessionComplete(initiator_bob.account_id,
+                                             bob_secondaries);
+
+  // User accepts Bob's bubble.
+  std::move(bob_bubble_callback).Run(SigninInterceptionResult::kAccepted);
+
+  // Verify profile creator was successfully started for Bob!
+  EXPECT_TRUE(interceptor()->has_dice_signed_in_profile_creator_for_testing());
+  EXPECT_THAT(
+      interceptor()->dice_signed_in_profile_creator_accounts_for_testing(),
+      testing::ElementsAre(initiator_bob.account_id));
 }

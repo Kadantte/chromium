@@ -17,6 +17,8 @@
 #import "ios/web/public/js_messaging/java_script_feature_util.h"
 #import "ios/web/public/js_messaging/script_message.h"
 #import "ios/web/public/js_messaging/web_frames_manager.h"
+#import "ios/web/public/web_state.h"
+#import "url/origin.h"
 
 namespace webauthn {
 
@@ -87,8 +89,16 @@ std::string Base64UrlEncode(std::string_view input) {
   return output;
 }
 
-bool ValidateFeatureUsage(const PasskeyRequestParams& request_params) {
+// Validates whether the given passkey request is permitted to proceed.
+bool ValidateFeatureUsage(const PasskeyRequestParams& request_params,
+                          bool has_user_interaction) {
   if (request_params.Type() == PasskeyRequestParams::RequestType::kModal) {
+    // Modal passkey registration or assertion is only allowed if it originates
+    // from a user gesture.
+    if (!has_user_interaction) {
+      return false;
+    }
+
     return base::FeatureList::IsEnabled(kIOSPasskeyModalLoginWithShim);
   } else {
     return base::FeatureList::IsEnabled(kIOSPasskeyConditionalLoginWithShim);
@@ -113,6 +123,8 @@ WebAuthenticationIOSContentAreaEvent ToWebAuthenticationIOSContentAreaEvent(
       return WebAuthenticationIOSContentAreaEvent::kCreateResolvedGpm;
     case PasskeyScriptEvent::kLogCreateResolvedNonGpm:
       return WebAuthenticationIOSContentAreaEvent::kCreateResolvedNonGpm;
+    case PasskeyScriptEvent::kCancelRequest:
+      return WebAuthenticationIOSContentAreaEvent::kCancelRequested;
   }
 }
 
@@ -250,7 +262,7 @@ void PasskeyJavaScriptFeature::ScriptMessageReceived(
   // event: (string) Describes a type of event.
   //
   // For some events there are more expected arguments described below.
-  base::Value* body = message.body();
+  base::Value* body = message.legacy_body();
   if (!body || !body->is_dict()) {
     return;
   }
@@ -258,8 +270,9 @@ void PasskeyJavaScriptFeature::ScriptMessageReceived(
   const base::DictValue& dict = body->GetDict();
 
   std::optional<PasskeyScriptEvent> event = ParsePasskeyScriptEvent(
-      dict, [passkey_tab_helper](const std::string& rp_id,
-                                 const std::string& credential_id) {
+      dict, message.security_origin(),
+      [passkey_tab_helper](const std::string& rp_id,
+                           const std::string& credential_id) {
         return passkey_tab_helper->HasCredential(rp_id, credential_id);
       });
 
@@ -274,8 +287,10 @@ void PasskeyJavaScriptFeature::ScriptMessageReceived(
       (*event == PasskeyScriptEvent::kHandleGetRequest);
   bool is_handle_create_request_event =
       (*event == PasskeyScriptEvent::kHandleCreateRequest);
+  bool is_cancel_request_event = (*event == PasskeyScriptEvent::kCancelRequest);
 
-  if (!is_handle_get_request_event && !is_handle_create_request_event) {
+  if (!is_handle_get_request_event && !is_handle_create_request_event &&
+      !is_cancel_request_event) {
     return;
   }
 
@@ -292,6 +307,37 @@ void PasskeyJavaScriptFeature::ScriptMessageReceived(
     return;
   }
 
+  if (is_cancel_request_event) {
+    passkey_tab_helper->HandleCancelRequestEvent(std::move(*request_info));
+    return;
+  }
+
+  if (is_handle_create_request_event) {
+    auto registration_request_params =
+        BuildRegistrationRequestParams(*request_info, dict);
+
+    if (!registration_request_params.has_value()) {
+      base::UmaHistogramEnumeration("WebAuthentication.IOS.PasskeyParsingError",
+                                    registration_request_params.error());
+      passkey_tab_helper->DeferToRenderer(
+          std::move(*request_info),
+          PasskeyRequestParams::RequestType::kUnknown);
+      return;
+    }
+
+    if (!ValidateFeatureUsage(*registration_request_params,
+                              message.is_user_interacting())) {
+      // TODO(crbug.com/460485333): Log the error.
+      passkey_tab_helper->DeferToRenderer(std::move(*request_info),
+                                          registration_request_params->Type());
+      return;
+    }
+
+    passkey_tab_helper->HandleCreateRequestedEvent(
+        std::move(*registration_request_params));
+    return;
+  }
+
   if (is_handle_get_request_event) {
     auto assertion_request_params =
         BuildAssertionRequestParams(*request_info, dict);
@@ -304,8 +350,9 @@ void PasskeyJavaScriptFeature::ScriptMessageReceived(
       return;
     }
 
-    if (!ValidateFeatureUsage(*assertion_request_params)) {
-      // TODO(460485333): Log the error.
+    if (!ValidateFeatureUsage(*assertion_request_params,
+                              message.is_user_interacting())) {
+      // TODO(crbug.com/460485333): Log the error.
       passkey_tab_helper->DeferToRenderer(std::move(*request_info),
                                           assertion_request_params->Type());
       return;
@@ -313,27 +360,6 @@ void PasskeyJavaScriptFeature::ScriptMessageReceived(
 
     passkey_tab_helper->HandleGetRequestedEvent(
         std::move(*assertion_request_params));
-  } else {  // is_handle_create_request_event
-    auto registration_request_params =
-        BuildRegistrationRequestParams(*request_info, dict);
-    if (!registration_request_params.has_value()) {
-      base::UmaHistogramEnumeration("WebAuthentication.IOS.PasskeyParsingError",
-                                    registration_request_params.error());
-      passkey_tab_helper->DeferToRenderer(
-          std::move(*request_info),
-          PasskeyRequestParams::RequestType::kUnknown);
-      return;
-    }
-
-    if (!ValidateFeatureUsage(*registration_request_params)) {
-      // TODO(460485333): Log the error.
-      passkey_tab_helper->DeferToRenderer(std::move(*request_info),
-                                          registration_request_params->Type());
-      return;
-    }
-
-    passkey_tab_helper->HandleCreateRequestedEvent(
-        std::move(*registration_request_params));
   }
 }
 

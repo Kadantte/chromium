@@ -73,7 +73,9 @@ class TabListInterface {
 
   // Opens a new tab to the given `url`, inserting it at `index` in the tab
   // strip. `index` may be ignored by the implementation if necessary.
-  virtual tabs::TabInterface* OpenTab(const GURL& url, int index) = 0;
+  virtual tabs::TabInterface* OpenTab(const GURL& url,
+                                      int index,
+                                      bool foreground = true) = 0;
 
   // Sets the opener for the `target` tab to be the `opener` tab.
   virtual void SetOpenerForTab(tabs::TabHandle target,
@@ -81,6 +83,18 @@ class TabListInterface {
 
   // Get the `opener` tab from `target` tab.
   virtual tabs::TabInterface* GetOpenerForTab(tabs::TabHandle target) = 0;
+
+  // Insert `web_contents` into a TabListInterface at target `index`.
+  // If `should_pin` is true, the tab will be pinned. On desktop, this
+  // corresponds to the `ADD_PINNED` flag. Other actions on insertion (like
+  // making the tab active) are not supported by this method.
+  // The tab can optionally be added to a `group`.
+  // Returns the interface for the newly inserted tab.
+  virtual tabs::TabInterface* InsertWebContentsAt(
+      int index,
+      std::unique_ptr<content::WebContents> web_contents,
+      bool should_pin,
+      std::optional<tab_groups::TabGroupId> group) = 0;
 
   // Attempts to discard the renderer for the `tab` from memory and return the
   // discarded WebContents if successful.
@@ -112,6 +126,12 @@ class TabListInterface {
 
   // Closes the `tab`.
   virtual void CloseTab(tabs::TabHandle tab) = 0;
+
+  // Detaches the `tab` from the tab list and returns its WebContents.
+  // Ownership of the WebContents is transferred to the caller.
+  // This will NOT destroy the tab or its WebContents.
+  virtual std::unique_ptr<content::WebContents> DetachWebContents(
+      tabs::TabHandle tab) = 0;
 
   // Returns an in-order list of all tabs in the tab strip.
   virtual std::vector<tabs::TabInterface*> GetAllTabs() = 0;
@@ -183,8 +203,8 @@ class TabListInterface {
   // will be inserted with the first tab at `index` in the destination tab list.
   // This will no-op if the tab group is not present in this TabListInterface or
   // the destination window does not exist. `index` may be adjusted as necessary
-  // to ensure the tab group is in a valid position.
-  virtual void MoveTabGroupToWindow(tab_groups::TabGroupId group_id,
+  // to ensure the tab group is in a valid position. Returns true on success.
+  virtual bool MoveTabGroupToWindow(tab_groups::TabGroupId group_id,
                                     SessionID destination_window_id,
                                     int destination_index) = 0;
 

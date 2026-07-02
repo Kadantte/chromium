@@ -30,17 +30,25 @@
 
 #include "third_party/blink/renderer/core/svg/svg_geometry_element.h"
 
+#include <cmath>
+#include <limits>
+
 #include "third_party/blink/renderer/bindings/core/v8/v8_dom_point_init.h"
+#include "third_party/blink/renderer/core/css/css_identifier_value.h"
+#include "third_party/blink/renderer/core/css/css_numeric_literal_value.h"
+#include "third_party/blink/renderer/core/css/css_primitive_value.h"
 #include "third_party/blink/renderer/core/geometry/dom_point.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_path.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_shape.h"
 #include "third_party/blink/renderer/core/layout/svg/svg_layout_support.h"
 #include "third_party/blink/renderer/core/svg/svg_animated_number.h"
+#include "third_party/blink/renderer/core/svg/svg_length_functions.h"
 #include "third_party/blink/renderer/core/svg/svg_point_tear_off.h"
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/platform/geometry/path_builder.h"
 #include "third_party/blink/renderer/platform/geometry/stroke_data.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/transforms/affine_transform.h"
 
 namespace blink {
@@ -48,9 +56,15 @@ namespace blink {
 class SVGAnimatedPathLength final : public SVGAnimatedNumber {
  public:
   explicit SVGAnimatedPathLength(SVGGeometryElement* context_element)
-      : SVGAnimatedNumber(context_element,
-                          svg_names::kPathLengthAttr,
-                          MakeGarbageCollected<SVGNumber>()) {}
+      : SVGAnimatedNumber(
+            context_element,
+            svg_names::kPathLengthAttr,
+            MakeGarbageCollected<SVGNumber>(),
+            RuntimeEnabledFeatures::SvgPathLengthCssPropertyEnabled()
+                ? CSSPropertyID::kPathLength
+                : CSSPropertyID::kInvalid) {}
+
+  const CSSValue* CssValue() const final;
 
   SVGParsingError AttributeChanged(const String& value) override {
     SVGParsingError parse_status = SVGAnimatedNumber::AttributeChanged(value);
@@ -60,18 +74,45 @@ class SVGAnimatedPathLength final : public SVGAnimatedNumber {
   }
 };
 
+const CSSValue* SVGAnimatedPathLength::CssValue() const {
+  DCHECK(HasPresentationAttributeMapping());
+  // A negative animated value is an error; treat it as 'none'.
+  if (CurrentValue()->Value() < 0) {
+    return CSSIdentifierValue::Create(CSSValueID::kNone);
+  }
+  return CSSNumericLiteralValue::Create(CurrentValue()->Value(),
+                                        CSSPrimitiveValue::UnitType::kPixels);
+}
+
 SVGGeometryElement::SVGGeometryElement(const QualifiedName& tag_name,
                                        Document& document,
                                        ConstructionType construction_type)
-    : SVGGraphicsElement(tag_name, document, construction_type),
-      path_length_(MakeGarbageCollected<SVGAnimatedPathLength>(this)) {}
+    : SVGGraphicsElement(tag_name, document, construction_type) {}
+
+SVGAnimatedNumber& SVGGeometryElement::EnsurePathLength() const {
+  if (!path_length_) {
+    path_length_ = MakeGarbageCollected<SVGAnimatedPathLength>(
+        const_cast<SVGGeometryElement*>(this));
+  }
+  return *path_length_;
+}
+
+SVGAnimatedNumber* SVGGeometryElement::pathLength() const {
+  return &EnsurePathLength();
+}
 
 void SVGGeometryElement::SvgAttributeChanged(
     const SvgAttributeChangedParams& params) {
   const QualifiedName& attr_name = params.name;
   if (attr_name == svg_names::kPathLengthAttr) {
-    if (LayoutObject* layout_object = GetLayoutObject())
+    CHECK(path_length_);
+    if (RuntimeEnabledFeatures::SvgPathLengthCssPropertyEnabled()) {
+      UpdatePresentationAttributeStyle(*path_length_);
+      return;
+    }
+    if (LayoutObject* layout_object = GetLayoutObject()) {
       MarkForLayoutAndParentResourceInvalidation(*layout_object);
+    }
     return;
   }
 
@@ -222,13 +263,26 @@ float SVGGeometryElement::ComputePathLength() const {
 }
 
 float SVGGeometryElement::AuthorPathLength() const {
-  if (!pathLength()->IsSpecified())
+  if (RuntimeEnabledFeatures::SvgPathLengthCssPropertyEnabled()) {
+    const ComputedStyle* style =
+        const_cast<SVGGeometryElement*>(this)->EnsureComputedStyle();
+    if (!style || style->PathLength().IsNone()) {
+      return std::numeric_limits<float>::quiet_NaN();
+    }
+    // path-length cannot be a percentage, so the dimension is unused. This
+    // also divides out the effective zoom to keep the author value stable.
+    return ValueForLength(style->PathLength(), *style, /*dimension=*/0);
+  }
+  // Read from the animated SVG attribute directly.
+  if (!path_length_ || !path_length_->IsSpecified()) {
     return std::numeric_limits<float>::quiet_NaN();
-  float author_path_length = pathLength()->CurrentValue()->Value();
+  }
+  float author_path_length = path_length_->CurrentValue()->Value();
   // https://svgwg.org/svg2-draft/paths.html#PathLengthAttribute
   // "A negative value is an error"
-  if (author_path_length < 0)
+  if (author_path_length < 0) {
     return std::numeric_limits<float>::quiet_NaN();
+  }
   return author_path_length;
 }
 
@@ -268,6 +322,11 @@ void SVGGeometryElement::GeometryAttributeChanged() {
   if (auto* layout_object = To<LayoutSVGShape>(GetLayoutObject())) {
     layout_object->SetNeedsShapeUpdate();
     MarkForLayoutAndParentResourceInvalidation(*layout_object);
+  } else {
+    NotifyIncomingReferences([](SVGElement& element) {
+      DCHECK(element.GetLayoutObject());
+      MarkForLayoutAndParentResourceInvalidation(*element.GetLayoutObject());
+    });
   }
   NotifyResourceClients();
 }
@@ -280,16 +339,27 @@ LayoutObject* SVGGeometryElement::CreateLayoutObject(const ComputedStyle&) {
 SVGAnimatedPropertyBase* SVGGeometryElement::PropertyFromAttribute(
     const QualifiedName& attribute_name) const {
   if (attribute_name == svg_names::kPathLengthAttr) {
-    return path_length_.Get();
+    return &EnsurePathLength();
   } else {
     return SVGGraphicsElement::PropertyFromAttribute(attribute_name);
   }
 }
 
 void SVGGeometryElement::SynchronizeAllSVGAttributes() const {
-  SVGAnimatedPropertyBase* attrs[]{path_length_.Get()};
-  SynchronizeListOfSVGAttributes(attrs);
+  if (path_length_) {
+    SVGAnimatedPropertyBase* attrs[]{path_length_.Get()};
+    SynchronizeListOfSVGAttributes(attrs);
+  }
   SVGGraphicsElement::SynchronizeAllSVGAttributes();
+}
+
+void SVGGeometryElement::CollectExtraStyleForPresentationAttribute(
+    HeapVector<CSSPropertyValue, 8>& style) {
+  if (RuntimeEnabledFeatures::SvgPathLengthCssPropertyEnabled() &&
+      path_length_) {
+    AddAnimatedPropertyToPresentationAttributeStyle(*path_length_, style);
+  }
+  SVGGraphicsElement::CollectExtraStyleForPresentationAttribute(style);
 }
 
 }  // namespace blink

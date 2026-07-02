@@ -17,34 +17,90 @@ export function getHtml(this: ContextualTasksAppElement) {
           .title="${this.threadTitle_}"
           .darkMode="${this.darkMode_}"
           .isAiPage="${this.isAiPage_}"
+          .isAimEligible="${this.isAimEligible_}"
+          .isUserSignedIn="${this.isUserSignedIn_}"
+          .enableOpenInNewTabButton="${this.isAiPage_ && !this.isErrorPageVisible_}"
+          .onboardingTooltipShowing="${this.onboardingTooltipShowing_}"
           @new-thread-click="${this.onNewThreadClick_}">
       </top-toolbar>
     </div>
   `}
-  <webview id="threadFrame" allowtransparency="on" partition="persist:contextual-tasks"></webview>
+  <webview id="threadFrame" allowtransparency="on"
+      partition="persist:contextual-tasks"
+      style="${this.getThreadFrameStyles()}">
+  </webview>
   <ghost-loader id="ghostLoader"></ghost-loader>
   ${this.isErrorDialogVisible_ ?
     html`<contextual-tasks-error-dialog></contextual-tasks-error-dialog>` : ''}
   <div id="flexCenterContainer">
     <div id="composeboxHeaderWrapper"
-        ?hidden="${this.isInBasicMode_ && !this.enableBasicModeZOrder_}">
+        ?hidden="${this.isComposeboxHeaderWrapperHidden_()}">
       <h1 class="thread-header" id="composeboxHeader">
-          ${this.friendlyZeroStateTitle}
-          ${this.friendlyZeroStateSubtitle.length > 0 ?
-              html`<br>
-              ${this.friendlyZeroStateSubtitle}` : ''}
+        ${this.userName_
+            ? [
+              html`<span>${this.friendlyZeroStateTitleBeforeName_}</span>`,
+              html`<span id="nameShimmer" class="name-shimmer">${this.userName_}</span>`,
+              html`<span>${this.friendlyZeroStateTitleAfterName_}</span>`,
+            ]
+            : html`<span>${this.friendlyZeroStateTitle}</span>`
+        }
+        ${this.friendlyZeroStateSubtitle.length > 0 ?
+            html`<br>
+            ${this.friendlyZeroStateSubtitle}` : ''}
       </h1>
     </div>
+<if expr="not is_android">
+    ${this.showOnboardingTooltip_ ? html`
+      <contextual-tasks-onboarding-tooltip id="onboardingTooltip"
+          @onboarding-tooltip-dismissed="${this.onOnboardingTooltipDismissed_}">
+      </contextual-tasks-onboarding-tooltip>
+    ` : ''}
+    ${this.showSmartTabSharingTryItIph_ ? html`
+      <contextual-tasks-banner-promo id="stsTryItPromo"
+          style="${this.getBannerPromoBoundsStyles_()}"
+          accept-button-text="$i18n{stsTryItTurnOn}"
+          dismiss-button-text="$i18n{stsTryItNotNow}"
+          @dismiss="${this.onStsTryItDismiss_}"
+          @accept="${this.onStsTryItAccept_}">
+        <span slot="header">$i18n{stsTryItHeader}</span>
+        <span slot="body">$i18n{stsTryItBody}</span>
+      </contextual-tasks-banner-promo>
+    ` : ''}
+    ${this.showSmartTabSharingDefaultOnIph_ ? html`
+      <contextual-tasks-banner-promo id="stsDefaultOnPromo"
+          style="${this.getBannerPromoBoundsStyles_()}"
+          accept-button-text="$i18n{stsDefaultOnTurnOn}"
+          dismiss-button-text="$i18n{stsDefaultOnNotNow}"
+          @dismiss="${this.onStsDefaultOnDismiss_}"
+          @accept="${this.onStsDefaultOnAccept_}">
+        <span slot="header">$i18n{stsDefaultOnHeader}</span>
+        <span slot="body">
+          $i18n{stsDefaultOnBody}
+          <a href="chrome://settings/ai"
+              target="_blank">$i18n{stsDefaultOnLink}</a>
+          $i18n{stsDefaultOnBodyEnd}
+        </span>
+      </contextual-tasks-banner-promo>
+    ` : ''}
+</if>
+<if expr="not is_android or enable_webui_contextual_tasks_composebox">
     <contextual-tasks-composebox id="composebox"
-          ?hidden="${this.isInBasicMode_ && !this.enableBasicModeZOrder_}"
+          style="${this.getComposeboxBoundsStyles()}"
+          ?hidden="${this.isComposeboxHidden_()}"
           .isZeroState="${this.isZeroState_}"
           .isSidePanel="${!this.isShownInTab_}"
-          .enableNativeZeroStateSuggestions=
-              "${this.enableNativeZeroStateSuggestions_}"
-          .inputEnabled="${!this.isInputLocked_}">
+          .isLensOverlayShowing="${this.isLensOverlayShowing_}"
+          .isOverlayOpenForAimVisualSearch="${
+              this.isOverlayOpenForAimVisualSearch_}"
+          .enableNativeZeroStateSuggestions="${
+              this.enableNativeZeroStateSuggestions_}"
+          .inputEnabled="${!this.isInputLocked_}"
+          .inNlm="${this.inNlm_}">
     </contextual-tasks-composebox>
+</if>
   </div>
   <error-page id="errorPage"></error-page>
+  <div id="iphMenuSmartTabSharingAnchor"></div>
   <!--_html_template_end_-->`;
 }
 // clang-format on

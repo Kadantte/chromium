@@ -14,8 +14,8 @@
 #include "components/sharing_message/features.h"
 #include "components/sharing_message/mock_sharing_service.h"
 #include "components/sharing_message/pref_names.h"
+#include "components/sharing_message/sharing_channel_sender.h"
 #include "components/sharing_message/sharing_fcm_handler.h"
-#include "components/sharing_message/sharing_fcm_sender.h"
 #include "components/sharing_message/sharing_handler_registry.h"
 #include "components/sharing_message/sharing_service.h"
 #include "components/sharing_message/sharing_sync_preference.h"
@@ -118,7 +118,7 @@ TEST_F(ClickToCallUtilsTest, NonTelLink_DoNotOfferForLink) {
 TEST_F(ClickToCallUtilsTest, TelLinkWithFragment) {
   GURL fragment("tel:123#456");
   EXPECT_TRUE(ShouldOfferClickToCallForURL(&profile_, fragment));
-  EXPECT_EQ("123", fragment.GetContent());
+  EXPECT_EQ("123", fragment.GetContentPiece());
 }
 
 TEST_F(ClickToCallUtilsTest, TelLinkWithEncodedCharacters) {

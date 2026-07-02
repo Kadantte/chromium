@@ -26,8 +26,8 @@
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/trusted_vault/trusted_vault_encryption_keys_tab_helper.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/views/profiles/profile_management_types.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_view.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_web_contents_host.h"
@@ -132,7 +132,7 @@ void ProfilePickerSignInProvider::SwitchToSignIn(
     host_->ShowScreen(
         contents(), GURL(),
         base::BindOnce(std::move(switch_finished_callback.value()), true));
-    host_->SetNativeToolbarVisible(true);
+    host_->SetNativeToolbarSigninButtonsVisible(true);
     return;
   }
 
@@ -176,7 +176,7 @@ void ProfilePickerSignInProvider::NavigateBack() {
   // Do not load any url because the desired screen is still loaded in the
   // picker contents.
   host_->ShowScreenInPickerContents(GURL(), base::OnceClosure());
-  host_->SetNativeToolbarVisible(false);
+  host_->SetNativeToolbarSigninButtonsVisible(false);
 }
 
 bool ProfilePickerSignInProvider::HandleContextMenu(
@@ -227,6 +227,12 @@ void ProfilePickerSignInProvider::NavigationStateChanged(
   if (source != contents_.get()) {
     return;
   }
+
+  // The first Gaia screen has no back history. If CanGoBack() is `false`, we
+  // are on the first screen and the "Don't sign in" button (if exists) should
+  // be visible.
+  host_->SetNativeToolbarDontSignInButtonVisible(
+      !contents_->GetController().CanGoBack());
 
   const GURL& visible_url = contents_->GetVisibleURL();
   auto primary_account =
@@ -297,14 +303,7 @@ void ProfilePickerSignInProvider::OnProfileInitialized(
       content::WebContents::CreateParams(profile_));
   contents()->SetDelegate(this);
 
-  // Create a manager that supports modal dialogs, such as for webauthn.
-  web_modal::WebContentsModalDialogManager::CreateForWebContents(contents());
-  web_modal::WebContentsModalDialogManager::FromWebContents(contents())
-      ->SetDelegate(this);
-
-  // To allow passing encryption keys during interactions with the page,
-  // instantiate TrustedVaultEncryptionKeysTabHelper.
-  TrustedVaultEncryptionKeysTabHelper::CreateForWebContents(contents());
+  AddCommonSigninWebContentUserData(contents(), this);
 
   // Record that the sign in process starts. Its end is recorded automatically
   // when the primary account is set.
@@ -327,18 +326,16 @@ void ProfilePickerSignInProvider::OnProfileInitialized(
       contents(), host_->GetPreferredBackgroundColor());
 
   base::OnceClosure navigation_finished_closure =
-      base::BindOnce(&ProfilePickerWebContentsHost::SetNativeToolbarVisible,
-                     // Unretained is enough as the callback is called by the
-                     // host itself.
-                     base::Unretained(host_), /*visible=*/true)
+      base::BindOnce(
+          &ProfilePickerWebContentsHost::SetNativeToolbarSigninButtonsVisible,
+          // Unretained is enough as the callback is called by the
+          // host itself.
+          base::Unretained(host_), /*visible=*/true)
           .Then(base::BindOnce(std::move(switch_finished_callback.value()),
                                true));
   host_->ShowScreen(contents(), BuildSigninURL(),
                     std::move(navigation_finished_closure));
-#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
-  ChromePasswordReuseDetectionManagerClient::CreateForProfilePickerWebContents(
-      contents());
-#endif
+
   // Attach a `DiceTabHelper` to the `WebContents` to trigger the completion
   // of the step.
   DiceTabHelper::CreateForWebContents(contents());
@@ -354,7 +351,7 @@ bool ProfilePickerSignInProvider::IsInitialized() const {
 void ProfilePickerSignInProvider::FinishFlow(
     const CoreAccountInfo& account_info) {
   DCHECK(IsInitialized());
-  host_->SetNativeToolbarVisible(false);
+  host_->SetNativeToolbarSigninButtonsVisible(false);
   ResetWebContentsDelegates();
   std::move(callback_).Run(profile_.get(), account_info, std::move(contents_),
                            StepSwitchFinishedCallback());
@@ -388,8 +385,7 @@ void ProfilePickerSignInProvider::ShowSigninError(
     Profile* profile,
     content::WebContents* contents,
     const SigninUIError& error) {
-  if (!base::FeatureList::IsEnabled(
-          syncer::kReplaceSyncPromosWithSignInPromos)) {
+  if (!syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
     return;
   }
   delegate_->ShowSigninError(profile, error);
@@ -462,7 +458,25 @@ void ProfilePickerSignInProvider::InitializeOrUpdateDiceTabHelper(
           DiceTabHelper::GetHistorySyncOptinCallbackForBrowser());
       helper.UpdateSigninErrorCallback(
           DiceTabHelper::GetShowSigninErrorCallbackForBrowser());
-      helper.UpdateRedirectUrl(GURL(chrome::kChromeUINewTabURL));
+      helper.UpdateRedirectUrl(chrome::ChromeUINewTabURLAsGURL());
       return;
   }
+}
+
+void AddCommonSigninWebContentUserData(
+    content::WebContents* web_contents,
+    web_modal::WebContentsModalDialogManagerDelegate* delegate) {
+  // Create a manager that supports modal dialogs, such as for webauthn.
+  web_modal::WebContentsModalDialogManager::CreateForWebContents(web_contents);
+  web_modal::WebContentsModalDialogManager::FromWebContents(web_contents)
+      ->SetDelegate(delegate);
+
+  // To allow passing encryption keys during interactions with the page,
+  // instantiate TrustedVaultEncryptionKeysTabHelper.
+  TrustedVaultEncryptionKeysTabHelper::CreateForWebContents(web_contents);
+
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+  ChromePasswordReuseDetectionManagerClient::CreateForProfilePickerWebContents(
+      web_contents);
+#endif
 }

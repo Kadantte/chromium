@@ -12,12 +12,12 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/unguessable_token.h"
 #include "chrome/browser/feature_engagement/tracker_factory.h"
+#include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/media/router/media_router_feature.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/global_media_controls/cast_device_list_host.h"
 #include "chrome/browser/ui/global_media_controls/media_notification_device_provider_impl.h"
 #include "chrome/browser/ui/global_media_controls/presentation_request_notification_producer.h"
@@ -37,6 +37,7 @@
 #include "content/public/browser/audio_service.h"
 #include "content/public/browser/media_session.h"
 #include "content/public/browser/media_session_service.h"
+#include "content/public/browser/render_frame_host.h"
 #include "media/base/media_switches.h"
 #include "media/remoting/device_capability_checker.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -54,12 +55,6 @@
 #include "ash/system/unified/unified_system_tray.h"
 #include "ash/system/unified/unified_system_tray_bubble.h"
 #include "ash/system/unified/unified_system_tray_controller.h"
-#endif
-
-#if BUILDFLAG(ENABLE_GLIC)
-#include "chrome/browser/glic/host/host.h"
-#include "chrome/browser/glic/public/glic_keyed_service.h"
-#include "chrome/browser/glic/widget/glic_window_controller.h"
 #endif
 
 namespace mojom {
@@ -87,7 +82,8 @@ void CancelRequest(
 // focused.
 bool IsWebContentsFocused(content::WebContents* web_contents) {
   DCHECK(web_contents);
-  Browser* browser = chrome::FindBrowserWithTab(web_contents);
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
   if (!browser) {
     return false;
   }
@@ -97,7 +93,7 @@ bool IsWebContentsFocused(content::WebContents* web_contents) {
   if (GetLastActiveBrowserWindowInterfaceWithAnyProfile() != browser) {
     return false;
   }
-  return browser->tab_strip_model()->GetActiveWebContents() == web_contents;
+  return browser->GetTabStripModel()->GetActiveWebContents() == web_contents;
 }
 
 bool ShouldInitializeWithRemotePlaybackSource(
@@ -462,6 +458,12 @@ void MediaNotificationService::OnStartPresentationContextCreated(
         GetActiveControllableSessionForWebContents(web_contents);
     media_session_item_producer_->UpdateMediaItemSourceOrigin(
         item_id, context_->presentation_request().frame_origin);
+#if BUILDFLAG(IS_CHROMEOS)
+    if (auto* provider = ash::MediaNotificationProvider::Get(); provider) {
+      provider->UpdateMediaItemSourceOrigin(
+          item_id, context_->presentation_request().frame_origin);
+    }
+#endif
   } else if (presentation_request_notification_producer_) {
     // If there do not exist active notifications, pass |context| to
     // |presentation_request_notification_producer_| to create a dummy
@@ -481,11 +483,11 @@ void MediaNotificationService::GetDeviceListHostForSession(
   // `remoting_session_id` is used to construct the MediaRemotingCallback for
   // CastDeviceListHost to request Media Remoting for a MediaSession. This is
   // used for Media Remoting sessions started from the GMC dialog. However, when
-  // the dialog is opened for RemotePlayback#prompt() (when `context_` is not
-  // nullptr), the Remote Playback API on the blink side handles sending Media
-  // Remoting request and there's no need for requesting Media Remoting from
-  // MNS.
-  if (context_ == nullptr) {
+  // the dialog is opened for RemotePlayback#prompt() (when there is a matching
+  // presentation context), the Remote Playback API on the blink side handles
+  // sending the Media Remoting request and there's no need for requesting Media
+  // Remoting from MNS.
+  if (!HasPresentationContextForSession(session_id)) {
     remoting_session_id = session_id;
   }
   CreateCastDeviceListHost(CreateCastDialogControllerForSession(session_id),
@@ -516,7 +518,7 @@ MediaNotificationService::CreateCastDialogControllerForSession(
     return nullptr;
   }
 
-  if (context_) {
+  if (HasPresentationContextForSession(id)) {
     return media_router::MediaRouterUI::CreateWithStartPresentationContext(
         web_contents, std::move(context_));
   }
@@ -592,6 +594,23 @@ void MediaNotificationService::CreateCastDeviceListHost(
   host_receivers_.emplace(host_id, std::move(host_receiver));
 }
 
+bool MediaNotificationService::HasPresentationContextForSession(
+    const std::string& session_id) {
+  if (!context_) {
+    return false;
+  }
+  auto* initiator_rfh = content::RenderFrameHost::FromID(
+      context_->presentation_request().render_frame_host_id);
+  if (!initiator_rfh || !initiator_rfh->IsActive()) {
+    context_.reset();
+    return false;
+  }
+  auto* web_contents =
+      content::MediaSession::GetWebContentsFromRequestId(session_id);
+  return web_contents && content::WebContents::FromRenderFrameHost(
+                             initiator_rfh) == web_contents;
+}
+
 void MediaNotificationService::set_device_provider_for_testing(
     std::unique_ptr<MediaNotificationDeviceProvider> device_provider) {
   device_provider_ = std::move(device_provider);
@@ -664,29 +683,7 @@ void MediaNotificationService::RemoveDeviceListHost(int host_id) {
 
 bool MediaNotificationService::IsIdBlocked(
     const std::string& request_id) const {
-#if BUILDFLAG(ENABLE_GLIC)
-  auto* glic_keyed_service = glic::GlicKeyedService::Get(profile_);
-  if (!glic_keyed_service) {
-    return false;
-  }
-
-  // Block if the request came from any glic instance.
-  for (glic::GlicInstance* instance :
-       glic_keyed_service->window_controller().GetInstances()) {
-    if (!instance->host().webui_contents()) {
-      continue;
-    }
-
-    std::vector<content::WebContents*> inner_contents =
-        instance->host().webui_contents()->GetInnerWebContents();
-    if (inner_contents.size() == 1ul &&
-        content::MediaSession::GetRequestIdFromWebContents(inner_contents[0])
-                .ToString() == request_id) {
-      return true;
-    }
-  }
-#endif
-  return false;
+  return glic::IsMediaRequestFromGlic(profile_, request_id);
 }
 
 global_media_controls::MediaItemManager* MediaNotificationService::

@@ -154,6 +154,11 @@ class PLATFORM_EXPORT PaintArtifactCompositor final
 
     // Full update of layers and property trees. See `Update`.
     kFull,
+
+    // TODO(522765400): The enum values are logged to UMA temporarily.
+    // Please keep in sync with "PACUpdateType" in
+    // src/tools/metrics/histograms/metadata/blink/enums.xml.
+    kMaxValue = kFull,
   };
 
   void SetNeedsUpdate() { SetNeedsUpdateInternal(UpdateType::kFull); }
@@ -162,6 +167,9 @@ class PLATFORM_EXPORT PaintArtifactCompositor final
   }
   void SetNeedsUpdateAfterRepaint(const PaintArtifact& previous,
                                   const PaintArtifact& repainted);
+  void SetScrollingContentsCullRectChanged() {
+    scrolling_contents_cull_rect_changed_ = true;
+  }
 
   UpdateType NeedsUpdate() const { return needs_update_; }
   void ClearNeedsUpdateForTesting() { needs_update_ = UpdateType::kNone; }
@@ -217,6 +225,12 @@ class PLATFORM_EXPORT PaintArtifactCompositor final
 
   void SetTracksRasterInvalidations(bool);
 
+  bool HasCanvasChildPaintRecord(DOMNodeId child_id) const;
+  std::optional<CanvasChildPaintRecord> GetCanvasChildPaintRecord(
+      DOMNodeId child_id) const;
+  const CanvasChildPaintState* GetCanvasChildPaintState(
+      DOMNodeId child_id) const;
+
   // Called when the local frame view that owns this compositor is
   // going to be removed from its frame.
   void WillBeRemovedFromFrame();
@@ -261,11 +275,18 @@ class PLATFORM_EXPORT PaintArtifactCompositor final
   struct SynthesizedClipEntry {
     DISALLOW_NEW();
 
-    Member<const ClipPaintPropertyNode> key;
+    Member<const ClipPaintPropertyNode> clip_key;
     std::unique_ptr<SynthesizedClip> synthesized_clip;
     bool in_use;
+    // Transform space of the emitted mask layer. The same clip can be
+    // re-emitted in a different transform space, so the cache key must
+    // include both clip and transform.
+    Member<const TransformPaintPropertyNode> transform_key;
 
-    void Trace(Visitor* visitor) const { visitor->Trace(key); }
+    void Trace(Visitor* visitor) const {
+      visitor->Trace(clip_key);
+      visitor->Trace(transform_key);
+    }
   };
 
  private:
@@ -323,6 +344,9 @@ class PLATFORM_EXPORT PaintArtifactCompositor final
   bool layer_debug_info_enabled_ = false;
   bool should_always_update_on_scroll_ = false;
 
+  // TODO(crbug.com/522765400): This is temporary for performance evaluation.
+  bool scrolling_contents_cull_rect_changed_ = false;
+
   UpdateType needs_update_ = UpdateType::kFull;
   UpdateType previous_update_for_testing_ = UpdateType::kNone;
 
@@ -335,6 +359,7 @@ class PLATFORM_EXPORT PaintArtifactCompositor final
 
   class OldPendingLayerMatcher;
   PendingLayers pending_layers_;
+  HashMap<DOMNodeId, wtf_size_t> canvas_child_layer_map_;
 
   class Layerizer;
 

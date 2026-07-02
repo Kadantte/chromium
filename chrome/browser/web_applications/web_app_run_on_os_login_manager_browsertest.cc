@@ -20,8 +20,8 @@
 #include "chrome/browser/notifications/system_notification_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/startup/first_run_service.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
@@ -45,7 +45,6 @@
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_run_on_os_login_manager.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -282,7 +281,9 @@ IN_PROC_BROWSER_TEST_F(
   run_on_os_login_handler_.WaitForRunOnOsLogin();
 
   // Should have 2 browsers: normal and app.
-  ASSERT_EQ(2u, chrome::GetBrowserCount(browser()->profile()));
+  ASSERT_EQ(
+      2u,
+      ProfileBrowserCollection::GetForProfile(browser()->profile())->GetSize());
 
   BrowserWindowInterface* app_browser = FindAppBrowser(GURL(kTestApp));
   ASSERT_TRUE(app_browser);
@@ -305,7 +306,9 @@ IN_PROC_BROWSER_TEST_F(
   run_on_os_login_handler_.WaitForRunOnOsLogin();
 
   // Should have 2 browsers: normal and app.
-  ASSERT_EQ(2u, chrome::GetBrowserCount(browser()->profile()));
+  ASSERT_EQ(
+      2u,
+      ProfileBrowserCollection::GetForProfile(browser()->profile())->GetSize());
   BrowserWindowInterface* app_browser = FindAppBrowser(GURL(kTestApp));
 
   ASSERT_TRUE(app_browser);
@@ -327,7 +330,9 @@ IN_PROC_BROWSER_TEST_F(WebAppRunOnOsLoginManagerBrowserTest,
   provider().command_manager().AwaitAllCommandsCompleteForTesting();
 
   // Should have only the normal browser as there is no network.
-  ASSERT_EQ(1u, chrome::GetBrowserCount(browser()->profile()));
+  ASSERT_EQ(
+      1u,
+      ProfileBrowserCollection::GetForProfile(browser()->profile())->GetSize());
 
   // Simulate the network coming back.
   mock_tracker_->OnNetworkChanged(
@@ -335,7 +340,9 @@ IN_PROC_BROWSER_TEST_F(WebAppRunOnOsLoginManagerBrowserTest,
   run_on_os_login_handler_.WaitForRunOnOsLogin();
 
   // Should have 2 browsers: normal and app.
-  ASSERT_EQ(2u, chrome::GetBrowserCount(browser()->profile()));
+  ASSERT_EQ(
+      2u,
+      ProfileBrowserCollection::GetForProfile(browser()->profile())->GetSize());
   BrowserWindowInterface* app_browser = FindAppBrowser(GURL(kTestApp));
 
   ASSERT_TRUE(app_browser);
@@ -364,7 +371,9 @@ IN_PROC_BROWSER_TEST_F(
   provider().command_manager().AwaitAllCommandsCompleteForTesting();
 
   // Should have only the normal browser as there is no network.
-  ASSERT_EQ(1u, chrome::GetBrowserCount(browser()->profile()));
+  ASSERT_EQ(
+      1u,
+      ProfileBrowserCollection::GetForProfile(browser()->profile())->GetSize());
 
   // Asynchronously notify that there is a network connection
   std::move(connection_changed_callback)
@@ -372,7 +381,9 @@ IN_PROC_BROWSER_TEST_F(
   run_on_os_login_handler_.WaitForRunOnOsLogin();
 
   // Should have 2 browsers: normal and app.
-  ASSERT_EQ(2u, chrome::GetBrowserCount(browser()->profile()));
+  ASSERT_EQ(
+      2u,
+      ProfileBrowserCollection::GetForProfile(browser()->profile())->GetSize());
   BrowserWindowInterface* app_browser = FindAppBrowser(GURL(kTestApp));
 
   ASSERT_TRUE(app_browser);
@@ -401,7 +412,9 @@ IN_PROC_BROWSER_TEST_F(
   provider().command_manager().AwaitAllCommandsCompleteForTesting();
 
   // Should have only the normal browser as there is no network.
-  ASSERT_EQ(1u, chrome::GetBrowserCount(browser()->profile()));
+  ASSERT_EQ(
+      1u,
+      ProfileBrowserCollection::GetForProfile(browser()->profile())->GetSize());
 
   // Asynchronously notify that the device is connected.
   std::move(connection_changed_callback)
@@ -409,7 +422,9 @@ IN_PROC_BROWSER_TEST_F(
   provider().command_manager().AwaitAllCommandsCompleteForTesting();
 
   // Should have only the normal browser as there is no network.
-  ASSERT_EQ(1u, chrome::GetBrowserCount(browser()->profile()));
+  ASSERT_EQ(
+      1u,
+      ProfileBrowserCollection::GetForProfile(browser()->profile())->GetSize());
 
   // Simulate the network coming back.
   mock_tracker_->OnNetworkChanged(
@@ -417,7 +432,9 @@ IN_PROC_BROWSER_TEST_F(
   run_on_os_login_handler_.WaitForRunOnOsLogin();
 
   // Should have 2 browsers: normal and app.
-  ASSERT_EQ(2u, chrome::GetBrowserCount(browser()->profile()));
+  ASSERT_EQ(
+      2u,
+      ProfileBrowserCollection::GetForProfile(browser()->profile())->GetSize());
   BrowserWindowInterface* app_browser = FindAppBrowser(GURL(kTestApp));
 
   ASSERT_TRUE(app_browser);
@@ -466,8 +483,9 @@ IN_PROC_BROWSER_TEST_P(WebAppRunOnOsLoginNotificationBrowserTest,
 
   // Should have `number_of_rool_apps` + 1 browsers: normal and
   // `number_of_rool_apps` apps.
-  ASSERT_EQ(test_params.number_of_rool_apps + 1,
-            chrome::GetBrowserCount(browser()->profile()));
+  ASSERT_EQ(
+      test_params.number_of_rool_apps + 1,
+      ProfileBrowserCollection::GetForProfile(browser()->profile())->GetSize());
 
   bool notification_shown = base::test::RunUntil([&]() {
     return notification_tester_->GetNotification(kRunOnOsLoginNotificationId)
@@ -532,8 +550,9 @@ IN_PROC_BROWSER_TEST_P(WebAppRunOnOsLoginNotificationBrowserTest,
 
   // Should have `number_of_rool_apps` + 1 browsers: normal and
   // `number_of_rool_apps` apps.
-  ASSERT_EQ(GetParam().number_of_rool_apps + 1,
-            chrome::GetBrowserCount(browser()->profile()));
+  ASSERT_EQ(
+      GetParam().number_of_rool_apps + 1,
+      ProfileBrowserCollection::GetForProfile(browser()->profile())->GetSize());
 
   message_center::Notification notification =
       notification_tester_->GetNotification(kRunOnOsLoginNotificationId)
@@ -742,7 +761,9 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppRunOnOsLoginManagerBrowserTest,
   run_on_os_login_handler_.WaitForRunOnOsLogin();
 
   // Should have 2 browsers: normal and app.
-  ASSERT_EQ(2u, chrome::GetBrowserCount(browser()->profile()));
+  ASSERT_EQ(
+      2u,
+      ProfileBrowserCollection::GetForProfile(browser()->profile())->GetSize());
   BrowserWindowInterface* app_browser = FindAppBrowser(GURL(manifest_id));
 
   ASSERT_TRUE(app_browser);

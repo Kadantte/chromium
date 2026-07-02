@@ -181,8 +181,8 @@ content::RenderFrameHost* RenderFrameHostForName(
       base::BindRepeating(&content::FrameMatchesName, name));
 }
 
-autofill::ElementExpr GetElementById(const std::string& id) {
-  return autofill::ElementExpr(
+ElementExpr GetElementById(const std::string& id) {
+  return ElementExpr(
       base::StringPrintf("document.getElementById(`%s`)", id.c_str()));
 }
 
@@ -230,7 +230,7 @@ std::vector<FieldValue> GetFieldValues(
 
 // Types the characters of `value` after focusing field `e`.
 [[nodiscard]] AssertionResult EnterTextIntoField(
-    const autofill::ElementExpr& e,
+    const ElementExpr& e,
     std::string_view value,
     AutofillUiTest* test,
     content::ToRenderFrameHost execution_target) {
@@ -804,20 +804,8 @@ class AutofillInteractiveTestBase : public AutofillUiTest {
     ASSERT_TRUE(content::ExecJs(GetWebContents(), script));
 
     content::DOMMessageQueue msg_queue(GetWebContents());
-    for (char16_t character : value) {
-      ui::DomKey dom_key = ui::DomKey::FromCharacter(character);
-      const ui::PrintableCodeEntry* code_entry = std::ranges::find_if(
-          ui::kPrintableCodeMap,
-          [character](const ui::PrintableCodeEntry& entry) {
-            return entry.character[0] == character ||
-                   entry.character[1] == character;
-          });
-      ASSERT_TRUE(code_entry != std::end(ui::kPrintableCodeMap));
-      bool shift = code_entry->character[1] == character;
-      ui::DomCode dom_code = code_entry->dom_code;
-      content::SimulateKeyPress(GetWebContents(), dom_key, dom_code,
-                                ui::DomCodeToUsLayoutKeyboardCode(dom_code),
-                                false, shift, false, false);
+    for (char character : value) {
+      content::SimulateCharTyped(GetWebContents(), character);
     }
     std::string reply;
     ASSERT_TRUE(msg_queue.WaitForMessage(&reply));
@@ -1024,17 +1012,25 @@ IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest, ModifyTextNotifiesObserver) {
   SetTestUrlResponse(kTestShippingFormString);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetTestUrl()));
 
-  autofill::MockAutofillManagerObserver observer;
+  MockAutofillManagerObserver observer;
   BrowserAutofillManager* autofill_manager = GetBrowserAutofillManager();
   autofill_manager->AddObserver(&observer);
 
   // OnAfterTextFieldValueChanged will eventually be called with the final text
   // "Montreal".
   EventWaiter<bool> waiter({true});
-  EXPECT_CALL(observer, OnAfterTextFieldValueChanged(_, _, _, _))
-      .WillRepeatedly([&](AutofillManager&, FormGlobalId, FieldGlobalId,
-                          std::u16string text_value) {
-        if (text_value == u"Montreal") {
+  EXPECT_CALL(observer, OnAfterTextFieldValueChanged)
+      .WillRepeatedly([&](AutofillManager& manager, FormGlobalId form_id,
+                          FieldGlobalId field_id) {
+        const FormStructure* form = manager.FindCachedFormById(form_id);
+        if (!form) {
+          return;
+        }
+        const AutofillField* field = form->GetFieldById(field_id);
+        if (!field) {
+          return;
+        }
+        if (field->value() == u"Montreal") {
           waiter.OnEvent(true);
         }
       });
@@ -1067,15 +1063,23 @@ IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest,
   SetTestUrlResponse(kForm);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetTestUrl()));
 
-  autofill::MockAutofillManagerObserver observer;
+  MockAutofillManagerObserver observer;
   BrowserAutofillManager* autofill_manager = GetBrowserAutofillManager();
   autofill_manager->AddObserver(&observer);
 
   EventWaiter<bool> waiter({true});
-  EXPECT_CALL(observer, OnAfterTextFieldValueChanged(_, _, _, _))
-      .WillRepeatedly([&](AutofillManager&, FormGlobalId, FieldGlobalId,
-                          std::u16string text_value) {
-        if (text_value == u"My Address") {
+  EXPECT_CALL(observer, OnAfterTextFieldValueChanged)
+      .WillRepeatedly([&](AutofillManager& manager, FormGlobalId form_id,
+                          FieldGlobalId field_id) {
+        const FormStructure* form = manager.FindCachedFormById(form_id);
+        if (!form) {
+          return;
+        }
+        const AutofillField* field = form->GetFieldById(field_id);
+        if (!field) {
+          return;
+        }
+        if (field->value() == u"My Address") {
           waiter.OnEvent(true);
         }
       });
@@ -1218,7 +1222,7 @@ IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest,
 
 // Makes sure that clicking a field while there is no enough height in the
 // content area for at least one suggestion, won't show the autofill popup. This
-// is a regression test for crbug.com/1108181
+// is a regression test for crbug.com/40052907
 IN_PROC_BROWSER_TEST_F(AutofillInteractiveTest,
                        DontAutofillShowPopupWhenNoEnoughHeightInContentArea) {
   // This firstname field starts at y=-100px and has a height of 5120px. There
@@ -2424,6 +2428,14 @@ IN_PROC_BROWSER_TEST_P(AutofillInteractiveFencedFrameTest,
   ASSERT_TRUE(AutofillFlow(GetElementById("CREDIT_CARD_NUMBER"), this,
                            {.after_focus = base::BindLambdaForTesting(Wait),
                             .execution_target = cross_frame_host}));
+
+  // Verify that the credit card was actually filled into the cross-site frame.
+  EXPECT_EQ(
+      "Milton Waddams",
+      GetFieldValue(GetElementById("CREDIT_CARD_NAME_FULL"), cross_frame_host));
+  EXPECT_EQ(
+      "4111111111111111",
+      GetFieldValue(GetElementById("CREDIT_CARD_NUMBER"), cross_frame_host));
 }
 
 // Tests that deleting the subframe that has opened the Autofill popup closes
@@ -3111,6 +3123,16 @@ IN_PROC_BROWSER_TEST_F(AutofillInteractiveTestDynamicForm,
   expect_count("Autofill.KeyMetrics.FillingAcceptance.CreditCard", 1, 1);
   expect_count("Autofill.KeyMetrics.FillingCorrectness.CreditCard", 1, 1);
   expect_count("Autofill.KeyMetrics.FillingAssistance.CreditCard", 1, 1);
+#if !BUILDFLAG(IS_CHROMEOS)
+  expect_count("Autofill.KeyMetrics.FillingReadiness.CreditCard.Profile0", 1,
+               1);
+  expect_count("Autofill.KeyMetrics.FillingAcceptance.CreditCard.Profile0", 1,
+               1);
+  expect_count("Autofill.KeyMetrics.FillingCorrectness.CreditCard.Profile0", 1,
+               1);
+  expect_count("Autofill.KeyMetrics.FillingAssistance.CreditCard.Profile0", 1,
+               1);
+#endif
   // Ensure that refills don't count as edits.
   expect_count("Autofill.PerfectFilling.CreditCards", 1, 1);
   // Bucket 0 = edited, 1 = accepted; 3 samples for 3 fields.
@@ -3226,7 +3248,7 @@ INSTANTIATE_TEST_SUITE_P(ManifestVersion,
                                            ash::ManifestVersion::kThree));
 
 // Ensure that autofill suggestions are properly read out via ChromeVox.
-// This is a regressions test for crbug.com/1208913.
+// This is a regressions test for crbug.com/40766297.
 // TODO(crbug.com/40820453): Flaky on ChromeOS
 #if BUILDFLAG(IS_CHROMEOS)
 #define MAYBE_TestNotificationOfAutofillDropdown \
@@ -3266,7 +3288,7 @@ IN_PROC_BROWSER_TEST_P(AutofillInteractiveTestChromeVox,
   sm()->Call([this] {
     test_delegate()->SetExpectations({ObservedUiEvents::kPreviewFormData});
     ASSERT_TRUE(
-        ui_controls::SendKeyPress(browser()->window()->GetNativeWindow(),
+        ui_controls::SendKeyPress(browser()->GetWindow()->GetNativeWindow(),
                                   ui::VKEY_DOWN, false, false, false, false));
   });
   sm()->ExpectSpeechPattern("Autofill menu opened");

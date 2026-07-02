@@ -17,6 +17,7 @@ import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
@@ -32,19 +33,21 @@ import android.nfc.TagLostException;
 import android.os.Bundle;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
-import org.chromium.base.test.BaseRobolectricTestRule;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.Feature;
 import org.chromium.device.mojom.NdefError;
 import org.chromium.device.mojom.NdefErrorType;
@@ -125,9 +128,10 @@ public class NFCTest {
         public void stopTrackingActivityForHost(int hostId) {}
     }
 
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         mDelegate = new TestNfcDelegate(mActivity);
         doReturn(mNfcManager).when(mContext).getSystemService(Context.NFC_SERVICE);
         doReturn(mNfcAdapter).when(mNfcManager).getDefaultAdapter();
@@ -1194,7 +1198,7 @@ public class NFCTest {
     /** Test that Nfc.push() fails if NFC operations are already suspended. */
     @Test
     @Feature({"NFCTest"})
-    public void testPushWhenOperationsAreSuspended() {
+    public void testPushWhenOperationsAreSuspended() throws IOException, FormatException {
         TestNfcImpl nfc = new TestNfcImpl(mContext, mDelegate);
         nfc.suspendNfcOperations();
         mDelegate.invokeCallback();
@@ -1205,6 +1209,10 @@ public class NFCTest {
         verify(mockCallback).call(mErrorCaptor.capture());
         assertNotNull(mErrorCaptor.getValue());
         assertEquals(NdefErrorType.OPERATION_CANCELLED, mErrorCaptor.getValue().errorType);
+
+        // Check that push is not triggered when NFC tag is in proximity.
+        nfc.processPendingOperationsForTesting(mNfcTagHandler);
+        verify(mNfcTagHandler, never()).write(any(android.nfc.NdefMessage.class));
     }
 
     /** Test that Nfc.suspendNfcOperations() cancels pending push operation. */
@@ -1254,7 +1262,7 @@ public class NFCTest {
     /** Test that Nfc.makeReadOnly() fails if NFC operations are already suspended. */
     @Test
     @Feature({"NFCTest"})
-    public void testMakeReadOnlyWhenOperationsAreSuspended() {
+    public void testMakeReadOnlyWhenOperationsAreSuspended() throws IOException {
         TestNfcImpl nfc = new TestNfcImpl(mContext, mDelegate);
         nfc.suspendNfcOperations();
         mDelegate.invokeCallback();
@@ -1265,6 +1273,10 @@ public class NFCTest {
         verify(mockCallback).call(mErrorCaptor.capture());
         assertNotNull(mErrorCaptor.getValue());
         assertEquals(NdefErrorType.OPERATION_CANCELLED, mErrorCaptor.getValue().errorType);
+
+        // Check that makeReadOnly is not triggered when NFC tag is in proximity.
+        nfc.processPendingOperationsForTesting(mNfcTagHandler);
+        verify(mNfcTagHandler, never()).makeReadOnly();
     }
 
     /** Test that Nfc.suspendNfcOperations() cancels pending makeReadOnly operation. */
@@ -1654,7 +1666,7 @@ public class NFCTest {
                         (Bundle) isNull());
 
         nfc.cancelPush();
-        BaseRobolectricTestRule.runAllBackgroundAndUiIncludingDelayed();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         // Reader mode is disabled.
         verify(mNfcAdapter, times(1)).disableReaderMode(mActivity);
@@ -1686,7 +1698,7 @@ public class NFCTest {
                         (Bundle) isNull());
 
         nfc.cancelMakeReadOnly();
-        BaseRobolectricTestRule.runAllBackgroundAndUiIncludingDelayed();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         // Reader mode is disabled.
         verify(mNfcAdapter, times(1)).disableReaderMode(mActivity);
@@ -1726,7 +1738,7 @@ public class NFCTest {
 
         // Cancel the second push.
         nfc.cancelPush();
-        BaseRobolectricTestRule.runAllBackgroundAndUiIncludingDelayed();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         // Reader mode is disabled after cancelPush is invoked.
         verify(mNfcAdapter, times(1)).disableReaderMode(mActivity);
@@ -1766,7 +1778,7 @@ public class NFCTest {
 
         // Cancel the second makeReadOnly.
         nfc.cancelMakeReadOnly();
-        BaseRobolectricTestRule.runAllBackgroundAndUiIncludingDelayed();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         // Reader mode is disabled after cancelMakeReadOnly is invoked.
         verify(mNfcAdapter, times(1)).disableReaderMode(mActivity);
@@ -1809,7 +1821,7 @@ public class NFCTest {
         verify(mNfcAdapter, times(0)).disableReaderMode(mActivity);
 
         nfc.cancelWatch(mNextWatchId);
-        BaseRobolectricTestRule.runAllBackgroundAndUiIncludingDelayed();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         // Reader mode is disabled when there are no pending push / watch operations.
         verify(mNfcAdapter, times(1)).disableReaderMode(mActivity);
@@ -1847,7 +1859,7 @@ public class NFCTest {
         verify(mNfcAdapter, times(0)).disableReaderMode(mActivity);
 
         nfc.cancelWatch(mNextWatchId);
-        BaseRobolectricTestRule.runAllBackgroundAndUiIncludingDelayed();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         // Reader mode is disabled when there are no pending makeReadOnly / watch operations.
         verify(mNfcAdapter, times(1)).disableReaderMode(mActivity);

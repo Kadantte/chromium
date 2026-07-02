@@ -94,7 +94,8 @@ size_t AXNode::GetUnignoredChildCount() const {
 }
 
 size_t AXNode::GetUnignoredChildCountCrossingTreeBoundary() const {
-  // TODO(nektar): Should DCHECK that this node is not ignored.
+  // TODO(accessibility): Add DCHECK(!IsIgnored()) once all call sites
+  // (including BrowserAccessibility::PlatformChildCount) are audited.
   DCHECK(!tree_->GetTreeUpdateInProgressState());
 
   const AXTreeManager* child_tree_manager = AXTreeManager::ForChildTree(*this);
@@ -130,7 +131,8 @@ AXNode* AXNode::GetChildAtIndexCrossingTreeBoundary(size_t index) const {
 }
 
 AXNode* AXNode::GetUnignoredChildAtIndex(size_t index) const {
-  // TODO(nektar): Should DCHECK that this node is not ignored.
+  // TODO(accessibility): Add DCHECK(!IsIgnored()) once all call sites
+  // (including BrowserAccessibility::PlatformChildCount) are audited.
   DCHECK(!tree_->GetTreeUpdateInProgressState());
 
   for (auto it = UnignoredChildrenBegin(), end = UnignoredChildrenEnd();
@@ -145,7 +147,8 @@ AXNode* AXNode::GetUnignoredChildAtIndex(size_t index) const {
 
 AXNode* AXNode::GetUnignoredChildAtIndexCrossingTreeBoundary(
     size_t index) const {
-  // TODO(nektar): Should DCHECK that this node is not ignored.
+  // TODO(accessibility): Add DCHECK(!IsIgnored()) once all call sites
+  // (including BrowserAccessibility::PlatformChildCount) are audited.
   DCHECK(!tree_->GetTreeUpdateInProgressState());
 
   const AXTreeManager* child_tree_manager = AXTreeManager::ForChildTree(*this);
@@ -1158,11 +1161,11 @@ const std::u16string& AXNode::GetHypertext() const {
         hypertext_.hypertext += iter->GetTextContentUTF16();
       } else {
         int character_offset = static_cast<int>(hypertext_.hypertext.size());
-        auto inserted =
+        const auto [_, inserted] =
             hypertext_.hypertext_offset_to_hyperlink_child_index.emplace(
                 character_offset, static_cast<int>(std::distance(first, iter)));
-        DCHECK(inserted.second) << "An embedded object at " << character_offset
-                                << " has already been encountered.";
+        DCHECK(inserted) << "An embedded object at " << character_offset
+                         << " has already been encountered.";
         hypertext_.hypertext += *embedded_character_str;
       }
     }
@@ -2087,10 +2090,28 @@ AXNode* AXNode::ComputeFirstUnignoredChildRecursive() const {
   return nullptr;
 }
 
+std::optional<std::string> AXNode::GetAriaValueTextOrValue() const {
+  if (IsSelectElement(GetRole()) || data().IsAtomicTextField()) {
+    return GetStringAttribute(ax::mojom::StringAttribute::kValue);
+  }
+
+  // Use aria value if the node is a range control.
+  if (data().IsRangeValueSupported() &&
+      HasStringAttribute(ax::mojom::StringAttribute::kAriaValueText)) {
+    return GetStringAttribute(ax::mojom::StringAttribute::kAriaValueText);
+  }
+
+  // Default to using the rendered value (kValue).
+  if (HasStringAttribute(ax::mojom::StringAttribute::kValue)) {
+    return GetStringAttribute(ax::mojom::StringAttribute::kValue);
+  }
+
+  return std::nullopt;
+}
+
 std::string AXNode::GetTextForRangeValue() const {
   DCHECK(data().IsRangeValueSupported());
-  std::string range_value =
-      GetStringAttribute(ax::mojom::StringAttribute::kValue);
+  std::string range_value = GetAriaValueTextOrValue().value_or(std::string());
   if (range_value.empty()) {
     float numeric_value =
         GetFloatAttribute(ax::mojom::FloatAttribute::kValueForRange);
@@ -2471,6 +2492,21 @@ AXNode* AXNode::GetTextFieldAncestor() const {
        ancestor = ancestor->GetUnignoredParent()) {
     if (ancestor->data().IsTextField())
       return ancestor;
+  }
+  return nullptr;
+}
+
+AXNode* AXNode::GetParagraphContainerAncestor() const {
+  for (const AXNode* ancestor = this; ancestor;
+       ancestor = ancestor->GetParentCrossingTreeBoundary()) {
+    if (ancestor->GetBoolAttribute(
+            ax::mojom::BoolAttribute::kIsLineBreakingObject) &&
+        // Exclude `<br>` elements and their `kInlineTextBox` children —
+        // these have `kIsLineBreakingObject` but are not block containers.
+        ancestor->GetRole() != ax::mojom::Role::kLineBreak &&
+        ancestor->GetRole() != ax::mojom::Role::kInlineTextBox) {
+      return const_cast<AXNode*>(ancestor);
+    }
   }
   return nullptr;
 }

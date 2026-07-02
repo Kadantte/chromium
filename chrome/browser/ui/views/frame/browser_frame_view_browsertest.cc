@@ -204,7 +204,7 @@ IN_PROC_BROWSER_TEST_F(BrowserFrameViewBrowserTest,
   // On Linux, the system theme is the GTK theme and should change the frame
   // color to the system color (not the app theme color); otherwise the title
   // and border would clash horribly with the GTK title bar.
-  // (https://crbug.com/878636)
+  // (https://crbug.com/41410571)
   const ui::ColorProvider* color_provider =
       GetAppFrameView()->GetColorProvider();
   const SkColor frame_color = color_provider->GetColor(ui::kColorFrameActive);
@@ -234,7 +234,7 @@ IN_PROC_BROWSER_TEST_F(BrowserFrameViewBrowserTest, IncognitoIsCorrectColor) {
   // Ensure that the frame color is very dark in Incognito.
   EXPECT_LT(frame_color_hsl.l, 0.2);
 
-  incognito_browser->window()->Close();
+  incognito_browser->GetWindow()->Close();
 }
 
 // Checks that the title bar for hosted app windows is hidden when in fullscreen
@@ -390,7 +390,8 @@ class SaveCardOfferObserver
                    ->GetAutofillManager()
                    .client()
                    .GetFormDataImporter()
-                   ->GetCreditCardSaveManager();
+                   ->GetPaymentsFormDataImporter()
+                   .GetCreditCardSaveManager();
     manager_->SetEventObserverForTesting(this);
   }
 

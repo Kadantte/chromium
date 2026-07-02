@@ -4,16 +4,21 @@
 
 #include "components/contextual_search/contextual_search_session_handle.h"
 
+#include <algorithm>
 #include <vector>
 
 #include "base/containers/flat_set.h"
 #include "base/memory/ptr_util.h"
+#include "base/no_destructor.h"
 #include "base/unguessable_token.h"
 #include "components/contextual_search/contextual_search_context_controller.h"
 #include "components/contextual_search/contextual_search_metrics_recorder.h"
 #include "components/contextual_search/contextual_search_service.h"
+#include "components/contextual_tasks/public/query_contextualizer.h"
 #include "components/lens/contextual_input.h"
+#include "components/lens/lens_features.h"
 #include "components/lens/proto/server/lens_overlay_response.pb.h"
+#include "components/omnibox/common/composebox_features.h"
 #include "components/prefs/pref_service.h"
 #include "contextual_search_context_controller.h"
 #include "contextual_search_types.h"
@@ -66,6 +71,11 @@ ContextualSearchSessionHandle::GetMetricsRecorder() const {
   return service_ ? service_->GetSessionMetricsRecorder(session_id_) : nullptr;
 }
 
+ContextualSearchSessionHandle::TabValidator*
+ContextualSearchSessionHandle::GetTabValidator() const {
+  return service_ ? service_->GetTabValidator() : nullptr;
+}
+
 void ContextualSearchSessionHandle::NotifySessionStarted() {
   if (auto* controller = GetController()) {
     controller->InitializeIfNeeded();
@@ -73,6 +83,14 @@ void ContextualSearchSessionHandle::NotifySessionStarted() {
       metrics_recorder->NotifySessionStateChanged(
           contextual_search::SessionState::kSessionStarted);
     }
+  }
+}
+
+void ContextualSearchSessionHandle::SetIsBackgrounded(bool backgrounded) {
+  // TODO(crbug.com/496926563): Add UMA logging for backgrounding to the
+  // metrics recorder.
+  if (auto* controller = GetController()) {
+    controller->SetIsBackgrounded(backgrounded);
   }
 }
 
@@ -141,26 +159,43 @@ void ContextualSearchSessionHandle::StartFileContextUploadFlow(
   }
 
   lens::MimeType mime_type;
+  bool mime_type_has_image = file_mime_type.find("image") != std::string::npos;
 
-  if (file_mime_type.find("pdf") != std::string::npos) {
-    mime_type = lens::MimeType::kPdf;
-  } else if (file_mime_type.find("image") != std::string::npos) {
-    mime_type = lens::MimeType::kImage;
+  if (lens::features::IsLensSendRawFileMediaTypesEnabled()) {
+    // When the raw file media types feature is enabled, only set the mime type
+    // to image if the file is an image, otherwise set it to unknown for all
+    // other file types.
+    if (mime_type_has_image && file_mime_type != "image/svg+xml") {
+      mime_type = lens::MimeType::kImage;
+    } else {
+      mime_type = lens::MimeType::kUnknown;
+    }
   } else {
-    NOTREACHED();
+    if (file_mime_type.find("pdf") != std::string::npos) {
+      mime_type = lens::MimeType::kPdf;
+    } else if (mime_type_has_image) {
+      mime_type = lens::MimeType::kImage;
+    } else {
+      mime_type = lens::MimeType::kUnknown;
+    }
   }
 
   std::unique_ptr<lens::ContextualInputData> input_data =
       std::make_unique<lens::ContextualInputData>();
   input_data->context_input = std::vector<lens::ContextualInput>();
   input_data->primary_content_type = mime_type;
+  input_data->upload_type = lens::LensOverlayContextualInputUploadType::
+      CONTEXTUAL_INPUT_UPLOAD_TYPE_EXPLICIT;
   input_data->file_name = file_name;
+  // For manual file uploads, the file name is also set in the page_title field.
+  input_data->page_title = file_name;
 
   base::span<const uint8_t> file_data_span = base::span(file_bytes);
   std::vector<uint8_t> file_data_vector(file_data_span.begin(),
                                         file_data_span.end());
   input_data->context_input->push_back(
       lens::ContextualInput(std::move(file_data_vector), mime_type));
+  input_data->mime_type_string = file_mime_type;
 
   metrics_recorder->RecordFileSizeMetric(mime_type, file_bytes.size());
   context_controller->StartFileUploadFlow(file_token, std::move(input_data),
@@ -182,28 +217,90 @@ void ContextualSearchSessionHandle::StartTabContextUploadFlow(
   if (auto* metrics_recorder = GetMetricsRecorder()) {
     auto mime_type = contextual_input_data->primary_content_type.value_or(
         lens::MimeType::kUnknown);
-    size_t content_size = 0;
+    size_t page_contents_size = 0;
+
     if (contextual_input_data->context_input.has_value()) {
       for (const auto& input : *contextual_input_data->context_input) {
-        content_size += input.bytes_.size();
+        page_contents_size += input.bytes_.size();
       }
     }
 
+    size_t viewport_screenshot_size = 0;
+
     if (contextual_input_data->viewport_screenshot_bytes.has_value()) {
-      content_size += contextual_input_data->viewport_screenshot_bytes->size();
+      viewport_screenshot_size +=
+          contextual_input_data->viewport_screenshot_bytes->size();
     }
 
     if (contextual_input_data->viewport_screenshot.has_value()) {
-      content_size +=
+      viewport_screenshot_size +=
           contextual_input_data->viewport_screenshot->computeByteSize();
     }
 
+    size_t content_size = page_contents_size + viewport_screenshot_size;
+
     metrics_recorder->RecordFileSizeMetric(mime_type, content_size);
+    metrics_recorder->RecordTabPartsSizes(viewport_screenshot_size,
+                                          page_contents_size);
   }
 
   if (auto* controller = GetController()) {
+    if (!contextual_input_data->upload_type.has_value()) {
+      // If the input data did not already have an upload type (e.g.
+      // auto-context) then it was the result of an explicit user upload.
+      contextual_input_data->upload_type =
+          lens::LensOverlayContextualInputUploadType::
+              CONTEXTUAL_INPUT_UPLOAD_TYPE_EXPLICIT;
+    }
     controller->StartFileUploadFlow(
         file_token, std::move(contextual_input_data), image_options);
+  }
+}
+
+void ContextualSearchSessionHandle::StartUrlContextUploadFlow(
+    const base::UnguessableToken& file_token,
+    const std::string& url) {
+  // Exit early if the file token is not in the list of uploaded context
+  // tokens, i.e. it was deleted before the upload flow could start.
+  auto it = std::find(uploaded_context_tokens_.begin(),
+                      uploaded_context_tokens_.end(), file_token);
+  if (it == uploaded_context_tokens_.end()) {
+    return;
+  }
+
+  if (auto* context_controller = GetController()) {
+    auto contextual_input_data = std::make_unique<lens::ContextualInputData>();
+    contextual_input_data->primary_content_type = lens::MimeType::kUnknown;
+    contextual_input_data->parsed_url = url;
+    context_controller->StartFileUploadFlow(
+        file_token, std::move(contextual_input_data), std::nullopt);
+  }
+}
+
+void ContextualSearchSessionHandle::StartDriveContextUploadFlow(
+    const base::UnguessableToken& file_token,
+    const DriveUploadParams& params) {
+  // Exit early if the file token is not in the list of uploaded context
+  // tokens, i.e. it was deleted before the upload flow could start.
+  auto it = std::find(uploaded_context_tokens_.begin(),
+                      uploaded_context_tokens_.end(), file_token);
+  if (it == uploaded_context_tokens_.end()) {
+    return;
+  }
+
+  if (auto* context_controller = GetController()) {
+    auto contextual_input_data = std::make_unique<lens::ContextualInputData>();
+    contextual_input_data->drive_id = params.drive_id;
+    contextual_input_data->resource_key = params.resource_key;
+    contextual_input_data->mime_type_string = params.mime_type;
+    contextual_input_data->file_name = params.file_name;
+    contextual_input_data->page_title = params.file_name;
+    contextual_input_data->primary_content_type = lens::MimeType::kUnknown;
+    contextual_input_data->upload_type =
+        lens::LensOverlayContextualInputUploadType::
+            CONTEXTUAL_INPUT_UPLOAD_TYPE_EXPLICIT;
+    context_controller->StartFileUploadFlow(
+        file_token, std::move(contextual_input_data), std::nullopt);
   }
 }
 
@@ -239,6 +336,17 @@ void ContextualSearchSessionHandle::StartModalityChipUploadFlow(
 
 bool ContextualSearchSessionHandle::DeleteFile(
     const base::UnguessableToken& file_token) {
+  // If the file was already submitted, don't delete it from the context
+  // controller, so that the file info can be looked up in the future.
+  // This prevents the file info for submitted content from being deleted
+  // prematurely, such as when controlling the auto-tab chip for the transition
+  // from the LensOverlay searchbox to the contextual tasks page.
+  if (std::find(submitted_context_tokens_.begin(),
+                submitted_context_tokens_.end(),
+                file_token) != submitted_context_tokens_.end()) {
+    return false;
+  }
+
   // Remove the file token from the list of uploaded context tokens.
   auto it = std::find(uploaded_context_tokens_.begin(),
                       uploaded_context_tokens_.end(), file_token);
@@ -256,9 +364,9 @@ bool ContextualSearchSessionHandle::DeleteFile(
     }
     lens::MimeType file_type =
         file_info ? file_info->mime_type : lens::MimeType::kUnknown;
-    contextual_search::FileUploadStatus file_status =
+    contextual_search::ContextUploadStatus file_status =
         file_info ? file_info->upload_status
-                  : contextual_search::FileUploadStatus::kNotUploaded;
+                  : contextual_search::ContextUploadStatus::kNotUploaded;
 
     bool success = context_controller->DeleteFile(file_token);
     if (auto* metrics_recorder = GetMetricsRecorder()) {
@@ -270,8 +378,14 @@ bool ContextualSearchSessionHandle::DeleteFile(
   return false;
 }
 
-void ContextualSearchSessionHandle::ClearFiles() {
-  uploaded_context_tokens_.clear();
+void ContextualSearchSessionHandle::ClearFiles(bool query_submitted) {
+  if (query_submitted &&
+      base::FeatureList::IsEnabled(omnibox::kContextManagementInComposebox)) {
+    std::erase_if(uploaded_context_tokens_,
+                  [this](const auto& token) { return !IsTabToken(token); });
+  } else {
+    uploaded_context_tokens_.clear();
+  }
 }
 
 void ContextualSearchSessionHandle::CreateSearchUrl(
@@ -290,26 +404,42 @@ void ContextualSearchSessionHandle::CreateSearchUrl(
     return;
   }
 
-  metrics_recorder->NotifySessionStateChanged(
-      contextual_search::SessionState::kQuerySubmitted);
-  std::string query_text = search_url_request_info->query_text;
+  auto uploaded_file_infos = GetUploadedContextFileInfos();
+  NotifyQuerySubmittedSessionState(uploaded_file_infos,
+                                   search_url_request_info->query_text.size());
   metrics_recorder->NotifySessionStateChanged(
       contextual_search::SessionState::kNavigationOccurred);
-  metrics_recorder->RecordQueryMetrics(query_text.size(),
-                                       uploaded_context_tokens_.size());
-  // Move the uploaded tokens to the request's file_tokens. Make sure to dedupe
-  // the tokens with those already in the SearchUrlRequestInfo.
-  base::flat_set<base::UnguessableToken> file_tokens_set(
-      std::move(search_url_request_info->file_tokens));
-  file_tokens_set.insert(uploaded_context_tokens_.begin(),
-                         uploaded_context_tokens_.end());
-  search_url_request_info->file_tokens = std::move(file_tokens_set).extract();
-  uploaded_context_tokens_.clear();
+
+  // If the request info has no file tokens, move the uploaded tokens to the
+  // request. Otherwise, keep the file tokens as is and remove them from the
+  // uploaded context tokens manually. Treat tabs the same way.
+  if (search_url_request_info->file_tokens.empty()) {
+    search_url_request_info->file_tokens =
+        std::exchange(uploaded_context_tokens_, {});
+  } else {
+    // For lens queries, handle subset of files chosen:
+    for (const auto& token : search_url_request_info->file_tokens) {
+      std::erase(uploaded_context_tokens_, token);
+    }
+  }
 
   // Copy the tokens from this request to the list of all submitted tokens.
   submitted_context_tokens_.insert(submitted_context_tokens_.end(),
                                    search_url_request_info->file_tokens.begin(),
                                    search_url_request_info->file_tokens.end());
+
+  // Track submitted tabs for the next turn.
+  for (const auto& token : search_url_request_info->file_tokens) {
+    if (IsTabToken(token)) {
+      const auto* file_info = context_controller->GetFileInfo(token);
+      if (file_info && file_info->request_id.has_value() &&
+          !file_info->is_superceded && file_info->tab_session_id.has_value() &&
+          file_info->tab_session_id->is_valid()) {
+        submitted_tabs_[file_info->tab_session_id.value()] =
+            std::make_pair(token, *file_info->request_id);
+      }
+    }
+  }
 
   // Set the invocation source on the search URL request info, if it is not
   // already set.
@@ -331,12 +461,111 @@ ContextualSearchSessionHandle::CreateClientToAimRequest(
     return lens::ClientToAimMessage();
   }
 
+  auto* tab_validator = GetTabValidator();
+
+  // Check for closed/navigated/removed tabs.
+  std::vector<SessionID> deleted_tabs;
+  bool context_management_enabled =
+      base::FeatureList::IsEnabled(omnibox::kContextManagementInComposebox);
+  bool signal_browser_tab_deletions = base::FeatureList::IsEnabled(
+      lens::features::kLensDeleteContextOnPageNavigation);
+
+  for (const auto& [session_id, token_and_req] : submitted_tabs_) {
+    base::UnguessableToken token_to_validate;
+
+    if (context_management_enabled) {
+      // TODO(crbug.com/524332787): Stop using uploaded_context_tokens_ for tab
+      // persistence when context management is enabled.
+      token_to_validate = GetActiveTokenForTab(session_id);
+
+      // Case A: User removed it from UI.
+      if (token_to_validate.is_empty()) {
+        deleted_tabs.push_back(session_id);
+        continue;
+      }
+    } else {
+      // Flag disabled: uploaded_context_tokens_ is cleared after each query.
+      // Validate the stored token directly against the browser.
+      token_to_validate = token_and_req.first;
+    }
+
+    if (signal_browser_tab_deletions && tab_validator &&
+        !token_to_validate.is_empty()) {
+      const auto* file_info =
+          context_controller->GetFileInfo(token_to_validate);
+      if (file_info && !tab_validator->IsTabValidAndPointingToUrl(*file_info)) {
+        deleted_tabs.push_back(session_id);
+      }
+    }
+  }
+
+  for (const auto& session_id : deleted_tabs) {
+    auto it = submitted_tabs_.find(session_id);
+    if (it != submitted_tabs_.end()) {
+      create_client_to_aim_request_info->removed_contexts.push_back(
+          it->second.second);
+
+      // If the tab is closed, we remove all tokens associated with it.
+      // If the tab is still open (navigated), we only remove the superceded
+      // token that failed validation (stored_token).
+      bool tab_still_open = false;
+      if (tab_validator) {
+        // If there is an active (potentially new) token for this tab, check if
+        // it is valid. If it is valid, the tab is still open (navigated).
+        base::UnguessableToken active_token = GetActiveTokenForTab(session_id);
+        if (!active_token.is_empty()) {
+          const auto* active_file_info =
+              context_controller->GetFileInfo(active_token);
+          if (active_file_info &&
+              tab_validator->IsTabValidAndPointingToUrl(*active_file_info)) {
+            tab_still_open = true;
+          }
+        }
+      }
+
+      if (!tab_still_open) {
+        std::vector<base::UnguessableToken> tokens_to_remove;
+        for (const auto& token : uploaded_context_tokens_) {
+          if (IsTabToken(token)) {
+            const auto* file_info = context_controller->GetFileInfo(token);
+            if (file_info && file_info->tab_session_id == session_id) {
+              tokens_to_remove.push_back(token);
+            }
+          }
+        }
+        for (const auto& token : submitted_context_tokens_) {
+          if (IsTabToken(token)) {
+            const auto* file_info = context_controller->GetFileInfo(token);
+            if (file_info && file_info->tab_session_id == session_id) {
+              tokens_to_remove.push_back(token);
+            }
+          }
+        }
+        for (const auto& token : tokens_to_remove) {
+          std::erase(uploaded_context_tokens_, token);
+          std::erase(submitted_context_tokens_, token);
+        }
+      } else {
+        std::erase(uploaded_context_tokens_, it->second.first);
+        std::erase(submitted_context_tokens_, it->second.first);
+      }
+
+      submitted_tabs_.erase(it);
+    }
+  }
+
   // Move the uploaded tokens to the request's file_tokens. Make sure to dedupe
   // the tokens with those already in the ClientToAimRequestInfo.
   base::flat_set<base::UnguessableToken> file_tokens_set(
       std::move(create_client_to_aim_request_info->file_tokens));
-  auto uploaded_tokens = std::exchange(uploaded_context_tokens_, {});
-  file_tokens_set.insert(uploaded_tokens.begin(), uploaded_tokens.end());
+  // Deduplicate file tokens by adding tokens to set that is sent in
+  // this current request/query submission.
+  file_tokens_set.insert(uploaded_context_tokens_.begin(),
+                         uploaded_context_tokens_.end());
+  // Keep tabs but clear the files. `uploaded_context_tokens_` modified by
+  // `ClearFiles` will represent the attached context for the future composebox
+  // state after this query submission.
+  ClearFiles(/*query_submitted=*/true);
   create_client_to_aim_request_info->file_tokens =
       std::move(file_tokens_set).extract();
 
@@ -346,13 +575,24 @@ ContextualSearchSessionHandle::CreateClientToAimRequest(
       create_client_to_aim_request_info->file_tokens.begin(),
       create_client_to_aim_request_info->file_tokens.end());
 
-  if (auto* metrics_recorder = GetMetricsRecorder()) {
-    metrics_recorder->NotifySessionStateChanged(
-        contextual_search::SessionState::kQuerySubmitted);
-    std::string query_text = create_client_to_aim_request_info->query_text;
-    metrics_recorder->RecordQueryMetrics(
-        query_text.size(),
-        create_client_to_aim_request_info->file_tokens.size());
+  if (GetMetricsRecorder()) {
+    NotifyQuerySubmittedSessionState(
+        TokensToFileInfos(GetController(),
+                          create_client_to_aim_request_info->file_tokens),
+        create_client_to_aim_request_info->query_text.size());
+  }
+
+  // Track submitted tabs for the next turn.
+  for (const auto& token : create_client_to_aim_request_info->file_tokens) {
+    if (IsTabToken(token)) {
+      const auto* file_info = context_controller->GetFileInfo(token);
+      if (file_info && file_info->request_id.has_value() &&
+          !file_info->is_superceded && file_info->tab_session_id.has_value() &&
+          file_info->tab_session_id->is_valid()) {
+        submitted_tabs_[file_info->tab_session_id.value()] =
+            std::make_pair(token, *file_info->request_id);
+      }
+    }
   }
 
   return context_controller->CreateClientToAimRequest(
@@ -379,6 +619,17 @@ ContextualSearchSessionHandle::GetSubmittedContextFileInfos() const {
   return TokensToFileInfos(GetController(), submitted_context_tokens_);
 }
 
+std::vector<std::string>
+ContextualSearchSessionHandle::GetSubmittedContextTabTitles() const {
+  std::vector<std::string> titles;
+  for (const auto& file_info : GetSubmittedContextFileInfos()) {
+    if (file_info.tab_title.has_value()) {
+      titles.push_back(file_info.tab_title.value());
+    }
+  }
+  return titles;
+}
+
 void ContextualSearchSessionHandle::ClearSubmittedContextTokens() {
   submitted_context_tokens_.clear();
 }
@@ -386,6 +637,11 @@ void ContextualSearchSessionHandle::ClearSubmittedContextTokens() {
 void ContextualSearchSessionHandle::set_submitted_context_tokens(
     const std::vector<base::UnguessableToken>& tokens) {
   submitted_context_tokens_ = tokens;
+}
+
+void ContextualSearchSessionHandle::set_submitted_tabs(
+    SubmittedTabsMap submitted_tabs) {
+  submitted_tabs_ = std::move(submitted_tabs);
 }
 
 bool ContextualSearchSessionHandle::IsTabInContext(SessionID session_id) const {
@@ -405,9 +661,70 @@ bool ContextualSearchSessionHandle::IsTabInContext(SessionID session_id) const {
   return false;
 }
 
-base::WeakPtr<ContextualSearchSessionHandle>
-ContextualSearchSessionHandle::AsWeakPtr() {
-  return weak_ptr_factory_.GetWeakPtr();
+bool ContextualSearchSessionHandle::IsTabToken(
+    const base::UnguessableToken& token) const {
+  auto* controller = GetController();
+  if (!controller) {
+    return false;
+  }
+  const auto* file_info = controller->GetFileInfo(token);
+  return file_info &&
+         (file_info->tab_url.has_value() || file_info->tab_title.has_value() ||
+          file_info->tab_session_id.has_value());
+}
+
+base::UnguessableToken ContextualSearchSessionHandle::GetActiveTokenForTab(
+    SessionID tab_session_id) const {
+  auto* context_controller = GetController();
+  if (!context_controller) {
+    return base::UnguessableToken();
+  }
+  for (const auto& token : uploaded_context_tokens_) {
+    if (IsTabToken(token)) {
+      const auto* file_info = context_controller->GetFileInfo(token);
+      if (file_info && file_info->tab_session_id == tab_session_id &&
+          !file_info->is_superceded) {
+        return token;
+      }
+    }
+  }
+  return base::UnguessableToken();
+}
+
+void ContextualSearchSessionHandle::NotifyQuerySubmittedSessionState(
+    const std::vector<FileInfo>& file_infos,
+    int query_text_length) {
+  if (auto* metrics_recorder = GetMetricsRecorder()) {
+    bool has_tab_context = false;
+    bool has_non_tab_context = false;
+    bool has_drive_context = false;
+    int tab_count = 0;
+    for (const auto& file_info : file_infos) {
+      if (file_info.tab_url.has_value()) {
+        has_tab_context = true;
+      } else {
+        has_non_tab_context = true;
+      }
+      if (file_info.input_data && file_info.input_data->drive_id.has_value()) {
+        has_drive_context = true;
+      }
+      if (file_info.mime_type == lens::MimeType::kAnnotatedPageContent) {
+        tab_count++;
+      }
+    }
+    metrics_recorder->NotifyQuerySubmitted(has_tab_context, has_non_tab_context,
+                                           query_text_length, file_infos.size(),
+                                           has_drive_context);
+    if (tab_count > 0) {
+      metrics_recorder->RecordAttachmentCountAtSubmission(
+          lens::MimeType::kAnnotatedPageContent, tab_count);
+    }
+  }
+}
+
+void ContextualSearchSessionHandle::AddThreadTurn(
+    const contextual_tasks::ThreadTurn& turn) {
+  previous_turns_.push_back(turn);
 }
 
 }  // namespace contextual_search

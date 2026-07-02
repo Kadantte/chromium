@@ -10,11 +10,19 @@
 
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "base/timer/timer.h"
 #include "base/uuid.h"
 #include "base/version_info/channel.h"
+#include "build/build_config.h"
+#include "components/prefs/pref_change_registrar.h"
 #include "components/skills/internal/skills_downloader.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "components/skills/internal/skills_fetcher.h"
+#endif  // !BUILDFLAG(IS_ANDROID)
 #include "components/skills/public/skill.h"
 #include "components/skills/public/skills_service.h"
+#include "components/skills/public/skills_types.h"
 #include "components/sync/model/data_type_store.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
@@ -26,6 +34,12 @@ namespace optimization_guide {
 class OptimizationGuideDecider;
 }  // namespace optimization_guide
 
+namespace signin {
+class IdentityManager;
+}  // namespace signin
+
+class PrefService;
+
 namespace skills {
 
 class SkillsSyncBridge;
@@ -36,7 +50,9 @@ class SkillsSyncBridge;
 class SkillsServiceImpl : public SkillsService {
  public:
   SkillsServiceImpl(
+      PrefService* pref_service,
       optimization_guide::OptimizationGuideDecider* optimization_guide,
+      signin::IdentityManager* identity_manager,
       version_info::Channel channel,
       syncer::OnceDataTypeStoreFactory create_store_callback,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
@@ -76,9 +92,16 @@ class SkillsServiceImpl : public SkillsService {
   void DeleteSkill(std::string_view skill_id,
                    UpdateSource update_source) override;
   const Skill* GetSkillById(std::string_view skill_id) const override;
+  void RefreshDiscoverySkills() override;
   void FetchDiscoverySkills() override;
-  void Handle1pSkillsMap(std::unique_ptr<SkillsMap> skills_map) override;
-  const SkillsMap& Get1PSkills() const override;
+  void Handle1pSkills(
+      std::unique_ptr<FirstPartySkillData> first_party_skill_data) override;
+#if !BUILDFLAG(IS_ANDROID)
+  void OnDiscoverySkillsFetchedFromService(
+      std::unique_ptr<FirstPartySkillData> first_party_skill_data);
+#endif  // !BUILDFLAG(IS_ANDROID)
+  const SkillProtoList& Get1PSkills() const override;
+  const std::vector<skills::proto::TopicInfo>& Get1PTopicsInfo() const override;
   const std::vector<std::unique_ptr<Skill>>& GetSkills() const override;
   void AddObserver(Observer* observer) override;
   void RemoveObserver(Observer* observer) override;
@@ -86,10 +109,14 @@ class SkillsServiceImpl : public SkillsService {
       override;
   void SyncStatusChanged() override;
   void SetServiceStatusForTesting(ServiceStatus status) override;
+  void NotifyTemporarySkillDisplayChanged(std::string_view skill_id,
+                                          DisplayState display_state) override;
+  void NotifyPanelWillOpen() override;
 
  private:
   void NotifySkillChanged(std::string_view skill_id,
-                          UpdateSource update_source);
+                          UpdateSource update_source,
+                          bool is_position_changed);
 
   // Adds a skill to the service and returns the created skill.
   const Skill* AddSkillImpl(std::unique_ptr<Skill> skill,
@@ -97,6 +124,10 @@ class SkillsServiceImpl : public SkillsService {
 
   // Returns a mutable skill with the given ID or nullptr if not found.
   Skill* GetMutableSkillById(std::string_view skill_id);
+
+  // Returns the position of the skill with the given ID or nullopt if not
+  // found.
+  std::optional<size_t> GetSkillPosition(std::string_view skill_id) const;
 
   // Updates an existing `skill` with the given data. `update_time` is used only
   // if the skill is actually updated with new data or if updated from sync.
@@ -115,11 +146,17 @@ class SkillsServiceImpl : public SkillsService {
   // Sorts the skills by name in alphabetical order.
   void SortSkills();
 
+  // Called when the Skills enabled preference changes.
+  void OnSkillsEnabledPrefChanged();
+
   // The list of skills managed by this service.
   std::vector<std::unique_ptr<Skill>> skills_;
 
-  // The map of loaded 1p discovery skills.
-  SkillsMap first_party_skills_map_;
+  // The struct of loaded 1p discovery skill protos and topics list.
+  FirstPartySkillData first_party_data_;
+
+  // The map of loaded 1p discovery skill objects.
+  SkillIdToSkillMap first_party_skill_objects_map_;
 
   // The list of observers to be notified on changes.
   base::ObserverList<Observer,
@@ -133,9 +170,30 @@ class SkillsServiceImpl : public SkillsService {
   // Downloader for 1P skills.
   std::unique_ptr<SkillsDownloader> skills_downloader_;
 
+  // Fetcher for 1P skills from Boq API.
+#if !BUILDFLAG(IS_ANDROID)
+  std::unique_ptr<SkillsFetcher> skills_fetcher_;
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+  raw_ptr<PrefService> pref_service_;
+  raw_ptr<optimization_guide::OptimizationGuideDecider> optimization_guide_;
+  PrefChangeRegistrar pref_registrar_;
+
+  // Identity manager for OAuth.
+  raw_ptr<signin::IdentityManager> identity_manager_;
+
+  // URL loader factory for fetching skills.
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
+
   // Service status for testing purposes which overrides the actual service
   // status.
   std::optional<ServiceStatus> service_status_for_testing_;
+
+  // A timer for periodically fetching discovery skills.
+  base::RepeatingTimer discovery_skills_refresh_timer_;
+
+  // The last time the discovery skills were fetched.
+  base::Time last_discovery_skills_fetch_time_;
 
   // Weak pointer factory for posting tasks.
   base::WeakPtrFactory<SkillsServiceImpl> weak_ptr_factory_{this};

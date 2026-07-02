@@ -14,6 +14,7 @@
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/khronos/GLES2/gl2.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
+#include "ui/gfx/hdr_metadata.h"
 
 namespace gpu {
 namespace gles2 {
@@ -22,7 +23,6 @@ class GLES2Interface;
 }  // namespace gpu
 
 namespace blink {
-class CanvasNon2DResourceProviderSharedImage;
 
 class PLATFORM_EXPORT StaticBitmapImage : public Image {
  public:
@@ -33,6 +33,7 @@ class PLATFORM_EXPORT StaticBitmapImage : public Image {
   static scoped_refptr<StaticBitmapImage> Create(
       sk_sp<SkData> data,
       const SkImageInfo&,
+      const gfx::HDRMetadata&,
       ImageOrientation = ImageOrientationEnum::kDefault);
 
   StaticBitmapImage(ImageOrientation orientation) : orientation_(orientation) {}
@@ -70,10 +71,6 @@ class PLATFORM_EXPORT StaticBitmapImage : public Image {
                              const gfx::Rect& src_rect) {
     NOTREACHED();
   }
-
-  virtual bool CopyToResourceProvider(
-      CanvasNon2DResourceProviderSharedImage* resource_provider,
-      const gfx::Rect& copy_rect) = 0;
 
   virtual void EnsureSyncTokenVerified() { NOTREACHED(); }
   virtual scoped_refptr<gpu::ClientSharedImage> GetSharedImage() const {
@@ -113,6 +110,8 @@ class PLATFORM_EXPORT StaticBitmapImage : public Image {
   virtual SkAlphaType GetAlphaType() const = 0;
   virtual gfx::ColorSpace GetColorSpace() const = 0;
   virtual viz::SharedImageFormat GetSharedImageFormat() const = 0;
+  virtual const gfx::HDRMetadata& GetHdrMetadata() const = 0;
+
   base::ByteSize EstimatedSizeInBytes() const {
     return base::ByteSize(
         GetSharedImageFormat().EstimatedSizeInBytes(GetSize()));

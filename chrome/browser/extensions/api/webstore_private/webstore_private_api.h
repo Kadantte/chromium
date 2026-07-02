@@ -13,18 +13,17 @@
 #include "base/memory/raw_ptr.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "chrome/browser/extensions/api/webstore_private/extension_install_status.h"
 #include "chrome/browser/extensions/extension_install_prompt.h"
-#include "chrome/browser/extensions/webstore_install_helper.h"
-#include "chrome/browser/extensions/webstore_installer.h"
-#include "chrome/browser/supervised_user/supervised_user_extensions_metrics_recorder.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/extensions/api/webstore_private.h"
-#include "chrome/common/extensions/webstore_install_result.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "extensions/browser/active_install_data.h"
+#include "extensions/browser/api/webstore_private/extension_install_status.h"
 #include "extensions/browser/extension_function.h"
 #include "extensions/browser/supervised_user_extensions_delegate.h"
+#include "extensions/browser/webstore_install_helper.h"
+#include "extensions/browser/webstore_install_result.h"
+#include "extensions/browser/webstore_installer.h"
 #include "extensions/buildflags/buildflags.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 
@@ -33,8 +32,6 @@
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
-
-class Profile;
 
 namespace content {
 class GpuFeatureChecker;
@@ -62,11 +59,11 @@ class WebstorePrivateApi {
   // Sets a delegate for testing.
   static base::AutoReset<Delegate*> SetDelegateForTesting(Delegate* delegate);
 
-  // Gets the pending approval for the `extension_id` in `profile`. Pending
-  // approvals are held between the calls to beginInstallWithManifest and
-  // completeInstall. This should only be used for testing.
+  // Gets the pending approval for the `extension_id` in `browser_context`.
+  // Pending approvals are held between the calls to beginInstallWithManifest
+  // and completeInstall. This should only be used for testing.
   static std::unique_ptr<InstallApproval> PopApprovalForTesting(
-      Profile* profile,
+      content::BrowserContext* browser_context,
       const std::string& extension_id);
 
   // Clear the pending approvals. This should only be used for testing.
@@ -74,6 +71,8 @@ class WebstorePrivateApi {
 
   // Get the count of pending approvals. This should only be used for testing.
   static int GetPendingApprovalsCountForTesting();
+
+  static void EnsureAssociatedFactoryBuilt();
 };
 
 class WebstorePrivateBeginInstallWithManifest3Function
@@ -108,9 +107,17 @@ class WebstorePrivateBeginInstallWithManifest3Function
 
   // Handles the result of GetWebstoreExtensionInstallStatus.
   void OnInstallStatusCheckDone(
-      extensions::ExtensionInstallStatus install_status);
+      extensions::ExtensionInstallStatus install_status,
+      std::u16string blocked_message);
 
   void RequestExtensionApproval(content::WebContents* web_contents);
+
+#if BUILDFLAG(IS_ANDROID)
+  // Called when the parent access flow on Android desktop completes to show the
+  // browser parent approval permission dialog.
+  void OnParentAuthenticationDone(content::WebContents* web_contents,
+                                  SupervisedExtensionApprovalResult result);
+#endif  // !BUILDFLAG(IS_ANDROID)
 
   // Handles the result of the extension approval flow.
   void OnExtensionApprovalDone(SupervisedExtensionApprovalResult result);
@@ -141,7 +148,7 @@ class WebstorePrivateBeginInstallWithManifest3Function
       api::webstore_private::Result result,
       const std::string& error);
 
-  bool ShouldShowFrictionDialog(Profile* profile);
+  bool ShouldShowFrictionDialog(content::BrowserContext* browser_context);
   void ShowInstallFrictionDialog(content::WebContents* contents);
   void ShowInstallDialog(content::WebContents* contents);
 
@@ -163,7 +170,7 @@ class WebstorePrivateBeginInstallWithManifest3Function
 
   std::optional<Params> params_;
 
-  raw_ptr<Profile> profile_ = nullptr;
+  raw_ptr<content::BrowserContext> browser_context_ = nullptr;
 
   std::unique_ptr<ScopedActiveInstall> scoped_active_install_;
 
@@ -175,9 +182,6 @@ class WebstorePrivateBeginInstallWithManifest3Function
   scoped_refptr<Extension> dummy_extension_;
 
   std::u16string blocked_by_policy_error_message_;
-
-  SupervisedUserExtensionsMetricsRecorder
-      supervised_user_extensions_metrics_recorder_;
 
   std::unique_ptr<ExtensionInstallPrompt> install_prompt_;
 
@@ -368,7 +372,8 @@ class WebstorePrivateGetExtensionStatusFunction : public ExtensionFunction {
       const ExtensionId& extension_id);
   void OnManifestParsed(const ExtensionId& extension_id,
                         data_decoder::DataDecoder::ValueOrError result);
-  void OnInstallStatusCheckDone(ExtensionInstallStatus status);
+  void OnInstallStatusCheckDone(ExtensionInstallStatus status,
+                                std::u16string blocked_message);
 
   // ExtensionFunction:
   ExtensionFunction::ResponseAction Run() override;

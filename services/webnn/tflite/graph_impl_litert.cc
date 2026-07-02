@@ -9,6 +9,7 @@
 #include "base/containers/to_vector.h"
 #include "base/files/file_util.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/notimplemented.h"
@@ -19,7 +20,7 @@
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/types/expected_macros.h"
-#include "mojo/public/cpp/bindings/self_owned_associated_receiver.h"
+#include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "services/webnn/buildflags.h"
 #include "services/webnn/error.h"
 #include "services/webnn/public/cpp/webnn_trace.h"
@@ -40,6 +41,7 @@
 #include "services/webnn/webnn_switches.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "third_party/flatbuffers/src/include/flatbuffers/flatbuffers.h"
+#include "third_party/litert/buildflags.h"
 #include "third_party/litert/src/litert/c/litert_common.h"
 #include "third_party/litert/src/litert/cc/litert_compiled_model.h"
 #include "third_party/litert/src/litert/cc/litert_element_type.h"
@@ -51,11 +53,8 @@
 #include "third_party/litert/src/litert/cc/litert_ranked_tensor_type.h"
 #include "third_party/litert/src/litert/cc/litert_tensor_buffer.h"
 #include "third_party/litert/src/litert/cc/options/litert_gpu_options.h"
-// TODO(crbug.com/454732289): Create new build flags for litert instead of
-// reusing tflite build flags.
-#include "third_party/tflite/buildflags.h"
 
-#if BUILDFLAG(BUILD_TFLITE_WITH_XNNPACK)
+#if BUILDFLAG(BUILD_LITERT_WITH_XNNPACK)
 #include "third_party/litert/src/tflite/delegates/xnnpack/xnnpack_delegate.h"
 #include "third_party/xnnpack/src/include/xnnpack.h"  // nogncheck
 #endif
@@ -114,14 +113,32 @@ void DumpModelToFile(const flatbuffers::DetachedBuffer& model_content) {
   }
 }
 
+bool CheckShapeMatch(base::span<const uint32_t> expected_shape,
+                     base::span<const int32_t> actual_shape) {
+  return std::ranges::equal(
+      expected_shape, actual_shape, [](uint32_t a, int32_t b) {
+        return base::IsValueInRangeForNumericType<int32_t>(a) &&
+               static_cast<int32_t>(a) == b;
+      });
+}
+
 template <typename T>
 base::expected<T, mojom::ErrorPtr> AsBaseExpected(
-    ::litert::Expected<T> result) {
+    ::litert::Expected<T> result,
+    std::string_view error_message = "") {
   if (result.HasValue()) {
-    return std::move(result.Value());
+    if constexpr (std::is_void_v<T>) {
+      return base::ok();
+    } else {
+      return std::move(result.Value());
+    }
   }
-  return base::unexpected(mojom::Error::New(mojom::Error::Code::kUnknownError,
-                                            result.Error().Message()));
+  std::string message(result.Error().Message());
+  if (!error_message.empty()) {
+    message = base::StrCat({error_message, ": ", message});
+  }
+  return base::unexpected(
+      mojom::Error::New(mojom::Error::Code::kUnknownError, std::move(message)));
 }
 
 }  // namespace
@@ -132,6 +149,7 @@ class GraphImplLiteRt::ComputeResources {
  public:
   static base::expected<std::unique_ptr<ComputeResources>, mojom::ErrorPtr>
   Create(mojom::Device context_device,
+         bool is_xnnpack_enabled,
          tflite::GraphBuilderTflite::Result build_graph_result) {
     auto self = std::make_unique<ComputeResources>(
         std::move(build_graph_result.input_name_to_descriptor),
@@ -143,20 +161,17 @@ class GraphImplLiteRt::ComputeResources {
       DumpModelToFile(self->model_content_);
     }
 
-    ASSIGN_OR_RETURN(
-        ::litert::Options compilation_options,
-        self->GetCompilationOptions(
-            context_device, build_graph_result.graph_requires_fp32_precision));
+    ASSIGN_OR_RETURN(::litert::Options compilation_options,
+                     self->GetCompilationOptions(
+                         context_device, is_xnnpack_enabled,
+                         build_graph_result.graph_requires_fp32_precision));
 
-    // TODO(crbug.com/454732289): Update to use ScopedFile and
-    // ScopedWeightSectionMap once external weight loader is fully supported in
-    // LiteRT.
-    // TODO(Update):lyjiang
-    // self->weights_file_ = std::make_unique<::litert::ScopedFile>(
-    //     build_graph_result.weights_file.TakePlatformFile());
-    // compilation_options.SetExternalWeightScopedFile(
-    //     *self->weights_file_,
-    //     std::move(build_graph_result.weights_section_map));
+    self->weights_file_ = std::make_unique<::litert::ScopedFile>(
+        build_graph_result.weights_file.TakePlatformFile());
+
+    compilation_options.SetExternalWeightScopedFile(
+        *self->weights_file_,
+        std::move(build_graph_result.weights_section_map));
 
     ASSIGN_OR_RETURN(self->env_,
                      AsBaseExpected(::litert::Environment::Create({})));
@@ -196,6 +211,62 @@ class GraphImplLiteRt::ComputeResources {
       self->devices.push_back(mojom::Device::kCpu);
     }
 
+    for (const auto& [name, input] : self->input_name_to_descriptor) {
+      self->input_tensor_types.push_back(::litert::RankedTensorType(
+          GetLiteRtElementType(input.descriptor.data_type()),
+          ::litert::Layout(
+              ::litert::Dimensions(input.descriptor.shape().begin(),
+                                   input.descriptor.shape().end()))));
+    }
+
+    ASSIGN_OR_RETURN(auto output_layouts,
+                     AsBaseExpected(self->model_->GetOutputTensorLayouts(
+                                        /*signature_index=*/0,
+                                        /*update_allocation=*/true),
+                                    "Failed to get output tensor layouts"));
+
+    if (self->output_name_to_descriptor.size() != output_layouts.size()) {
+      return base::unexpected(mojom::Error::New(
+          mojom::Error::Code::kUnknownError,
+          base::StringPrintf(
+              "The number of outputs in the model (%zu) doesn't match the "
+              "expected number of outputs (%zu).",
+              output_layouts.size(), self->output_name_to_descriptor.size())));
+    }
+
+    for (size_t i = 0; i < self->output_name_to_descriptor.size(); ++i) {
+      const auto& [name, output] = self->output_name_to_descriptor[i];
+      auto& layout = output_layouts[i];
+      // For scalar outputs the LiteRT tensor rank is 1 but the WebNN output
+      // rank is 0, so we skip the shape check for this case.
+      if (!output.descriptor.shape().empty() &&
+          !CheckShapeMatch(output.descriptor.shape(), layout.Dimensions())) {
+        return base::unexpected(mojom::Error::New(
+            mojom::Error::Code::kUnknownError,
+            base::StringPrintf(
+                "The shape of output tensor '%s' doesn't match the model's "
+                "output shape.",
+                name.c_str())));
+      }
+
+      auto tensor_type = ::litert::RankedTensorType(
+          GetLiteRtElementType(output.descriptor.data_type()),
+          std::move(layout));
+      ASSIGN_OR_RETURN(auto required_bytes,
+                       AsBaseExpected(tensor_type.Bytes()));
+      if (output.descriptor.PackedByteLength() != required_bytes) {
+        return base::unexpected(mojom::Error::New(
+            mojom::Error::Code::kUnknownError,
+            base::StringPrintf(
+                "Output buffer size (%zu bytes) is different from "
+                "the required size (%zu bytes) for output "
+                "tensor '%s'",
+                output.descriptor.PackedByteLength(),
+                static_cast<size_t>(required_bytes), name.c_str())));
+      }
+      self->output_tensor_types.push_back(std::move(tensor_type));
+    }
+
     return self;
   }
 
@@ -218,49 +289,39 @@ class GraphImplLiteRt::ComputeResources {
 #endif
   }
 
-  void DoDispatch(
+  base::expected<void, mojom::ErrorPtr> DoDispatchImpl(
       const std::vector<std::pair<std::string, TensorDescriptor>>& inputs,
       const std::vector<std::pair<std::string, TensorDescriptor>>& outputs,
-      base::flat_map<int, raw_ref<const BufferContent>> buffers,
-      ScopedTrace scoped_trace) {
+      const base::flat_map<int, raw_ref<const BufferContent>>& buffers,
+      ScopedTrace& scoped_trace) {
     scoped_trace.AddStep("Set up input and output buffers");
 
     std::vector<::litert::TensorBuffer> input_buffers;
     input_buffers.reserve(inputs.size());
-    for (const auto& [name, input] : inputs) {
-      auto tensor_type = ::litert::RankedTensorType(
-          GetLiteRtElementType(input.descriptor.data_type()),
-          ::litert::Layout(
-              ::litert::Dimensions(input.descriptor.shape().begin(),
-                                   input.descriptor.shape().end())));
-      base::span<uint8_t> data = buffers.at(input.tensor_index)->AsSpan();
-      auto litert_buffer_or = ::litert::TensorBuffer::CreateFromHostMemory(
-          *env_, tensor_type, data.data(), data.size());
-      if (!litert_buffer_or) {
-        LOG(ERROR) << "Failed to create input litert buffer: "
-                   << litert_buffer_or.Error().Message();
-        return;
-      }
-      input_buffers.push_back(std::move(*litert_buffer_or));
+    for (int i = 0; i < inputs.size(); ++i) {
+      const auto& [name, input] = inputs[i];
+      const auto& buffer = buffers.at(input.tensor_index);
+      ASSIGN_OR_RETURN(
+          auto litert_buffer,
+          AsBaseExpected(::litert::TensorBuffer::CreateFromHostMemory(
+                             *env_, input_tensor_types[i],
+                             buffer->AsSpan().data(), buffer->AllocatedSize()),
+                         "Failed to create input LiteRT buffer"));
+      input_buffers.push_back(std::move(litert_buffer));
     }
 
     std::vector<::litert::TensorBuffer> output_buffers;
     output_buffers.reserve(outputs.size());
-    for (const auto& [name, output] : outputs) {
-      auto tensor_type = ::litert::RankedTensorType(
-          GetLiteRtElementType(output.descriptor.data_type()),
-          ::litert::Layout(
-              ::litert::Dimensions(output.descriptor.shape().begin(),
-                                   output.descriptor.shape().end())));
-      base::span<uint8_t> data = buffers.at(output.tensor_index)->AsSpan();
-      auto litert_buffer_or = ::litert::TensorBuffer::CreateFromHostMemory(
-          *env_, tensor_type, data.data(), data.size());
-      if (!litert_buffer_or) {
-        LOG(ERROR) << "Failed to create output litert buffer: "
-                   << litert_buffer_or.Error().Message();
-        return;
-      }
-      output_buffers.push_back(std::move(*litert_buffer_or));
+    for (int i = 0; i < outputs.size(); ++i) {
+      const auto& [name, output] = outputs[i];
+      const auto& buffer = buffers.at(output.tensor_index);
+      ASSIGN_OR_RETURN(
+          auto litert_buffer,
+          AsBaseExpected(::litert::TensorBuffer::CreateFromHostMemory(
+                             *env_, output_tensor_types[i],
+                             buffer->AsSpan().data(), buffer->AllocatedSize()),
+                         "Failed to create output LiteRT buffer"));
+      output_buffers.push_back(std::move(litert_buffer));
     }
 
     scoped_trace.AddStep("Run inference");
@@ -273,8 +334,22 @@ class GraphImplLiteRt::ComputeResources {
 #endif
 
     if (!status) {
-      LOG(ERROR) << "Failed to compute: " << status.Error().Message();
-      return;
+      return base::unexpected(mojom::Error::New(
+          mojom::Error::Code::kUnknownError,
+          base::StrCat({"Failed to compute: ", status.Error().Message()})));
+    }
+
+    return base::ok();
+  }
+
+  void DoDispatch(
+      const std::vector<std::pair<std::string, TensorDescriptor>>& inputs,
+      const std::vector<std::pair<std::string, TensorDescriptor>>& outputs,
+      base::flat_map<int, raw_ref<const BufferContent>> buffers,
+      ScopedTrace scoped_trace) {
+    auto result = DoDispatchImpl(inputs, outputs, buffers, scoped_trace);
+    if (!result.has_value()) {
+      LOG(ERROR) << result.error()->message;
     }
   }
 
@@ -306,9 +381,13 @@ class GraphImplLiteRt::ComputeResources {
   std::vector<std::pair<std::string, TensorDescriptor>>
       output_name_to_descriptor;
 
+  std::vector<::litert::RankedTensorType> input_tensor_types;
+  std::vector<::litert::RankedTensorType> output_tensor_types;
+
  private:
   base::expected<::litert::Options, mojom::ErrorPtr> GetCompilationOptions(
       mojom::Device context_device,
+      bool is_xnnpack_enabled,
       bool graph_requires_fp32_precision) {
     auto options = ::litert::Options::Create();
     if (!options) {
@@ -337,7 +416,7 @@ class GraphImplLiteRt::ComputeResources {
                                     ? ::litert::GpuOptions::Precision::kFp32
                                     : ::litert::GpuOptions::Precision::kFp16);
     }
-#if BUILDFLAG(BUILD_TFLITE_WITH_XNNPACK)
+#if BUILDFLAG(BUILD_LITERT_WITH_XNNPACK)
     accelerators |= ::litert::HwAccelerators::kCpu;
     auto cpu_options = options->GetCpuOptions();
     if (!cpu_options) {
@@ -346,8 +425,17 @@ class GraphImplLiteRt::ComputeResources {
           base::StringPrintf("Unable to create CPU Options: %s",
                              cpu_options.Error().Message())));
     }
+    // Fall back to LiteRT's built-in optimized kernels when `xnn_initialize()`
+    // failed during `WebNNContextImpl` construction.
+    if (!is_xnnpack_enabled) {
+      cpu_options->SetKernelMode(kLiteRtCpuKernelModeBuiltin);
+    }
 #if BUILDFLAG(WEBNN_ENABLE_TFLITE_PROFILER)
-    cpu_options->SetXNNPackFlags(XNN_FLAG_BASIC_PROFILING);
+    // `SetXNNPackFlags` only applies to the XNNPACK kernel mode; skip it
+    // when falling back to LiteRT's built-in kernels.
+    if (is_xnnpack_enabled) {
+      cpu_options->SetXNNPackFlags(XNN_FLAG_BASIC_PROFILING);
+    }
     auto runtime_options = options->GetRuntimeOptions();
     if (!runtime_options) {
       return base::unexpected(mojom::Error::New(
@@ -375,9 +463,7 @@ class GraphImplLiteRt::ComputeResources {
     return std::move(*options);
   }
 
-  // TODO(crbug.com/454732289): Re-enable the once external weight loader is
-  // fully supported in LiteRT. std::unique_ptr<::litert::ScopedFile>
-  // weights_file_;
+  std::unique_ptr<::litert::ScopedFile> weights_file_;
   flatbuffers::DetachedBuffer model_content_;
   std::optional<::litert::Environment> env_;
   std::optional<::litert::CompiledModel> model_;
@@ -389,13 +475,13 @@ class GraphImplLiteRt::ComputeResources {
 
 // static
 void GraphImplLiteRt::CreateAndBuild(
-    mojo::PendingAssociatedReceiver<mojom::WebNNGraph> receiver,
     mojom::GraphInfoPtr graph_info,
     ComputeResourceInfo compute_resource_info,
     base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>
         constant_operands,
-    base::flat_map<OperandId, WebNNTensorImpl*> constant_tensor_operands,
-    ContextImplLiteRt* context,
+    base::flat_map<OperandId, scoped_refptr<WebNNTensorImpl>>
+        constant_tensor_operands,
+    ContextImplLiteRt& context,
     base::File weights_file,
     WebNNContextImpl::CreateGraphImplCallback callback) {
   base::flat_map<OperandId, base::flat_set<OperationId>>
@@ -407,19 +493,15 @@ void GraphImplLiteRt::CreateAndBuild(
       FROM_HERE,
       {base::TaskPriority::USER_BLOCKING,
        base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN, base::MayBlock()},
-      base::BindOnce(
-          &GraphImplLiteRt::CreateAndBuildOnBackgroundThread,
-          context->properties(), context->options().device,
-          std::move(graph_info), std::move(constant_operands),
-          std::move(operand_to_dependent_operations),
-          std::move(operand_to_producing_operation),
-          // TODO(crbug.com/454732289): Explicitly pass an invalid file before
-          // LiteRT external weight loader support is ready. This will force the
-          // builder to store the weights in the flatbuffer.
-          base::File(base::File::FILE_ERROR_NOT_FOUND)),
-      base::BindOnce(&GraphImplLiteRt::DidCreateAndBuild, std::move(receiver),
-                     context->AsWeakPtr(), std::move(compute_resource_info),
-                     std::move(callback)));
+      base::BindOnce(&GraphImplLiteRt::CreateAndBuildOnBackgroundThread,
+                     context.properties(), context.options().device,
+                     context.IsXNNPackInitialized(), std::move(graph_info),
+                     std::move(constant_operands),
+                     std::move(operand_to_dependent_operations),
+                     std::move(operand_to_producing_operation),
+                     std::move(weights_file)),
+      base::BindOnce(&GraphImplLiteRt::DidCreateAndBuild, context.AsWeakPtr(),
+                     std::move(compute_resource_info), std::move(callback)));
 }
 
 // static
@@ -428,6 +510,7 @@ base::expected<std::unique_ptr<GraphImplLiteRt::ComputeResources>,
 GraphImplLiteRt::CreateAndBuildOnBackgroundThread(
     ContextProperties context_properties,
     mojom::Device context_device,
+    bool is_xnnpack_enabled,
     mojom::GraphInfoPtr graph_info,
     base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>
         constant_operands,
@@ -440,19 +523,20 @@ GraphImplLiteRt::CreateAndBuildOnBackgroundThread(
       tflite::GraphBuilderTflite::CreateAndBuild(
           context_properties, *graph_info, std::move(constant_operands),
           std::move(operand_to_dependent_operations),
-          std::move(operand_to_producing_operation), std::move(weights_file)),
+          std::move(operand_to_producing_operation), std::move(weights_file),
+          /*use_external_buffer=*/true),
       [](std::string error) {
         return mojom::Error::New(mojom::Error::Code::kNotSupportedError,
                                  std::move(error));
       });
 
   ASSIGN_OR_RETURN(std::unique_ptr<ComputeResources> compute_resources,
-                   ComputeResources::Create(context_device, std::move(result)));
+                   ComputeResources::Create(context_device, is_xnnpack_enabled,
+                                            std::move(result)));
   return compute_resources;
 }
 
 void GraphImplLiteRt::DidCreateAndBuild(
-    mojo::PendingAssociatedReceiver<mojom::WebNNGraph> receiver,
     base::WeakPtr<WebNNContextImpl> context,
     ComputeResourceInfo compute_resource_info,
     WebNNContextImpl::CreateGraphImplCallback callback,
@@ -477,16 +561,14 @@ void GraphImplLiteRt::DidCreateAndBuild(
       base::MakeRefCounted<QueueableResourceState<ComputeResources>>(
           std::move(*compute_resources));
   std::move(callback).Run(base::MakeRefCounted<GraphImplLiteRt>(
-      std::move(receiver), std::move(compute_resource_info),
-      std::move(input_name_to_index), std::move(output_name_to_index),
-      std::move(compute_resources_state), std::move(context),
-      std::move(devices)));
+      std::move(compute_resource_info), std::move(input_name_to_index),
+      std::move(output_name_to_index), std::move(compute_resources_state),
+      *context, std::move(devices)));
 }
 
 GraphImplLiteRt::~GraphImplLiteRt() = default;
 
 GraphImplLiteRt::GraphImplLiteRt(
-    mojo::PendingAssociatedReceiver<mojom::WebNNGraph> receiver,
     ComputeResourceInfo compute_resource_info,
     std::vector<std::pair<std::string, tflite::TensorDescriptor>>
         input_name_to_descriptor,
@@ -494,10 +576,9 @@ GraphImplLiteRt::GraphImplLiteRt(
         output_name_to_descriptor,
     scoped_refptr<QueueableResourceState<ComputeResources>>
         compute_resources_state,
-    base::WeakPtr<WebNNContextImpl> context,
+    WebNNContextImpl& context,
     std::vector<mojom::Device> devices)
-    : WebNNGraphImpl(std::move(receiver),
-                     std::move(context),
+    : WebNNGraphImpl(context,
                      std::move(compute_resource_info),
                      std::move(devices)),
       compute_resources_state_(std::move(compute_resources_state)),

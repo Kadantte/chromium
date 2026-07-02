@@ -13,7 +13,6 @@
 #include "base/memory/weak_ptr.h"
 #include "content/browser/webid/network_request_manager.h"
 #include "content/common/content_export.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/mojom/client_security_state.mojom-forward.h"
 #include "url/gurl.h"
@@ -35,6 +34,7 @@ class CONTENT_EXPORT EmailVerifierNetworkRequestManager
     ~WellKnown();
     WellKnown(const WellKnown&);
     GURL issuance_endpoint;
+    GURL jwks_uri;
     std::vector<std::string> signing_alg_values_supported;
   };
 
@@ -52,7 +52,7 @@ class CONTENT_EXPORT EmailVerifierNetworkRequestManager
   using FetchWellKnownCallback =
       base::OnceCallback<void(FetchStatus, WellKnown)>;
   using TokenRequestCallback =
-      base::OnceCallback<void(FetchStatus, TokenResult&&)>;
+      base::OnceCallback<void(FetchStatus, TokenResult)>;
 
   static std::unique_ptr<EmailVerifierNetworkRequestManager> Create(
       RenderFrameHostImpl* host);

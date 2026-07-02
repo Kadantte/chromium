@@ -5,6 +5,8 @@
 #ifndef UI_DISPLAY_MAC_VSYNC_PROVIDER_MAC_H_
 #define UI_DISPLAY_MAC_VSYNC_PROVIDER_MAC_H_
 
+#include <CoreGraphics/CGDirectDisplay.h>
+
 #include <list>
 #include <map>
 
@@ -32,23 +34,29 @@ class DISPLAY_EXPORT VSyncProviderMac {
   VSyncProviderMac& operator=(const VSyncProviderMac&) = delete;
 
   // Originated from the browser process
-  void OnVSync(const VSyncParamsMac& params, int64_t display_id);
+  void OnVSync(const VSyncParamsMac& params, int64_t vsync_display_id);
 
   void RegisterCallback(VSyncCallbackMac::Callback callback,
-                        int64_t display_id);
+                        CGDirectDisplayID display_id);
   void UnregisterCallback(VSyncCallbackMac::Callback callback,
-                          int64_t display_id);
+                          CGDirectDisplayID display_id);
 
-  void SetSupportedDisplayLinkId(int64_t display_id, bool is_supported);
+  void SetSupportedDisplayLinkId(int64_t vsync_display_id, bool is_supported);
 
   // Returns the vsync interval via the Vsync provider.
   void SetCallbackForRemoteNeedsBeginFrame(NeedsBeginFrameCB callback);
 
   // Whether CADisplayLink in Browser with this display_id is supported.
-  bool IsDisplayLinkSupported(int64_t display_id);
+  // The status is updated by SetSupportedDisplayLinkId().
+  bool IsDisplayLinkInBrowserValid(int64_t vsync_display_id);
 
   // Whether the task runner of VSyncProviderMac belongs to the current thread.
   bool BelongsToCurrentThread();
+
+  // Returns true if the provider is connected to the browser (i.e.,
+  // `needs_begin_frame_callback_` is valid) and is running on the Viz thread.
+  // Used only to gate recording the ExternalDisplayLink creation histogram.
+  bool IsConnectedToBrowserOnVizThread();
 
  private:
   friend class base::NoDestructor<VSyncProviderMac>;
@@ -56,16 +64,28 @@ class DISPLAY_EXPORT VSyncProviderMac {
   VSyncProviderMac();
   virtual ~VSyncProviderMac();
 
-  void AddSupportedDisplayLinkId(int64_t display_id);
-  void RemoveSupportedDisplayLinkId(int64_t display_id);
+  void AddSupportedDisplayLinkId(CGDirectDisplayID display_id);
+  void RemoveSupportedDisplayLinkId(CGDirectDisplayID display_id);
 
+  // Records the time elapsed between sending the NeedsBeginFrames request via
+  // IPC and receiving the first VSync signal for the specified display.
+  void RecordTimeFromNeedsBeginFramesToVSync(CGDirectDisplayID display_id);
+
+  // Must only be accessed on the Viz thread.
   NeedsBeginFrameCB needs_begin_frame_callback_;
 
-  // Updated on Viz thread and read back on both Viz and gpu main thread.
-  // Use this lock when it's written on the Viz thread and read back on the gpu
-  // main thread. No need to lock when read on Viz thread.
+  // Protects `callback_lists_` when it is updated on the Viz thread and read
+  // concurrently from other threads (such as `CrGpuMain` or
+  // `CompositorGpuThread`). Lock acquisition is bypassed when accessing
+  // `callback_lists_` directly on the Viz thread.
   base::Lock id_lock_;
-  std::map<int64_t, std::list<VSyncCallbackMac::Callback>> callback_lists_;
+  std::map<CGDirectDisplayID, std::list<VSyncCallbackMac::Callback>>
+      callback_lists_;
+
+  // Map of display ID to the time when NeedsBeginFrames(true) was sent to
+  // request VSync from the browser. This is used to measure the latency until
+  // the first VSync signal is received.
+  std::map<CGDirectDisplayID, base::TimeTicks> begin_frame_request_times_;
 
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
 

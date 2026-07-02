@@ -31,6 +31,7 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_registration_options.mojom.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace content {
 
@@ -86,17 +87,19 @@ ServiceWorkerContainerHostForClient::ServiceWorkerContainerHostForClient(
     blink::mojom::ServiceWorkerContainerInfoForClientPtr& container_info,
     const PolicyContainerPolicies& policy_container_policies,
     mojo::PendingRemote<network::mojom::CrossOriginEmbedderPolicyReporter>
-        coep_reporter,
+        cross_origin_embedder_policy_reporter,
     mojo::PendingRemote<network::mojom::DocumentIsolationPolicyReporter>
-        dip_reporter,
+        document_isolation_policy_reporter,
     ukm::SourceId ukm_source_id)
     : service_worker_client_(std::move(service_worker_client)),
       container_(
           container_info->client_receiver.InitWithNewEndpointAndPassRemote()),
       ukm_source_id_(std::move(ukm_source_id)),
       policy_container_policies_(policy_container_policies.Clone()),
-      coep_reporter_(std::move(coep_reporter)),
-      dip_reporter_(std::move(dip_reporter)) {
+      cross_origin_embedder_policy_reporter_(
+          std::move(cross_origin_embedder_policy_reporter)),
+      document_isolation_policy_reporter_(
+          std::move(document_isolation_policy_reporter)) {
   CHECK(container_.is_bound());
   CHECK(service_worker_client_);
   CHECK(!service_worker_client_->is_response_committed());
@@ -160,10 +163,10 @@ void ServiceWorkerContainerHostForClient::Register(
   }
 
   int64_t trace_id = base::TimeTicks::Now().since_origin().InMicroseconds();
-  TRACE_EVENT_BEGIN(
-      "ServiceWorker", "ServiceWorkerContainerHost::Register",
-      perfetto::NamedTrack("ServiceWorkerContainerHost::Register", trace_id),
-      "Scope", options->scope.spec(), "Script URL", script_url.spec());
+  TRACE_EVENT_INSTANT("ServiceWorker", "ServiceWorkerContainerHost::Register",
+                      perfetto::Flow::ProcessScoped(trace_id, "Register"),
+                      "Scope", options->scope.spec(), "Script URL",
+                      script_url.spec());
 
   // Wrap the callback with default invoke before passing it, since
   // RegisterServiceWorker() can drop the callback on service worker
@@ -233,11 +236,10 @@ void ServiceWorkerContainerHostForClient::GetRegistration(
   }
 
   int64_t trace_id = base::TimeTicks::Now().since_origin().InMicroseconds();
-  TRACE_EVENT_BEGIN(
+  TRACE_EVENT_INSTANT(
       "ServiceWorker", "ServiceWorkerContainerHost::GetRegistration",
-      perfetto::NamedTrack("ServiceWorkerContainerHost::GetRegistration",
-                           trace_id),
-      "Client URL", client_url.spec());
+      perfetto::Flow::ProcessScoped(trace_id, "GetRegistration"), "Client URL",
+      client_url.spec());
 
   // The client_url may be cross-origin if "disable-web-security" is active,
   // make sure we get the correct key.
@@ -274,10 +276,9 @@ void ServiceWorkerContainerHostForClient::GetRegistrations(
   }
 
   int64_t trace_id = base::TimeTicks::Now().since_origin().InMicroseconds();
-  TRACE_EVENT_BEGIN(
+  TRACE_EVENT_INSTANT(
       "ServiceWorker", "ServiceWorkerContainerHost::GetRegistrations",
-      perfetto::NamedTrack("ServiceWorkerContainerHost::GetRegistrations",
-                           trace_id));
+      perfetto::Flow::ProcessScoped(trace_id, "GetRegistrations"));
   context()->registry().GetRegistrationsForStorageKey(
       service_worker_client().key(),
       base::BindOnce(
@@ -298,9 +299,9 @@ void ServiceWorkerContainerHostForClient::GetRegistrationForReady(
     return;
   }
 
-  TRACE_EVENT_BEGIN("ServiceWorker",
-                    "ServiceWorkerContainerHost::GetRegistrationForReady",
-                    perfetto::Track::FromPointer(this));
+  TRACE_EVENT_INSTANT(
+      "ServiceWorker", "ServiceWorkerContainerHost::GetRegistrationForReady",
+      perfetto::Flow::FromPointer(this, "GetRegistrationForReady"));
   DCHECK(!get_ready_callback_);
   get_ready_callback_ =
       std::make_unique<GetRegistrationForReadyCallback>(std::move(callback));
@@ -457,7 +458,7 @@ ServiceWorkerContainerHostForClient::CreateControllerServiceWorkerInfo() {
   controller_info->mode = controller()->GetControllerMode();
   controller_info->fetch_handler_type = controller()->fetch_handler_type();
   controller_info->fetch_handler_bypass_option =
-      controller()->fetch_handler_bypass_option();
+      service_worker_client().fetch_handler_bypass_option();
   controller_info->sha256_script_checksum =
       controller()->sha256_script_checksum();
   controller_info->need_router_evaluate = controller()->NeedRouterEvaluate();
@@ -479,6 +480,11 @@ ServiceWorkerContainerHostForClient::CreateControllerServiceWorkerInfo() {
       controller_info->router_data->initial_running_status =
           controller()->running_status();
     }
+
+    controller_info->cross_origin_embedder_policy =
+        CreateCrossOriginEmbedderPolicyInfo();
+    controller_info->document_isolation_policy =
+        CreateDocumentIsolationPolicyInfo();
   }
 
   // Note that |controller_info->remote_controller| is null if the controller
@@ -705,26 +711,9 @@ ServiceWorkerContainerHostForClient::GetRemoteControllerServiceWorker() {
 
 void ServiceWorkerContainerHostForClient::CloneControllerServiceWorker(
     mojo::PendingReceiver<blink::mojom::ControllerServiceWorker> receiver) {
-  mojo::PendingRemote<network::mojom::CrossOriginEmbedderPolicyReporter>
-      coep_reporter_to_be_passed;
-  mojo::PendingRemote<network::mojom::DocumentIsolationPolicyReporter>
-      dip_reporter_to_be_passed;
-  if (coep_reporter_) {
-    coep_reporter_->Clone(
-        coep_reporter_to_be_passed.InitWithNewPipeAndPassReceiver());
-  }
-
-  if (dip_reporter_) {
-    dip_reporter_->Clone(
-        dip_reporter_to_be_passed.InitWithNewPipeAndPassReceiver());
-  }
-
-  controller()->controller()->Clone(
-      std::move(receiver),
-      policy_container_policies_.cross_origin_embedder_policy,
-      std::move(coep_reporter_to_be_passed),
-      policy_container_policies_.document_isolation_policy,
-      std::move(dip_reporter_to_be_passed));
+  controller()->controller()->Clone(std::move(receiver),
+                                    CreateCrossOriginEmbedderPolicyInfo(),
+                                    CreateDocumentIsolationPolicyInfo());
 }
 
 bool ServiceWorkerContainerHostForClient::AllowServiceWorker(
@@ -849,8 +838,10 @@ void ServiceWorkerContainerHostForClient::ReturnRegistrationForReadyIfNeeded() {
   if (!registration || !registration->active_version())
     return;
   // ServiceWorkerContainerHost::GetRegistrationForReady
-  TRACE_EVENT_END("ServiceWorker", perfetto::Track::FromPointer(this),
-                  "Registration ID", registration->id());
+  TRACE_EVENT_INSTANT(
+      "ServiceWorker", "ServiceWorkerContainerHost::ReturnRegistrationForReady",
+      perfetto::TerminatingFlow::FromPointer(this, "GetRegistrationForReady"),
+      "Registration ID", registration->id());
   if (!context()) {
     // Here no need to run or destroy |get_ready_callback_|, which will destroy
     // together with |receiver_| when |this| destroys.
@@ -885,10 +876,10 @@ void ServiceWorkerContainerHostForClient::RegistrationComplete(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // ServiceWorkerContainerHost::Register
-  TRACE_EVENT_END(
-      "ServiceWorker",
-      perfetto::NamedTrack("ServiceWorkerContainerHost::Register", trace_id),
-      "Status", blink::ServiceWorkerStatusToString(status), "Registration ID",
+  TRACE_EVENT_INSTANT(
+      "ServiceWorker", "ServiceWorkerContainerHost::RegistrationComplete",
+      perfetto::TerminatingFlow::ProcessScoped(trace_id, "Register"), "Status",
+      blink::ServiceWorkerStatusToString(status), "Registration ID",
       registration_id);
 
   // kErrorInvalidArguments means the renderer gave unexpectedly bad arguments,
@@ -948,10 +939,9 @@ void ServiceWorkerContainerHostForClient::GetRegistrationComplete(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // ServiceWorkerContainerHost::GetRegistration
-  TRACE_EVENT_END(
-      "ServiceWorker",
-      perfetto::NamedTrack("ServiceWorkerContainerHost::GetRegistration",
-                           trace_id),
+  TRACE_EVENT_INSTANT(
+      "ServiceWorker", "ServiceWorkerContainerHost::GetRegistrationComplete",
+      perfetto::TerminatingFlow::ProcessScoped(trace_id, "GetRegistration"),
       "Status", blink::ServiceWorkerStatusToString(status), "Registration ID",
       registration ? registration->id()
                    : blink::mojom::kInvalidServiceWorkerRegistrationId);
@@ -1000,10 +990,10 @@ void ServiceWorkerContainerHostForClient::GetRegistrationsComplete(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // ServiceWorkerContainerHost::GetRegistrations
-  TRACE_EVENT_END("ServiceWorker",
-                  perfetto::NamedTrack(
-                      "ServiceWorkerContainerHost::GetRegistrations", trace_id),
-                  "Status", blink::ServiceWorkerStatusToString(status));
+  TRACE_EVENT_INSTANT(
+      "ServiceWorker", "ServiceWorkerContainerHost::GetRegistrationsComplete",
+      perfetto::TerminatingFlow::ProcessScoped(trace_id, "GetRegistrations"),
+      "Status", blink::ServiceWorkerStatusToString(status));
 
   if (!context()) {
     std::move(callback).Run(
@@ -1389,6 +1379,30 @@ void ServiceWorkerContainerHostForServiceWorker::Update(
 
 ServiceWorkerVersion* ServiceWorkerContainerHostForClient::controller() const {
   return service_worker_client().controller();
+}
+
+blink::mojom::CrossOriginEmbedderPolicyInfoPtr
+ServiceWorkerContainerHostForClient::CreateCrossOriginEmbedderPolicyInfo()
+    const {
+  auto info = blink::mojom::CrossOriginEmbedderPolicyInfo::New(
+      policy_container_policies_.cross_origin_embedder_policy,
+      mojo::NullRemote());
+  if (cross_origin_embedder_policy_reporter_) {
+    cross_origin_embedder_policy_reporter_->Clone(
+        info->reporter.InitWithNewPipeAndPassReceiver());
+  }
+  return info;
+}
+
+blink::mojom::DocumentIsolationPolicyInfoPtr
+ServiceWorkerContainerHostForClient::CreateDocumentIsolationPolicyInfo() const {
+  auto info = blink::mojom::DocumentIsolationPolicyInfo::New(
+      policy_container_policies_.document_isolation_policy, mojo::NullRemote());
+  if (document_isolation_policy_reporter_) {
+    document_isolation_policy_reporter_->Clone(
+        info->reporter.InitWithNewPipeAndPassReceiver());
+  }
+  return info;
 }
 
 }  // namespace content

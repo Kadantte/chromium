@@ -29,7 +29,6 @@
 #include "base/lazy_instance.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
 #include "base/path_service.h"
 #include "base/rand_util.h"
@@ -79,8 +78,8 @@ bool GenerateEntropy(unsigned char* buffer, size_t amount) {
 void GetMappedFileData(base::MemoryMappedFile* mapped_file,
                        v8::StartupData* data) {
   if (mapped_file) {
-    data->data = reinterpret_cast<const char*>(mapped_file->data());
-    data->raw_size = static_cast<int>(mapped_file->length());
+    data->data = reinterpret_cast<const char*>(mapped_file->bytes().data());
+    data->raw_size = static_cast<int>(mapped_file->bytes().size());
   } else {
     data->data = nullptr;
     data->raw_size = 0;
@@ -230,7 +229,7 @@ class V8FeatureVisitor : public base::FeatureVisitor {
  public:
   void Visit(const std::string& feature_name,
              base::FeatureList::OverrideState override_state,
-             const std::map<std::string, std::string>& params,
+             const base::FieldTrialParams& params,
              const std::string& trial_name,
              const std::string& group_name) override {
     std::string_view feature_name_view(feature_name);
@@ -385,9 +384,6 @@ void SetFeatureFlags() {
       features::kV8ExperimentalRegexpEngine,
       "--enable-experimental-regexp-engine-on-excessive-backtracks",
       "--no-enable-experimental-regexp-engine-on-excessive-backtracks");
-  SetV8FlagsIfOverridden(features::kV8ExternalMemoryAccountedInGlobalLimit,
-                         "--external-memory-accounted-in-global-limit",
-                         "--no-external-memory-accounted-in-global-limit");
   SetV8FlagsIfOverridden(features::kV8TurboFastApiCalls,
                          "--turbo-fast-api-calls", "--no-turbo-fast-api-calls");
   SetV8FlagsIfOverridden(features::kV8MegaDomIC, "--mega-dom-ic",
@@ -396,6 +392,9 @@ void SetFeatureFlags() {
   SetV8FlagsIfOverridden(features::kV8ConcurrentMaglevHighPriorityThreads,
                          "--concurrent-maglev-high-priority-threads",
                          "--no-concurrent-maglev-high-priority-threads");
+  if (base::FeatureList::IsEnabled(features::kV8MaxValidPolymorphicMapCount)) {
+    SetV8FlagsFormatted("--max-valid-polymorphic-map-count=10");
+  }
   if (base::FeatureList::IsEnabled(features::kV8MemoryReducer)) {
     SetV8FlagsFormatted("--memory-reducer-gc-count=%i",
                         features::kV8MemoryReducerGCCount.Get());
@@ -486,9 +485,7 @@ void SetFeatureFlags() {
       base::FeatureList::IsEnabled(
           features::kV8SlowHistogramsCodeMemoryWriteProtection) ||
       base::FeatureList::IsEnabled(features::kV8SlowHistogramsSparkplug) ||
-      base::FeatureList::IsEnabled(
-          features::kV8SlowHistogramsSparkplugAndroid) ||
-      base::FeatureList::IsEnabled(features::kV8SlowHistogramsNoTurbofan);
+      base::FeatureList::IsEnabled(features::kV8SlowHistogramsSparkplugAndroid);
   if (any_slow_histograms_alias) {
     SetV8Flags("--slow-histograms");
   } else {
@@ -572,26 +569,14 @@ void V8Initializer::Initialize(IsolateHolder::ScriptMode mode,
   // do it is that there are no Isolates available yet, which are required
   // for recording histograms in V8.
 
-  // Record the mode of the sandbox.
-  // These values are persisted to logs. Entries should not be renumbered and
-  // numeric values should never be reused. This should match enum
-  // V8SandboxMode in tools/metrics/histograms/enums.xml.
-  enum class V8SandboxMode {
-    kSecure = 0,
-    kInsecure = 1,
-    kMaxValue = kInsecure,
-  };
-  base::UmaHistogramEnumeration("V8.SandboxMode",
-                                v8::V8::IsSandboxConfiguredSecurely()
-                                    ? V8SandboxMode::kSecure
-                                    : V8SandboxMode::kInsecure);
+  base::UmaHistogramEnumeration("V8.SandboxMode", v8::V8::GetSandboxMode());
 
   // Record the size of the address space reservation backing the sandbox.
   // The size will always be one of a handful of values, so use a sparse
   // histogram to capture it.
-  size_t size = v8::V8::GetSandboxReservationSizeInBytes();
+  const size_t size = v8::V8::GetSandboxReservationSizeInBytes();
   DCHECK_GT(size, 0U);
-  size_t sizeInGB = size >> 30;
+  const size_t sizeInGB = size >> 30;
   DCHECK_EQ(sizeInGB << 30, size);
   base::UmaHistogramSparse("V8.SandboxReservationSizeGB", sizeInGB);
 

@@ -42,6 +42,7 @@
 #include "components/services/paint_preview_compositor/public/mojom/paint_preview_compositor.mojom.h"
 #include "content/public/browser/audio_service_info.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/common/child_process_id.h"
 #include "content/public/common/content_switches.h"
 #include "extensions/buildflags/buildflags.h"
 #include "media/mojo/mojom/cdm_service.mojom.h"
@@ -65,7 +66,7 @@
 #include "media/mojo/mojom/media_foundation_service.mojom.h"
 #endif
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/process_map.h"
 #include "extensions/common/extension.h"
@@ -243,11 +244,27 @@ const Metric kAllocatorDumpNamesForMetrics[] = {
     {"devtools/durable_message_collectors",
      "DurableMessages.AggregateMemoryUsage", MetricSize::kLarge, kSize,
      EmitTo::kSizeInUmaOnly, nullptr},
-    {"devtools/durable_message_collectors", "DurableMessages.CollectorCount",
-     MetricSize::kTiny, MemoryAllocatorDump::kNameObjectCount,
-     EmitTo::kSizeInUmaOnly, nullptr},
-    {"devtools/sessions", "DevTools.Sessions.ActiveCount", MetricSize::kTiny,
-     MemoryAllocatorDump::kNameObjectCount, EmitTo::kSizeInUmaOnly, nullptr},
+    {"devtools/durable_message_collectors",
+     "DurableMessages.AggregateMessageCount",
+     MetricSize::kCustom,
+     "message_count",
+     EmitTo::kSizeInUmaOnly,
+     nullptr,
+     {1, 1000000}},
+    {"devtools/durable_message_collectors",
+     "DurableMessages.CollectorCount",
+     MetricSize::kCustom,
+     "collector_count",
+     EmitTo::kSizeInUmaOnly,
+     nullptr,
+     {1, 10000}},
+    {"devtools/sessions",
+     "DevTools.Sessions.ActiveCount",
+     MetricSize::kCustom,
+     MemoryAllocatorDump::kNameObjectCount,
+     EmitTo::kSizeInUmaOnly,
+     nullptr,
+     {1, 10000}},
     {"discardable", "Discardable", MetricSize::kLarge, kEffectiveSize,
      EmitTo::kSizeInUkmAndUma, &Memory_Experimental::SetDiscardable},
     {"discardable", "Discardable.FreelistSize", MetricSize::kSmall,
@@ -485,6 +502,8 @@ const Metric kAllocatorDumpNamesForMetrics[] = {
      MetricSize::kPercentage, "fragmentation", EmitTo::kSizeInUmaOnly, nullptr},
     {"malloc", "Malloc.SyscallsPerMinute", MetricSize::kTiny,
      "syscalls_per_minute", EmitTo::kSizeInUmaOnly, nullptr},
+    {"malloc/partitions/leaked", "Malloc.IntendedLeakSize", MetricSize::kLarge,
+     "intended_leak_size", EmitTo::kSizeInUmaOnly, nullptr},
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
     {"mojo", "NumberOfMojoHandles", MetricSize::kSmall,
      MemoryAllocatorDump::kNameObjectCount, EmitTo::kCountsInUkmOnly,
@@ -749,6 +768,10 @@ const Metric kAllocatorDumpNamesForMetrics[] = {
     {"web_cache/Other_resources", "WebCache.OtherResources", MetricSize::kSmall,
      kEffectiveSize, EmitTo::kSizeInUkmAndUma,
      &Memory_Experimental::SetWebCache_OtherResources},
+    {"webnn", "WebNN", MetricSize::kLarge, kEffectiveSize,
+     EmitTo::kSizeInUkmAndUma, &Memory_Experimental::SetWebNN},
+    {"webgl", "WebGL", MetricSize::kLarge, kEffectiveSize,
+     EmitTo::kSizeInUmaOnly, nullptr},
 #if BUILDFLAG(IS_ANDROID)
     {base::android::MeminfoDumpProvider::kDumpName, "AndroidOtherPss",
      MetricSize::kLarge, base::android::MeminfoDumpProvider::kPssMetricName,
@@ -1342,7 +1365,7 @@ ukm::UkmRecorder* ProcessMemoryMetricsEmitter::GetUkmRecorder() {
 
 int ProcessMemoryMetricsEmitter::GetNumberOfExtensions(base::ProcessId pid) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   // Retrieve the renderer process host for the given pid.
 
   content::RenderProcessHost* rph = nullptr;
@@ -1368,7 +1391,7 @@ int ProcessMemoryMetricsEmitter::GetNumberOfExtensions(base::ProcessId pid) {
   }
 
   const extensions::Extension* extension =
-      process_map->GetEnabledExtensionByProcessID(rph->GetDeprecatedID());
+      process_map->GetEnabledExtensionByProcessID(rph->GetID());
   // Only include this extension if it's not a hosted app.
   return (extension && !extension->is_hosted_app()) ? 1 : 0;
 #else

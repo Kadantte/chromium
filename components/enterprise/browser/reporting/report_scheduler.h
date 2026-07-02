@@ -15,6 +15,7 @@
 #include "base/time/time.h"
 #include "base/timer/wall_clock_timer.h"
 #include "components/enterprise/browser/reporting/report_uploader.h"
+#include "components/enterprise/browser/reporting/report_util.h"
 #include "components/enterprise/browser/reporting/user_security_signals_service.h"
 #include "components/policy/core/common/cloud/dm_token.h"
 #include "components/prefs/pref_change_registrar.h"
@@ -117,7 +118,7 @@ class ReportScheduler {
 
   void OnDMTokenUpdated();
 
-  void UploadFullReport(base::OnceClosure on_report_uploaded);
+  void UploadReport(base::OnceClosure on_report_uploaded);
 
  private:
   // Observes CloudReportingEnabled policy.
@@ -145,9 +146,10 @@ class ReportScheduler {
   // Starts report generation in response to |trigger|.
   void GenerateAndUploadReport(ReportTrigger trigger);
 
-  // Continues processing a report (contained in the |requests| collection) by
+  // Continues processing a report (contained in the |result| collection) by
   // sending it to the uploader.
-  void OnReportGenerated(ReportRequestQueue requests);
+  void OnReportGenerated(
+      base::expected<ReportRequestQueue, ReportGenerationError> result);
 
   // Finishes processing following report upload. |status| indicates the result
   // of the attempted upload.
@@ -185,6 +187,9 @@ class ReportScheduler {
   ReportGenerationConfig active_report_generation_config_ =
       ReportGenerationConfig(ReportTrigger::kTriggerNone);
 
+  // The start time of the active report generation/upload process.
+  base::TimeTicks report_generation_start_time_;
+
   // The set of triggers that have fired while processing a report (a bitfield
   // of ReportTrigger values). They will be handled following completion of the
   // in-process report.
@@ -196,7 +201,7 @@ class ReportScheduler {
   // pref is true.
   bool require_policy_fetch_with_profile_id_;
 
-  ReportType full_report_type_;
+  ReportType status_report_type_;
 
   std::vector<std::unique_ptr<ReportUploader>> report_uploaders_for_test_;
 

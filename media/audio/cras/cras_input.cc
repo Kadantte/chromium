@@ -16,6 +16,7 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
+#include "base/synchronization/lock.h"
 #include "base/time/time.h"
 #include "media/audio/audio_device_description.h"
 #include "media/audio/cras/audio_manager_cras_base.h"
@@ -26,6 +27,8 @@
 #include "media/base/media_switches.h"
 
 namespace media {
+
+using Error = AudioInputStream::AudioInputCallback::Error;
 
 namespace {
 
@@ -85,6 +88,43 @@ void RecordVoiceIsolationState(StreamEffectState state) {
 }
 
 }  // namespace
+
+class CrasAudioInputStreamProxy {
+ public:
+  explicit CrasAudioInputStreamProxy(CrasInputStream* stream)
+      : stream_(stream) {}
+
+  CrasAudioInputStreamProxy(const CrasAudioInputStreamProxy&) = delete;
+  CrasAudioInputStreamProxy& operator=(const CrasAudioInputStreamProxy&) =
+      delete;
+
+  void Detach() {
+    base::AutoLock auto_lock(lock_);
+    stream_ = nullptr;
+  }
+
+  int SamplesReady(struct libcras_stream_cb_data* data) {
+    base::AutoLock auto_lock(lock_);
+    if (stream_) {
+      return stream_->OnSamplesReady(data);
+    }
+    unsigned int frames = 0;
+    libcras_stream_cb_data_get_frames(data, &frames);
+    return frames;
+  }
+
+  int StreamError(cras_client* client, cras_stream_id_t stream_id, int err) {
+    base::AutoLock auto_lock(lock_);
+    if (stream_) {
+      return stream_->OnStreamError(client, stream_id, err);
+    }
+    return 0;
+  }
+
+ private:
+  base::Lock lock_;
+  raw_ptr<CrasInputStream> stream_ GUARDED_BY(lock_);
+};
 
 CrasInputStream::CrasInputStream(const AudioParameters& params,
                                  AudioManagerCrasBase* manager,
@@ -221,6 +261,10 @@ void CrasInputStream::Close() {
     client_ = nullptr;
   }
 
+  if (proxy_) {
+    proxy_.reset();
+  }
+
   // Signal to the manager that we're closed and can be removed.
   // Should be last call in the method as it deletes "this".
   audio_manager_->ReleaseInputStream(this);
@@ -268,9 +312,14 @@ void CrasInputStream::Start(AudioInputCallback* callback) {
 
   // Channel map to CRAS_CHANNEL, values in the same order of
   // corresponding source in Chromium defined Channels.
+  static constexpr int kUnsupportedChannel = -4;
   static const int kChannelMap[] = {
-      CRAS_CH_FL,  CRAS_CH_FR,  CRAS_CH_FC, CRAS_CH_LFE, CRAS_CH_RL, CRAS_CH_RR,
-      CRAS_CH_FLC, CRAS_CH_FRC, CRAS_CH_RC, CRAS_CH_SL,  CRAS_CH_SR};
+      CRAS_CH_FL, CRAS_CH_FR, CRAS_CH_FC, CRAS_CH_LFE, CRAS_CH_RL, CRAS_CH_RR,
+      CRAS_CH_FLC, CRAS_CH_FRC, CRAS_CH_RC, CRAS_CH_SL, CRAS_CH_SR,
+      // CRAS doesn't currently define explicit mappings for all channels.
+      kUnsupportedChannel, kUnsupportedChannel, kUnsupportedChannel,
+      kUnsupportedChannel, kUnsupportedChannel, kUnsupportedChannel,
+      kUnsupportedChannel};
   static_assert(std::size(kChannelMap) == CHANNELS_MAX + 1,
                 "kChannelMap array size should match");
 
@@ -296,14 +345,16 @@ void CrasInputStream::Start(AudioInputCallback* callback) {
     DLOG(ERROR) << "Error creating stream params";
     ReportStreamStartResult(
         StreamStartResult::kCallbackStartErrorCreatingStreamParameters);
-    callback_->OnError();
+    callback_->OnError(Error::kStartupFailed);
     callback_ = nullptr;
     return;
   }
 
+  proxy_ = std::make_unique<CrasAudioInputStreamProxy>(this);
+
   int rc = libcras_stream_params_set(
       stream_params, stream_direction_, frames_per_packet, frames_per_packet,
-      type, audio_manager_->GetClientType(), flags, this,
+      type, audio_manager_->GetClientType(), flags, proxy_.get(),
       CrasInputStream::SamplesReady, CrasInputStream::StreamError,
       params_.sample_rate(), SND_PCM_FORMAT_S16, params_.channels());
 
@@ -311,7 +362,7 @@ void CrasInputStream::Start(AudioInputCallback* callback) {
     DLOG(WARNING) << "Error setting up stream parameters.";
     ReportStreamStartResult(
         StreamStartResult::kCallbackStartErrorSettingUpStreamParameters);
-    callback_->OnError();
+    callback_->OnError(Error::kStartupFailed);
     callback_ = nullptr;
     libcras_stream_params_destroy(stream_params);
     return;
@@ -327,8 +378,10 @@ void CrasInputStream::Start(AudioInputCallback* callback) {
   // Converts to CRAS defined channels. ChannelOrder will return -1
   // for channels that are not present in params_.channel_layout().
   for (size_t i = 0; i < std::size(kChannelMap); ++i) {
-    UNSAFE_TODO(layout[kChannelMap[i]]) =
-        ChannelOrder(params_.channel_layout(), static_cast<Channels>(i));
+    if (kChannelMap[i] != kUnsupportedChannel) {
+      UNSAFE_TODO(layout[kChannelMap[i]]) =
+          ChannelOrder(params_.channel_layout(), static_cast<Channels>(i));
+    }
   }
 
   rc = libcras_stream_params_set_channel_layout(stream_params, CRAS_CH_MAX,
@@ -337,7 +390,7 @@ void CrasInputStream::Start(AudioInputCallback* callback) {
     DLOG(WARNING) << "Error setting up the channel layout.";
     ReportStreamStartResult(
         StreamStartResult::kCallbackStartErrorSettingUpChannelLayout);
-    callback_->OnError();
+    callback_->OnError(Error::kStartupFailed);
     callback_ = nullptr;
     libcras_stream_params_destroy(stream_params);
     return;
@@ -391,7 +444,7 @@ void CrasInputStream::Start(AudioInputCallback* callback) {
     DLOG(WARNING) << "Failed to add the stream.";
     ReportStreamStartResult(
         StreamStartResult::kCallbackStartFailedAddingStream);
-    callback_->OnError();
+    callback_->OnError(Error::kStartupFailed);
     callback_ = nullptr;
   }
 
@@ -424,6 +477,11 @@ void CrasInputStream::Stop() {
     return;
   }
 
+  // Instantly fence off the CRAS thread.
+  if (proxy_) {
+    proxy_->Detach();
+  }
+
   audio_manager_->DeregisterSystemAecDumpSource(this);
 
   if (mute_system_audio_ && mute_done_) {
@@ -444,28 +502,11 @@ void CrasInputStream::Stop() {
 
 // Static callback asking for samples.  Run on high priority thread.
 int CrasInputStream::SamplesReady(struct libcras_stream_cb_data* data) {
-  unsigned int frames;
-  uint8_t* buf;
-  struct timespec latency;
   void* usr_arg;
-  uint32_t overrun_frames = 0;
-  struct timespec dropped_samples_duration_ts;
-  base::TimeDelta dropped_samples_duration;
-
-  libcras_stream_cb_data_get_frames(data, &frames);
-  libcras_stream_cb_data_get_buf(data, &buf);
-  libcras_stream_cb_data_get_latency(data, &latency);
   libcras_stream_cb_data_get_usr_arg(data, &usr_arg);
-  CrasInputStream* me = static_cast<CrasInputStream*>(usr_arg);
-  me->ReadAudio(frames, buf, &latency);
-  // Audio glitches are checked every callback.
-  libcras_stream_cb_data_get_overrun_frames(data, &overrun_frames);
-  libcras_stream_cb_data_get_dropped_samples_duration(
-      data, &dropped_samples_duration_ts);
-  dropped_samples_duration =
-      base::TimeDelta::FromTimeSpec(dropped_samples_duration_ts);
-  me->CalculateAudioGlitches(overrun_frames, dropped_samples_duration);
-  return frames;
+  CrasAudioInputStreamProxy* proxy =
+      static_cast<CrasAudioInputStreamProxy*>(usr_arg);
+  return proxy->SamplesReady(data);
 }
 
 // Static callback for stream errors.
@@ -473,13 +514,51 @@ int CrasInputStream::StreamError(cras_client* client,
                                  cras_stream_id_t stream_id,
                                  int err,
                                  void* arg) {
-  CrasInputStream* me = static_cast<CrasInputStream*>(arg);
-  me->NotifyStreamError(err);
+  CrasAudioInputStreamProxy* proxy =
+      static_cast<CrasAudioInputStreamProxy*>(arg);
+  return proxy->StreamError(client, stream_id, err);
+}
+
+int CrasInputStream::OnSamplesReady(struct libcras_stream_cb_data* data) {
+  unsigned int frames;
+  uint8_t* buf;
+  struct timespec latency;
+  uint32_t overrun_frames = 0;
+  struct timespec dropped_samples_duration_ts;
+  base::TimeDelta dropped_samples_duration;
+
+  libcras_stream_cb_data_get_frames(data, &frames);
+  libcras_stream_cb_data_get_buf(data, &buf);
+  libcras_stream_cb_data_get_latency(data, &latency);
+
+  // The frames should be equal to CRAS actually delivered.
+  CHECK_EQ(static_cast<size_t>(audio_bus_->frames()), frames);
+
+  const size_t sample_count = static_cast<size_t>(params_.channels()) * frames;
+  // SAFETY: buffer is guaranteed to be at least as large as the number of
+  // frames to read.
+  auto source_data =
+      UNSAFE_BUFFERS(base::span(reinterpret_cast<int16_t*>(buf), sample_count));
+  ReadAudio(source_data, &latency);
+
+  // Audio glitches are checked every callback.
+  libcras_stream_cb_data_get_overrun_frames(data, &overrun_frames);
+  libcras_stream_cb_data_get_dropped_samples_duration(
+      data, &dropped_samples_duration_ts);
+  dropped_samples_duration =
+      base::TimeDelta::FromTimeSpec(dropped_samples_duration_ts);
+  CalculateAudioGlitches(overrun_frames, dropped_samples_duration);
+  return frames;
+}
+
+int CrasInputStream::OnStreamError(cras_client* client,
+                                   cras_stream_id_t stream_id,
+                                   int err) {
+  NotifyStreamError(err);
   return 0;
 }
 
-void CrasInputStream::ReadAudio(size_t frames,
-                                uint8_t* buffer,
+void CrasInputStream::ReadAudio(base::span<const int16_t> source_data,
                                 const timespec* latency_ts) {
   DCHECK(callback_);
 
@@ -496,8 +575,7 @@ void CrasInputStream::ReadAudio(size_t frames,
   // Now() to find the capture time.
   const base::TimeTicks capture_time = base::TimeTicks::Now() - delay;
 
-  audio_bus_->FromInterleaved<SignedInt16SampleTypeTraits>(
-      reinterpret_cast<int16_t*>(buffer), audio_bus_->frames());
+  audio_bus_->FromInterleaved<SignedInt16SampleTypeTraits>(source_data);
 
   peak_detector_.FindPeak(audio_bus_.get());
 
@@ -508,7 +586,7 @@ void CrasInputStream::ReadAudio(size_t frames,
 void CrasInputStream::NotifyStreamError(int err) {
   ReportNotifyStreamErrors(err);
   if (callback_) {
-    callback_->OnError();
+    callback_->OnError(Error::kRuntimeError);
   }
 }
 

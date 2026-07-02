@@ -17,6 +17,7 @@
 #include "chrome/browser/ui/views/autofill/payments/virtual_card_enroll_icon_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
+#include "chrome/browser/ui/views/page_action/test_support/page_action_test_support.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
@@ -32,27 +33,29 @@ namespace autofill {
 
 class SaveCardConfirmationBubbleViewsInteractiveUiTest
     : public InProcessBrowserTest,
-      public ::testing::WithParamInterface<std::tuple<bool, bool>> {
+      public ::testing::WithParamInterface<std::tuple<bool, bool, bool>> {
  public:
   SaveCardConfirmationBubbleViewsInteractiveUiTest() {
     const bool is_page_action_migration_enabled = std::get<0>(GetParam());
-    const bool is_wallet_branding_enabled = IsWalletBrandingEnabled();
     std::vector<base::test::FeatureRefAndParams> enabled_features = {};
     std::vector<base::test::FeatureRef> disabled_features = {};
 
-    if (is_page_action_migration_enabled) {
-      enabled_features.push_back(
-          {::features::kPageActionsMigration,
-           {
-               {::features::kPageActionsMigrationSavePayments.name, "true"},
-           }});
-    } else {
-      disabled_features.emplace_back(::features::kPageActionsMigration);
-    }
-    if (is_wallet_branding_enabled) {
+    enabled_features.push_back(
+        {::features::kPageActionsMigration,
+         {
+             {::features::kPageActionsMigrationSavePayments.name,
+              is_page_action_migration_enabled ? "true" : "false"},
+         }});
+    if (IsWalletBrandingEnabled()) {
       enabled_features.push_back({features::kAutofillEnableWalletBranding, {}});
     } else {
       disabled_features.emplace_back(features::kAutofillEnableWalletBranding);
+    }
+    if (IsWalletBrandingV2Enabled()) {
+      enabled_features.push_back(
+          {features::kAutofillEnableWalletBrandingV2, {}});
+    } else {
+      disabled_features.emplace_back(features::kAutofillEnableWalletBrandingV2);
     }
 
     feature_list_.InitWithFeaturesAndParameters(enabled_features,
@@ -96,7 +99,9 @@ class SaveCardConfirmationBubbleViewsInteractiveUiTest
         BrowserView::GetBrowserViewForBrowser(browser());
     IconLabelBubbleView* icon;
     if (IsPageActionMigrationEnabled()) {
-      icon = browser_view->toolbar_button_provider()->GetPageActionView(
+      auto* provider = browser_view->toolbar_button_provider();
+      icon = page_actions::GetIconLabelBubbleViewForTesting(
+          provider->GetPageActionViewInterface(kActionShowPaymentsBubbleOrPage),
           kActionShowPaymentsBubbleOrPage);
     } else {
       icon = browser_view->toolbar_button_provider()->GetPageActionIconView(
@@ -124,6 +129,7 @@ class SaveCardConfirmationBubbleViewsInteractiveUiTest
   }
 
   bool IsWalletBrandingEnabled() { return std::get<1>(GetParam()); }
+  bool IsWalletBrandingV2Enabled() { return std::get<2>(GetParam()); }
 
  private:
   test::AutofillBrowserTestEnvironment autofill_test_environment_;
@@ -158,14 +164,18 @@ IN_PROC_BROWSER_TEST_P(SaveCardConfirmationBubbleViewsInteractiveUiTest,
             BubbleView()->GetViewByID(DialogViewId::DESCRIPTION_LABEL))
             ->GetText(),
         l10n_util::GetStringUTF16(
-            IDS_AUTOFILL_SAVE_CARD_TO_WALLET_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT));
+            IsWalletBrandingV2Enabled()
+                ? IDS_AUTOFILL_SAVE_CARD_TO_WALLET_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT_V2
+                : IDS_AUTOFILL_SAVE_CARD_TO_WALLET_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT));
     EXPECT_EQ(
         static_cast<views::Label*>(
             BubbleView()->GetViewByID(DialogViewId::DESCRIPTION_LABEL))
             ->GetViewAccessibility()
             .GetCachedName(),
         l10n_util::GetStringUTF16(
-            IDS_AUTOFILL_SAVE_CARD_TO_WALLET_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT));
+            IsWalletBrandingV2Enabled()
+                ? IDS_AUTOFILL_SAVE_CARD_TO_WALLET_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT_V2
+                : IDS_AUTOFILL_SAVE_CARD_TO_WALLET_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT));
   } else {
     EXPECT_EQ(
         static_cast<views::Label*>(
@@ -262,7 +272,7 @@ IN_PROC_BROWSER_TEST_P(SaveCardConfirmationBubbleViewsInteractiveUiTest,
   EXPECT_EQ(
       BubbleView()->GetOkButton()->GetViewAccessibility().GetCachedName(),
       l10n_util::GetStringUTF16(
-          IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_FAILURE_OK_BUTTON_ACCESSIBLE_NAME));
+          IDS_AUTOFILL_SAVE_CARD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUTTON_TEXT));
   EXPECT_TRUE(IconView()->GetVisible());
 
   HideBubble(views::Widget::ClosedReason::kLostFocus);
@@ -311,12 +321,13 @@ IN_PROC_BROWSER_TEST_P(SaveCardConfirmationBubbleViewsInteractiveUiTest,
 INSTANTIATE_TEST_SUITE_P(
     ,
     SaveCardConfirmationBubbleViewsInteractiveUiTest,
-    testing::Combine(testing::Bool(), testing::Bool()),
+    testing::Combine(testing::Bool(), testing::Bool(), testing::Bool()),
     [](const ::testing::TestParamInfo<
         SaveCardConfirmationBubbleViewsInteractiveUiTest::ParamType>& info) {
       return base::StrCat({
           std::get<0>(info.param) ? "NewPageAction" : "OldPageAction",
           std::get<1>(info.param) ? "BrandingFlagOn" : "BrandingFlagOff",
+          std::get<2>(info.param) ? "BrandingV2FlagOn" : "BrandingV2FlagOff",
       });
     });
 
@@ -330,15 +341,12 @@ class VirtualCardEnrollConfirmationBubbleViewsInteractiveUiTest
     std::vector<base::test::FeatureRefAndParams> enabled_features = {};
     std::vector<base::test::FeatureRef> disabled_features = {};
 
-    if (is_page_action_migration_enabled) {
-      enabled_features.push_back(
-          {::features::kPageActionsMigration,
-           {
-               {::features::kPageActionsMigrationVirtualCard.name, "true"},
-           }});
-    } else {
-      disabled_features.emplace_back(::features::kPageActionsMigration);
-    }
+    enabled_features.push_back(
+        {::features::kPageActionsMigration,
+         {
+             {::features::kPageActionsMigrationVirtualCard.name,
+              is_page_action_migration_enabled ? "true" : "false"},
+         }});
     if (is_wallet_branding_enabled) {
       enabled_features.push_back({features::kAutofillEnableWalletBranding, {}});
     } else {
@@ -386,9 +394,10 @@ class VirtualCardEnrollConfirmationBubbleViewsInteractiveUiTest
   IconLabelBubbleView* IconView() {
     BrowserView* browser_view =
         BrowserView::GetBrowserViewForBrowser(browser());
-    IconLabelBubbleView* icon =
-        browser_view->toolbar_button_provider()->GetPageActionView(
-            kActionVirtualCardEnroll);
+    auto* provider = browser_view->toolbar_button_provider();
+    IconLabelBubbleView* icon = page_actions::GetIconLabelBubbleViewForTesting(
+        provider->GetPageActionViewInterface(kActionVirtualCardEnroll),
+        kActionVirtualCardEnroll);
     CHECK(icon);
     return icon;
   }
@@ -526,7 +535,7 @@ IN_PROC_BROWSER_TEST_P(
   EXPECT_EQ(
       BubbleView()->GetOkButton()->GetViewAccessibility().GetCachedName(),
       l10n_util::GetStringUTF16(
-          IDS_AUTOFILL_VIRTUAL_CARD_ENROLL_CONFIRMATION_FAILURE_OK_BUTTON_ACCESSIBLE_NAME));
+          IDS_AUTOFILL_SAVE_CARD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUTTON_TEXT));
   EXPECT_TRUE(IconView()->GetVisible());
 
   GetController()->HideIconAndBubble();

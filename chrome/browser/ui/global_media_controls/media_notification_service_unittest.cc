@@ -44,10 +44,6 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-#if BUILDFLAG(IS_CHROMEOS)
-#include "chrome/browser/ash/crosapi/test_crosapi_environment.h"
-#endif
-
 namespace mojom {
 using global_media_controls::mojom::DeviceListClient;
 using global_media_controls::mojom::DeviceListHost;
@@ -79,9 +75,6 @@ class MediaNotificationServiceTest : public ChromeRenderViewHostTestHarness {
 
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
-#if BUILDFLAG(IS_CHROMEOS)
-    crosapi_environment_.SetUp();
-#endif
     media_router::ChromeMediaRouterFactory::GetInstance()->SetTestingFactory(
         profile(), base::BindRepeating(&media_router::MockMediaRouter::Create));
     service_ = std::make_unique<MediaNotificationService>(profile(), false);
@@ -90,9 +83,6 @@ class MediaNotificationServiceTest : public ChromeRenderViewHostTestHarness {
   void TearDown() override {
     SimulateCloseDialog();
     service_.reset();
-#if BUILDFLAG(IS_CHROMEOS)
-    crosapi_environment_.TearDown();
-#endif
     ChromeRenderViewHostTestHarness::TearDown();
   }
 
@@ -185,12 +175,6 @@ class MediaNotificationServiceTest : public ChromeRenderViewHostTestHarness {
 
  private:
   std::unique_ptr<MediaNotificationService> service_;
-#if BUILDFLAG(IS_CHROMEOS)
-  TestingProfileManager testing_profile_manager_{
-      TestingBrowserProcess::GetGlobal()};
-  crosapi::TestCrosapiEnvironment crosapi_environment_{
-      &testing_profile_manager_};
-#endif
 };
 
 // This class enables the features for starting/stopping cast sessions from
@@ -314,6 +298,13 @@ class MediaNotificationServiceCastTest : public MediaNotificationServiceTest {
   mojo::PendingReceiver<T> TakeReceiverAndExpectNoDisconnect(
       mojo::Remote<T>& remote) {
     return TakeReceiver(remote, /*expected_disconnect_count=*/0);
+  }
+
+  bool HasPresentationContext() { return service()->context_ != nullptr; }
+
+  std::unique_ptr<media_router::CastDialogController>
+  CreateCastDialogControllerForSession(const std::string& id) {
+    return service()->CreateCastDialogControllerForSession(id);
   }
 
  private:
@@ -609,7 +600,7 @@ TEST_F(MediaNotificationServiceCastTest,
   // At this point `session_item` has no RemotePlaybackMetadata and there's no
   // default MediaSource.
   std::unique_ptr<media_router::CastDialogController> controller_presentation =
-      service()->CreateCastDialogControllerForSession(id.ToString());
+      CreateCastDialogControllerForSession(id.ToString());
   std::unique_ptr<media_router::MediaRouteStarter> starter =
       controller_presentation->TakeMediaRouteStarter();
   const auto* query_result_manager = starter->GetQueryResultManagerForTesting();
@@ -625,12 +616,126 @@ TEST_F(MediaNotificationServiceCastTest,
 
   std::unique_ptr<media_router::CastDialogController>
       controller_remote_playback =
-          service()->CreateCastDialogControllerForSession(id.ToString());
+          CreateCastDialogControllerForSession(id.ToString());
   starter = controller_remote_playback->TakeMediaRouteStarter();
   query_result_manager = starter->GetQueryResultManagerForTesting();
   const media_router::CastModeSet mode = {
       media_router::MediaCastMode::REMOTE_PLAYBACK};
   EXPECT_EQ(mode, query_result_manager->GetSupportedCastModes());
+}
+
+TEST_F(MediaNotificationServiceCastTest,
+       CreateCastDialogControllerWithMultipleSessions) {
+  // Set up the first WebContents and session.
+  std::unique_ptr<content::WebContents> first_contents(
+      content::RenderViewHostTestHarness::CreateTestWebContents());
+  auto first_id =
+      SimulatePlayingControllableMediaForWebContents(first_contents.get());
+
+  // Set up the second WebContents and session.
+  std::unique_ptr<content::WebContents> second_contents(
+      content::RenderViewHostTestHarness::CreateTestWebContents());
+  auto second_id =
+      SimulatePlayingControllableMediaForWebContents(second_contents.get());
+
+  // The second session initiates a cast request.
+  auto second_request = content::PresentationRequest(
+      second_contents->GetPrimaryMainFrame()->GetGlobalId(), {GURL(), GURL()},
+      url::Origin::Create(GURL()));
+  auto context = CreateStartPresentationContext(second_request);
+
+  // Pass the second session's context to the service.
+  service()->OnStartPresentationContextCreated(std::move(context));
+  EXPECT_TRUE(HasPresentationContext());
+
+  // Try to create a CastDialogController for the first session.
+  // It should NOT consume the context because of origin mismatch.
+  std::unique_ptr<media_router::CastDialogController> controller_first =
+      CreateCastDialogControllerForSession(first_id.ToString());
+  EXPECT_TRUE(HasPresentationContext());
+
+  // Creating it for the second session SHOULD consume the context.
+  std::unique_ptr<media_router::CastDialogController> controller_second =
+      CreateCastDialogControllerForSession(second_id.ToString());
+  EXPECT_FALSE(HasPresentationContext());
+}
+
+TEST_F(MediaNotificationServiceCastTest,
+       GetDeviceListHostForSessionWithMultipleSessions) {
+  // Set up the first WebContents and session.
+  std::unique_ptr<content::WebContents> first_contents(
+      content::RenderViewHostTestHarness::CreateTestWebContents());
+  auto first_id =
+      SimulatePlayingControllableMediaForWebContents(first_contents.get());
+
+  // Set up the second WebContents and session.
+  std::unique_ptr<content::WebContents> second_contents(
+      content::RenderViewHostTestHarness::CreateTestWebContents());
+  auto second_id =
+      SimulatePlayingControllableMediaForWebContents(second_contents.get());
+
+  // The second session initiates a cast request.
+  auto second_request = content::PresentationRequest(
+      second_contents->GetPrimaryMainFrame()->GetGlobalId(), {GURL(), GURL()},
+      url::Origin::Create(GURL()));
+  auto context = CreateStartPresentationContext(second_request);
+
+  // Pass the second session's context to the service.
+  service()->OnStartPresentationContextCreated(std::move(context));
+  EXPECT_TRUE(HasPresentationContext());
+
+  // Get DeviceListHost for the first session (mismatched presentation context).
+  // It should NOT consume the context.
+  mojo::Remote<mojom::DeviceListHost> host_remote_1;
+  MockDeviceListClient client_1;
+  service()->GetDeviceListHostForSession(
+      first_id.ToString(), TakeReceiverAndExpectNoDisconnect(host_remote_1),
+      TakeRemoteAndExpectNoDisconnect(client_1.receiver()));
+  host_remote_1.FlushForTesting();
+  client_1.receiver().FlushForTesting();
+  EXPECT_TRUE(HasPresentationContext());
+
+  // Get DeviceListHost for the second session (matched presentation context).
+  // It should consume the context.
+  mojo::Remote<mojom::DeviceListHost> host_remote_2;
+  MockDeviceListClient client_2;
+  service()->GetDeviceListHostForSession(
+      second_id.ToString(), TakeReceiverAndExpectNoDisconnect(host_remote_2),
+      TakeRemoteAndExpectNoDisconnect(client_2.receiver()));
+  host_remote_2.FlushForTesting();
+  client_2.receiver().FlushForTesting();
+  EXPECT_FALSE(HasPresentationContext());
+}
+
+TEST_F(MediaNotificationServiceCastTest,
+       OrphanedPresentationContextIsCleanedUp) {
+  std::unique_ptr<content::WebContents> contents(
+      content::RenderViewHostTestHarness::CreateTestWebContents());
+  auto id = SimulatePlayingControllableMediaForWebContents(contents.get());
+
+  auto request = content::PresentationRequest(
+      contents->GetPrimaryMainFrame()->GetGlobalId(), {GURL(), GURL()},
+      url::Origin::Create(GURL()));
+  auto context = CreateStartPresentationContext(request);
+
+  // Pass the context to the service.
+  service()->OnStartPresentationContextCreated(std::move(context));
+  EXPECT_TRUE(HasPresentationContext());
+
+  // Delete the WebContents. This destroys the RenderFrameHost as well.
+  contents.reset();
+
+  // Get DeviceListHost for the session. Since the initiator_rfh is now null
+  // (orphaned), calling GetDeviceListHostForSession should reset the context.
+  mojo::Remote<mojom::DeviceListHost> host_remote;
+  MockDeviceListClient client;
+  service()->GetDeviceListHostForSession(
+      id.ToString(), TakeReceiverAndExpectDisconnect(host_remote),
+      TakeRemoteAndExpectDisconnect(client.receiver()));
+  host_remote.FlushForTesting();
+  client.receiver().FlushForTesting();
+
+  EXPECT_FALSE(HasPresentationContext());
 }
 
 TEST_F(MediaNotificationServiceCastTest, RequestMediaRemoting) {

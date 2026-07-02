@@ -21,7 +21,6 @@ import static androidx.test.espresso.matcher.ViewMatchers.withText;
 import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertNotNull;
 
-import static org.chromium.chrome.browser.keyboard_accessory.ManualFillingTestHelper.selectTabAtPosition;
 import static org.chromium.chrome.browser.keyboard_accessory.ManualFillingTestHelper.selectTabWithDescription;
 import static org.chromium.chrome.browser.keyboard_accessory.ManualFillingTestHelper.waitToBeHidden;
 import static org.chromium.chrome.browser.keyboard_accessory.ManualFillingTestHelper.whenDisplayed;
@@ -90,6 +89,7 @@ public class ManualFillingIntegrationTest {
 
     @Test
     @SmallTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511287512
     public void testKeyboardAccessoryHiddenUntilKeyboardShows() throws TimeoutException {
         mHelper.startAtTestPage(/* isRtl= */ false);
 
@@ -105,6 +105,7 @@ public class ManualFillingIntegrationTest {
 
     @Test
     @SmallTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511287512
     public void testKeyboardAccessoryDisappearsWithKeyboard() throws TimeoutException {
         mHelper.startAtTestPage(/* isRtl= */ false);
 
@@ -209,7 +210,7 @@ public class ManualFillingIntegrationTest {
 
     @Test
     @SmallTest
-    @DisabledTest(message = "https://crbug.com/1466461")
+    @DisabledTest(message = "https://crbug.com/40276407")
     public void testAccessoryHiddenAfterTappingAutoGenerationButton() throws TimeoutException {
         mHelper.startAtTestPage(/* isRtl= */ false);
 
@@ -220,7 +221,7 @@ public class ManualFillingIntegrationTest {
 
         // Click the tab to show the sheet and hide the keyboard.
         whenDisplayed(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
-                .perform(selectTabAtPosition(0));
+                .perform(selectTabWithDescription(R.string.password_accessory_sheet_toggle));
         mHelper.waitForKeyboardToDisappear();
         whenDisplayed(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
 
@@ -232,7 +233,7 @@ public class ManualFillingIntegrationTest {
 
     @Test
     @SmallTest
-    @DisabledTest(message = "https://crbug.com/1406328,https://crbug.com/1466461")
+    @DisabledTest(message = "https://crbug.com/40887193,https://crbug.com/40276407")
     public void testHidingSheetBringsBackKeyboard() throws TimeoutException {
         mHelper.startAtTestPage(/* isRtl= */ false);
 
@@ -242,13 +243,13 @@ public class ManualFillingIntegrationTest {
 
         // Click the tab to show the sheet and hide the keyboard.
         whenDisplayed(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
-                .perform(selectTabAtPosition(0));
+                .perform(selectTabWithDescription(R.string.password_accessory_sheet_toggle));
         mHelper.waitForKeyboardToDisappear();
         whenDisplayed(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
 
         // Click the tab again to hide the sheet and show the keyboard.
         whenDisplayed(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
-                .perform(selectTabAtPosition(0));
+                .perform(selectTabWithDescription(R.string.password_accessory_sheet_toggle));
         mHelper.waitForKeyboardAccessoryToBeShown();
         onView(withId(R.id.keyboard_accessory)).check(matches(isDisplayed()));
         waitToBeHidden(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
@@ -256,6 +257,7 @@ public class ManualFillingIntegrationTest {
 
     @Test
     @SmallTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511287512
     public void testSelectingNonPasswordInputDismissesAccessory() throws TimeoutException {
         mHelper.startAtTestPage(/* isRtl= */ false);
 
@@ -292,7 +294,7 @@ public class ManualFillingIntegrationTest {
         whenDisplayed(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
 
         LayoutTestUtils.startShowingAndWaitForLayout(
-                mActivityTestRule.getActivity().getLayoutManager(), LayoutType.TAB_SWITCHER, false);
+                mActivityTestRule.getActivity().getLayoutManager(), LayoutType.HUB, false);
 
         LayoutTestUtils.startShowingAndWaitForLayout(
                 mActivityTestRule.getActivity().getLayoutManager(), LayoutType.BROWSING, false);

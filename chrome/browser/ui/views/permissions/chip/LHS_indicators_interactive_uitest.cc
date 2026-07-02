@@ -13,6 +13,7 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
+#include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
@@ -41,47 +42,48 @@
 #include "url/gurl.h"
 
 namespace {
-class ChipAnimationObserver : PermissionChipView::Observer {
+class ChipAnimationObserver : PermissionChipInterface::Observer {
  public:
   enum class QuitOnEvent {
     kExpand,
     kCollapse,
-    kVisibiltyTrue,
-    kVisibiltyFalse,
+    kVisibilityTrue,
+    kVisibilityFalse,
   };
 
-  explicit ChipAnimationObserver(PermissionChipView* chip) {
+  explicit ChipAnimationObserver(PermissionChipInterface* chip) {
     observation_.Observe(chip);
   }
 
   void WaitForChip() { loop_.Run(); }
 
   void OnExpandAnimationEnded() override {
-    if (quiet_on_event == QuitOnEvent::kExpand) {
+    if (quit_on_event == QuitOnEvent::kExpand) {
       loop_.Quit();
     }
   }
   void OnCollapseAnimationEnded() override {
-    if (quiet_on_event == QuitOnEvent::kCollapse) {
+    if (quit_on_event == QuitOnEvent::kCollapse) {
       loop_.Quit();
     }
   }
 
   void OnChipVisibilityChanged(bool is_visible) override {
-    if (quiet_on_event == QuitOnEvent::kVisibiltyTrue && is_visible) {
+    if (quit_on_event == QuitOnEvent::kVisibilityTrue && is_visible) {
       loop_.Quit();
       return;
     }
 
-    if (quiet_on_event == QuitOnEvent::kVisibiltyFalse && !is_visible) {
+    if (quit_on_event == QuitOnEvent::kVisibilityFalse && !is_visible) {
       loop_.Quit();
     }
   }
 
-  base::ScopedObservation<PermissionChipView, PermissionChipView::Observer>
+  base::ScopedObservation<PermissionChipInterface,
+                          PermissionChipInterface::Observer>
       observation_{this};
   base::RunLoop loop_;
-  QuitOnEvent quiet_on_event = QuitOnEvent::kExpand;
+  QuitOnEvent quit_on_event = QuitOnEvent::kExpand;
 };
 }  // namespace
 
@@ -90,8 +92,8 @@ class LHSIndicatorsInteractiveUITest : public UiBrowserTest {
   enum class TargetViewToVerify { kLocationBar, kPageInfo };
 
   LHSIndicatorsInteractiveUITest() {
-    scoped_features_.InitAndEnableFeature(
-        content_settings::features::kLeftHandSideActivityIndicators);
+    scoped_features_.InitWithFeatures(
+        {content_settings::features::kLeftHandSideActivityIndicators}, {});
     https_server_ = std::make_unique<net::EmbeddedTestServer>(
         net::EmbeddedTestServer::TYPE_HTTPS);
   }
@@ -120,6 +122,15 @@ class LHSIndicatorsInteractiveUITest : public UiBrowserTest {
     UiBrowserTest::SetUpOnMainThread();
   }
 
+  void TearDownOnMainThread() override {
+    // Restore the original LocationBarModel if it was overridden.
+    if (original_location_bar_model_) {
+      browser()->GetFeatures().swap_location_bar_models(
+          &original_location_bar_model_);
+    }
+    UiBrowserTest::TearDownOnMainThread();
+  }
+
   void SetUpCommandLine(base::CommandLine* command_line) override {
     // Set a window's size to avoid pixel tests flakiness due to different
     // widths of the omnibox.
@@ -129,17 +140,19 @@ class LHSIndicatorsInteractiveUITest : public UiBrowserTest {
 
   void OverrideVisibleUrlInLocationBar(const std::u16string& text) {
     OmniboxView* omnibox_view = GetLocationBarView(browser())->GetOmniboxView();
-    raw_ptr<TestLocationBarModel> test_location_bar_model_ =
-        new TestLocationBarModel;
-    std::unique_ptr<LocationBarModel> location_bar_model(
-        test_location_bar_model_);
-    browser()->GetFeatures().swap_location_bar_models(&location_bar_model);
 
-    test_location_bar_model_->set_formatted_full_url(text);
+    // The pixel tests are sensitive to the URL displayed in the omnibox, as the
+    // port number of the test server varies. To prevent flakiness, we override
+    // the LocationBarModel with a TestLocationBarModel that returns a static
+    // URL. We preserve the original model to restore it during teardown.
+    auto test_location_bar_model = std::make_unique<TestLocationBarModel>();
+    test_location_bar_model->set_formatted_full_url(text);
+    test_location_bar_model->set_url_for_display(text);
 
-    // Normally the URL for display has portions elided. We aren't doing that in
-    // this case, because that is irrevelant for these tests.
-    test_location_bar_model_->set_url_for_display(text);
+    std::unique_ptr<LocationBarModel> new_model_for_swap =
+        std::move(test_location_bar_model);
+    browser()->GetFeatures().swap_location_bar_models(&new_model_for_swap);
+    original_location_bar_model_ = std::move(new_model_for_swap);
 
     omnibox_view->Update();
   }
@@ -216,7 +229,7 @@ class LHSIndicatorsInteractiveUITest : public UiBrowserTest {
 
   void ExpandIndicator(std::string js) {
     ChipAnimationObserver chip_animation_observer(GetIndicatorChip());
-    chip_animation_observer.quiet_on_event =
+    chip_animation_observer.quit_on_event =
         ChipAnimationObserver::QuitOnEvent::kExpand;
 
     EXPECT_TRUE(content::ExecJs(web_contents(), js));
@@ -230,7 +243,7 @@ class LHSIndicatorsInteractiveUITest : public UiBrowserTest {
 
   void CollapseIndicator() {
     ChipAnimationObserver chip_animation_observer(GetIndicatorChip());
-    chip_animation_observer.quiet_on_event =
+    chip_animation_observer.quit_on_event =
         ChipAnimationObserver::QuitOnEvent::kCollapse;
     // Wait until chip collapses.
     chip_animation_observer.WaitForChip();
@@ -241,8 +254,8 @@ class LHSIndicatorsInteractiveUITest : public UiBrowserTest {
 
   void HideIndicator(std::string js) {
     ChipAnimationObserver chip_animation_observer(GetIndicatorChip());
-    chip_animation_observer.quiet_on_event =
-        ChipAnimationObserver::QuitOnEvent::kVisibiltyFalse;
+    chip_animation_observer.quit_on_event =
+        ChipAnimationObserver::QuitOnEvent::kVisibilityFalse;
 
     EXPECT_TRUE(content::ExecJs(web_contents(), js));
 
@@ -255,7 +268,6 @@ class LHSIndicatorsInteractiveUITest : public UiBrowserTest {
 
   PermissionChipView* GetIndicatorChip() {
     return GetLocationBarView(browser())
-        ->permission_dashboard_controller()
         ->permission_dashboard_view()
         ->GetIndicatorChip();
   }
@@ -290,6 +302,7 @@ class LHSIndicatorsInteractiveUITest : public UiBrowserTest {
   base::test::ScopedFeatureList scoped_features_;
   std::unique_ptr<net::EmbeddedTestServer> https_server_;
   std::unique_ptr<test::PermissionRequestManagerTestApi> test_api_;
+  std::unique_ptr<LocationBarModel> original_location_bar_model_;
 };
 
 IN_PROC_BROWSER_TEST_F(LHSIndicatorsInteractiveUITest, InvokeUi_camera) {
@@ -454,8 +467,8 @@ IN_PROC_BROWSER_TEST_F(LHSIndicatorsInteractiveUITest, InvokeUi_Camera_twice) {
 
   // Request Camera for the second time.
   ChipAnimationObserver chip_animation_observer(GetIndicatorChip());
-  chip_animation_observer.quiet_on_event =
-      ChipAnimationObserver::QuitOnEvent::kVisibiltyTrue;
+  chip_animation_observer.quit_on_event =
+      ChipAnimationObserver::QuitOnEvent::kVisibilityTrue;
 
   EXPECT_TRUE(content::ExecJs(web_contents(), "requestCamera()"));
 

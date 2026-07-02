@@ -33,8 +33,8 @@
 #include "content/common/cursors/webcursor.h"
 #include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/visibility.h"
+#include "third_party/blink/public/common/page/content_to_visible_time_request.h"
 #include "third_party/blink/public/mojom/input/input_handler.mojom-forward.h"
-#include "third_party/blink/public/mojom/widget/record_content_to_visible_time_request.mojom-forward.h"
 #include "third_party/skia/include/core/SkRegion.h"
 #include "ui/accessibility/platform/browser_accessibility_manager.h"
 #include "ui/aura/client/cursor_client_observer.h"
@@ -131,13 +131,15 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
   bool HasFocus() override;
   void Hide() override;
   bool IsShowing() override;
-  void WasUnOccluded() override;
   void WasOccluded() override;
   gfx::Rect GetViewBounds() override;
   bool IsPointerLocked() override;
   gfx::Size GetVisibleViewportSize() override;
   gfx::Size GetVisibleViewportSizeDevicePx() override;
   void SetInsets(const gfx::Insets& insets) override;
+  void SetForceSpecifiedDeadline(
+      std::optional<uint32_t> deadline_in_frames) override;
+  std::optional<uint32_t> GetForceSpecifiedDeadlineForTesting() override;
   TouchSelectionControllerClientManager*
   GetTouchSelectionControllerClientManager() override;
   ui::mojom::VirtualKeyboardMode GetVirtualKeyboardMode() override;
@@ -145,6 +147,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
       const gfx::Rect& keyboard_rect) override;
   bool IsHTMLFormPopup() const override;
   void ResetGestureDetection() override;
+  void SetShouldUseDefaultDeadlineOnResize(bool enable) override;
 
   // Overridden from RenderWidgetHostViewBase:
   void InitAsPopup(RenderWidgetHostView* parent_host_view,
@@ -163,7 +166,6 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
   void UpdateTooltipFromKeyboard(const std::u16string& tooltip_text,
                                  const gfx::Rect& bounds) override;
   void ClearKeyboardTriggeredTooltip() override;
-  uint32_t GetCaptureSequenceNumber() const override;
   bool IsSurfaceAvailableForCopy() override;
   void CopyFromSurface(
       const gfx::Rect& src_rect,
@@ -172,7 +174,6 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
       base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
       override;
   ui::FilteredGestureProvider* GetFilteredGestureProviderForTesting() override;
-  void EnsureSurfaceSynchronizedForWebTest() override;
   void TransformPointToRootSurface(gfx::PointF* point) override;
   gfx::Rect GetBoundsInRootWindow() override;
   void WheelEventAck(const blink::WebMouseWheelEvent& event,
@@ -219,6 +220,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
       gfx::PointF* transformed_point) override;
   viz::FrameSinkId GetRootFrameSinkId() override;
   viz::SurfaceId GetCurrentSurfaceId() const override;
+  bool HasSavedCompositorFrame() const override;
   void FocusedNodeChanged(bool is_editable_node,
                           const gfx::Rect& node_bounds_in_screen) override;
 #if BUILDFLAG(IS_WIN)
@@ -226,11 +228,21 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
   void OnStartStylusWriting() override;
   void OnEditElementFocusedForStylusWriting(
       blink::mojom::StylusWritingFocusResultPtr focus_result) override;
+  void SetStylusHandwritingFocusCallback(
+      OnFocusHandwritingTargetCallback callback) override;
 #endif  // BUILDFLAG(IS_WIN)
   void OnSynchronizedDisplayPropertiesChanged(bool rotation = false) override;
   viz::ScopedSurfaceIdAllocator DidUpdateVisualProperties(
       const cc::RenderFrameMetadata& metadata) override;
   void DidNavigate() override;
+
+  // Unbounded element API overrides:
+  void CreateUnboundedSurface(
+      mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
+      mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient>
+          client,
+      const gfx::Rect& bounds_in_dips) override;
+
   void TakeFallbackContentFrom(RenderWidgetHostView* view) override;
   bool CanSynchronizeVisualProperties() override;
   // TODO(lanwei): Use TestApi interface to write functions that are used in
@@ -460,6 +472,8 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
   }
 #endif  // BUILDFLAG(IS_WIN)
 
+  bool ShouldUseDefaultDeadlineOnResize() const;
+
  protected:
   ~RenderWidgetHostViewAura() override;
 
@@ -480,11 +494,10 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
       const DisplayFeature* display_feature) override;
   void EnsurePlatformVisibility(PageVisibilityState page_visibility) override;
   void NotifyHostAndDelegateOnWasShown(
-      blink::mojom::RecordContentToVisibleTimeRequestPtr visible_time_request)
-      final;
+      std::optional<blink::RecordContentToVisibleTimeRequest>
+          visible_time_request) final;
   void RequestSuccessfulPresentationTimeFromHostOrDelegate(
-      blink::mojom::RecordContentToVisibleTimeRequestPtr visible_time_request)
-      final;
+      blink::RecordContentToVisibleTimeRequest visible_time_request) final;
   void CancelSuccessfulPresentationTimeRequestForHostAndDelegate() final;
 
   // May be overridden in tests.
@@ -840,10 +853,6 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
 
   std::unique_ptr<input::CursorManager> cursor_manager_;
 
-  // Latest capture sequence number which is incremented when the caller
-  // requests surfaces be synchronized via
-  // EnsureSurfaceSynchronizedForWebTest().
-  uint32_t latest_capture_sequence_number_ = 0u;
 
   // The pointer type of the most recent gesture/mouse/touch event.
   ui::EventPointerType last_pointer_type_ = ui::EventPointerType::kUnknown;
@@ -882,9 +891,16 @@ class CONTENT_EXPORT RenderWidgetHostViewAura
   // pointer id and a handwriting stroke id.
   std::optional<ui::StylusHandwritingPropertiesWin>
       last_stylus_handwriting_properties_;
+
+  // Set by a child frame view so the TSF focus response is routed to the
+  // child frame view instead of this view. Reset after use in
+  // OnStartStylusWriting.
+  OnFocusHandwritingTargetCallback stylus_handwriting_focus_callback_;
 #endif  // BUILDFLAG(IS_WIN)
 
   std::optional<display::ScopedDisplayObserver> display_observer_;
+
+  bool use_default_deadline_on_resize_ = false;
 
   base::WeakPtrFactory<RenderWidgetHostViewAura> weak_ptr_factory_{this};
 };

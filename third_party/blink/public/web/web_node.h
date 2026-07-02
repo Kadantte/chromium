@@ -43,6 +43,10 @@
 #include "v8/include/cppgc/source-location.h"
 #include "v8/include/v8-forward.h"
 
+#if INSIDE_BLINK
+#include "third_party/blink/renderer/platform/wtf/casting.h"
+#endif  // INSIDE_BLINK
+
 namespace base {
 class ScopedClosureRunner;
 }  // namespace base
@@ -116,7 +120,10 @@ class BLINK_EXPORT WebNode {
   bool ContainsViaFlatTree(const WebNode*) const;
 
   WebNode ParentNode() const;
+  // Returns the DOM parent, or the shadow host when this node is a shadow root.
   WebNode ParentOrShadowHostNode() const;
+  // Returns the parent node of this node in the flat (composed) tree.
+  WebNode ParentInFlatTree() const;
   bool IsInUserAgentShadowRoot() const;
   WebString NodeValue() const;
   WebDocument GetDocument() const;
@@ -202,12 +209,12 @@ class BLINK_EXPORT WebNode {
 
   template <typename T>
   T* Unwrap() {
-    return static_cast<T*>(private_.Get());
+    return ::blink::To<T>(private_.Get());
   }
 
   template <typename T>
   const T* ConstUnwrap() const {
-    return static_cast<const T*>(private_.Get());
+    return ::blink::To<T>(private_.Get());
   }
 #endif
 

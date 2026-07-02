@@ -23,7 +23,7 @@
 #include "content/public/browser/web_contents_observer.h"
 
 #if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/resource_coordinator/lifecycle_unit_observer.h"
+#include "chrome/browser/resource_coordinator/lifecycle_unit_observer.h"  // nogncheck
 #endif
 
 class PrefRegistrySimple;
@@ -133,6 +133,17 @@ class TabStatsTracker :
     // The name of the histogram that records each window's width, in DIPs.
     static const char kWindowWidthHistogramName[];
 
+    // The name of the histogram that records if a window's vertical tab strip
+    // is collapsed.
+    static const char kVerticalTabStripCollapseStateHistogramName[];
+
+    // The name of the histogram that records the keyboard tab switch mode.
+    static const char kKeyboardTabSwitchModeHistogramName[];
+
+    // The name of the histogram that records the number of pinned tabs in the
+    // tab strip.
+    static const char kPinnedTabCountHistogramName[];
+
     // The names of the histograms that record daily discard/reload counts
     // caused for each discard reason.
     static const char kDailyDiscardsExternalHistogramName[];
@@ -174,6 +185,17 @@ class TabStatsTracker :
 
     // Called once per day to report the metrics.
     void ReportDailyMetrics(const TabStatsDataStore::TabsStats& tab_stats);
+
+    // Enumerates the keyboard tab switch mode.
+    // These values are persisted to logs. Entries should not be renumbered and
+    // numeric values should never be reused.
+    // LINT.IfChange(KeyboardTabSwitchMode)
+    enum class KeyboardTabSwitchMode {
+      kStandard = 0,
+      kMRU = 1,
+      kMaxValue = kMRU,
+    };
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/tab/enums.xml:KeyboardTabSwitchMode)
 
     // Report the tab heartbeat metrics.
     void ReportHeartbeatMetrics(const TabStatsDataStore::TabsStats& tab_stats);
@@ -366,6 +388,9 @@ class TabStatsTracker::TabStripInterface {
 
   // Returns the count of tabs in this tab strip.
   size_t GetTabCount() const;
+
+  // Returns the count of pinned tabs in this tab strip.
+  size_t GetPinnedTabCount() const;
 
 #if !BUILDFLAG(IS_ANDROID)
   // Returns the count of tabs within Split Views in this tab strip.

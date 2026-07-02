@@ -145,11 +145,18 @@ class IsolatedWebAppApplyUpdateCommandTest : public WebAppTest {
     base::WriteFile(installed_path, "");
   }
 
-  IsolatedWebAppApplyUpdateCommandResult ApplyPendingUpdate() {
+  IsolatedWebAppApplyUpdateCommandResult ApplyPendingUpdate(
+      base::OnceCallback<void(IsolatedWebAppApplyUpdateCommand&)>
+          on_before_start = base::DoNothing()) {
     base::test::TestFuture<IsolatedWebAppApplyUpdateCommandResult> future;
-    fake_provider().scheduler().ApplyPendingIsolatedWebAppUpdate(
-        url_info_, /*optional_keep_alive=*/nullptr,
+    auto command = std::make_unique<IsolatedWebAppApplyUpdateCommand>(
+        url_info_, *profile(),
+        /*optional_keep_alive=*/nullptr,
         /*optional_profile_keep_alive=*/nullptr, future.GetCallback());
+
+    std::move(on_before_start).Run(*command);
+
+    fake_provider().command_manager().ScheduleCommand(std::move(command));
 
     return future.Take();
   }
@@ -236,7 +243,7 @@ TEST_F(IsolatedWebAppApplyUpdateCommandTest, Succeeds) {
 
   auto& icon_state = fake_web_contents_manager().GetOrCreateIconState(
       url_info_.origin().GetURL().Resolve(kIconPath));
-  icon_state.bitmaps = {web_app::CreateSquareIcon(32, SK_ColorWHITE)};
+  icon_state.bitmaps = {CreateSquareIcon(32, SK_ColorWHITE)};
 
   EXPECT_THAT(ApplyPendingUpdate(), HasValue());
 
@@ -378,24 +385,14 @@ TEST_F(IsolatedWebAppApplyUpdateCommandTest, FailsIfIconDownloadFails) {
   ExpectAppNotUpdatedAndDataCleared();
 }
 
-TEST_F(IsolatedWebAppApplyUpdateCommandTest, FailsIfInstallFinalizerFails) {
-  class FailingUpdateFinalizer : public WebAppInstallFinalizer {
-   public:
-    explicit FailingUpdateFinalizer(webapps::AppId app_id)
-        : WebAppInstallFinalizer(nullptr), app_id_(std::move(app_id)) {}
-
-    void FinalizeUpdate(const WebAppInstallInfo& web_app_info,
-                        InstallFinalizedCallback callback) override {
-      std::move(callback).Run(app_id_,
-                              webapps::InstallResultCode::kNotInstallable);
-    }
-
-   private:
-    webapps::AppId app_id_;
-  };
-
-  fake_provider().SetInstallFinalizer(
-      std::make_unique<FailingUpdateFinalizer>(url_info_.app_id()));
+// TODO(https://crbug.com/487841728): Test is very flaky on Windows.
+#if BUILDFLAG(IS_WIN)
+#define MAYBE_FailsIfInstallFinalizerFails DISABLED_FailsIfInstallFinalizerFails
+#else
+#define MAYBE_FailsIfInstallFinalizerFails FailsIfInstallFinalizerFails
+#endif
+TEST_F(IsolatedWebAppApplyUpdateCommandTest,
+       MAYBE_FailsIfInstallFinalizerFails) {
   test::AwaitStartWebAppProviderAndSubsystems(profile());
 
   InstallIwa(update_info());
@@ -404,14 +401,23 @@ TEST_F(IsolatedWebAppApplyUpdateCommandTest, FailsIfInstallFinalizerFails) {
 
   auto& icon_state = fake_web_contents_manager().GetOrCreateIconState(
       url_info_.origin().GetURL().Resolve(kIconPath));
-  icon_state.bitmaps = {web_app::CreateSquareIcon(32, SK_ColorWHITE)};
+  icon_state.bitmaps = {CreateSquareIcon(32, SK_ColorWHITE)};
 
-  auto result = ApplyPendingUpdate();
+  auto result = ApplyPendingUpdate(base::BindOnce(
+      [](const webapps::AppId& app_id,
+         IsolatedWebAppApplyUpdateCommand& command) {
+        command.OverrideUpdateJobForTesting(base::BindOnce(
+            [](const webapps::AppId& app_id) {
+              return std::make_pair(
+                  app_id, webapps::InstallResultCode::kNotInstallable);
+            },
+            app_id));
+      },
+      url_info_.app_id()));
   EXPECT_THAT(result,
               ErrorIs(Field(&IsolatedWebAppApplyUpdateCommandError::message,
                             HasSubstr("Error during finalization"))));
   ExpectAppNotUpdatedAndDataCleared();
 }
-
 }  // namespace
 }  // namespace web_app

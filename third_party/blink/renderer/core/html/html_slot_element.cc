@@ -47,6 +47,7 @@
 #include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -101,7 +102,7 @@ HeapVector<Member<Node>> CollectFlattenedAssignedNodes(
       if (!child.IsSlotable())
         continue;
       if (auto* child_slot = ToHTMLSlotElementIfSupportsAssignmentOrNull(child))
-        nodes.AppendVector(CollectFlattenedAssignedNodes(*child_slot));
+        nodes.append_range(CollectFlattenedAssignedNodes(*child_slot));
       else
         nodes.push_back(child);
     }
@@ -110,7 +111,7 @@ HeapVector<Member<Node>> CollectFlattenedAssignedNodes(
       DCHECK(node->IsSlotable());
       if (auto* assigned_node_slot =
               ToHTMLSlotElementIfSupportsAssignmentOrNull(*node))
-        nodes.AppendVector(CollectFlattenedAssignedNodes(*assigned_node_slot));
+        nodes.append_range(CollectFlattenedAssignedNodes(*assigned_node_slot));
       else
         nodes.push_back(node);
     }
@@ -119,6 +120,37 @@ HeapVector<Member<Node>> CollectFlattenedAssignedNodes(
 }
 
 }  // namespace
+
+bool HTMLSlotElement::HasFlattenedAssignedNodesNoRecalc() const {
+  if (!SupportsAssignment()) {
+    DCHECK(assigned_nodes_.empty());
+    return false;
+  }
+
+  auto has_flattened = [](const Node& node) -> bool {
+    if (auto* slot = ToHTMLSlotElementIfSupportsAssignmentOrNull(node)) {
+      return slot->HasFlattenedAssignedNodesNoRecalc();
+    }
+    return true;
+  };
+
+  if (assigned_nodes_.empty()) {
+    for (auto& child : NodeTraversal::ChildrenOf(*this)) {
+      if (child.IsSlotable() && has_flattened(child)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  for (auto& node : assigned_nodes_) {
+    DCHECK(node->IsSlotable());
+    if (has_flattened(*node)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 const HeapVector<Member<Node>> HTMLSlotElement::FlattenedAssignedNodes() {
   if (!SupportsAssignment()) {
@@ -228,10 +260,29 @@ void HTMLSlotElement::Assign(const HeapVector<Member<Node>>& nodes) {
   }
 
   if (!changed_slots.empty()) {
-    for (HTMLSlotElement& slot :
-         Traversal<HTMLSlotElement>::DescendantsOf(*shadow_root)) {
-      if (changed_slots.Contains(&slot)) {
-        slot.DidSlotChange(SlotChangeType::kSignalSlotChangeEvent);
+    if (RuntimeEnabledFeatures::SlotAssignNotifyDifferentShadowRootsEnabled()) {
+      if (shadow_root) {
+        for (HTMLSlotElement& slot :
+             Traversal<HTMLSlotElement>::DescendantsOf(*shadow_root)) {
+          if (changed_slots.Take(&slot)) {
+            slot.DidSlotChange(SlotChangeType::kSignalSlotChangeEvent);
+          }
+        }
+      }
+      // A previous slot may belong to a different shadow tree than `this`, or
+      // `this` may not be in a shadow tree at all. Such slots are not reached
+      // by the traversal above; signal them here.
+      for (HTMLSlotElement* slot : changed_slots) {
+        slot->DidSlotChange(SlotChangeType::kSignalSlotChangeEvent);
+      }
+    } else {
+      if (shadow_root) {
+        for (HTMLSlotElement& slot :
+             Traversal<HTMLSlotElement>::DescendantsOf(*shadow_root)) {
+          if (changed_slots.Contains(&slot)) {
+            slot.DidSlotChange(SlotChangeType::kSignalSlotChangeEvent);
+          }
+        }
       }
     }
   }
@@ -365,7 +416,8 @@ void HTMLSlotElement::AttachLayoutTreeForSlotChildren(AttachContext& context) {
 void HTMLSlotElement::DetachLayoutTree(bool performing_reattach) {
   if (SupportsAssignment()) {
     auto* host = OwnerShadowHost();
-    const HeapVector<Member<Node>>& flat_tree_children = assigned_nodes_;
+    // Defensive copy to prevent UAF from sync recalc. See crbug.com/497830330.
+    const HeapVector<Member<Node>> flat_tree_children = assigned_nodes_;
     for (auto& node : flat_tree_children) {
       // Don't detach the assigned node if the node is no longer a child of the
       // host.
@@ -653,10 +705,11 @@ void HTMLSlotElement::NotifySlottedNodesOfFlatTreeChangeNaive(
       ++j;
       continue;
     }
-    if (old_index_map.Contains(new_node)) {
-      wtf_size_t old_index = old_index_map.at(new_node);
+    if (auto it = old_index_map.find(new_node);
+        it != old_index_map.end()) {
+      wtf_size_t old_index = it->value;
       if (old_index > i) {
-        i = old_index_map.at(new_node) + 1;
+        i = old_index + 1;
         ++j;
         continue;
       }
@@ -682,8 +735,9 @@ void HTMLSlotElement::NotifySlottedNodesOfFlatTreeChangeNaive(
       --j;
       continue;
     }
-    if (old_index_map.Contains(new_node)) {
-      wtf_size_t old_index = old_index_map.at(new_node);
+    if (auto it = old_index_map.find(new_node);
+        it != old_index_map.end()) {
+      wtf_size_t old_index = it->value;
       if (old_index < i - 1) {
         i = old_index;
         --j;

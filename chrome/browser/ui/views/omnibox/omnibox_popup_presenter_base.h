@@ -10,6 +10,10 @@
 #include <string_view>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
+#include "base/memory/weak_ptr.h"
+#include "base/time/time.h"
+#include "chrome/browser/ui/webui/cr_components/searchbox/searchbox_handler.h"
 #include "chrome/browser/ui/webui/searchbox/webui_omnibox_handler.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "ui/gfx/geometry/rect.h"
@@ -18,9 +22,15 @@
 #include "ui/views/view_observer.h"
 #include "ui/views/widget/widget.h"
 
-class LocationBarView;
+class LocationBar;
 class OmniboxPopupWebUIBaseContent;
+class OmniboxPopupPresenterDelegate;
 class RoundedOmniboxResultsFrame;
+class OmniboxController;
+
+namespace content {
+class WebContents;
+}  // namespace content
 
 namespace omnibox {
 extern const void* kOmniboxWebUIPopupWidgetId;
@@ -32,14 +42,19 @@ extern const void* kOmniboxWebUIPopupWidgetId;
 // this class is presentation only, i.e. Views and Widgets.  For omnibox logic
 // concerns and communication between native omnibox code and the WebUI code,
 // work with OmniboxPopupViewWebUI directly.
-class OmniboxPopupPresenterBase {
+class OmniboxPopupPresenterBase : public content::WebContentsObserver,
+                                  public SearchboxHandler::Delegate {
  public:
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kRoundedResultsFrame);
-  explicit OmniboxPopupPresenterBase(LocationBarView* location_bar_view);
+  // Arguments must outlast this.
+  explicit OmniboxPopupPresenterBase(
+      LocationBar* location_bar,
+      OmniboxPopupPresenterDelegate& presenter_delegate,
+      OmniboxController* controller);
   OmniboxPopupPresenterBase(const OmniboxPopupPresenterBase&) = delete;
   OmniboxPopupPresenterBase& operator=(const OmniboxPopupPresenterBase&) =
       delete;
-  virtual ~OmniboxPopupPresenterBase();
+  ~OmniboxPopupPresenterBase() override;
 
   // Show or hide the popup widget with web view.
   virtual void Show();
@@ -48,17 +63,60 @@ class OmniboxPopupPresenterBase {
   // Tells whether the popup widget exists.
   bool IsShown() const;
 
+  // Request focus on the popup widget and its web contents.
+  void RequestFocus();
+
   // Caches the height of the WebUI content, which is then used to compute the
   // popup widget bounds.
   void OnContentHeightChanged(int content_height);
+
+  // Synchronize the popup widget's bounds to its anchor (location bar view).
+  virtual void SynchronizePopupBounds();
 
   // Returns the currently "active" Popup content, whichever one is visible or
   // going to be visible within the popup.
   OmniboxPopupWebUIBaseContent* GetWebUIContent() const;
 
+  // Returns the timeout if showing should be deferred until the WebUI has
+  // painted a new frame, or std::nullopt if it should not be deferred.
+  virtual std::optional<base::TimeDelta> ShouldDeferUntilVisualStateReady()
+      const = 0;
+
+  // Returns if the WebContents should be detached when the popup is hidden.
+  virtual bool ShouldDetachWebContentsOnHide() const = 0;
+
   virtual std::string_view GetPopupMetricPrefix() const = 0;
 
+  OmniboxPopupPresenterDelegate& delegate() const {
+    return *presenter_delegate_;
+  }
+  // content::WebContentsObserver
+  void PrimaryPageChanged(content::Page& page) override;
+
+  // SearchboxHandler::Delegate:
+  void OnEmbeddedPermissionDialogChanged(bool is_showing,
+                                         const gfx::Size& prompt_size) override;
+  OmniboxController* GetOmniboxController() override;
+
+  views::Widget* get_widget_for_testing() { return widget_.get(); }
+
+  void set_widget_for_testing(std::unique_ptr<views::Widget> widget) {
+    widget_ = std::move(widget);
+  }
+
+  const gfx::Size& get_minimum_size() const { return minimum_size_; }
+
+  // Outermost view in the hierarchy; used for hit testing.
+  views::View* GetOuterView();
+
  protected:
+  inline static constexpr std::string_view kWebUIPopupMetricPrefix =
+      "Omnibox.Popup.WebUI";
+  inline static constexpr std::string_view kAimPopupMetricPrefix =
+      "Omnibox.Popup.Aim";
+  inline static constexpr std::string_view kFullWebUIPopupMetricPrefix =
+      "Omnibox.Popup.FullWebUI";
+
   // The container for the WebUI WebView.
   views::View* GetUIContainer() const;
 
@@ -71,17 +129,31 @@ class OmniboxPopupPresenterBase {
   // Called when the widget has just been destroyed.
   virtual void WidgetDestroyed() {}
 
+  // Hook to create the results frame view.
+  virtual std::unique_ptr<RoundedOmniboxResultsFrame> CreateResultsFrame(
+      std::unique_ptr<views::View> contents,
+      LocationBar* location_bar,
+      bool forward_mouse_events);
+
+  // Returns the frame view of the widget if it exists. CHECKs if no widget
+  // created.
+  RoundedOmniboxResultsFrame* GetResultsFrame() const;
+
   // Returns whether or not the popup should include the location bar cutout.
   virtual bool ShouldShowLocationBarCutout() const;
 
   // Returns whether the WebUI content view receive focus.
   virtual bool ShouldReceiveFocus() const;
 
-  LocationBarView* location_bar_view() const {
-    return location_bar_view_.get();
-  }
+  // Returns true if the popup widget should start transparent to allow the
+  // initial layout pass to complete without visual artifacts.
+  virtual bool ShouldHideForInitialLayout() const;
+
+  LocationBar* location_bar() const { return location_bar_.get(); }
 
   views::Widget* GetWidget() const { return widget_.get(); }
+
+  OmniboxController* controller() const;
 
   // The height of the popup content. Can be 0 if not specified.
   int content_height_ = 0;
@@ -90,20 +162,32 @@ class OmniboxPopupPresenterBase {
   friend class OmniboxPopupViewWebUITest;
   friend class OmniboxWebUiInteractiveTest;
 
-  // Synchronize the popup widget's bounds to its anchor (location bar view).
-  void SynchronizePopupBounds();
-
   void OnWidgetClosed(views::Widget::ClosedReason closed_reason);
+
+  // Shows the popup widget immediately, called after stale frame fix deferral
+  // if enabled.
+  void ShowWidget(base::TimeTicks show_widget_time);
+
+  // Callback for when the visual state is ready.
+  void OnVisualStateReady(base::TimeTicks show_widget_time,
+                          bool from_fallback,
+                          bool success);
+
+  // Callback for when the visual state is ready.
+  // This is specifically for metrics logging and is distinct from the
+  // OnVisualStateReady deferral callback.
+  void OnVisualStateReadyForMetrics(base::TimeTicks result_ready_time,
+                                    bool success);
+
+  void LogResultToContentReadyMetric(content::WebContents* web_contents);
 
   // Remove observation and reset widget, optionally requesting it to close.
   void ReleaseWidget();
 
-  // Returns the frame view of the widget if it exists. CHECKs if no widget
-  // created
-  RoundedOmniboxResultsFrame* GetResultsFrame() const;
+  // The location bar that owns `this`.
+  const raw_ptr<LocationBar> location_bar_;
 
-  // The location bar view that owns `this`.
-  const raw_ptr<LocationBarView> location_bar_view_;
+  const raw_ref<OmniboxPopupPresenterDelegate> presenter_delegate_;
 
   // The container for both the WebUI suggestions list and other WebUI
   // containers
@@ -115,6 +199,25 @@ class OmniboxPopupPresenterBase {
   // The popup widget that contains this WebView. Created and closed by `this`;
   // owned and destroyed by the OS.
   std::unique_ptr<views::Widget> widget_;
+
+  const raw_ptr<OmniboxController> controller_;
+
+  // True if `ShowWidget()` execution is currently being deferred until the
+  // WebUI has produced a new frame.
+  bool is_deferred_ = false;
+
+  // Whether the first content ready metric of the popup has been logged.
+  bool has_logged_first_content_ready_ = false;
+
+  // Whether the content ready metric has been logged since the popup was
+  // opened.
+  // This should be reset at the beginning of the Show() method.
+  bool has_logged_content_ready_since_open_ = false;
+
+  // Minimum size bounds of omnibox popup.
+  gfx::Size minimum_size_;
+
+  base::WeakPtrFactory<OmniboxPopupPresenterBase> weak_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_OMNIBOX_OMNIBOX_POPUP_PRESENTER_BASE_H_

@@ -14,13 +14,11 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "build/branding_buildflags.h"
-#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "components/autofill/core/common/autofill_features.h"
-#include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/accessibility/ax_enums.mojom-forward.h"
-#include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/text_elider.h"
@@ -234,7 +232,9 @@ ui::ImageModel CreateWalletIcon() {
 
 #else
   // This is a placeholder icon on non-branded builds.
-  return ui::ImageModel::FromVectorIcon(vector_icons::kGlobeIcon,
+  return ui::ImageModel::FromVectorIcon(::features::IsRoundedIconsEnabled()
+                                            ? vector_icons::kGlobeIcon
+                                            : vector_icons::kGlobeOldIcon,
                                         ui::kColorIcon, kWalletIconSize);
 #endif
 }

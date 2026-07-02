@@ -120,6 +120,7 @@ AnimationFrameTimingMonitor::RecordRenderingUpdateEndTime(
   current_frame_timing_info_->SetScripts(current_scripts_);
 
   current_frame_timing_info_->SetStyleDuration(render_style_duration_);
+  current_frame_timing_info_->SetLayoutDuration(render_layout_duration_);
 
   AnimationFrameTimingInfo* long_animation_frame = nullptr;
   if (current_frame_timing_info_->Duration() >= kLongAnimationFrameDuration) {
@@ -157,6 +158,9 @@ AnimationFrameTimingMonitor::RecordRenderingUpdateEndTime(
   longest_task_duration_ = total_blocking_time_excluding_longest_task_ =
       base::TimeDelta();
   render_style_duration_ = base::TimeDelta();
+  render_layout_duration_ = base::TimeDelta();
+  render_style_duration_during_layout_ = base::TimeDelta();
+  render_layout_depth_ = 0;
   state_ = State::kIdle;
   return long_animation_frame;
 }
@@ -166,6 +170,9 @@ void AnimationFrameTimingMonitor::WillProcessTask(base::TimeTicks start_time) {
     state_ = State::kProcessingTask;
   }
   current_task_start_ = start_time;
+  task_attributed_window_ = nullptr;
+  task_has_multiple_attributed_windows_ = false;
+  task_longtask_reported_ = false;
 }
 
 void AnimationFrameTimingMonitor::ApplyTaskDuration(
@@ -224,8 +231,18 @@ void AnimationFrameTimingMonitor::OnTaskCompleted(
   pending_script_info_ = std::nullopt;
 
   if (RuntimeEnabledFeatures::LongTaskFromLongAnimationFrameEnabled() &&
-      frame && frame->DomWindow() && task_duration >= kLongTaskDuration) {
-    client_.ReportLongTaskTiming(start_time, end_time, frame->DomWindow());
+      !task_longtask_reported_ && task_duration >= kLongTaskDuration) {
+    LocalDOMWindow* attributed_window = nullptr;
+    if (frame && frame->DomWindow()) {
+      attributed_window = frame->DomWindow();
+    } else if (task_attributed_window_ &&
+               !task_has_multiple_attributed_windows_) {
+      attributed_window = task_attributed_window_.Get();
+    }
+    if (attributed_window) {
+      client_.ReportLongTaskTiming(start_time, end_time, attributed_window);
+      task_longtask_reported_ = true;
+    }
   }
 
   // If we already need an update and a new task is processed, count its
@@ -281,8 +298,9 @@ void AnimationFrameTimingMonitor::OnTaskCompleted(
                                         kLongAnimationFrameDuration);
   timing_info->SetBeginFrameId(current_begin_frame_id_);
 
-  // No render-phase style since there was no rendering.
+  // No render-phase style/layout since there was no rendering.
   timing_info->SetStyleDuration(base::TimeDelta());
+  timing_info->SetLayoutDuration(base::TimeDelta());
 
   if (did_pause) {
     timing_info->SetDidPause();
@@ -522,6 +540,7 @@ void AnimationFrameTimingMonitor::Trace(Visitor* visitor) const {
   visitor->Trace(current_frame_timing_info_);
   visitor->Trace(current_scripts_);
   visitor->Trace(frame_handling_input_);
+  visitor->Trace(task_attributed_window_);
 }
 
 BASE_FEATURE(kAlwaysLogLOAFURL, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -534,7 +553,7 @@ bool ShouldAllowScriptURL(const String& url) {
   }
 
   KURL kurl(url);
-  return kurl.ProtocolIsData() || kurl.ProtocolIsInHTTPFamily() ||
+  return kurl.ProtocolIsData() || kurl.ProtocolIsInHttpFamily() ||
          kurl.ProtocolIs("blob") || kurl.IsEmpty();
 }
 
@@ -543,6 +562,18 @@ bool ShouldAllowScriptURL(const String& url) {
 bool AnimationFrameTimingMonitor::PushScriptEntryPoint(
     ScriptState* script_state) {
   entry_point_depth_++;
+
+  if (script_state->World().IsMainWorld()) {
+    if (auto* window =
+            DynamicTo<LocalDOMWindow>(ToExecutionContext(script_state))) {
+      if (!task_attributed_window_) {
+        task_attributed_window_ = window;
+      } else if (task_attributed_window_ != window) {
+        task_has_multiple_attributed_windows_ = true;
+      }
+    }
+  }
+
   // This will return true if there's a potential long animation frame, i.e.
   // we're in a visible window, and this is the script entry point rather than
   // a nested script (entry_point_depth is 1).
@@ -733,8 +764,11 @@ ScriptTimingInfo::ScriptSourceLocation CaptureScriptSourceLocation(
     return ScriptTimingInfo::ScriptSourceLocation();
   }
 
-  v8::Local<v8::Value> bound = value.As<v8::Function>()->GetBoundFunction();
-  if (!bound.IsEmpty() && bound->IsFunction()) {
+  while (value->IsFunction()) {
+    v8::Local<v8::Value> bound = value.As<v8::Function>()->GetBoundFunction();
+    if (bound.IsEmpty() || !bound->IsFunction()) {
+      break;
+    }
     value = bound;
   }
 
@@ -869,33 +903,55 @@ void AnimationFrameTimingMonitor::Did(
   if (pending_script_info_) {
     probe_data.CaptureEndTime();
     pending_script_info_->style_duration += probe_data.Duration();
+    // Track style time that occurs during layout (e.g. container query style
+    // recalc) so we can subtract it from layout_duration later.
+    if (pending_script_info_->layout_depth > 0) {
+      pending_script_info_->style_duration_during_layout +=
+          probe_data.Duration();
+    }
   } else if (state_ == State::kRenderingFrame) {
     probe_data.CaptureEndTime();
     render_style_duration_ += probe_data.Duration();
+    if (render_layout_depth_ > 0) {
+      render_style_duration_during_layout_ += probe_data.Duration();
+    }
   }
 }
 void AnimationFrameTimingMonitor::Will(const probe::UpdateLayout& probe_data) {
-  if (!pending_script_info_) {
-    return;
+  if (pending_script_info_) {
+    if (!pending_script_info_->layout_depth) {
+      probe_data.CaptureStartTime();
+    }
+    pending_script_info_->layout_depth++;
+  } else if (state_ == State::kRenderingFrame) {
+    if (!render_layout_depth_) {
+      probe_data.CaptureStartTime();
+    }
+    render_layout_depth_++;
   }
-
-  if (!pending_script_info_->layout_depth) {
-    probe_data.CaptureStartTime();
-  }
-
-  pending_script_info_->layout_depth++;
 }
 
 void AnimationFrameTimingMonitor::Did(const probe::UpdateLayout& probe_data) {
-  if (!pending_script_info_) {
-    return;
-  }
-
-  pending_script_info_->layout_depth--;
-
-  if (!pending_script_info_->layout_depth) {
-    probe_data.CaptureEndTime();
-    pending_script_info_->layout_duration += probe_data.Duration();
+  if (pending_script_info_) {
+    pending_script_info_->layout_depth--;
+    if (!pending_script_info_->layout_depth) {
+      probe_data.CaptureEndTime();
+      // Subtract style time that occurred during this layout scope (e.g.
+      // container query style recalc) to avoid double-counting it in both
+      // style_duration and layout_duration.
+      pending_script_info_->layout_duration +=
+          probe_data.Duration() -
+          pending_script_info_->style_duration_during_layout;
+      pending_script_info_->style_duration_during_layout = base::TimeDelta();
+    }
+  } else if (state_ == State::kRenderingFrame) {
+    render_layout_depth_--;
+    if (!render_layout_depth_) {
+      probe_data.CaptureEndTime();
+      render_layout_duration_ +=
+          probe_data.Duration() - render_style_duration_during_layout_;
+      render_style_duration_during_layout_ = base::TimeDelta();
+    }
   }
 }
 

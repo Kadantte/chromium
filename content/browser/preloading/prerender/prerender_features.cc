@@ -10,21 +10,10 @@
 
 namespace features {
 
-// Enables fallback from prerender to prefetch for Speculation Rules.
-// See https://crbug.com/342089123 for more details.
-//
-// Effects:
-//
-// - Use code paths for prefetch/prerender integration. (The effect of
-//   `kPrefetchPrerenderIntegration`).
-// - Trigger prefetch ahead of prerender.
-BASE_FEATURE(kPrerender2FallbackPrefetchSpecRules,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 const base::FeatureParam<bool>
     kPrerender2FallbackPrefetchUseBlockUntilHeadTimetout{
         &kPrerender2FallbackPrefetchSpecRules,
-        "kPrerender2FallbackPrefetchUseBlockUntilHeadTimetout", true};
+        "kPrerender2FallbackPrefetchUseBlockUntilHeadTimetout", false};
 
 constexpr base::FeatureParam<Prerender2FallbackPrefetchSchedulerPolicy>::Option
     kPrerender2FallbackPrefetchSchedulerPolicyOptios[] = {
@@ -38,10 +27,6 @@ const base::FeatureParam<Prerender2FallbackPrefetchSchedulerPolicy>
         "kPrerender2FallbackPrefetchSchedulerPolicy",
         Prerender2FallbackPrefetchSchedulerPolicy::kNotUse,
         &kPrerender2FallbackPrefetchSchedulerPolicyOptios};
-
-const base::FeatureParam<bool> kPrerender2FallbackUsePreloadServingMetrics{
-    &kPrerender2FallbackPrefetchSpecRules,
-    "kPrerender2FallbackUsePreloadServingMetrics", false};
 
 BASE_FEATURE(kPrerender2NoVarySearch, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -84,6 +69,21 @@ BASE_FEATURE(kPrerender2WarmUpCompositorForImmediate,
              base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kPrerender2WarmUpCompositorForNonImmediate,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPrerenderUntilScriptUpgrade, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPrerender2ReuseInitiatorProcess,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+const base::FeatureParam<std::string>
+    kPrerender2ReuseInitiatorProcessActionType{
+        &kPrerender2ReuseInitiatorProcess, "prerender_action_type",
+        "prerender-until-script"};
+
+const base::FeatureParam<std::string> kPrerender2ReuseInitiatorProcessEagerness{
+    &kPrerender2ReuseInitiatorProcess, "eagerness", "moderate"};
+
+const base::FeatureParam<int> kPrerender2ReuseInitiatorProcessMaxReuseCount{
+    &kPrerender2ReuseInitiatorProcess, "max_reuse_count", 2};
 
 bool UsePrefetchPrerenderIntegration() {
   return base::FeatureList::IsEnabled(

@@ -108,7 +108,7 @@ class TooltipBrowserTest : public InProcessBrowserTest {
     ASSERT_TRUE(embedded_test_server()->Start());
 
     gfx::NativeWindow root_window =
-        browser()->window()->GetNativeWindow()->GetRootWindow();
+        browser()->GetWindow()->GetNativeWindow()->GetRootWindow();
     event_generator_ = std::make_unique<ui::test::EventGenerator>(root_window);
     helper_ = std::make_unique<TooltipControllerTestHelper>(root_window);
     tooltip_monitor_ = std::make_unique<TooltipMonitor>();
@@ -197,7 +197,7 @@ IN_PROC_BROWSER_TEST_F(TooltipBrowserTest,
 }
 
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
-// https://crbug.com/1212403. Flaky on linux-chromeos-rel and other linux bots.
+// https://crbug.com/40768202. Flaky on linux-chromeos-rel and other linux bots.
 #define MAYBE_ShowTooltipFromWebContentWithKeyboard \
   DISABLED_ShowTooltipFromWebContentWithKeyboard
 #else
@@ -219,8 +219,8 @@ IN_PROC_BROWSER_TEST_F(TooltipBrowserTest,
   helper()->HideAndReset();
 }
 
-// https://crbug.com/1212403. Flaky on linux-chromeos-rel.
-// https://crbug.com/1241736. Flaky on Win.
+// https://crbug.com/40768202. Flaky on linux-chromeos-rel.
+// https://crbug.com/40786199. Flaky on Win.
 IN_PROC_BROWSER_TEST_F(TooltipBrowserTest,
                        DISABLED_ShowTooltipFromIFrameWithKeyboard) {
   // There are two tooltips in this file: one above the iframe and one inside
@@ -263,8 +263,8 @@ IN_PROC_BROWSER_TEST_F(TooltipBrowserTest,
 }
 
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
-// https://crbug.com/1212403. Flaky on linux-chromeos-rel.
-// https://crbug.com/1241736. Flaky on Win.
+// https://crbug.com/40768202. Flaky on linux-chromeos-rel.
+// https://crbug.com/40786199. Flaky on Win.
 #define MAYBE_HideTooltipOnKeyPressTriggeredByCursor \
   DISABLED_HideTooltipOnKeyPressTriggeredByCursor
 #else
@@ -285,15 +285,15 @@ IN_PROC_BROWSER_TEST_F(TooltipBrowserTest,
 
   // Second, send a key press event to test whether the tooltip gets hidden.
   EXPECT_TRUE(tooltip_monitor()->IsWidgetActive());
-  ui_controls::SendKeyPress(browser()->window()->GetNativeWindow(), ui::VKEY_A,
-                            false, false, false, false);
+  ui_controls::SendKeyPress(browser()->GetWindow()->GetNativeWindow(),
+                            ui::VKEY_A, false, false, false, false);
   tooltip_monitor()->WaitUntilTooltipClosed();
   EXPECT_FALSE(helper()->IsTooltipVisible());
 }
 
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
-// https://crbug.com/1212403. Flaky on linux-chromeos-rel.
-// https://crbug.com/1241736. Flaky on Win.
+// https://crbug.com/40768202. Flaky on linux-chromeos-rel.
+// https://crbug.com/40786199. Flaky on Win.
 #define MAYBE_HideTooltipOnKeyPressTriggeredByKeyboard \
   DISABLED_HideTooltipOnKeyPressTriggeredByKeyboard
 #else
@@ -321,7 +321,7 @@ IN_PROC_BROWSER_TEST_F(TooltipBrowserTest,
 }
 
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
-// https://crbug.com/1212403. Flaky on linux-chromeos-rel, windows, linux.
+// https://crbug.com/40768202. Flaky on linux-chromeos-rel, windows, linux.
 #define MAYBE_ScriptFocusHidesKeyboardTriggeredTooltip \
   DISABLED_ScriptFocusHidesKeyboardTriggeredTooltip
 #else

@@ -16,14 +16,15 @@
 #include "base/functional/callback.h"
 #include "base/logging.h"
 #include "base/memory/scoped_policy.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/threading/thread_restrictions.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "net/base/features.h"
+#include "net/base/network_change_notifier_apple_buildflags.h"
 #include "net/base/network_interfaces_getifaddrs.h"
 #include "net/dns/dns_config_service.h"
 #include "net/log/net_log.h"
@@ -31,12 +32,6 @@
 #if BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_IOS_TVOS)
 #import <CoreTelephony/CTTelephonyNetworkInfo.h>
 #endif
-
-#if BUILDFLAG(IS_MAC) || !defined(__IPHONE_17_4) || \
-    __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_17_4
-#define COMPILE_OLD_NOTIFIER_IMPL 1
-#endif  // BUILDFLAG(IS_MAC) || !defined(__IPHONE_17_4) ||
-        // __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_17_4
 
 namespace net {
 
@@ -265,69 +260,62 @@ NetworkChangeNotifierApple::CalculateConnectionType(
   if (!(flags & kSCNetworkReachabilityFlagsIsWWAN)) {
     return CONNECTION_WIFI;
   }
-  if (@available(iOS 12, *)) {
-    CTTelephonyNetworkInfo* info = [[CTTelephonyNetworkInfo alloc] init];
-    NSDictionary<NSString*, NSString*>*
-        service_current_radio_access_technology =
-            info.serviceCurrentRadioAccessTechnology;
-    NSSet<NSString*>* technologies_2g = [NSSet
-        setWithObjects:CTRadioAccessTechnologyGPRS, CTRadioAccessTechnologyEdge,
-                       CTRadioAccessTechnologyCDMA1x, nil];
-    NSSet<NSString*>* technologies_3g =
-        [NSSet setWithObjects:CTRadioAccessTechnologyWCDMA,
-                              CTRadioAccessTechnologyHSDPA,
-                              CTRadioAccessTechnologyHSUPA,
-                              CTRadioAccessTechnologyCDMAEVDORev0,
-                              CTRadioAccessTechnologyCDMAEVDORevA,
-                              CTRadioAccessTechnologyCDMAEVDORevB,
-                              CTRadioAccessTechnologyeHRPD, nil];
-    NSSet<NSString*>* technologies_4g =
-        [NSSet setWithObjects:CTRadioAccessTechnologyLTE, nil];
-    // TODO: Use constants from CoreTelephony once Cronet builds with Xcode 12.1
-    NSSet<NSString*>* technologies_5g =
-        [NSSet setWithObjects:@"CTRadioAccessTechnologyNRNSA",
-                              @"CTRadioAccessTechnologyNR", nil];
-    int best_network = 0;
-    for (NSString* service in service_current_radio_access_technology) {
-      if (!service_current_radio_access_technology[service]) {
-        continue;
-      }
-      int current_network = 0;
-
-      NSString* network_type = service_current_radio_access_technology[service];
-
-      if ([technologies_2g containsObject:network_type]) {
-        current_network = 2;
-      } else if ([technologies_3g containsObject:network_type]) {
-        current_network = 3;
-      } else if ([technologies_4g containsObject:network_type]) {
-        current_network = 4;
-      } else if ([technologies_5g containsObject:network_type]) {
-        current_network = 5;
-      } else {
-        // New technology?
-        NOTREACHED() << "Unknown network technology: " << network_type;
-      }
-      if (current_network > best_network) {
-        // iOS is supposed to use the best network available.
-        best_network = current_network;
-      }
+  CTTelephonyNetworkInfo* info = [[CTTelephonyNetworkInfo alloc] init];
+  NSDictionary<NSString*, NSString*>* service_current_radio_access_technology =
+      info.serviceCurrentRadioAccessTechnology;
+  NSSet<NSString*>* technologies_2g = [NSSet
+      setWithObjects:CTRadioAccessTechnologyGPRS, CTRadioAccessTechnologyEdge,
+                     CTRadioAccessTechnologyCDMA1x, nil];
+  NSSet<NSString*>* technologies_3g = [NSSet
+      setWithObjects:CTRadioAccessTechnologyWCDMA, CTRadioAccessTechnologyHSDPA,
+                     CTRadioAccessTechnologyHSUPA,
+                     CTRadioAccessTechnologyCDMAEVDORev0,
+                     CTRadioAccessTechnologyCDMAEVDORevA,
+                     CTRadioAccessTechnologyCDMAEVDORevB,
+                     CTRadioAccessTechnologyeHRPD, nil];
+  NSSet<NSString*>* technologies_4g =
+      [NSSet setWithObjects:CTRadioAccessTechnologyLTE, nil];
+  NSSet<NSString*>* technologies_5g =
+      [NSSet setWithObjects:CTRadioAccessTechnologyNRNSA,
+                            CTRadioAccessTechnologyNR, nil];
+  int best_network = 0;
+  for (NSString* service in service_current_radio_access_technology) {
+    if (!service_current_radio_access_technology[service]) {
+      continue;
     }
-    switch (best_network) {
-      case 2:
-        return CONNECTION_2G;
-      case 3:
-        return CONNECTION_3G;
-      case 4:
-        return CONNECTION_4G;
-      case 5:
-        return CONNECTION_5G;
-      default:
-        // Default to CONNECTION_3G to not change existing behavior.
-        return CONNECTION_3G;
+    int current_network = 0;
+
+    NSString* network_type = service_current_radio_access_technology[service];
+
+    if ([technologies_2g containsObject:network_type]) {
+      current_network = 2;
+    } else if ([technologies_3g containsObject:network_type]) {
+      current_network = 3;
+    } else if ([technologies_4g containsObject:network_type]) {
+      current_network = 4;
+    } else if ([technologies_5g containsObject:network_type]) {
+      current_network = 5;
+    } else {
+      // New technology?
+      NOTREACHED() << "Unknown network technology: " << network_type;
     }
-  } else {
-    return CONNECTION_3G;
+    if (current_network > best_network) {
+      // iOS is supposed to use the best network available.
+      best_network = current_network;
+    }
+  }
+  switch (best_network) {
+    case 2:
+      return CONNECTION_2G;
+    case 3:
+      return CONNECTION_3G;
+    case 4:
+      return CONNECTION_4G;
+    case 5:
+      return CONNECTION_5G;
+    default:
+      // Default to CONNECTION_3G to not change existing behavior.
+      return CONNECTION_3G;
   }
 
 #else
@@ -355,12 +343,12 @@ void NetworkChangeNotifierApple::Forwarder::CleanUpOnNotifierThread() {
 
 void NetworkChangeNotifierApple::SetInitialConnectionType() {
   // Called on notifier thread.
-#if defined(COMPILE_OLD_NOTIFIER_IMPL)
   if (EnsureNetworkPathMonitorStarted()) {
     WaitOnInitialConnectionType();
     return;
   }
 
+#if defined(COMPILE_OLD_NOTIFIER_IMPL)
   // Try to reach 0.0.0.0. This is the approach taken by Firefox:
   //
   // http://mxr.mozilla.org/mozilla2.0/source/netwerk/system/mac/nsNetworkLinkService.mm
@@ -387,8 +375,6 @@ void NetworkChangeNotifierApple::SetInitialConnectionType() {
     connection_type_initialized_ = true;
     initial_connection_type_cv_.Broadcast();
   }
-#else
-  WaitOnInitialConnectionType();
 #endif  // defined(COMPILE_OLD_NOTIFIER_IMPL)
 }
 

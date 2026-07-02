@@ -47,6 +47,7 @@
 #include "chrome/browser/ash/policy/core/device_policy_cros_browser_test.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/login/mock_login_display_host.h"
@@ -57,7 +58,6 @@
 #include "chrome/browser/ui/webui/ash/login/locale_switch_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/terms_of_service_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/tpm_error_screen_handler.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/fake_gaia_mixin.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
@@ -215,7 +215,11 @@ class ExistingUserControllerTest : public policy::DevicePolicyCrosBrowserTest {
 
   void SetUpOnMainThread() override {
     policy::DevicePolicyCrosBrowserTest::SetUpOnMainThread();
-    existing_user_controller_ = std::make_unique<ExistingUserController>();
+    existing_user_controller_ = std::make_unique<ExistingUserController>(
+        g_browser_process->local_state(),
+        g_browser_process->GetFeatures()->application_locale_storage(),
+        g_browser_process->shared_url_loader_factory(),
+        g_browser_process->platform_part()->browser_policy_connector_ash());
     EXPECT_CALL(*mock_login_display_host_, GetExistingUserController())
         .Times(AnyNumber())
         .WillRepeatedly(Return(existing_user_controller_.get()));

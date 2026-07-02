@@ -12,6 +12,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "base/containers/span_reader.h"
 #include "base/debug/crash_logging.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -19,7 +20,6 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/not_fatal_until.h"
 #include "base/numerics/clamped_math.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
@@ -114,7 +114,7 @@ std::string GetHexKeyId(const cdm::InputBuffer_2& buffer) {
   if (buffer.key_id_size == 0)
     return "N/A";
 
-  return base::HexEncode(buffer.key_id, buffer.key_id_size);
+  return base::HexEncode(KeyIdFrom(&buffer));
 }
 
 std::string GetHexMask(uint32_t mask) {
@@ -505,10 +505,8 @@ void CdmAdapter::Decrypt(StreamType stream_type,
     return;
   }
 
-  scoped_refptr<DecoderBuffer> decrypted_buffer(DecoderBuffer::CopyFrom(
-      // SAFETY: `Data()` must return a buffer of `Size()` bytes.
-      UNSAFE_BUFFERS(base::span(decrypted_block->DecryptedBuffer()->Data(),
-                                decrypted_block->DecryptedBuffer()->Size()))));
+  scoped_refptr<DecoderBuffer> decrypted_buffer(
+      DecoderBuffer::CopyFrom(AsSpan(decrypted_block->DecryptedBuffer())));
   decrypted_buffer->set_timestamp(
       base::Microseconds(decrypted_block->Timestamp()));
   std::move(decrypt_cb).Run(Decryptor::kSuccess, std::move(decrypted_buffer));
@@ -1158,6 +1156,18 @@ void CdmAdapter::ReportMetrics(cdm::MetricName metric_name, uint64_t value) {
       cdm_metrics_data_.decoder_check1_error_count =
           cdm_metrics_data_.decoder_check1_error_count.value_or(0) + value;
       return;
+    case cdm::kKeySystemDataTime1:
+      cdm_metrics_data_.key_system_data_time1 = value;
+      return;
+    case cdm::kKeySystemDataTime2:
+      cdm_metrics_data_.key_system_data_time2 = value;
+      return;
+    case cdm::kKeySystemDataTime3:
+      cdm_metrics_data_.key_system_data_time3 = value;
+      return;
+    case cdm::kKeySystemDataBool1:
+      cdm_metrics_data_.key_system_data_bool1 = value != 0;
+      return;
   }
 }
 
@@ -1173,59 +1183,78 @@ void CdmAdapter::OnStorageIdObtained(uint32_t version,
 bool CdmAdapter::AudioFramesDataToAudioFrames(
     std::unique_ptr<AudioFramesImpl> audio_frames,
     Decryptor::AudioFrames* result_frames) {
-  const uint8_t* data = audio_frames->FrameBuffer()->Data();
-  const size_t data_size = audio_frames->FrameBuffer()->Size();
-  size_t bytes_left = data_size;
+  base::span<uint8_t> data = AsSpan(audio_frames->FrameBuffer());
   const SampleFormat sample_format =
       ToMediaSampleFormat(audio_frames->Format());
   const int audio_channel_count =
       ChannelLayoutToChannelCount(audio_channel_layout_);
-  const int audio_bytes_per_frame =
-      SampleFormatToBytesPerChannel(sample_format) * audio_channel_count;
-  if (audio_bytes_per_frame <= 0)
+  const int audio_bytes_per_sample =
+      SampleFormatToBytesPerChannel(sample_format);
+  if (audio_bytes_per_sample <= 0 || audio_channel_count <= 0) {
     return false;
+  }
 
-  // Allocate space for the channel pointers given to AudioBuffer.
-  std::vector<const uint8_t*> channel_ptrs(audio_channel_count, nullptr);
-  do {
+  base::SpanReader<const uint8_t> frame_buffer_reader(data);
+  while (frame_buffer_reader.remaining() > 0) {
     // AudioFrames can contain multiple audio output buffers, which are
     // serialized into this format:
     // |<------------------- serialized audio buffer ------------------->|
     // | int64_t timestamp | int64_t length | length bytes of audio data |
     int64_t timestamp = 0;
     int64_t frame_size = -1;
-    const size_t kHeaderSize = sizeof(timestamp) + sizeof(frame_size);
-    if (bytes_left < kHeaderSize)
-      return false;
 
-    UNSAFE_TODO(memcpy(&timestamp, data, sizeof(timestamp)));
-    UNSAFE_TODO(
-        memcpy(&frame_size, data + sizeof(timestamp), sizeof(frame_size)));
-    UNSAFE_TODO(data += kHeaderSize);
-    bytes_left -= kHeaderSize;
-
-    // We should *not* have empty frames in the list.
-    if (frame_size <= 0 ||
-        bytes_left < base::checked_cast<size_t>(frame_size)) {
+    if (!frame_buffer_reader.ReadI64NativeEndian(timestamp) ||
+        !frame_buffer_reader.ReadI64NativeEndian(frame_size) ||
+        frame_size <= 0) {
       return false;
     }
 
-    // Setup channel pointers.  AudioBuffer::CopyFrom() will only use the first
-    // one in the case of interleaved data.
-    const int size_per_channel = frame_size / audio_channel_count;
-    for (int i = 0; i < audio_channel_count; ++i)
-      channel_ptrs[i] = UNSAFE_TODO(data + i * size_per_channel);
+    // Read the frame payload.
+    base::span<const uint8_t> frame_data =
+        frame_buffer_reader.Read(base::checked_cast<size_t>(frame_size))
+            .value_or(base::span<const uint8_t>());
+    if (frame_data.empty()) {
+      return false;
+    }
 
-    const int frame_count = frame_size / audio_bytes_per_frame;
+    // `frame_size` covers all channels. Validate the total sample count before
+    // converting it to the per-channel frame count expected by AudioBuffer.
+    if (frame_size % audio_bytes_per_sample != 0) {
+      return false;
+    }
+    const int64_t sample_count = frame_size / audio_bytes_per_sample;
+    if (sample_count % audio_channel_count != 0) {
+      return false;
+    }
+
+    const int frame_count =
+        base::checked_cast<int>(sample_count / audio_channel_count);
+
+    // Setup channel spans. AudioBuffer::CopyFrom() will only use the first one
+    // in the case of interleaved data, so the first span must cover the full
+    // interleaved payload.
+    std::vector<base::span<const uint8_t>> channel_spans;
+    if (IsInterleaved(sample_format)) {
+      channel_spans.push_back(frame_data);
+    } else {
+      if (!IsPlanar(sample_format)) {
+        return false;
+      }
+
+      channel_spans.resize(audio_channel_count);
+      const size_t size_per_channel =
+          base::checked_cast<size_t>(frame_size / audio_channel_count);
+      for (int i = 0; i < audio_channel_count; ++i) {
+        channel_spans[i] = frame_data.take_first(size_per_channel);
+      }
+      CHECK(frame_data.empty());
+    }
     scoped_refptr<media::AudioBuffer> frame = media::AudioBuffer::CopyFrom(
         sample_format, audio_channel_layout_, audio_channel_count,
-        audio_samples_per_second_, frame_count, &channel_ptrs[0],
+        audio_samples_per_second_, frame_count, channel_spans,
         base::Microseconds(timestamp), pool_);
     result_frames->push_back(frame);
-
-    UNSAFE_TODO(data += frame_size);
-    bytes_left -= frame_size;
-  } while (bytes_left > 0);
+  }
 
   return true;
 }

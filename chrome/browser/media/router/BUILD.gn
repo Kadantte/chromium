@@ -19,10 +19,8 @@ source_set("data_decoder_util") {
     "data_decoder_util.cc",
     "data_decoder_util.h",
   ]
-  deps = [
-    "//base",
-    "//services/data_decoder/public/cpp",
-  ]
+  public_deps = [ "//services/data_decoder/public/cpp" ]
+  deps = [ "//base" ]
   configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
@@ -86,6 +84,7 @@ static_library("router") {
     ":media_router_feature",
     "//base",
     "//chrome:strings",
+    "//chrome/browser/media",
     "//chrome/browser/profiles",
     "//chrome/browser/profiles:profile",
     "//chrome/common:constants",
@@ -171,6 +170,7 @@ static_library("router") {
       "//chrome/browser/media/router/discovery",
       "//chrome/browser/media/router/discovery/access_code:access_code_cast_feature",
       "//chrome/browser/profiles:profile",
+      "//chrome/browser/profiles:profile_manager",
       "//components/access_code_cast/common:metrics",
       "//components/embedder_support:user_agent",
       "//components/mirroring/mojom:service",
@@ -229,9 +229,11 @@ if (!is_android) {
       ":media_router_feature",
       ":router",
       "//chrome/browser:browser_process",
+      "//chrome/browser/media",
       "//chrome/browser/media/router/discovery",
       "//chrome/browser/media/router/discovery/access_code:access_code_cast_feature",
       "//chrome/browser/media/webrtc",
+      "//chrome/browser/net",
       "//components/media_router/common/providers/cast/channel",
       "//components/openscreen_platform",
       "//media/cast:common",
@@ -443,8 +445,9 @@ if (!is_win) {
   }
 }
 
-# This fuzzer targets DialInternalMessage defined in "providers/dial/dial_internal_message_util.h."
-# This api is excluded from ":router" on android.
+# This fuzzer targets DialInternalMessage defined in
+# "providers/dial/dial_internal_message_util.h." This api is excluded from
+# ":router" on android.
 if (!is_android) {
   fuzzer_test("dial_internal_message_fuzzer") {
     sources = [ "providers/dial/dial_internal_message_fuzzer.cc" ]

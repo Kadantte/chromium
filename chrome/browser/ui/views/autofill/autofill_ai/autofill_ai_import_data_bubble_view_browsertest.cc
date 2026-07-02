@@ -2,9 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef CHROME_BROWSER_UI_VIEWS_AUTOFILL_AUTOFILL_AI_SAVE_OR_UPDATE_AUTOFILL_AI_DATA_BUBBLE_VIEW_BROWSERTEST_CC_H_
-#define CHROME_BROWSER_UI_VIEWS_AUTOFILL_AUTOFILL_AI_SAVE_OR_UPDATE_AUTOFILL_AI_DATA_BUBBLE_VIEW_BROWSERTEST_CC_H_
-
 #include "chrome/browser/ui/views/autofill/autofill_ai/autofill_ai_import_data_bubble_view.h"
 
 #include <tuple>
@@ -23,7 +20,6 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/ui_base_switches.h"
-#include "ui/views/test/views_test_base.h"
 #include "ui/views/widget/widget.h"
 
 namespace autofill {
@@ -55,6 +51,8 @@ class AutofillAiImportDataBubbleViewBrowsertest
     ON_CALL(mock_controller(), GetSaveUpdateDialogTitleImagesResourceId())
         .WillByDefault(
             Return(IDR_AUTOFILL_SAVE_PASSPORT_AND_NATIONAL_ID_CARD_LOTTIE));
+    ON_CALL(mock_controller(), GetNoticeStringId())
+        .WillByDefault(Return(IDS_AUTOFILL_AI_SAVE_ENTITY_DIALOG_SUBTITLE));
   }
 
   void DismissUi() override { bubble_ = nullptr; }
@@ -85,7 +83,8 @@ class AutofillAiImportDataBubbleViewBrowsertest
 
   void ShowUi(const std::string& name) override {
     auto bubble = std::make_unique<AutofillAiImportDataBubbleView>(
-        nullptr, browser()->tab_strip_model()->GetActiveWebContents(),
+        views::BubbleAnchor(),
+        browser()->tab_strip_model()->GetActiveWebContents(),
         &mock_controller());
     bubble->set_has_parent(false);
     bubble_ = bubble.get();
@@ -172,6 +171,8 @@ IN_PROC_BROWSER_TEST_P(AutofillAiImportDataBubbleViewBrowsertest,
           EntityAttributeUpdateType::kNewEntityAttributeUnchanged)};
   ON_CALL(mock_controller(), GetUpdatedAttributesDetails())
       .WillByDefault(Return(details));
+  ON_CALL(mock_controller(), GetNoticeStringId())
+      .WillByDefault(Return(IDS_AUTOFILL_AI_UPDATE_ENTITY_DIALOG_SUBTITLE));
   ShowAndVerifyUi();
 }
 
@@ -182,6 +183,9 @@ IN_PROC_BROWSER_TEST_P(AutofillAiImportDataBubbleViewBrowsertest,
           IDS_AUTOFILL_AI_SAVE_VEHICLE_ENTITY_DIALOG_TITLE)));
   ON_CALL(mock_controller(), IsSavePrompt()).WillByDefault(Return(true));
   ON_CALL(mock_controller(), IsWalletableEntity()).WillByDefault(Return(true));
+  ON_CALL(mock_controller(), GetNoticeStringId())
+      .WillByDefault(
+          Return(IDS_AUTOFILL_AI_SAVE_ENTITY_TO_WALLET_DIALOG_SUBTITLE));
   ON_CALL(mock_controller(), GetPrimaryAccountEmail())
       .WillByDefault(Return(u"machadodeassis@gmail.com"));
   std::vector<EntityAttributeUpdateDetails> details = {
@@ -211,6 +215,9 @@ IN_PROC_BROWSER_TEST_P(AutofillAiImportDataBubbleViewBrowsertest,
           IDS_AUTOFILL_AI_UPDATE_VEHICLE_ENTITY_DIALOG_TITLE)));
   ON_CALL(mock_controller(), IsSavePrompt()).WillByDefault(Return(false));
   ON_CALL(mock_controller(), IsWalletableEntity()).WillByDefault(Return(true));
+  ON_CALL(mock_controller(), GetNoticeStringId())
+      .WillByDefault(
+          Return(IDS_AUTOFILL_AI_UPDATE_ENTITY_TO_WALLET_DIALOG_SUBTITLE));
   ON_CALL(mock_controller(), GetPrimaryAccountEmail())
       .WillByDefault(Return(u"machadodeassis@gmail.com"));
   std::vector<EntityAttributeUpdateDetails> details = {
@@ -269,6 +276,8 @@ IN_PROC_BROWSER_TEST_P(AutofillAiImportDataBubbleViewBrowsertest,
           EntityAttributeUpdateType::kNewEntityAttributeUnchanged)};
   ON_CALL(mock_controller(), GetUpdatedAttributesDetails())
       .WillByDefault(Return(details));
+  ON_CALL(mock_controller(), GetNoticeStringId())
+      .WillByDefault(Return(IDS_AUTOFILL_AI_UPDATE_ENTITY_DIALOG_SUBTITLE));
   ShowAndVerifyUi();
 }
 
@@ -329,5 +338,3 @@ INSTANTIATE_TEST_SUITE_P(
 
 }  // namespace
 }  // namespace autofill
-
-#endif  // CHROME_BROWSER_UI_VIEWS_AUTOFILL_AUTOFILL_AI_SAVE_OR_UPDATE_AUTOFILL_AI_DATA_BUBBLE_VIEW_BROWSERTEST_CC_H_

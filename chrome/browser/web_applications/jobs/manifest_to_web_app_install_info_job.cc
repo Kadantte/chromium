@@ -32,6 +32,7 @@
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/web_applications/icons/trusted_icon_filter.h"
 #include "chrome/browser/web_applications/model/display_override.h"
+#include "chrome/browser/web_applications/model/migration_source.h"
 #include "chrome/browser/web_applications/scope_extension_info.h"
 #include "chrome/browser/web_applications/web_app_constants.h"
 #include "chrome/browser/web_applications/web_app_icon_operations.h"
@@ -47,12 +48,13 @@
 #include "components/webapps/browser/installable/installable_evaluator.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "content/public/browser/web_contents.h"
-#include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
+#include "net/base/schemeful_site.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/blink/public/common/safe_url_pattern.h"
 #include "third_party/blink/public/mojom/manifest/display_mode.mojom.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
+#include "third_party/blink/public/mojom/manifest/manifest_migration_behavior.mojom.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/geometry/size.h"
@@ -464,24 +466,15 @@ ScopeExtensions ToWebAppScopeExtensions(
   return apps_scope_extensions;
 }
 
-proto::WebAppMigrationSource ToWebAppMigrationSource(
+std::optional<MigrationSource> ToMigrationSource(
     const blink::mojom::ManifestMigrateFrom& migrate_from) {
-  proto::WebAppMigrationSource result;
-  result.set_manifest_id(migrate_from.id.spec());
-  if (migrate_from.install_url && migrate_from.install_url->is_valid()) {
-    result.set_install_url(migrate_from.install_url->spec());
+  std::optional<webapps::ManifestId> manifest_id =
+      webapps::ManifestId::Create(migrate_from.id);
+  if (!manifest_id.has_value()) {
+    return std::nullopt;
   }
-  switch (migrate_from.behavior) {
-    case blink::mojom::ManifestMigrationBehavior::kSuggest:
-      result.set_behavior(
-          proto::WebAppMigrationBehavior::WEB_APP_MIGRATION_BEHAVIOR_SUGGEST);
-      break;
-    case blink::mojom::ManifestMigrationBehavior::kForce:
-      result.set_behavior(
-          proto::WebAppMigrationBehavior::WEB_APP_MIGRATION_BEHAVIOR_FORCE);
-      break;
-  }
-  return result;
+  return MigrationSource(*manifest_id, migrate_from.behavior,
+                         migrate_from.install_url);
 }
 
 base::flat_map<std::string, blink::Manifest::TranslationItem>
@@ -709,8 +702,13 @@ void ManifestToWebAppInstallInfoJob::Start(
     return;
   }
 
-  install_info_ =
-      std::make_unique<WebAppInstallInfo>(manifest_->id, manifest_->start_url);
+  std::optional<webapps::ManifestId> manifest_id =
+          webapps::ManifestId::Create(manifest_->id);
+
+  CHECK(manifest_id.has_value());
+
+  install_info_ = std::make_unique<WebAppInstallInfo>(
+      *manifest_id, manifest_->start_url);
 
   // First, populate the `install_info()` by parsing the fields provided in the
   // manifest.
@@ -815,24 +813,27 @@ void ManifestToWebAppInstallInfoJob::ParseManifestAndPopulateInfo() {
     install_info().display_mode = manifest_->display;
   }
   for (const auto& override_item : manifest_->display_override) {
-    install_info().display_override.push_back(
-        override_item.display() == DisplayMode::kUnframed
-            ? DisplayOverride::CreateUnframed(override_item.url_patterns())
-            : DisplayOverride::Create(override_item.display()));
+    if (override_item.display() == DisplayMode::kUnframed) {
+      if (base::FeatureList::IsEnabled(blink::features::kUnframedIwa)) {
+        install_info().display_override.push_back(
+            DisplayOverride::CreateUnframed(override_item.url_patterns()));
+      }
+    } else {
+      install_info().display_override.push_back(
+          DisplayOverride::Create(override_item.display()));
+    }
   }
 
   const std::vector<blink::Manifest::ImageResource>& icons =
       GetLocalizedIconsFromManifest(*manifest_, application_locale);
   UpdateWebAppInstallInfoIconsFromManifestIfNeeded(icons, &install_info());
-  if (base::FeatureList::IsEnabled(features::kWebAppUsePrimaryIcon)) {
-    if (options_.use_manifest_icons_as_trusted) {
-      install_info().trusted_icons = install_info().manifest_icons;
-    } else {
-      std::optional<apps::IconInfo> primary_icon_metadata =
-          GetTrustedIconsFromManifest(icons);
-      if (primary_icon_metadata) {
-        install_info().trusted_icons = {*primary_icon_metadata};
-      }
+  if (options_.use_manifest_icons_as_trusted) {
+    install_info().trusted_icons = install_info().manifest_icons;
+  } else {
+    std::optional<apps::IconInfo> primary_icon_metadata =
+        GetTrustedIconsFromManifest(icons);
+    if (primary_icon_metadata) {
+      install_info().trusted_icons = {*primary_icon_metadata};
     }
   }
 
@@ -870,8 +871,14 @@ void ManifestToWebAppInstallInfoJob::ParseManifestAndPopulateInfo() {
                                        application_locale);
 
   for (const auto& migrate_from : manifest_->migrate_from) {
-    install_info().migration_sources.push_back(
-        ToWebAppMigrationSource(*migrate_from));
+    if (!net::SchemefulSite::IsSameSite(manifest_->manifest_url,
+                                        migrate_from->id)) {
+      continue;
+    }
+    std::optional<MigrationSource> source = ToMigrationSource(*migrate_from);
+    if (source.has_value()) {
+      install_info().migration_sources.push_back(std::move(*source));
+    }
   }
 
   if (manifest_->manifest_url.is_valid()) {
@@ -893,19 +900,6 @@ void ManifestToWebAppInstallInfoJob::ParseManifestAndPopulateInfo() {
   }
 
   install_info().translations = ToWebAppTranslations(manifest_->translations);
-
-  install_info().permissions_policy.clear();
-  for (const auto& decl : manifest_->permissions_policy) {
-    network::ParsedPermissionsPolicyDeclaration copy;
-    copy.feature = decl.feature;
-    copy.self_if_matches = decl.self_if_matches;
-    for (const auto& origin : decl.allowed_origins) {
-      copy.allowed_origins.push_back(origin);
-    }
-    copy.matches_all_origins = decl.matches_all_origins;
-    copy.matches_opaque_src = decl.matches_opaque_src;
-    install_info().permissions_policy.push_back(std::move(copy));
-  }
 
   install_info().tab_strip = manifest_->tab_strip;
 
@@ -943,12 +937,10 @@ void ManifestToWebAppInstallInfoJob::OnIconsFetchedGetInstallInfo(
   if (install_info().is_generated_icon) {
     debug_data_->Set("is_generated_icon", true);
   }
-  if (base::FeatureList::IsEnabled(features::kWebAppUsePrimaryIcon)) {
-    if (options_.use_manifest_icons_as_trusted) {
-      install_info().trusted_icon_bitmaps = install_info().icon_bitmaps;
-    } else {
-      PopulateTrustedIconBitmaps(install_info(), icons_map);
-    }
+  if (options_.use_manifest_icons_as_trusted) {
+    install_info().trusted_icon_bitmaps = install_info().icon_bitmaps;
+  } else {
+    PopulateTrustedIconBitmaps(install_info(), icons_map);
   }
   PopulateOtherIcons(&install_info(), icons_map);
   RecordDownloadedIconsResultAndHttpStatusCodes(result, icons_http_results);

@@ -40,6 +40,11 @@ class WaapUIMetricsService : public KeyedService {
   // Called when the ReloadButton is created.
   void OnReloadButtonCreated();
 
+  // Called when the renderer process is created and launched.
+  void OnReloadButtonRendererProcessCreatedAndLaunched(
+      base::TimeTicks created_timestamp,
+      base::TimeTicks launched_timestamp);
+
   // Called when the browser window is presented onto the screen for the first
   // time.
   void OnBrowserWindowFirstPresentation(base::TimeTicks time);
@@ -53,11 +58,13 @@ class WaapUIMetricsService : public KeyedService {
   // Called when a new browser window (not the initial one) is first painted.
   void OnNewWindowBrowserWindowFirstPresentation(
       waap::NewWindowCreationSource source,
+      bool with_existing_window,
       base::TimeTicks start_time,
       base::TimeTicks paint_time);
 
   // Called when the ReloadButton in a new browser window is first painted.
   void OnNewWindowReloadButtonFirstPaint(waap::NewWindowCreationSource source,
+                                         bool with_existing_window,
                                          base::TimeTicks start_time,
                                          base::TimeTicks paint_time);
 
@@ -65,8 +72,23 @@ class WaapUIMetricsService : public KeyedService {
   // painted.
   void OnNewWindowReloadButtonFirstContentfulPaint(
       waap::NewWindowCreationSource source,
+      bool with_existing_window,
       base::TimeTicks start_time,
       base::TimeTicks paint_time);
+
+  // Called when both the browser window and the ReloadButton have painted for
+  // the first time during startup.
+  void OnStartupBrowserWindowToReloadButtonFirstPaintGap(
+      base::TimeTicks browser_window_paint_time,
+      base::TimeTicks reload_button_paint_time);
+
+  // Called when both the browser window and the ReloadButton have painted for
+  // the first time in a new window.
+  void OnNewWindowBrowserWindowToReloadButtonFirstPaintGap(
+      waap::NewWindowCreationSource source,
+      bool with_existing_window,
+      base::TimeTicks browser_window_paint_time,
+      base::TimeTicks reload_button_paint_time);
 
   // Records the time duration from a mousedown event on the WaaP UI element to
   // its visual update, i.e. paint.
@@ -108,6 +130,38 @@ class WaapUIMetricsService : public KeyedService {
       base::TimeTicks start_ticks,
       base::TimeTicks end_ticks,
       WaapUIMetricsRecorder::ReloadButtonMode new_mode);
+
+  void RecordReloadButtonInteractionToReload(
+      base::TimeTicks interaction_ticks,
+      base::TimeTicks execution_ticks,
+      WaapUIMetricsRecorder::ReloadButtonInputType input_type);
+
+  // Called when the first browser window is painted after it's requested to be
+  // shown during startup.
+  void OnStartupBrowserWindowShowRequestedToFirstPaint(
+      base::TimeTicks request_time,
+      base::TimeTicks paint_time);
+
+  // Called when a new browser window (not the initial one) is first painted
+  // after it's requested to be shown.
+  void OnNewWindowBrowserWindowShowRequestedToFirstPaint(
+      waap::NewWindowCreationSource source,
+      bool with_existing_window,
+      base::TimeTicks request_time,
+      base::TimeTicks paint_time);
+
+  // Called when the browser window is closed before the first paint.
+  void OnStartupBrowserWindowClosedBeforeFirstPaint(
+      base::TimeTicks request_time,
+      base::TimeTicks close_time);
+
+  // Called when a new browser window (not the initial one) is closed before the
+  // first paint.
+  void OnNewWindowBrowserWindowClosedBeforeFirstPaint(
+      waap::NewWindowCreationSource source,
+      bool with_existing_window,
+      base::TimeTicks start_time,
+      base::TimeTicks close_time);
 };
 
 #endif  // CHROME_BROWSER_UI_WAAP_WAAP_UI_METRICS_SERVICE_H_

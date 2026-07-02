@@ -6,6 +6,7 @@
 
 #include <algorithm>
 
+#include "base/check_deref.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
@@ -44,7 +45,8 @@
 #include "chrome/browser/ui/views/profiles/profile_picker_feature_promo_controller.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_flow_controller.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_glic_flow_controller.h"
-#include "chrome/browser/ui/views/profiles/profile_picker_sign_in_toolbar.h"
+#include "chrome/browser/ui/views/profiles/profile_picker_toolbar.h"
+#include "chrome/browser/ui/views/profiles/profile_picker_widget.h"
 #include "chrome/browser/ui/webui/signin/profile_picker_ui.h"
 #include "chrome/browser/ui/webui/signin/signin_ui_error.h"
 #include "chrome/browser/ui/webui/signin/signin_url_utils.h"
@@ -55,8 +57,10 @@
 #include "components/keep_alive_registry/keep_alive_types.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_metrics.h"
+#include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/startup_metric_utils/browser/startup_metric_utils.h"
+#include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/navigation_handle.h"
@@ -102,26 +106,10 @@ constexpr int kSupportedAcceleratorCommands[] = {
     IDC_CLOSE_TAB,       IDC_CLOSE_WINDOW, IDC_EXIT,  IDC_FULLSCREEN,
     IDC_MINIMIZE_WINDOW, IDC_BACK,         IDC_RELOAD};
 
-class ProfilePickerWidget : public views::Widget {
- public:
-  explicit ProfilePickerWidget(ProfilePickerView* profile_picker_view) {
-    views::Widget::InitParams params(
-        views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET);
-    params.delegate = profile_picker_view;
-#if BUILDFLAG(IS_LINUX)
-    params.wm_class_name = shell_integration_linux::GetProgramClassName();
-    params.wm_class_class = shell_integration_linux::GetProgramClassClass();
-    params.wayland_app_id = params.wm_class_class;
-#endif
-    Init(std::move(params));
-  }
-  ~ProfilePickerWidget() override = default;
-};
-
 // Returns whether the current flow is part of the classic profile picker flow.
 // Checking this should become eventually unnecessary as flows move away from
 // using static calls and global variables, and keep calls to native contained
-// within their own steps. See crbug.com/1359352.
+// within their own steps. See crbug.com/40237338.
 bool IsClassicProfilePickerFlow(const ProfilePicker::Params& params) {
   switch (params.entry_point()) {
     case ProfilePicker::EntryPoint::kAppMenuProfileSubMenuAddNewProfile:
@@ -313,14 +301,14 @@ void ProfilePickerView::NavigationFinishedObserver::DidFinishNavigation(
     // Don't notify if the URL for the finishing navigation does not match.
     // The navigation may have been replaced by a new one. We are mindful to
     // allow redirections, which are necessary for example for Gaia sign-in
-    // pages (see crbug.com/1430681).
+    // pages (see crbug.com/40901873).
     return;
   }
 
   if (navigation_handle->IsErrorPage() &&
       requested_url_.SchemeIs(content::kChromeUIScheme)) {
     // We observed some cases where the navigation to the intended page fails
-    // (see crbug.com/1442159).
+    // (see crbug.com/40910391).
     // Loading the wrong URL may lead to crashes if we are expecting a certain
     // WebUI page to be loaded in the web contents. For these cases we will not
     // notify of the finished navigation to avoid crashing, but this negatively
@@ -419,11 +407,21 @@ bool ProfilePickerView::ShouldUseDarkColors() const {
          ui::NativeTheme::PreferredColorScheme::kDark;
 }
 
+bool ProfilePickerView::AreEffectsEnabled() const {
+  return toolbar_ ? toolbar_->AreEffectsEnabled() : true;
+}
+
 content::WebContents* ProfilePickerView::GetPickerContents() const {
   return contents_.get();
 }
 
 content::WebContentsDelegate* ProfilePickerView::GetWebContentsDelegate() {
+  return this;
+}
+
+web_modal::WebContentsModalDialogHost*
+ProfilePickerView::GetWebContentsModalDialogHost(
+    content::WebContents* web_contents) {
   return this;
 }
 
@@ -469,24 +467,21 @@ void ProfilePickerView::OnLocalProfileInitialized(
   GetProfilePickerFlowController()->SwitchToSignedOutPostIdentityFlow(profile);
 }
 
-void ProfilePickerView::SetNativeToolbarVisible(bool visible) {
-  if (!visible) {
-    toolbar_->SetVisible(false);
-    return;
-  }
-
-  if (toolbar_->children().empty()) {
-    toolbar_->BuildToolbar(
-        base::BindRepeating(&ProfilePickerView::NavigateBack,
-                            // Binding as Unretained as `this` is the
-                            // `toolbar_`'s parent and outlives it.
-                            base::Unretained(this)));
-  }
-  toolbar_->SetVisible(true);
+void ProfilePickerView::SetNativeToolbarSigninButtonsVisible(bool visible) {
+  CHECK_DEREF(toolbar_).SetSigninButtonsVisible(visible);
 }
 
-bool ProfilePickerView::IsNativeToolbarVisibleForTesting() const {
-  return toolbar_->GetVisible();
+void ProfilePickerView::SetNativeToolbarDontSignInButtonVisible(bool visible) {
+  CHECK_DEREF(toolbar_).SetDontSignInButtonVisible(visible);
+}
+
+void ProfilePickerView::SetNativeToolbarStartBrowsingButtonVisible(
+    bool visible) {
+  CHECK_DEREF(toolbar_).SetStartBrowsingButtonVisible(visible);
+}
+
+bool ProfilePickerView::AreNativeToolbarSigninButtonsVisibleForTesting() const {
+  return CHECK_DEREF(toolbar_).AreSigninButtonsVisibleForTesting();  // IN-TEST
 }
 
 SkColor ProfilePickerView::GetPreferredBackgroundColor() const {
@@ -535,6 +530,7 @@ ProfilePickerView::ProfilePickerView(ProfilePicker::Params&& params)
   // Setup the WidgetDelegate.
   SetHasWindowSizeControls(true);
   SetTitle(kWindowTitleId);
+  SetProperty(views::kElementIdentifierKey, kViewId);
 
   ConfigureAccelerators();
 
@@ -610,6 +606,10 @@ void ProfilePickerView::Init(Profile* picker_profile) {
   contents_ = content::WebContents::Create(
       content::WebContents::CreateParams(picker_profile));
   contents_->SetDelegate(this);
+  web_modal::WebContentsModalDialogManager::CreateForWebContents(
+      contents_.get());
+  web_modal::WebContentsModalDialogManager::FromWebContents(contents_.get())
+      ->SetDelegate(this);
 
   // Destroy the System Profile when the ProfilePickerView is closed (assuming
   // its refcount hits 0). We need to use GetOriginalProfile() here because
@@ -627,6 +627,8 @@ void ProfilePickerView::Init(Profile* picker_profile) {
   // The `FlowController` is created before the widget so it can be used to
   // determine certain aspects of it. E.g. see `GetAccessibleWindowTitle()`.
   flow_controller_ = CreateFlowController(picker_profile, GetClearClosure());
+
+  toolbar_ = AddChildView(flow_controller_->CreateToolbarBuilder().Build());
 
   // The widget is owned by the native widget.
   new ProfilePickerWidget(this);
@@ -796,7 +798,7 @@ bool ProfilePickerView::AcceleratorPressed(const ui::Accelerator& accelerator) {
       GetWidget()->Minimize();
       break;
     case IDC_BACK: {
-      NavigateBack();
+      flow_controller_->OnNavigateBackRequested();
       break;
     }
     // Always reload bypassing cache.
@@ -827,7 +829,7 @@ bool ProfilePickerView::GetAcceleratorForCommandId(
 void ProfilePickerView::Layout(PassKey) {
   LayoutSuperclass<views::WidgetDelegateView>(this);
   CHECK(toolbar_);
-  toolbar_->SetBoundsRect(gfx::Rect(toolbar_->GetPreferredSize()));
+  toolbar_->SetBounds(0, 0, width(), toolbar_->GetPreferredSize().height());
 }
 
 void ProfilePickerView::BuildLayout() {
@@ -836,10 +838,6 @@ void ProfilePickerView::BuildLayout() {
   auto web_view = std::make_unique<views::WebView>();
   web_view->set_allow_accelerators(true);
   web_view_ = AddChildView(std::move(web_view));
-
-  // Toolbar gets built and set visible once it's needed for the signin.
-  toolbar_ = AddChildView(std::make_unique<ProfilePickerSignInToolbar>());
-  SetNativeToolbarVisible(false);
 
   web_contents_attached_subscription_ =
       web_view_->AddWebContentsAttachedCallback(base::BindRepeating(
@@ -861,10 +859,6 @@ void ProfilePickerView::ShowScreenFinished(
   if (navigation_finished_closure) {
     std::move(navigation_finished_closure).Run();
   }
-}
-
-void ProfilePickerView::NavigateBack() {
-  flow_controller_->OnNavigateBackRequested();
 }
 
 void ProfilePickerView::ConfigureAccelerators() {
@@ -903,6 +897,7 @@ void ProfilePickerView::InitializeFeaturePromo(Profile* system_profile) {
 
   feature_promo_ = std::make_unique<ProfilePickerFeaturePromoController>(
       tracker_service, user_education_service, g_profile_picker_view);
+  feature_promo_->Init();
 }
 
 ProfilePickerFlowController* ProfilePickerView::GetProfilePickerFlowController()
@@ -937,3 +932,5 @@ void ProfilePickerView::ShowSigninErrorDialog(
 
 BEGIN_METADATA(ProfilePickerView)
 END_METADATA
+
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(ProfilePickerView, kViewId);

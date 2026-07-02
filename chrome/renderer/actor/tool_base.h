@@ -14,8 +14,8 @@
 #include "base/time/time.h"
 #include "base/types/expected.h"
 #include "chrome/common/actor.mojom-forward.h"
-#include "chrome/common/actor/task_id.h"
 #include "chrome/renderer/actor/journal.h"
+#include "components/actor/core/task_id.h"
 #include "third_party/blink/public/web/web_node.h"
 #include "third_party/blink/public/web/web_page_popup.h"
 #include "third_party/blink/public/web/web_widget.h"
@@ -105,11 +105,23 @@ class ToolBase {
   // interactions.
   virtual bool SupportsPaintStability() const;
 
+  void MarkAsRevalidation() { is_revalidation_ = true; }
+
   content::RenderFrame* frame() const { return &frame_.get(); }
   const TaskId& task_id() const { return task_id_; }
 
  protected:
   using ResolveResult = base::expected<ResolvedTarget, mojom::ActionResultPtr>;
+
+  enum class TargetOcclusionMode {
+    // The normal path: the live hit test at the interaction point must resolve
+    // to the same target tree that APC observed.
+    kRequireUnoccluded,
+
+    // The server-approved direct activation path: the live hit test may miss
+    // the target, but the DOM target still needs normal renderer-local checks.
+    kAllowOccludedForDirectActivation,
+  };
 
   // Resolves the given target into the ResolvedTarget struct which includes
   // both a point to inject input events to and a DOM node to validate against.
@@ -118,7 +130,9 @@ class ToolBase {
   // Validate that target_ passes tool-agnostic validation (e.g. within
   // viewport, no change between observation and time of use) and resolve the
   // mojom target to Node and Point, ready for tool use.
-  ResolveResult ValidateAndResolveTarget() const;
+  ResolveResult ValidateAndResolveTarget(
+      TargetOcclusionMode occlusion_mode =
+          TargetOcclusionMode::kRequireUnoccluded) const;
 
   // Raw ref since this is owned by ToolExecutor whose lifetime is tied to
   // RenderFrame.
@@ -132,7 +146,10 @@ class ToolBase {
   // Validate that resolved target matches the observed target from last
   // observation.
   mojom::ActionResultPtr ValidateTimeOfUse(
-      const ResolvedTarget& resolved_target) const;
+      const ResolvedTarget& resolved_target,
+      TargetOcclusionMode occlusion_mode) const;
+
+  bool is_revalidation_ = false;
 };
 }  // namespace actor
 

@@ -30,7 +30,7 @@ class DefaultSearchExtensionControlledController {
       BrowserWindowInterface* browser);
 
   using ConfirmationCallback = base::OnceCallback<void(
-      SettingsOverriddenDialogController::DialogResult proceed)>;
+      SettingsOverriddenDialogController::DialogResult result)>;
 
   explicit DefaultSearchExtensionControlledController(
       BrowserWindowInterface& browser_window_interface,
@@ -57,6 +57,16 @@ class DefaultSearchExtensionControlledController {
  private:
   void OnParamsLoaded(
       std::unique_ptr<ExtensionSettingsOverriddenDialog::Params> params);
+
+  // Tracks the active controller instance currently showing (or preparing to
+  // show) the confirmation dialog. Used to enforce that only one dialog is
+  // active at any time across all browser windows, suppressing duplicate prompt
+  // prompts if multiple search navigations occur concurrently.
+  static base::WeakPtr<DefaultSearchExtensionControlledController>
+  GetDialogCurrentlyShowing();
+
+  static void SetDialogCurrentlyShowing(
+      base::WeakPtr<DefaultSearchExtensionControlledController> controller);
 
   ConfirmationCallback confirmation_callback_;
 

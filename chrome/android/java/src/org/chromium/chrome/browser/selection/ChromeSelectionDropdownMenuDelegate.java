@@ -28,10 +28,13 @@ import org.chromium.ui.listmenu.ListMenuUtils;
 import org.chromium.ui.listmenu.ListSectionDividerProperties;
 import org.chromium.ui.modelutil.MVCListAdapter;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
+import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.widget.AnchoredPopupWindow;
 import org.chromium.ui.widget.FlyoutPopupSpecCalculator;
 import org.chromium.ui.widget.RectProvider;
+
+import java.util.List;
 
 /**
  * Chrome implementation of dropdown context menu which leverages {@link BasicListMenu} and {@link
@@ -42,7 +45,7 @@ public class ChromeSelectionDropdownMenuDelegate
         implements SelectionDropdownMenuDelegate, FlyoutHandler<AnchoredPopupWindow> {
     private @Nullable ItemClickListener mClickListener;
     private @Nullable View mRootView;
-    private @Nullable HierarchicalMenuController mHierarchicalMenuController;
+    private @Nullable HierarchicalMenuController<AnchoredPopupWindow> mHierarchicalMenuController;
 
     @Override
     public void show(
@@ -50,14 +53,20 @@ public class ChromeSelectionDropdownMenuDelegate
             View rootView,
             MVCListAdapter.ModelList items,
             ItemClickListener clickListener,
-            HierarchicalMenuController hierarchicalMenuController,
+            Runnable dismissMenuCallback,
             int x,
             int y) {
         mRootView = rootView;
         mClickListener = clickListener;
-        mHierarchicalMenuController = hierarchicalMenuController;
+        mHierarchicalMenuController = ListMenuUtils.createHierarchicalMenuController(context);
+        mHierarchicalMenuController.setupCallbacks(
+                /* headerModelList= */ null, items, dismissMenuCallback);
 
-        Rect dropdownRect = new Rect(x, y, x + 1, y + 1);
+        int[] location = new int[2];
+        rootView.getLocationInWindow(location);
+        int windowX = location[0] + x;
+        int windowY = location[1] + y;
+        Rect dropdownRect = new Rect(windowX, windowY, windowX + 1, windowY + 1);
         BasicListMenu menu =
                 BrowserUiListMenuUtils.getBasicListMenu(
                         context, items, (model, view) -> clickListener.onItemClick(model));
@@ -130,13 +139,15 @@ public class ChromeSelectionDropdownMenuDelegate
 
     @Override
     public AnchoredPopupWindow createAndShowFlyoutPopup(
-            ListItem item, View view, Runnable dismissRunnable) {
+            List<ListItem> items, View view, Runnable dismissRunnable) {
         Context context = view.getContext();
+        ModelList modelList = new ModelList();
+        modelList.addAll(items);
 
         BasicListMenu menu =
                 BrowserUiListMenuUtils.getBasicListMenu(
                         context,
-                        ListMenuUtils.getModelListSubtree(item),
+                        modelList,
                         (model, unusedView) -> {
                             assert mClickListener != null;
                             mClickListener.onItemClick(model);

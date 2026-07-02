@@ -13,7 +13,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.graphics.Bitmap;
-import android.media.AudioManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.support.v4.media.MediaMetadataCompat;
@@ -21,6 +20,7 @@ import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
 import android.text.TextUtils;
 import android.util.SparseArray;
+import android.view.KeyEvent;
 
 import androidx.annotation.VisibleForTesting;
 import androidx.core.app.NotificationCompat;
@@ -68,6 +68,9 @@ public class MediaNotificationController {
 
     // Used to help initialize `mPendingIntentActionSwipe`.
     @VisibleForTesting public @Nullable PendingIntentInitializer mPendingIntentInitializer;
+
+    public static final String EXTRA_NOTIFICATION_ID =
+            "org.chromium.components.browser_ui.media.EXTRA_NOTIFICATION_ID";
 
     public static final String ACTION_PLAY = "org.chromium.components.browser_ui.media.ACTION_PLAY";
     public static final String ACTION_PAUSE =
@@ -325,8 +328,43 @@ public class MediaNotificationController {
         }
     }
 
+    /**
+     * Toggles playback if the media is currently paused and a specific media button event is
+     * received. This is primarily to support Bluetooth headsets that send KEYCODE_MEDIA_PAUSE
+     * shortly after media is paused when intending to resume playback.
+     *
+     * @param mediaButtonIntent The intent containing the media button event.
+     * @return True if the event was handled by toggling playback, false otherwise.
+     */
+    @VisibleForTesting
+    public boolean maybeTogglePausedPlayback(Intent mediaButtonIntent) {
+        KeyEvent event =
+                IntentUtils.safeGetParcelableExtra(mediaButtonIntent, Intent.EXTRA_KEY_EVENT);
+        if (event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
+            int keyCode = event.getKeyCode();
+            // When media is already paused, receiving KEYCODE_MEDIA_PAUSE with a 0 timestamp
+            // indicates that the external controller is out of sync (e.g. it believes the
+            // audio stream is active when it is not). We interpret this redundant PAUSE as a
+            // user intent to resume playback.
+            if (mMediaNotificationInfo != null
+                    && mMediaNotificationInfo.isPaused
+                    && keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE
+                    && event.getEventTime() == 0) {
+                onPlay(MediaNotificationListener.ACTION_SOURCE_MEDIA_SESSION);
+                return true;
+            }
+        }
+        return false;
+    }
+
     private final MediaSessionCompat.Callback mMediaSessionCallback =
             new MediaSessionCompat.Callback() {
+                @Override
+                public boolean onMediaButtonEvent(Intent mediaButtonIntent) {
+                    if (maybeTogglePausedPlayback(mediaButtonIntent)) return true;
+                    return super.onMediaButtonEvent(mediaButtonIntent);
+                }
+
                 @Override
                 public void onPlay() {
                     MediaNotificationController.this.onPlay(
@@ -369,6 +407,10 @@ public class MediaNotificationController {
                 }
             };
 
+    public MediaSessionCompat.Callback getMediaSessionCallbackForTesting() {
+        return mMediaSessionCallback;
+    }
+
     /**
      * Finishes starting the service on O+.
      *
@@ -398,9 +440,11 @@ public class MediaNotificationController {
     @VisibleForTesting
     public PendingIntentProvider createPendingIntent(String action) {
         Intent intent = assumeNonNull(mDelegate.createServiceIntent()).setAction(action);
+        int notificationId = mDelegate.getNotificationId();
+        intent.putExtra(EXTRA_NOTIFICATION_ID, notificationId);
         return PendingIntentProvider.getService(
                 getContext(),
-                0,
+                notificationId,
                 intent,
                 PendingIntent.FLAG_CANCEL_CURRENT
                         | IntentUtils.getPendingIntentMutabilityFlag(false));
@@ -451,6 +495,12 @@ public class MediaNotificationController {
 
         /** Called when a notification has been shown and should be logged in UMA. */
         void logNotificationShown(NotificationWrapper notification);
+
+        /** Returns the media type ID associated with this delegate. */
+        int getMediaTypeId();
+
+        /** Returns the unique notification ID associated with this delegate. */
+        int getNotificationId();
     }
 
     public MediaNotificationController(Delegate delegate) {
@@ -524,12 +574,14 @@ public class MediaNotificationController {
         if (mService == service) return;
 
         mService = service;
+        MediaNotificationManager.setService(getMediaTypeId(), service);
         updateNotification(/* serviceStarting= */ true, /* shouldLogNotification= */ true);
     }
 
     /** Handles the service destruction. */
     public void onServiceDestroyed() {
         mService = null;
+        MediaNotificationManager.setService(getMediaTypeId(), null);
     }
 
     public boolean processIntent(Service service, @Nullable Intent intent) {
@@ -556,9 +608,8 @@ public class MediaNotificationController {
             onPlay(MediaNotificationListener.ACTION_SOURCE_MEDIA_NOTIFICATION);
         } else if (ACTION_PAUSE.equals(action)) {
             onPause(MediaNotificationListener.ACTION_SOURCE_MEDIA_NOTIFICATION);
-        } else if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(action)) {
-            onPause(MediaNotificationListener.ACTION_SOURCE_HEADSET_UNPLUG);
         } else if (ACTION_PREVIOUS_TRACK.equals(action)) {
+
             onMediaSessionAction(MediaSessionAction.PREVIOUS_TRACK);
         } else if (ACTION_NEXT_TRACK.equals(action)) {
             onMediaSessionAction(MediaSessionAction.NEXT_TRACK);
@@ -576,6 +627,7 @@ public class MediaNotificationController {
         // or something that isn't properly cleaned up but given that the
         // crashes are rare and the fix is simple, null check was enough.
         if (mMediaNotificationInfo == null || !mMediaNotificationInfo.isPaused) return;
+
         mMediaNotificationInfo.listener.onPlay(actionSource);
     }
 
@@ -585,21 +637,7 @@ public class MediaNotificationController {
         // is no longer available. It's unclear if it is a Support Library issue
         // or something that isn't properly cleaned up but given that the
         // crashes are rare and the fix is simple, null check was enough.
-        if (mMediaNotificationInfo == null) return;
-
-        if (mMediaNotificationInfo.isPaused) {
-            // If already paused, receiving a PAUSE command from the MediaSession indicates
-            // the external controller is out of sync (e.g. it believes the audio stream is active).
-            // We interpret this redundant PAUSE as a user intent to resume playback.
-            //
-            // We specifically check for ACTION_SOURCE_MEDIA_SESSION to avoid side effects from
-            // other pause sources, such as unplugging headphones (ACTION_SOURCE_HEADSET_UNPLUG),
-            // which should never trigger playback.
-            if (actionSource == MediaNotificationListener.ACTION_SOURCE_MEDIA_SESSION) {
-                onPlay(actionSource);
-            }
-            return;
-        }
+        if (mMediaNotificationInfo == null || mMediaNotificationInfo.isPaused) return;
 
         mMediaNotificationInfo.listener.onPause(actionSource);
     }
@@ -651,12 +689,22 @@ public class MediaNotificationController {
         if (mService == null) {
             updateMediaSession();
             updateNotificationBuilder();
-            // This is not allowed from the background, and there is no workaround on S+.  Just
-            // catch the exception, and `mService` will remain null for us to try again later.
-            try {
-                ForegroundServiceUtils.getInstance()
-                        .startForegroundService(assertNonNull(mDelegate.createServiceIntent()));
-            } catch (RuntimeException e) {
+            // If a foreground service is already running for another tab, reuse it instead
+            // of starting a new one. Android only permits one active FGS instance of this
+            // class, and starting another from the background would crash on Android S+.
+            Service sharedService = MediaNotificationManager.getService(getMediaTypeId());
+            if (sharedService != null) {
+                mService = sharedService;
+                updateNotification(/* serviceStarting= */ false, /* shouldLogNotification= */ true);
+            } else {
+                // This is not allowed from the background, and there is no workaround on S+.  Just
+                // catch the exception, and `mService` will remain null for us to try again later.
+                try {
+                    Intent intent = assertNonNull(mDelegate.createServiceIntent());
+                    intent.putExtra(EXTRA_NOTIFICATION_ID, mediaNotificationInfo.id);
+                    ForegroundServiceUtils.getInstance().startForegroundService(intent);
+                } catch (RuntimeException e) {
+                }
             }
         } else {
             updateNotification(false, false);
@@ -718,9 +766,16 @@ public class MediaNotificationController {
     public void stopListenerService() {
         if (mService == null) return;
 
+        if (MediaNotificationManager.isServiceNeeded(
+                getMediaTypeId(), mDelegate.getNotificationId())) {
+            mService = null;
+            return;
+        }
+
         ForegroundServiceUtils.getInstance()
                 .stopForeground(mService, Service.STOP_FOREGROUND_REMOVE);
         mService.stopSelf();
+        mService = null;
     }
 
     @VisibleForTesting
@@ -1128,6 +1183,32 @@ public class MediaNotificationController {
         }
 
         return CollectionUtil.integerCollectionToIntArray(compactActions);
+    }
+
+    public boolean isPaused() {
+        return mMediaNotificationInfo == null || mMediaNotificationInfo.isPaused;
+    }
+
+    public int getMediaTypeId() {
+        return mDelegate.getMediaTypeId();
+    }
+
+    /**
+     * Promotes this controller's notification to own the Foreground Service (FGS). This transitions
+     * the shared service to the foreground and displays this notification as the active,
+     * non-swipeable FGS notification to protect playback.
+     */
+    public void promote() {
+        // TODO(crbug.com/522397811): Implement promotion logic.
+    }
+
+    /**
+     * Demotes this controller's notification from the Foreground Service (FGS). This transitions
+     * the shared service to the background, making this notification a normal background
+     * notification that the user can swipe away.
+     */
+    public void demote() {
+        // TODO(crbug.com/522397811): Implement demotion logic.
     }
 
     private static Context getContext() {

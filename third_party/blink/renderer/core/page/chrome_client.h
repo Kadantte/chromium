@@ -30,8 +30,8 @@
 #include "base/time/time.h"
 #include "cc/input/event_listener_properties.h"
 #include "cc/input/overscroll_behavior.h"
+#include "cc/metrics/begin_main_frame_metrics.h"
 #include "cc/paint/draw_image.h"
-#include "cc/trees/paint_holding_commit_trigger.h"
 #include "cc/trees/paint_holding_reason.h"
 #include "components/viz/common/surfaces/frame_sink_id.h"
 #include "third_party/blink/public/common/dom_storage/session_storage_namespace_id.h"
@@ -69,7 +69,7 @@ struct ElementId;
 class Layer;
 struct OverscrollBehavior;
 class ScopedPauseRendering;
-}
+}  // namespace cc
 
 namespace display {
 struct ScreenInfo;
@@ -119,12 +119,6 @@ struct FrameLoadRequest;
 struct ViewportDescription;
 struct WebWindowFeatures;
 
-namespace mojom {
-namespace blink {
-class TextAutosizerPageInfo;
-}
-}  // namespace mojom
-
 using CompositorElementId = cc::ElementId;
 
 class CORE_EXPORT ChromeClient : public GarbageCollected<ChromeClient> {
@@ -146,6 +140,8 @@ class CORE_EXPORT ChromeClient : public GarbageCollected<ChromeClient> {
   virtual void ChromeDestroyed() = 0;
 
   virtual void SetWindowRect(const gfx::Rect&, LocalFrame&) = 0;
+  virtual void MoveWindowTo(const gfx::Point&, LocalFrame&) = 0;
+  virtual void ResizeWindowTo(const gfx::Size&, LocalFrame&) = 0;
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   // Additional Windowing Controls API.
@@ -168,20 +164,28 @@ class CORE_EXPORT ChromeClient : public GarbageCollected<ChromeClient> {
   virtual gfx::Rect LocalRootToScreenDIPs(const gfx::Rect&,
                                           const LocalFrameView*) const = 0;
 
-  void ScheduleAnimation(const LocalFrameView* view) {
-    ScheduleAnimation(view, base::TimeDelta(), /*urgent=*/false);
+  void ScheduleAnimation(const LocalFrameView* view,
+                         cc::BeginMainFrameReason reason) {
+    ScheduleAnimation(view, reason, base::TimeDelta(), /*urgent=*/false);
   }
-  void ScheduleAnimation(const LocalFrameView* view, base::TimeDelta delay) {
-    ScheduleAnimation(view, delay, /*urgent=*/false);
+  void ScheduleAnimation(const LocalFrameView* view,
+                         base::TimeDelta delay = base::TimeDelta(),
+                         bool urgent = false) {
+    ScheduleAnimation(view, cc::BeginMainFrameReason::kOther, delay, urgent);
   }
 
-  virtual void ScheduleAnimation(const LocalFrameView* local_frame_view,
+  virtual void ScheduleAnimation(const LocalFrameView* view,
+                                 cc::BeginMainFrameReason reason,
                                  base::TimeDelta delay,
                                  bool urgent) = 0;
 
   // Tells the browser that another page has accessed the DOM of the initial
   // empty document of a main frame.
   virtual void DidAccessInitialMainDocument() = 0;
+
+  virtual void DidChangeThemeColor(std::optional<SkColor> theme_color) = 0;
+  virtual void DidChangeBackgroundColor(SkColor4f background_color,
+                                        bool color_adjust) = 0;
 
   // This gives the rect of the top level window that the given LocalFrame is a
   // part of.
@@ -229,14 +233,12 @@ class CORE_EXPORT ChromeClient : public GarbageCollected<ChromeClient> {
   virtual void UnregisterFromCommitObservation(CommitObserver*) = 0;
 
   virtual void WillCommitCompositorFrame() = 0;
+  virtual void RequestFrameWithoutVSyncFromRoot(LocalFrame& frame) {}
 
   virtual bool StartDeferringCommits(LocalFrame& main_frame,
                                      base::TimeDelta timeout,
                                      cc::PaintHoldingReason reason) = 0;
-  virtual void StopDeferringCommits(LocalFrame& main_frame,
-                                    cc::PaintHoldingCommitTrigger) = 0;
-  virtual void SetShouldThrottleFrameRate(bool flag,
-                                          LocalFrame& main_frame) = 0;
+  virtual void StopDeferringCommits(LocalFrame& main_frame) = 0;
   virtual void RequestMainFrameOnCompositorAnimation(
       LocalFrame&,
       cc::PropertyChangeForcesCommitCriteria criteria,
@@ -497,8 +499,6 @@ class CORE_EXPORT ChromeClient : public GarbageCollected<ChromeClient> {
   virtual void SetBrowserControlsShownRatio(float top_ratio,
                                             float bottom_ratio) {}
 
-  virtual String AcceptLanguages() = 0;
-
   enum class UIElementType {
     kAlertDialog = 0,
     kConfirmDialog = 1,
@@ -548,6 +548,12 @@ class CORE_EXPORT ChromeClient : public GarbageCollected<ChromeClient> {
                                       const String& old_value,
                                       bool was_autofilled) {}
 
+  // Returns true if the given HTMLFormControlElement is eligible for Autofill
+  // by the embedder's Autofill client.
+  virtual bool IsAutofillableElement(const HTMLFormControlElement&) {
+    return false;
+  }
+
   // Input method editor related functions.
   virtual void ShowVirtualKeyboardOnElementFocus(LocalFrame&) {}
 
@@ -595,10 +601,6 @@ class CORE_EXPORT ChromeClient : public GarbageCollected<ChromeClient> {
   virtual int GetLayerTreeId(LocalFrame& frame) = 0;
 
   virtual void Trace(Visitor*) const;
-
-  virtual void DidUpdateTextAutosizerPageInfo(
-      const mojom::blink::TextAutosizerPageInfo&) {}
-
   virtual void DocumentDetached(Document&) {}
 
   // Return the user's zoom factor which is different from the typical usage

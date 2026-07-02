@@ -4,7 +4,7 @@
 
 import xml.dom.minidom
 
-import setup_modules
+import setup_modules  # pylint: disable=unused-import
 
 import chromium_src.tools.metrics.ukm.xml_validations as xml_validations
 import chromium_src.tools.metrics.histograms.extract_histograms as extract_histograms
@@ -26,7 +26,7 @@ class EventBasedXmlValidation(xml_validations.UkmXmlValidation):
     super().__init__(config_xml)
     self.config_type = config_type
 
-  def checkMetricTypeIsSpecified(self):
+  def check_metric_type_is_specified(self):
     """Checks each metric is either specified with an enum or a unit."""
     errors = []
 

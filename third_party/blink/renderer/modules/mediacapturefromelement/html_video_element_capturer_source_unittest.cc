@@ -50,6 +50,7 @@ class MockWebMediaPlayer : public WebMediaPlayer {
                   bool is_cache_disabled) override {
     return LoadTiming::kImmediate;
   }
+  void Shutdown() override {}
   void Play() override {}
   void Pause(PauseReason pause_reason) override {}
   void Seek(double seconds) override {}
@@ -98,7 +99,8 @@ class MockWebMediaPlayer : public WebMediaPlayer {
 
   void Paint(cc::PaintCanvas* canvas,
              const gfx::Rect& rect,
-             const cc::PaintFlags&) override {}
+             const cc::PaintFlags&,
+             bool force_pixel_readback) override {}
 
   scoped_refptr<media::VideoFrame> GetCurrentFrameThenUpdate() override {
     // We could fill in |canvas| with a meaningful pattern in ARGB and verify

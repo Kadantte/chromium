@@ -28,7 +28,6 @@
 #include "components/language/core/browser/language_model_manager.h"
 #include "components/live_caption/caption_util.h"
 #include "components/user_education/common/feature_promo/feature_promo_controller.h"
-#include "components/vector_icons/vector_icons.h"
 #include "media/base/media_switches.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -57,8 +56,12 @@ MediaToolbarButtonView::MediaToolbarButtonView(
   button_controller()->set_notify_action(
       views::ButtonController::NotifyAction::kOnPress);
   SetFlipCanvasOnPaintForRTLUI(false);
-  SetVectorIcons(kMediaToolbarButtonChromeRefreshIcon,
-                 kMediaToolbarButtonTouchIcon);
+  SetVectorIcons(features::IsRoundedIconsEnabled()
+                     ? kQueueMusicIcon
+                     : kMediaToolbarButtonChromeRefreshOldIcon,
+                 features::IsRoundedIconsEnabled()
+                     ? kQueueMusicIcon
+                     : kMediaToolbarButtonTouchOldIcon);
   SetTooltipText(
       l10n_util::GetStringUTF16(IDS_GLOBAL_MEDIA_CONTROLS_ICON_TOOLTIP_TEXT));
   GetViewAccessibility().SetHasPopup(ax::mojom::HasPopup::kDialog);
@@ -109,7 +112,7 @@ void MediaToolbarButtonView::Enable() {
   // Have to check for browser window because this can be called during setup,
   // before there is a valid widget to anchor anything to. Previously any
   // attempt to display an IPH at this point would have simply failed, so this
-  // is not a behavioral change (see crbug.com/1291170).
+  // is not a behavioral change (see crbug.com/40212637).
   if (captions::IsLiveCaptionFeatureSupported()) {
     BrowserUserEducationInterface::From(browser_)->MaybeShowFeaturePromo(
         feature_engagement::kIPHLiveCaptionFeature);

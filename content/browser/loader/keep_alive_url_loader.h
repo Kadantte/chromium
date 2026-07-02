@@ -90,10 +90,6 @@ class WeakDocumentPtr;
 // The lifetime of an instance is roughly equal to the lifetime of a keepalive
 // request, which may surpass the initiator renderer's lifetime.
 //
-// TODO(crbug.com/447954811): Consider if connection allowlists feature
-// requires special handling in this class or is the check for subresource
-// fetch in the URLLoaderFactory sufficient.
-//
 // * Design Doc:
 // https://docs.google.com/document/d/1ZzxMMBvpqn8VZBZKnb7Go8TWjnrGcXuLS_USwVVRUvY
 // * Mojo Connections:
@@ -104,9 +100,9 @@ class CONTENT_EXPORT KeepAliveURLLoader
       public blink::mojom::FetchLaterLoader {
  public:
   // A callback type to delete this loader immediately on triggered.
-  using OnDeleteCallback = base::OnceCallback<void(void)>;
+  using OnDeleteCallback = base::OnceClosure;
   using CheckRetryEligibilityCallback = base::RepeatingCallback<bool(void)>;
-  using OnRetryScheduledCallback = base::RepeatingCallback<void(void)>;
+  using OnRetryScheduledCallback = base::RepeatingClosure;
 
   // A callback type to return URLLoaderThrottles to be used by this loader.
   using URLLoaderThrottlesGetter = base::RepeatingCallback<
@@ -228,9 +224,7 @@ class CONTENT_EXPORT KeepAliveURLLoader
   // Receives actions from renderer.
   // `network::mojom::URLLoader` overrides:
   void FollowRedirect(
-      const std::vector<std::string>& removed_headers,
-      const net::HttpRequestHeaders& modified_headers,
-      const net::HttpRequestHeaders& modified_cors_exempt_headers,
+      network::HttpRequestHeadersUpdateParams headers_update_params,
       const std::optional<GURL>& new_url) override;
   void SetPriority(net::RequestPriority priority,
                    int intra_priority_value) override;

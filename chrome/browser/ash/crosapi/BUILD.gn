@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
 import("//build/config/ui.gni")
 import("//media/media_options.gni")
 import("//printing/buildflags/buildflags.gni")
@@ -19,16 +18,6 @@ static_library("crosapi") {
     "crosapi_id.h",
     "crosapi_manager.cc",
     "crosapi_manager.h",
-    "document_scan_ash.cc",
-    "document_scan_ash.h",
-    "document_scan_ash_type_converters.cc",
-    "document_scan_ash_type_converters.h",
-    "files_app_launcher.cc",
-    "files_app_launcher.h",
-    "local_printer_ash.cc",
-    "local_printer_ash.h",
-    "primary_profile_creation_waiter.cc",
-    "primary_profile_creation_waiter.h",
   ]
 
   deps = [
@@ -42,7 +31,6 @@ static_library("crosapi") {
     "//ash/webui/print_management",
     "//ash/webui/scanning",
     "//ash/webui/settings/public/constants:mojom",
-    "//ash/webui/system_apps/public:system_web_app_type",
     "//base",
     "//build/config/chromebox_for_meetings:buildflags",
     "//chrome/browser:browser_process",
@@ -77,7 +65,6 @@ static_library("crosapi") {
     "//chrome/browser/ash/printing/history:print_job_info_proto",
     "//chrome/browser/ash/printing/oauth2",
     "//chrome/browser/ash/printing/print_management",
-    "//chrome/browser/ash/printing/print_preview",
     "//chrome/browser/ash/privacy_hub",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/ash/remote_apps",
@@ -86,14 +73,14 @@ static_library("crosapi") {
     "//chrome/browser/ash/system",
     "//chrome/browser/ash/system_web_apps",
     "//chrome/browser/ash/system_web_apps/apps",
-    "//chrome/browser/chromeos/printing/print_preview",
     "//chrome/browser/extensions",
     "//chrome/browser/media/router/discovery/access_code:access_code_cast_feature",
     "//chrome/browser/media/webrtc",
     "//chrome/browser/notifications:system_notification_helper",
+    "//chrome/browser/printing",
+    "//chrome/browser/printing:impl",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui",
-    "//chrome/browser/ui:browser_navigator_params_headers",
     "//chrome/browser/ui/ash/birch",
     "//chrome/browser/ui/ash/capture_mode",
     "//chrome/browser/ui/ash/desks",
@@ -105,6 +92,7 @@ static_library("crosapi") {
     "//chrome/browser/ui/ash/shelf",
     "//chrome/browser/ui/ash/shelf/app_service",
     "//chrome/browser/ui/ash/system_web_apps",
+    "//chrome/browser/ui/navigator",
     "//chrome/browser/ui/views/select_file_dialog_extension",
     "//chrome/browser/ui/webui/signin/ash",
     "//chrome/browser/web_applications",
@@ -131,16 +119,16 @@ static_library("crosapi") {
     "//chromeos/ash/components/osauth/public",
     "//chromeos/ash/components/settings",
     "//chromeos/ash/components/system",
+    "//chromeos/ash/components/system_web_apps:system_web_app_type",
     "//chromeos/ash/components/telemetry_extension/diagnostics",
     "//chromeos/ash/components/telemetry_extension/events",
-    "//chromeos/ash/components/telemetry_extension/management",
     "//chromeos/ash/components/telemetry_extension/routines",
-    "//chromeos/ash/components/telemetry_extension/telemetry",
     "//chromeos/ash/experiences/arc",
     "//chromeos/ash/experiences/arc:arc_base_utils",
     "//chromeos/ash/experiences/arc/intent_helper",
     "//chromeos/ash/experiences/arc/mojom",
     "//chromeos/ash/experiences/arc/session",
+    "//chromeos/ash/experiences/settings_ui",
     "//chromeos/ash/experiences/system_web_apps/types",
     "//chromeos/components/cdm_factory_daemon:cdm_factory_daemon_browser",
     "//chromeos/components/firewall_hole",
@@ -192,7 +180,6 @@ static_library("crosapi") {
     "//printing/backend",
     "//remoting/host/chromeos:remoting_service",
     "//services/data_decoder/public/cpp",
-    "//services/device/wake_lock/power_save_blocker",
     "//services/video_capture:lib",
     "//services/video_capture/public/cpp",
     "//services/video_capture/public/mojom",
@@ -205,18 +192,9 @@ static_library("crosapi") {
     "//ui/views",
   ]
 
-  # local_printer_ash.cc includes
-  # chrome/browser/ash/printing/print_management/printing_manager.h, which in
-  # turn requires //chromeos/components/print_management/mojom to generate the
-  # Mojo headers referenced by printing_manager.h.
-  # Ideally, //chrome/browser/ash can just make
-  # //chromeos/components/print_management/mojom a public_deps entry, and this
-  # target can depend on //chrome/browser/ash. However, that creates a circular
-  # dependency, so add this indirect dependency to make it work as intended.
   deps += [
     "//chrome/browser/ash/arc:arc_util",
     "//chrome/browser/prefs",
-    "//chromeos/components/print_management/mojom",
   ]
 
   public_deps = [
@@ -227,9 +205,9 @@ static_library("crosapi") {
   ]
 
   allow_circular_includes_from = [
-    "//chrome/browser/chromeos/printing/print_preview",
     "//chrome/browser/extensions",
     "//chrome/browser/media/webrtc",
+    "//chrome/browser/printing:impl",
     "//chrome/browser/ui",
     "//chrome/browser/ui/ash/birch",
     "//chrome/browser/ui/ash/capture_mode",
@@ -243,119 +221,15 @@ static_library("crosapi") {
   ]
 }
 
-static_library("test_support") {
-  testonly = true
-
-  sources = [
-    "test_crosapi_environment.cc",
-    "test_crosapi_environment.h",
-    "test_local_printer_ash.cc",
-    "test_local_printer_ash.h",
-  ]
-
-  allow_circular_includes_from = [ "//chrome/test:test_support" ]
-
-  public_deps = [ "//chromeos/ash/components/system" ]
-
-  deps = [
-    ":crosapi",
-    "//ash",
-    "//ash:test_support",
-    "//ash/app_list",
-    "//base",
-    "//chrome/browser/apps/app_service",
-    "//chrome/browser/ash/app_list",
-    "//chrome/browser/ash/printing",
-    "//chrome/browser/ash/printing:test_support",
-    "//chrome/browser/ash/printing/history",
-    "//chrome/browser/ash/printing/history:test_support",
-    "//chrome/browser/ui/ash/desks",
-    "//chrome/browser/ui/webui/ash/app_install",
-    "//chrome/test:test_support",
-    "//chromeos/ash/components/dbus/shill",
-    "//chromeos/ash/experiences/arc:arc_test_support",
-    "//chromeos/crosapi/mojom",
-    "//components/component_updater/ash",
-    "//printing",
-    "//testing/gmock",
-    "//ui/events:gesture_detection",
-  ]
-}
-
-source_set("unit_tests") {
-  testonly = true
-
-  sources = [
-    "document_scan_ash_type_converters_unittest.cc",
-    "document_scan_ash_unittest.cc",
-    "local_printer_ash_unittest.cc",
-    "primary_profile_creation_waiter_unittest.cc",
-  ]
-
-  deps = [
-    ":crosapi",
-    ":test_support",
-    "//ash",
-    "//ash:test_support",
-    "//base",
-    "//base/test:test_config",
-    "//base/test:test_support",
-    "//chrome/browser/ash/login/users:test_support",
-    "//chrome/browser/ash/policy/core",
-    "//chrome/browser/ash/policy/core:test_support",
-    "//chrome/browser/ash/printing",
-    "//chrome/browser/ash/printing:test_support",
-    "//chrome/browser/ash/printing/oauth2",
-    "//chrome/browser/ash/printing/oauth2:test_support",
-    "//chrome/browser/ash/scanning",
-    "//chrome/browser/ash/scanning:test_support",
-    "//chrome/browser/ash/settings:test_support",
-    "//chrome/browser/notifications:system_notification_helper",
-    "//chrome/browser/ui/ash/desks",
-    "//chrome/browser/ui/ash/shelf",
-    "//chrome/common/printing",
-    "//chrome/test:test_support",
-    "//chromeos/ash/components/browser_context_helper",
-    "//chromeos/ash/components/channel",
-    "//chromeos/ash/components/cryptohome",
-    "//chromeos/ash/components/dbus/audio",
-    "//chromeos/ash/components/dbus/shill",
-    "//chromeos/ash/components/dbus/upstart",
-    "//chromeos/ash/components/disks:test_support",
-    "//chromeos/ash/components/login/login_state",
-    "//chromeos/ash/components/system",
-    "//chromeos/ash/experiences/arc:arc_test_support",
-    "//chromeos/crosapi/cpp:crosapi_constants",
-    "//chromeos/printing",
-    "//chromeos/ui/clipboard_history",
-    "//components/component_updater:test_support",
-    "//components/component_updater/ash",
-    "//components/component_updater/ash:test_support",
-    "//components/session_manager/core",
-    "//printing/backend",
-    "//printing/backend:test_support",
-    "//testing/gtest",
-    "//ui/display:test_support",
-  ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
-}
-
 source_set("browser_tests") {
   testonly = true
 
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
 
-  sources = [
-    "power_ash_apitest.cc",
-    "print_preview_ash_browsertest.cc",
-  ]
+  sources = [ "power_ash_apitest.cc" ]
 
   deps = [
     ":crosapi",
-    ":test_support",
     "//ash/constants",
     "//ash/public/cpp",
     "//base",
@@ -365,7 +239,6 @@ source_set("browser_tests") {
     "//chrome/browser/apps/app_service",
     "//chrome/browser/apps/app_service:app_registry_cache_waiter",
     "//chrome/browser/ash/fileapi",
-    "//chrome/browser/ash/printing/print_preview",
     "//chrome/browser/ash/system_web_apps/test_support:test_support_ui",
     "//chrome/browser/ui",
     "//chrome/common",
@@ -373,7 +246,6 @@ source_set("browser_tests") {
     "//chrome/test/base/ash/util:test_support",
     "//chromeos/ash/components/dbus/shill",
     "//chromeos/crosapi/mojom",
-    "//chromeos/printing:test_support",
     "//components/account_id",
     "//components/exo",
     "//components/global_media_controls:test_support",

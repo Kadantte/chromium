@@ -48,11 +48,14 @@ TestDevToolsAgentClient::TestDevToolsAgentClient(
       use_binary_protocol_(use_binary_protocol),
       agent_(std::move(agent)),
       receiver_(this) {
+  blink::mojom::DevToolsSessionStatePtr session_state =
+      blink::mojom::DevToolsSessionState::New();
+  session_state->browser_originating_session_state =
+      blink::mojom::BrowserOriginatingSessionState::New();
   agent_->AttachDevToolsSession(receiver_.BindNewEndpointAndPassRemote(),
                                 session_.BindNewEndpointAndPassReceiver(),
                                 io_session_.BindNewPipeAndPassReceiver(),
-                                nullptr, /*script_to_evaluate_on_load*/ "",
-                                use_binary_protocol_,
+                                std::move(session_state), use_binary_protocol_,
                                 /*client_is_trusted=*/true, session_id_,
                                 /*session_waits_for_debugger=*/false);
 }
@@ -76,10 +79,12 @@ void TestDevToolsAgentClient::RunCommand(Channel channel,
     message = base::as_byte_span(payload);
   }
 
-  if (channel == Channel::kMain)
-    session_->DispatchProtocolCommand(call_id, method, message);
-  else
-    io_session_->DispatchProtocolCommand(call_id, method, message);
+  if (channel == Channel::kMain) {
+    session_->DispatchProtocolCommand(call_id, method, message, std::string());
+  } else {
+    io_session_->DispatchProtocolCommand(call_id, method, message,
+                                         std::string());
+  }
 }
 
 TestDevToolsAgentClient::Event
@@ -130,13 +135,13 @@ TestDevToolsAgentClient::WaitForMethodNotification(std::string method) {
 void TestDevToolsAgentClient::DispatchProtocolResponse(
     blink::mojom::DevToolsMessagePtr message,
     int32_t call_id,
-    blink::mojom::DevToolsSessionStatePtr updates) {
+    blink::mojom::RendererOriginatingSessionStatePtr updates) {
   LogEvent(Event::Type::kResponse, call_id, std::move(message));
 }
 
 void TestDevToolsAgentClient::DispatchProtocolNotification(
     blink::mojom::DevToolsMessagePtr message,
-    blink::mojom::DevToolsSessionStatePtr updates) {
+    blink::mojom::RendererOriginatingSessionStatePtr updates) {
   LogEvent(Event::Type::kNotification, -1, std::move(message));
 }
 

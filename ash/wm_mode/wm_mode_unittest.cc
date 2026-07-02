@@ -27,6 +27,8 @@
 
 namespace ash {
 
+using chromeos::AppType;
+
 class WmModeTests : public AshTestBase {
  public:
   WmModeTests() = default;
@@ -130,20 +132,18 @@ TEST_F(WmModeTests, TraysOnMultipleDisplays) {
            std::string(image_model.GetVectorIcon().vector_icon()->name);
   };
 
-  EXPECT_TRUE(has_same_vector_icon(tray_button_1->GetImageViewForTesting(),
-                                   kWmModeOnIcon));
-  EXPECT_TRUE(has_same_vector_icon(tray_button_2->GetImageViewForTesting(),
-                                   kWmModeOnIcon));
+  EXPECT_TRUE(has_same_vector_icon(tray_button_1->image_view(), kWmModeOnIcon));
+  EXPECT_TRUE(has_same_vector_icon(tray_button_2->image_view(), kWmModeOnIcon));
 
   LeftClickOn(tray_button_1);
   EXPECT_FALSE(controller->is_active());
   EXPECT_FALSE(tray_button_1->is_active());
   EXPECT_FALSE(tray_button_2->is_active());
 
-  EXPECT_TRUE(has_same_vector_icon(tray_button_1->GetImageViewForTesting(),
-                                   kWmModeOffIcon));
-  EXPECT_TRUE(has_same_vector_icon(tray_button_2->GetImageViewForTesting(),
-                                   kWmModeOffIcon));
+  EXPECT_TRUE(
+      has_same_vector_icon(tray_button_1->image_view(), kWmModeOffIcon));
+  EXPECT_TRUE(
+      has_same_vector_icon(tray_button_2->image_view(), kWmModeOffIcon));
 }
 
 TEST_F(WmModeTests, ScreenDimming) {
@@ -175,8 +175,9 @@ TEST_F(WmModeTests, WindowSelection) {
   UpdateDisplay("800x700,801+0-800x700");
   auto roots = Shell::GetAllRootWindows();
   EXPECT_EQ(roots.size(), 2u);
-  auto win1 = CreateAppWindow(gfx::Rect(50, 60, 400, 400));
-  auto win2 = CreateAppWindow(gfx::Rect(1000, 200, 400, 400));
+  auto win1 = CreateWindowWithAppType(AppType::SYSTEM_APP, {50, 60, 400, 400});
+  auto win2 =
+      CreateWindowWithAppType(AppType::SYSTEM_APP, {1000, 200, 400, 400});
 
   auto* controller = WmModeController::Get();
   controller->Toggle();
@@ -235,8 +236,9 @@ TEST_F(WmModeTests, RemovingSelectedRoot) {
 TEST_F(WmModeTests, PieMenuVisibility) {
   UpdateDisplay("800x700");
   auto roots = Shell::GetAllRootWindows();
-  auto win1 = CreateAppWindow(gfx::Rect(400, 400));
-  auto win2 = CreateAppWindow(gfx::Rect(400, 300, 400, 400));
+  auto win1 = CreateWindowWithAppType(AppType::SYSTEM_APP, {400, 400});
+  auto win2 =
+      CreateWindowWithAppType(AppType::SYSTEM_APP, {400, 300, 400, 400});
 
   auto* controller = WmModeController::Get();
   controller->Toggle();
@@ -327,7 +329,7 @@ TEST_F(WmModeTests, MoveWindowToDeskFromPieMenu) {
   // Start with 2 desks.
   UpdateDisplay("800x700");
   NewDesk();
-  auto window = CreateAppWindow(gfx::Rect(400, 400));
+  auto window = CreateWindowWithAppType(AppType::SYSTEM_APP, {400, 400});
   auto* controller = WmModeController::Get();
   controller->Toggle();
   EXPECT_TRUE(controller->is_active());

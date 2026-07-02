@@ -93,12 +93,42 @@ void ActiveTaskContextProviderImpl::SetContextualTasksPanelController(
     if (tab_list_interface) {
       tab_list_interface->AddTabListInterfaceObserver(this);
       // Observe the active tab's WebContents on startup.
-      OnActiveTabChanged(tab_list_interface->GetActiveTab());
+      OnActiveTabChanged(*tab_list_interface,
+                         tab_list_interface->GetActiveTab());
     }
   }
 }
 
+// Local tab underlines are manual tab strip underlines that are explicitly
+// requested by clients (e.g., NTP realbox or omnibox popup searchbox handlers)
+// before a backend task has been created or is active.
+void ActiveTaskContextProviderImpl::AddLocalTabUnderline(
+    tabs::TabHandle tab_handle) {
+  auto* tab_list = TabListInterface::From(browser_window_);
+  auto* active_tab = tab_list ? tab_list->GetActiveTab() : nullptr;
+  tabs::TabHandle owner_handle =
+      active_tab ? active_tab->GetHandle() : tabs::TabHandle::Null();
+  local_tab_underlines_[owner_handle].insert(tab_handle);
+  NotifyObservers();
+}
+
+void ActiveTaskContextProviderImpl::RemoveLocalTabUnderline(
+    tabs::TabHandle tab_handle) {
+  for (auto& [owner_handle, underlines] : local_tab_underlines_) {
+    underlines.erase(tab_handle);
+  }
+  NotifyObservers();
+}
+
+void ActiveTaskContextProviderImpl::ClearAllLocalTabUnderlines() {
+  local_tab_underlines_.clear();
+  NotifyObservers();
+}
+
 ActiveTaskContextProviderImpl::~ActiveTaskContextProviderImpl() {
+  for (auto& observer : observers_) {
+    observer.OnActiveTaskContextProviderDestroyed();
+  }
   if (auto* tab_list_interface = TabListInterface::From(browser_window_)) {
     tab_list_interface->RemoveTabListInterfaceObserver(this);
   }
@@ -115,6 +145,7 @@ void ActiveTaskContextProviderImpl::RemoveObserver(
 }
 
 void ActiveTaskContextProviderImpl::OnActiveTabChanged(
+    TabListInterface& tab_list,
     tabs::TabInterface* active_tab) {
   // Start observing the new active tab's WebContents.
   Observe(active_tab ? active_tab->GetContents() : nullptr);
@@ -124,14 +155,15 @@ void ActiveTaskContextProviderImpl::OnActiveTabChanged(
 }
 
 void ActiveTaskContextProviderImpl::PrimaryPageChanged(content::Page& page) {
-  // If we are navigating away from the AIM WebUI, disassociate the tab from the
-  // task and clear its session handle.
   GURL url = page.GetMainDocument().GetLastCommittedURL();
-  bool is_contextual_tasks_webui =
-      url.scheme() == content::kChromeUIScheme &&
-      url.host() == chrome::kChromeUIContextualTasksHost;
+  bool is_aim_page = (url.scheme() == content::kChromeUIScheme &&
+                      url.host() == chrome::kChromeUIContextualTasksHost) ||
+                     (url.scheme() == content::kChromeUIScheme &&
+                      url.host() == chrome::kChromeUINewTabPageHost);
 
-  if (!is_contextual_tasks_webui) {
+  if (!is_aim_page) {
+    local_tab_underlines_.clear();
+
     auto* helper =
         ContextualSearchWebContentsHelper::FromWebContents(web_contents());
     if (helper && helper->task_id()) {
@@ -183,7 +215,7 @@ void ActiveTaskContextProviderImpl::RefreshContext() {
   contextual_search::ContextualSearchSessionHandle* session_handle = nullptr;
   if (contextual_tasks_panel_controller_) {
     auto [task_id, handle] = contextual_tasks_panel_controller_
-                                 ->GetSessionHandleForActiveTabOrSidePanel();
+                                 ->GetSessionHandleForActiveTabOrPanel();
     session_handle = handle;
     active_task_id_ = task_id;
   } else {
@@ -217,12 +249,37 @@ void ActiveTaskContextProviderImpl::OnGetContextForTask(
     return;
   }
 
-  if (!context) {
-    return;
+  if (context) {
+    backend_context_tabs_ = GetTabsFromContext(*context, browser_window_);
+  } else {
+    backend_context_tabs_.clear();
   }
 
-  std::set<tabs::TabHandle> tabs_to_underline =
-      GetTabsFromContext(*context, browser_window_);
+  NotifyObservers();
+}
+
+void ActiveTaskContextProviderImpl::ResetStateAndNotifyObservers() {
+  active_task_id_ = std::nullopt;
+  backend_context_tabs_.clear();
+  NotifyObservers();
+}
+
+void ActiveTaskContextProviderImpl::NotifyObservers() {
+  // Combine both the backend task context tab underlines and the local manual
+  // underlines for the active tab.
+  std::set<tabs::TabHandle> tabs_to_underline = backend_context_tabs_;
+
+  auto* tab_list = TabListInterface::From(browser_window_);
+  auto* active_tab = tab_list ? tab_list->GetActiveTab() : nullptr;
+  tabs::TabHandle owner_handle =
+      active_tab ? active_tab->GetHandle() : tabs::TabHandle::Null();
+
+  auto it = local_tab_underlines_.find(owner_handle);
+  if (it != local_tab_underlines_.end()) {
+    for (auto handle : it->second) {
+      tabs_to_underline.insert(handle);
+    }
+  }
 
   // Add auto-suggested tab if chip is showing.
   if (contextual_tasks_panel_controller_ &&
@@ -236,13 +293,6 @@ void ActiveTaskContextProviderImpl::OnGetContextForTask(
 
   for (auto& obs : observers_) {
     obs.OnContextTabsChanged(tabs_to_underline);
-  }
-}
-
-void ActiveTaskContextProviderImpl::ResetStateAndNotifyObservers() {
-  active_task_id_ = std::nullopt;
-  for (auto& observer : observers_) {
-    observer.OnContextTabsChanged({});
   }
 }
 

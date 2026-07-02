@@ -13,6 +13,7 @@
 
 #include <string_view>
 
+#include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
 #include "base/files/file_path.h"
@@ -25,7 +26,6 @@
 #include "base/win/registry.h"
 #include "base/win/win_util.h"
 #include "chrome/browser/browser_switcher/browser_switcher_prefs.h"
-#include "chrome/grit/generated_resources.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "url/gurl.h"

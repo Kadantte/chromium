@@ -2,21 +2,32 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/ui/web_applications/web_app_browsertest_base.h"
 #include "chrome/browser/web_applications/test/web_app_test_utils.h"
+#include "chrome/common/chrome_features.h"
 #include "content/public/test/browser_test.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 
 namespace web_app {
 namespace {
 
-using WebAppStatusBarTest = WebAppBrowserTestBase;
+class WebAppStatusBarTest : public WebAppBrowserTestBase {
+ public:
+  WebAppStatusBarTest() {
+    scoped_feature_list_.InitAndDisableFeature(
+        ::features::kWebAppInstallDialog);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
 
 IN_PROC_BROWSER_TEST_F(WebAppStatusBarTest, NoStatusBar) {
   NavigateViaLinkClickToURLAndWait(
-      browser(), https_server()->GetURL("/web_apps/basic.html"));
+      browser(), embedded_https_test_server().GetURL("/web_apps/basic.html"));
   const webapps::AppId app_id = test::InstallPwaForCurrentUrl(browser());
   Browser* const app_browser =
       ::web_app::LaunchWebAppBrowserAndWait(profile(), app_id);
@@ -25,7 +36,8 @@ IN_PROC_BROWSER_TEST_F(WebAppStatusBarTest, NoStatusBar) {
 
 IN_PROC_BROWSER_TEST_F(WebAppStatusBarTest, DisplayBrowserHasStatusBar) {
   NavigateViaLinkClickToURLAndWait(
-      browser(), https_server()->GetURL("/web_apps/display_browser.html"));
+      browser(),
+      embedded_https_test_server().GetURL("/web_apps/display_browser.html"));
   const webapps::AppId app_id = test::InstallPwaForCurrentUrl(browser());
   Browser* const app_browser =
       ::web_app::LaunchWebAppBrowserAndWait(profile(), app_id);
@@ -33,8 +45,9 @@ IN_PROC_BROWSER_TEST_F(WebAppStatusBarTest, DisplayBrowserHasStatusBar) {
 }
 
 IN_PROC_BROWSER_TEST_F(WebAppStatusBarTest, NoManifestHasStatusBar) {
-  NavigateViaLinkClickToURLAndWait(
-      browser(), https_server()->GetURL("/banners/no_manifest_test_page.html"));
+  NavigateViaLinkClickToURLAndWait(browser(),
+                                   embedded_https_test_server().GetURL(
+                                       "/banners/no_manifest_test_page.html"));
   const webapps::AppId app_id = test::InstallPwaForCurrentUrl(browser());
   Browser* const app_browser =
       ::web_app::LaunchWebAppBrowserAndWait(profile(), app_id);
@@ -43,7 +56,8 @@ IN_PROC_BROWSER_TEST_F(WebAppStatusBarTest, NoManifestHasStatusBar) {
 
 IN_PROC_BROWSER_TEST_F(WebAppStatusBarTest, DisplayMinimalUiHasStatusBar) {
   NavigateViaLinkClickToURLAndWait(
-      browser(), https_server()->GetURL("/web_apps/minimal_ui/basic.html"));
+      browser(),
+      embedded_https_test_server().GetURL("/web_apps/minimal_ui/basic.html"));
   const webapps::AppId app_id = test::InstallPwaForCurrentUrl(browser());
   Browser* const app_browser =
       ::web_app::LaunchWebAppBrowserAndWait(profile(), app_id);

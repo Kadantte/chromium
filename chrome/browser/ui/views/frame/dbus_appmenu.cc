@@ -362,7 +362,8 @@ void DbusAppmenu::AddEntryToHistoryMenu(
     SessionID id,
     std::u16string title,
     int index,
-    const std::vector<std::unique_ptr<sessions::tab_restore::Tab>>& tabs) {
+    const std::vector<std::unique_ptr<sessions::tab_restore::Tab>>& tabs,
+    int restore_string_id) {
   // Create the item for the parent/window.
   auto item = std::make_unique<HistoryItem>();
   item->session_id = id;
@@ -370,8 +371,7 @@ void DbusAppmenu::AddEntryToHistoryMenu(
   auto parent_menu = std::make_unique<ui::SimpleMenuModel>(this);
   int command = NextCommandId();
   history_menu_->InsertSubMenuAt(index, command, title, parent_menu.get());
-  parent_menu->AddItemWithStringId(command,
-                                   IDS_HISTORY_CLOSED_RESTORE_WINDOW_LINUX);
+  parent_menu->AddItemWithStringId(command, restore_string_id);
   parent_menu->AddSeparator(ui::MenuSeparatorType::NORMAL_SEPARATOR);
 
   // Loop over the tabs and add them to the submenu.
@@ -516,54 +516,87 @@ void DbusAppmenu::TabRestoreServiceChanged(
   const sessions::TabRestoreService::Entries& entries = service->entries();
 
   int index = ClearHistoryMenuSection(kTagRecentlyClosed);
-  recently_closed_window_menus_.clear();
+  // Delay destruction of old submenu models until after `menu_service_` is
+  // updated to prevent `DbusMenu::MenuItem` from holding dangling pointers.
+  auto old_recently_closed_window_menus =
+      std::move(recently_closed_window_menus_);
 
   unsigned int added_count = 0;
   for (auto it = entries.begin();
        it != entries.end() && added_count < kRecentlyClosedCount; ++it) {
     sessions::tab_restore::Entry* entry = it->get();
 
-    if (entry->type == sessions::tab_restore::Type::WINDOW) {
-      sessions::tab_restore::Window* window =
-          static_cast<sessions::tab_restore::Window*>(entry);
+    switch (entry->type) {
+      case sessions::tab_restore::Type::WINDOW: {
+        sessions::tab_restore::Window* window =
+            static_cast<sessions::tab_restore::Window*>(entry);
 
-      auto& tabs = window->tabs;
-      if (tabs.empty()) {
-        continue;
+        auto& tabs = window->tabs;
+        if (tabs.empty()) {
+          continue;
+        }
+
+        std::u16string title = l10n_util::GetPluralStringFUTF16(
+            IDS_RECENTLY_CLOSED_WINDOW, tabs.size());
+
+        AddEntryToHistoryMenu(window->id, title, index, tabs,
+                              IDS_HISTORY_CLOSED_RESTORE_WINDOW_LINUX);
+        ++index;
+        ++added_count;
+        break;
       }
-
-      std::u16string title = l10n_util::GetPluralStringFUTF16(
-          IDS_RECENTLY_CLOSED_WINDOW, tabs.size());
-
-      AddEntryToHistoryMenu(window->id, title, index++, tabs);
-      ++added_count;
-    } else if (entry->type == sessions::tab_restore::Type::TAB) {
-      sessions::tab_restore::Tab* tab =
-          static_cast<sessions::tab_restore::Tab*>(entry);
-      AddHistoryItemToMenu(HistoryItemForTab(*tab), history_menu_, index++);
-      ++added_count;
-    } else if (entry->type == sessions::tab_restore::Type::GROUP) {
-      sessions::tab_restore::Group* group =
-          static_cast<sessions::tab_restore::Group*>(entry);
-
-      auto& tabs = group->tabs;
-      if (tabs.empty()) {
-        continue;
+      case sessions::tab_restore::Type::TAB: {
+        sessions::tab_restore::Tab* tab =
+            static_cast<sessions::tab_restore::Tab*>(entry);
+        AddHistoryItemToMenu(HistoryItemForTab(*tab), history_menu_, index);
+        ++index;
+        ++added_count;
+        break;
       }
+      case sessions::tab_restore::Type::GROUP: {
+        sessions::tab_restore::Group* group =
+            static_cast<sessions::tab_restore::Group*>(entry);
 
-      std::u16string title;
-      if (group->visual_data.title().empty()) {
-        title = l10n_util::GetPluralStringFUTF16(
-            IDS_RECENTLY_CLOSED_GROUP_UNNAMED, tabs.size());
-      } else {
-        title = l10n_util::GetPluralStringFUTF16(IDS_RECENTLY_CLOSED_GROUP,
-                                                 tabs.size());
-        title = base::ReplaceStringPlaceholders(
-            title, group->visual_data.title(), nullptr);
+        auto& tabs = group->tabs;
+        if (tabs.empty()) {
+          continue;
+        }
+
+        std::u16string title;
+        if (group->visual_data.title().empty()) {
+          title = l10n_util::GetPluralStringFUTF16(
+              IDS_RECENTLY_CLOSED_GROUP_UNNAMED, tabs.size());
+        } else {
+          title = l10n_util::GetPluralStringFUTF16(IDS_RECENTLY_CLOSED_GROUP,
+                                                   tabs.size());
+          title = base::ReplaceStringPlaceholders(
+              title, group->visual_data.title(), nullptr);
+        }
+
+        AddEntryToHistoryMenu(group->id, title, index, tabs,
+                              IDS_HISTORY_CLOSED_RESTORE_GROUP_LINUX);
+        ++index;
+        ++added_count;
+        break;
       }
+      case sessions::tab_restore::Type::SPLIT: {
+        sessions::tab_restore::Split* split =
+            static_cast<sessions::tab_restore::Split*>(entry);
 
-      AddEntryToHistoryMenu(group->id, title, index++, tabs);
-      ++added_count;
+        auto& tabs = split->tabs;
+        if (tabs.empty()) {
+          continue;
+        }
+
+        std::u16string title =
+            l10n_util::GetStringUTF16(IDS_RECENTLY_CLOSED_SPLIT);
+
+        AddEntryToHistoryMenu(split->id, title, index, tabs,
+                              IDS_HISTORY_CLOSED_RESTORE_SPLIT_LINUX);
+        ++index;
+        ++added_count;
+        break;
+      }
     }
   }
 

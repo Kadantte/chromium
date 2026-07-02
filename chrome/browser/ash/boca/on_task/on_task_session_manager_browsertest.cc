@@ -6,7 +6,6 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/webui/boca_ui/url_constants.h"
-#include "ash/webui/system_apps/public/system_web_app_type.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
@@ -28,6 +27,7 @@
 #include "chromeos/ash/components/boca/on_task/notification_constants.h"
 #include "chromeos/ash/components/boca/on_task/on_task_notifications_manager.h"
 #include "chromeos/ash/components/boca/on_task/util/mock_clock.h"
+#include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "chromeos/ui/wm/window_util.h"
 #include "components/sessions/core/session_id.h"
 #include "content/public/test/browser_test.h"
@@ -350,16 +350,16 @@ IN_PROC_BROWSER_TEST_F(
   WaitForLockedModeCountdown();
   ASSERT_TRUE(platform_util::IsBrowserLockedFullscreen(boca_app_browser));
   EXPECT_FALSE(chromeos::wm::CanFloatWindow(
-      boca_app_browser->window()->GetNativeWindow()));
-  EXPECT_TRUE(boca_app_browser->window()->IsToolbarVisible());
+      boca_app_browser->GetWindow()->GetNativeWindow()));
+  EXPECT_TRUE(BrowserWindow::FromBrowser(boca_app_browser)->IsToolbarVisible());
 
   // Unlock the boca app.
   bundle.set_locked(false);
   GetOnTaskSessionManager()->OnBundleUpdated(bundle);
   ASSERT_FALSE(platform_util::IsBrowserLockedFullscreen(boca_app_browser));
   EXPECT_FALSE(chromeos::wm::CanFloatWindow(
-      boca_app_browser->window()->GetNativeWindow()));
-  EXPECT_TRUE(boca_app_browser->window()->IsToolbarVisible());
+      boca_app_browser->GetWindow()->GetNativeWindow()));
+  EXPECT_TRUE(BrowserWindow::FromBrowser(boca_app_browser)->IsToolbarVisible());
 
   // Attempt to lock the boca app again to simulate real world scenario.
   bundle.set_locked(true);
@@ -367,8 +367,8 @@ IN_PROC_BROWSER_TEST_F(
   WaitForLockedModeCountdown();
   ASSERT_TRUE(platform_util::IsBrowserLockedFullscreen(boca_app_browser));
   EXPECT_FALSE(chromeos::wm::CanFloatWindow(
-      boca_app_browser->window()->GetNativeWindow()));
-  EXPECT_TRUE(boca_app_browser->window()->IsToolbarVisible());
+      boca_app_browser->GetWindow()->GetNativeWindow()));
+  EXPECT_TRUE(BrowserWindow::FromBrowser(boca_app_browser)->IsToolbarVisible());
 
   // Unlock the Boca app to unblock test teardown that involves browser window
   // close.
@@ -406,14 +406,14 @@ IN_PROC_BROWSER_TEST_F(OnTaskSessionManagerBrowserTest,
   WaitForLockedModeCountdown();
   ASSERT_TRUE(platform_util::IsBrowserLockedFullscreen(boca_app_browser));
   EXPECT_FALSE(chromeos::wm::CanFloatWindow(
-      boca_app_browser->window()->GetNativeWindow()));
+      boca_app_browser->GetWindow()->GetNativeWindow()));
 
   // Pause the boca app.
   bundle.set_lock_to_app_home(true);
   GetOnTaskSessionManager()->OnBundleUpdated(bundle);
   ASSERT_TRUE(platform_util::IsBrowserLockedFullscreen(boca_app_browser));
   EXPECT_FALSE(chromeos::wm::CanFloatWindow(
-      boca_app_browser->window()->GetNativeWindow()));
+      boca_app_browser->GetWindow()->GetNativeWindow()));
   // Wait until immersive mode is disabled in pause mode.
   ASSERT_TRUE(base::test::RunUntil([&]() {
     return !ImmersiveModeController::From(boca_app_browser)->IsEnabled();
@@ -426,7 +426,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskSessionManagerBrowserTest,
   GetOnTaskSessionManager()->OnBundleUpdated(bundle);
   ASSERT_TRUE(platform_util::IsBrowserLockedFullscreen(boca_app_browser));
   EXPECT_FALSE(chromeos::wm::CanFloatWindow(
-      boca_app_browser->window()->GetNativeWindow()));
+      boca_app_browser->GetWindow()->GetNativeWindow()));
   EXPECT_TRUE(ImmersiveModeController::From(boca_app_browser)->IsEnabled());
 
   // Unlock the Boca app to unblock test teardown that involves browser window
@@ -465,7 +465,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskSessionManagerBrowserTest,
   GetOnTaskSessionManager()->OnBundleUpdated(bundle);
   ASSERT_TRUE(platform_util::IsBrowserLockedFullscreen(boca_app_browser));
   EXPECT_FALSE(chromeos::wm::CanFloatWindow(
-      boca_app_browser->window()->GetNativeWindow()));
+      boca_app_browser->GetWindow()->GetNativeWindow()));
   // Wait until immersive mode is disabled in pause mode.
   ASSERT_TRUE(base::test::RunUntil([&]() {
     return !ImmersiveModeController::From(boca_app_browser)->IsEnabled();
@@ -478,7 +478,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskSessionManagerBrowserTest,
   GetOnTaskSessionManager()->OnBundleUpdated(bundle);
   ASSERT_TRUE(platform_util::IsBrowserLockedFullscreen(boca_app_browser));
   EXPECT_FALSE(chromeos::wm::CanFloatWindow(
-      boca_app_browser->window()->GetNativeWindow()));
+      boca_app_browser->GetWindow()->GetNativeWindow()));
   EXPECT_TRUE(ImmersiveModeController::From(boca_app_browser)->IsEnabled());
 
   // Unlock the Boca app to unblock test teardown that involves browser window
@@ -521,7 +521,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskSessionManagerBrowserTest,
   GetOnTaskSessionManager()->OnBundleUpdated(bundle);
   ASSERT_TRUE(platform_util::IsBrowserLockedFullscreen(boca_app_browser));
   EXPECT_FALSE(chromeos::wm::CanFloatWindow(
-      boca_app_browser->window()->GetNativeWindow()));
+      boca_app_browser->GetWindow()->GetNativeWindow()));
   // Wait until immersive mode is disabled in pause mode.
   ASSERT_TRUE(base::test::RunUntil([&]() {
     return !ImmersiveModeController::From(boca_app_browser)->IsEnabled();
@@ -534,7 +534,7 @@ IN_PROC_BROWSER_TEST_F(OnTaskSessionManagerBrowserTest,
   GetOnTaskSessionManager()->OnBundleUpdated(bundle);
   ASSERT_TRUE(platform_util::IsBrowserLockedFullscreen(boca_app_browser));
   EXPECT_FALSE(chromeos::wm::CanFloatWindow(
-      boca_app_browser->window()->GetNativeWindow()));
+      boca_app_browser->GetWindow()->GetNativeWindow()));
   EXPECT_TRUE(ImmersiveModeController::From(boca_app_browser)->IsEnabled());
 
   // Unlock the Boca app to unblock test teardown that involves browser window
@@ -569,8 +569,8 @@ IN_PROC_BROWSER_TEST_F(OnTaskSessionManagerBrowserTest,
   WaitForLockedModeCountdown();
   ASSERT_TRUE(platform_util::IsBrowserLockedFullscreen(boca_app_browser));
   EXPECT_FALSE(chromeos::wm::CanFloatWindow(
-      boca_app_browser->window()->GetNativeWindow()));
-  EXPECT_TRUE(boca_app_browser->window()->IsToolbarVisible());
+      boca_app_browser->GetWindow()->GetNativeWindow()));
+  EXPECT_TRUE(BrowserWindow::FromBrowser(boca_app_browser)->IsToolbarVisible());
 
   // Unlock the Boca app to unblock test teardown that involves browser window
   // close.
@@ -883,13 +883,13 @@ IN_PROC_BROWSER_TEST_F(OnTaskSessionManagerBrowserTest,
 
   // Open first browser window.
   Browser* const browser_1 = browser();
-  chrome::NewTab(browser_1);
+  chrome::NewTab(browser_1, NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser_1, GURL(kTestUrl1)));
 
   // Open second browser window.
   Browser* const browser_2 =
       Browser::Create(Browser::CreateParams(profile(), true));
-  chrome::NewTab(browser_2);
+  chrome::NewTab(browser_2, NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser_2, GURL(kTestUrl2)));
 
   // Lock the boca app and tabs in boca app browser are not muted.

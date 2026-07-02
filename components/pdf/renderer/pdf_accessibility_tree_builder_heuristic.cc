@@ -6,18 +6,19 @@
 
 #include <algorithm>
 #include <cmath>
-#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/check.h"
 #include "base/check_op.h"
-#include "base/containers/fixed_flat_map.h"
 #include "base/feature_list.h"
 #include "base/memory/raw_ref.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/timer/elapsed_timer.h"
 #include "components/pdf/renderer/pdf_accessibility_tree_builder.h"
 #include "pdf/accessibility_structs.h"
 #include "pdf/pdf_features.h"
+#include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 #include "ui/accessibility/ax_enums.mojom-shared.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/gfx/geometry/point_f.h"
@@ -140,78 +141,6 @@ class LineHelper {
   float accumulated_width_;
 };
 
-// Please keep the below map as close as possible to the list defined in the PDF
-// Specification, ISO 32000-1:2008, table 333.
-ax::mojom::Role StructureElementTypeToAccessibilityRole(
-    const std::string& element_type) {
-  static constexpr auto kStructureElementTypeToAccessibilityRoleMap =
-      base::MakeFixedFlatMap<std::string_view, ax::mojom::Role>(
-          {{"Document", ax::mojom::Role::kDocument},
-           {"Part", ax::mojom::Role::kDocPart},
-           {"Art", ax::mojom::Role::kArticle},
-           {"Sect", ax::mojom::Role::kSection},
-           {"Div", ax::mojom::Role::kGenericContainer},
-           {"BlockQuote", ax::mojom::Role::kBlockquote},
-           {"Caption", ax::mojom::Role::kCaption},
-           {"TOC", ax::mojom::Role::kDocToc},
-           {"TOCI", ax::mojom::Role::kListItem},
-           {"Index", ax::mojom::Role::kDocIndex},
-           {"P", ax::mojom::Role::kParagraph},
-           {"H", ax::mojom::Role::kHeading},
-           {"H1", ax::mojom::Role::kHeading},
-           {"H2", ax::mojom::Role::kHeading},
-           {"H3", ax::mojom::Role::kHeading},
-           {"H4", ax::mojom::Role::kHeading},
-           {"H5", ax::mojom::Role::kHeading},
-           {"H6", ax::mojom::Role::kHeading},
-           {"L", ax::mojom::Role::kList},
-           {"LI", ax::mojom::Role::kListItem},
-           {"Lbl", ax::mojom::Role::kListMarker},
-           {"LBody", ax::mojom::Role::kNone},  // Presentational.
-           {"Table", ax::mojom::Role::kTable},
-           {"TR", ax::mojom::Role::kRow},
-           {"TH", ax::mojom::Role::kRowHeader},
-           {"THead", ax::mojom::Role::kRowGroup},
-           {"TBody", ax::mojom::Role::kRowGroup},
-           {"TFoot", ax::mojom::Role::kRowGroup},
-           {"TD", ax::mojom::Role::kCell},
-           {"Span", ax::mojom::Role::kStaticText},
-           {"Link", ax::mojom::Role::kLink},
-           {"Figure", ax::mojom::Role::kFigure},
-           {"Formula", ax::mojom::Role::kMath},
-           {"Form", ax::mojom::Role::kForm}});
-
-  if (auto iter =
-          kStructureElementTypeToAccessibilityRoleMap.find(element_type);
-      iter != kStructureElementTypeToAccessibilityRoleMap.end()) {
-    return iter->second;
-  }
-  // Return something that could at least make some sense, other than
-  // `kUnknown`.
-  return ax::mojom::Role::kParagraph;
-}
-
-std::optional<uint32_t> StructureElementTypeToHeadingLevel(
-    const std::string& element_type) {
-  if (StructureElementTypeToAccessibilityRole(element_type) ==
-      ax::mojom::Role::kHeading) {
-    if (element_type == "H" || element_type == "H1") {
-      return 1;
-    } else if (element_type == "H2") {
-      return 2;
-    } else if (element_type == "H3") {
-      return 3;
-    } else if (element_type == "H4") {
-      return 4;
-    } else if (element_type == "H5") {
-      return 5;
-    } else if (element_type == "H6") {
-      return 6;
-    }
-  }
-  return std::nullopt;
-}
-
 template <typename T>
 bool IsObjectInTextRun(const std::vector<T>& objects,
                        uint32_t object_index,
@@ -319,6 +248,11 @@ PdfAccessibilityTreeBuilderHeuristic::PdfAccessibilityTreeBuilderHeuristic(
     : builder_(builder) {}
 
 void PdfAccessibilityTreeBuilderHeuristic::BuildPageTree() {
+  base::ElapsedTimer timer;
+  absl::Cleanup run_on_exit = [&timer] {
+    base::UmaHistogramTimes("Accessibility.PDF.Heuristic.BuildPageTreeTime",
+                            timer.Elapsed());
+  };
   ComputeParagraphAndHeadingThresholds(builder_->text_runs(),
                                        &heading_font_size_threshold_,
                                        &paragraph_spacing_threshold_);
@@ -365,8 +299,7 @@ void PdfAccessibilityTreeBuilderHeuristic::BuildPageTree() {
 #endif  // BUILDFLAG(ENABLE_SCREEN_AI_SERVICE)
     // If we don't have a block level node, create one.
     if (!block_node) {
-      block_node =
-          CreateBlockLevelNode(text_run.tag_type, text_run.style.font_size);
+      block_node = CreateBlockLevelNode(text_run.style.font_size);
       builder_->page_node()->child_ids.push_back(block_node->id);
     }
 
@@ -496,21 +429,11 @@ void PdfAccessibilityTreeBuilderHeuristic::BuildPageTree() {
 }
 
 ui::AXNodeData* PdfAccessibilityTreeBuilderHeuristic::CreateBlockLevelNode(
-    const std::string& text_run_type,
     float font_size) {
   ui::AXNodeData* block_node = builder_->CreateAndAppendNode(
-      StructureElementTypeToAccessibilityRole(text_run_type),
-      ax::mojom::Restriction::kReadOnly);
+      ax::mojom::Role::kParagraph, ax::mojom::Restriction::kReadOnly);
   block_node->AddBoolAttribute(ax::mojom::BoolAttribute::kIsLineBreakingObject,
                                true);
-  if (std::optional<uint32_t> level =
-          StructureElementTypeToHeadingLevel(text_run_type);
-      level) {
-    block_node->AddIntAttribute(ax::mojom::IntAttribute::kHierarchicalLevel,
-                                *level);
-    // TODO(crbug.com/40707542): Set the HTML tag to "h*" by creating a helper
-    // in `AXEnumUtils`.
-  }
 
   if (builder_->mark_headings_using_heuristic() &&
       heading_font_size_threshold_ > 0 &&

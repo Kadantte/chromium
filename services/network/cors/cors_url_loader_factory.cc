@@ -28,6 +28,7 @@
 #include "net/shared_dictionary/shared_dictionary_isolation_key.h"
 #include "net/url_request/url_request_context.h"
 #include "services/network/cors/cors_url_loader.h"
+#include "services/network/cors/cors_util.h"
 #include "services/network/cors/preflight_controller.h"
 #include "services/network/network_service.h"
 #include "services/network/prefetch_matching_url_loader_factory.h"
@@ -372,7 +373,7 @@ void CorsURLLoaderFactory::CreateLoaderAndStart(
   std::optional<base::ElapsedTimer> timer;
   std::optional<base::ElapsedThreadTimer> thread_timer;
 
-  if (metrics_subsampler_.ShouldSample(0.001)) {
+  if (base::ShouldRecordSubsampledMetric(0.001)) {
     timer.emplace();
     if (base::ThreadTicks::IsSupported()) {
       thread_timer.emplace();
@@ -426,21 +427,11 @@ void CorsURLLoaderFactory::CreateLoaderAndStart(
     isolation_info_ptr = &isolation_info.value();
   }
 
-  // Check if the initiator's network access has been revoked.
-  // This check is only relevant if there is a partition nonce in the
-  // isolation info. (All requests originating from a fenced frame have a
-  // nonce specified.)
-  if (isolation_info.has_value() && isolation_info->nonce().has_value() &&
-      !context_->IsNetworkForNonceAndUrlAllowed(*isolation_info->nonce(),
-                                                resource_request.url)) {
-    mojo::Remote<mojom::URLLoaderClient>(std::move(client))
-        ->OnComplete(
-            URLLoaderCompletionStatus(net::ERR_NETWORK_ACCESS_REVOKED));
-    return;
-  }
+  // Check if the initiator's network access has been restricted.
   if (network_restrictions_id_.has_value() &&
-      !context_->IsNetworkForNonceAndUrlAllowed(*network_restrictions_id_,
-                                                resource_request.url)) {
+      !context_->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+          *network_restrictions_id_, resource_request.url,
+          isolation_info_ptr->network_anonymization_key())) {
     // TODO(crbug.com/447954811): Perhaps change to a new error code and
     // add console messages.
     mojo::Remote<mojom::URLLoaderClient>(std::move(client))
@@ -485,7 +476,7 @@ void CorsURLLoaderFactory::CreateLoaderAndStart(
         cross_origin_embedder_policy_, shared_dictionary_storage,
         shared_dictionary_observer_ ? shared_dictionary_observer_.get()
                                     : nullptr,
-        context_, factory_cookie_setting_overrides_,
+        context_, network_restrictions_id_, factory_cookie_setting_overrides_,
         devtools_cookie_setting_overrides_);
     auto* raw_loader = loader.get();
     OnCorsURLLoaderCreated(std::move(loader));
@@ -517,7 +508,7 @@ void CorsURLLoaderFactory::Clone(
 
 void CorsURLLoaderFactory::DeleteIfNeeded() {
   if (url_loaders_.empty() && cors_url_loaders_.empty() &&
-      !owner_->HasAdditionalReferences()) {
+      !owner_->HasAdditionalReferences() && !prevent_self_deletion_) {
     owner_->DestroyURLLoaderFactory(this);
   }
 }
@@ -581,7 +572,7 @@ bool CorsURLLoaderFactory::IsCorsPreflighLoadOptionAllowed() const {
 }
 
 bool CorsURLLoaderFactory::IsValidRequest(
-    const ResourceRequest& request,
+    ResourceRequest& request,
     uint32_t options,
     const net::MutableNetworkTrafficAnnotationTag& traffic_annotation) {
   if (request.url.SchemeIs(url::kDataScheme)) {
@@ -688,6 +679,31 @@ bool CorsURLLoaderFactory::IsValidRequest(
     return false;
   }
 
+  // A request whose destination is a frame type must be a navigation. A
+  // renderer-initiated subresource fetch must never claim to be a document /
+  // frame load, otherwise downstream consumers (e.g. Android WebView's
+  // shouldInterceptRequest) may misclassify it as a main-frame navigation.
+  // See 2.2.5 Requests: https://fetch.spec.whatwg.org/#requests
+  // See Navigation Request: https://fetch.spec.whatwg.org/#navigation-request
+  // See fenced frames: https://github.com/WICG/fenced-frame/issues/239
+  //
+  // This intentionally excludes destination types (see
+  // https://chromium-review.git.corp.google.com/c/chromium/src/+/7952612?tab=checks
+  // for details):
+  // * kEmbed: used by PDF pages to embed subresources.
+  // * kObject: used by wpt tests.
+  if (base::FeatureList::IsEnabled(
+          features::kRestrictFrameDestinationsToNavigate) &&
+      (request.destination == mojom::RequestDestination::kDocument ||
+       request.destination == mojom::RequestDestination::kFrame ||
+       request.destination == mojom::RequestDestination::kIframe ||
+       request.destination == mojom::RequestDestination::kFencedframe) &&
+      request.mode != mojom::RequestMode::kNavigate) {
+    mojo::ReportBadMessage(
+        "CorsURLLoaderFactory: frame destination requires kNavigate mode");
+    return false;
+  }
+
   // Validate that a navigation redirect chain is not sent for a non-navigation
   // request.
   if (!request.navigation_redirect_chain.empty() &&
@@ -770,33 +786,34 @@ bool CorsURLLoaderFactory::IsValidRequest(
 
     switch (request.destination) {
       // Allowed destinations from unprivileged process:
-      case network::mojom::RequestDestination::kEmpty:
       case network::mojom::RequestDestination::kAudio:
       case network::mojom::RequestDestination::kAudioWorklet:
+      case network::mojom::RequestDestination::kDictionary:
       case network::mojom::RequestDestination::kDocument:
       case network::mojom::RequestDestination::kEmbed:
+      case network::mojom::RequestDestination::kEmpty:
+      case network::mojom::RequestDestination::kFencedframe:
       case network::mojom::RequestDestination::kFont:
       case network::mojom::RequestDestination::kFrame:
       case network::mojom::RequestDestination::kIframe:
       case network::mojom::RequestDestination::kImage:
+      case network::mojom::RequestDestination::kJson:
       case network::mojom::RequestDestination::kManifest:
       case network::mojom::RequestDestination::kObject:
       case network::mojom::RequestDestination::kPaintWorklet:
       case network::mojom::RequestDestination::kReport:
       case network::mojom::RequestDestination::kScript:
       case network::mojom::RequestDestination::kServiceWorker:
+      case network::mojom::RequestDestination::kSharedStorageWorklet:
       case network::mojom::RequestDestination::kSharedWorker:
+      case network::mojom::RequestDestination::kSpeculationRules:
       case network::mojom::RequestDestination::kStyle:
+      case network::mojom::RequestDestination::kText:
       case network::mojom::RequestDestination::kTrack:
       case network::mojom::RequestDestination::kVideo:
       case network::mojom::RequestDestination::kWebBundle:
       case network::mojom::RequestDestination::kWorker:
       case network::mojom::RequestDestination::kXslt:
-      case network::mojom::RequestDestination::kFencedframe:
-      case network::mojom::RequestDestination::kDictionary:
-      case network::mojom::RequestDestination::kSpeculationRules:
-      case network::mojom::RequestDestination::kJson:
-      case network::mojom::RequestDestination::kSharedStorageWorklet:
         break;
       case network::mojom::RequestDestination::kWebIdentity:
       case network::mojom::RequestDestination::kEmailVerification:
@@ -861,6 +878,20 @@ bool CorsURLLoaderFactory::IsValidRequest(
     return false;
   }
 
+  const bool allow_unsafe_headers = cors::ShouldAllowUnsafeHeaders(
+      *origin_access_list_, request.request_initiator, request.url);
+  std::string forbidden_header;
+  if (!process_id_.is_browser() && !allow_unsafe_headers &&
+      ContainsForbiddenSecurityHeader(request.headers, &forbidden_header)) {
+    SCOPED_CRASH_KEY_STRING32("network", "forbidden_sec_header",
+                              forbidden_header);
+    if (features::kRestrictForbiddenSecurityHeadersDump.Get()) {
+      mojo::ReportBadMessage(
+          "CorsURLLoaderFactory: Forbidden Sec- header from renderer");
+    }
+    return false;
+  }
+
   if (!AreRequestHeadersSafe(request.headers) ||
       !AreRequestHeadersSafe(request.cors_exempt_headers)) {
     return false;
@@ -908,13 +939,8 @@ bool CorsURLLoaderFactory::IsValidRequest(
     return false;
   }
 
-  // Don't allow forbidden methods for any requests except RequestMode::kNoCors.
-  // Don't allow CONNECT method for any request.
-  if ((request.mode != mojom::RequestMode::kNoCors &&
-       cors::IsForbiddenMethod(request.method)) ||
-      (request.mode == mojom::RequestMode::kNoCors &&
-       base::EqualsCaseInsensitiveASCII(
-           request.method, net::HttpRequestHeaders::kConnectMethod))) {
+  // Don't allow forbidden methods.
+  if (cors::IsForbiddenMethod(request.method)) {
     mojo::ReportBadMessage("CorsURLLoaderFactory: Forbidden method");
     return false;
   }
@@ -990,26 +1016,6 @@ net::handles::NetworkHandle CorsURLLoaderFactory::GetBoundNetworkForTesting()
     const {
   CHECK(!factory_override_);
   return network_loader_factory_->GetBoundNetworkForTesting();  // IN-TEST
-}
-
-void CorsURLLoaderFactory::CancelRequestsIfNonceMatchesAndUrlNotExempted(
-    const base::UnguessableToken& nonce,
-    const std::set<GURL>& exemptions) {
-  auto iterate_over_set = [&nonce, &exemptions](auto& url_loaders) {
-    // Cancelling the request may cause the URL loader to be deleted from the
-    // data structure, invalidating the iterator if it is currently pointing to
-    // that element. So advance to the next element first and delete the
-    // previous one.
-    for (auto loader_it = url_loaders.begin(); loader_it != url_loaders.end();
-         /* iteration performed inside the loop */) {
-      auto* loader = loader_it->get();
-      ++loader_it;
-      loader->CancelRequestIfNonceMatchesAndUrlNotExempted(nonce, exemptions);
-    }
-  };
-
-  iterate_over_set(url_loaders_);
-  iterate_over_set(cors_url_loaders_);
 }
 
 }  // namespace network::cors

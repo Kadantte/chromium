@@ -50,7 +50,7 @@ suite('AiPage', function() {
   async function createPage() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     page = document.createElement('settings-ai-page');
-    page.prefs = settingsPrefs.prefs;
+    page.prefs = settingsPrefs.prefs!;
     Router.getInstance().navigateTo(routes.AI);
     document.body.appendChild(page);
     return flushTasks();
@@ -79,13 +79,15 @@ suite('AiPage', function() {
     loadTimeData.overrideValues({
       showHistorySearchControl: false,
       showComposeControl: true,
-      showTabOrganizationControl: false,
       showPasswordChangeControl: false,
+      showAiSuggestionsControl: false,
+      showSkillsSettingPage: true,
+      showIndigoControl: false,
     });
     resetRouterForTesting();
     await createPage();
 
-    assertEquals(4, metricsBrowserProxy.getCallCount('recordBooleanHistogram'));
+    assertEquals(5, metricsBrowserProxy.getCallCount('recordBooleanHistogram'));
 
     assertFalse(isChildVisible(page, '#historySearchRowV2'));
     await verifyFeatureVisibilityMetrics(
@@ -95,13 +97,19 @@ suite('AiPage', function() {
     await verifyFeatureVisibilityMetrics(
         'Settings.AiPage.ElementVisibility.Compose', true);
 
-    assertFalse(isChildVisible(page, '#tabOrganizationRowV2'));
-    await verifyFeatureVisibilityMetrics(
-        'Settings.AiPage.ElementVisibility.TabOrganization', false);
-
     assertFalse(isChildVisible(page, '#passwordChangeRowV2'));
     await verifyFeatureVisibilityMetrics(
         'Settings.AiPage.ElementVisibility.PasswordChange', false);
+
+    assertFalse(isChildVisible(page, '#aiSuggestionsRow'));
+    await verifyFeatureVisibilityMetrics(
+        'Settings.AiPage.ElementVisibility.AiSuggestions', false);
+
+    assertTrue(isChildVisible(page, '#skillsRow'));
+
+    assertFalse(isChildVisible(page, '#indigoRow'));
+    await verifyFeatureVisibilityMetrics(
+        'Settings.AiPage.ElementVisibility.Indigo', false);
 
     metricsBrowserProxy.resetResolver('recordBooleanHistogram');
 
@@ -113,12 +121,14 @@ suite('AiPage', function() {
     loadTimeData.overrideValues({
       showHistorySearchControl: true,
       showComposeControl: false,
-      showTabOrganizationControl: true,
       showPasswordChangeControl: true,
+      showAiSuggestionsControl: true,
+      showSkillsSettingPage: false,
+      showIndigoControl: true,
     });
     resetRouterForTesting();
     await createPage();
-    assertEquals(4, metricsBrowserProxy.getCallCount('recordBooleanHistogram'));
+    assertEquals(5, metricsBrowserProxy.getCallCount('recordBooleanHistogram'));
 
     assertTrue(isChildVisible(page, '#historySearchRowV2'));
     await verifyFeatureVisibilityMetrics(
@@ -128,13 +138,19 @@ suite('AiPage', function() {
     await verifyFeatureVisibilityMetrics(
         'Settings.AiPage.ElementVisibility.Compose', false);
 
-    assertTrue(isChildVisible(page, '#tabOrganizationRowV2'));
-    await verifyFeatureVisibilityMetrics(
-        'Settings.AiPage.ElementVisibility.TabOrganization', true);
-
     assertTrue(isChildVisible(page, '#passwordChangeRowV2'));
     await verifyFeatureVisibilityMetrics(
         'Settings.AiPage.ElementVisibility.PasswordChange', true);
+
+    assertTrue(isChildVisible(page, '#aiSuggestionsRow'));
+    await verifyFeatureVisibilityMetrics(
+        'Settings.AiPage.ElementVisibility.AiSuggestions', true);
+
+    assertFalse(isChildVisible(page, '#skillsRow'));
+
+    assertTrue(isChildVisible(page, '#indigoRow'));
+    await verifyFeatureVisibilityMetrics(
+        'Settings.AiPage.ElementVisibility.Indigo', true);
 
     metricsBrowserProxy.resetResolver('recordBooleanHistogram');
 
@@ -206,28 +222,6 @@ suite('AiPage', function() {
     assertEquals(routes.AI, currentRoute.parent);
   });
 
-  test('tabOrganizationRow', async () => {
-    loadTimeData.overrideValues({
-      showAiPage: true,
-      showTabOrganizationControl: true,
-    });
-    resetRouterForTesting();
-    await createPage();
-
-    const tabOrganizationRow =
-        page.shadowRoot!.querySelector<HTMLElement>('#tabOrganizationRowV2');
-
-    assertTrue(!!tabOrganizationRow);
-    assertTrue(isVisible(tabOrganizationRow));
-    tabOrganizationRow.click();
-    await verifyFeatureInteractionMetrics(
-        AiPageInteractions.TAB_ORGANIZATION_CLICK,
-        'Settings.AiPage.TabOrganizationEntryPointClick');
-
-    assertEquals(
-        routes.AI_TAB_ORGANIZATION, Router.getInstance().getCurrentRoute());
-  });
-
   test('PasswordChangeRow', async () => {
     loadTimeData.overrideValues({
       showPasswordChangeControl: true,
@@ -258,5 +252,78 @@ suite('AiPage', function() {
         page.shadowRoot!.querySelector<HTMLElement>('#passwordChangeRowV2');
     assertTrue(!!passwordChangeRow);
     assertFalse(isVisible(passwordChangeRow));
+  });
+
+  test('IndigoRow', async () => {
+    loadTimeData.overrideValues({
+      showIndigoControl: true,
+      indigoSavedUrl: 'https://example.com/custom_saved',
+    });
+    await createPage();
+
+    const indigoRow = page.shadowRoot!.querySelector<HTMLElement>('#indigoRow');
+    assertTrue(!!indigoRow);
+    assertTrue(isVisible(indigoRow));
+
+    indigoRow.click();
+    await verifyFeatureInteractionMetrics(
+        AiPageInteractions.INDIGO_CLICK,
+        'Settings.AiPage.IndigoEntryPointClick');
+
+    const url = await openWindowProxy.whenCalled('openUrl');
+    assertEquals(url, 'https://example.com/custom_saved');
+  });
+
+  test('NoIndigoRowWhenFeatureDisabled', async () => {
+    loadTimeData.overrideValues({
+      showIndigoControl: false,
+    });
+    await createPage();
+
+    const indigoRow = page.shadowRoot!.querySelector<HTMLElement>('#indigoRow');
+    assertTrue(!!indigoRow);
+    assertFalse(isVisible(indigoRow));
+  });
+
+  test('aiSuggestionsRow', async () => {
+    loadTimeData.overrideValues({
+      showAiPage: true,
+      showAiSuggestionsControl: true,
+    });
+    resetRouterForTesting();
+    await createPage();
+
+    const aiSuggestionsRow =
+        page.shadowRoot!.querySelector<HTMLElement>('#aiSuggestionsRow');
+
+    assertTrue(!!aiSuggestionsRow);
+    assertTrue(isVisible(aiSuggestionsRow));
+    aiSuggestionsRow.click();
+    await verifyFeatureInteractionMetrics(
+        AiPageInteractions.AI_SUGGESTIONS_CLICK,
+        'Settings.AiPage.AiSuggestionsEntryPointClick');
+
+    const currentRoute = Router.getInstance().getCurrentRoute();
+    assertEquals(routes.AI_SUGGESTIONS, currentRoute);
+    assertEquals(routes.AI, currentRoute.parent);
+  });
+
+  test('skillsRow', async () => {
+    loadTimeData.overrideValues({
+      showAiPage: true,
+      showSkillsSettingPage: true,
+    });
+    resetRouterForTesting();
+    await createPage();
+
+    const skillsRow = page.shadowRoot!.querySelector<HTMLElement>('#skillsRow');
+
+    assertTrue(!!skillsRow);
+    assertTrue(isVisible(skillsRow));
+    skillsRow.click();
+
+    const currentRoute = Router.getInstance().getCurrentRoute();
+    assertEquals(routes.SKILLS, currentRoute);
+    assertEquals(routes.AI, currentRoute.parent);
   });
 });

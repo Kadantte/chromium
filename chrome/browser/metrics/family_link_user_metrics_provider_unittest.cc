@@ -24,6 +24,7 @@
 #include "components/supervised_user/core/common/pref_names.h"
 #include "components/supervised_user/core/common/supervised_user_constants.h"
 #include "content/public/test/browser_task_environment.h"
+#include "extensions/buildflags/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -75,7 +76,7 @@ class FamilyLinkUserMetricsProviderTest : public testing::Test {
     AccountInfo account = signin::MakePrimaryAccountAvailable(
         IdentityManagerFactory::GetForProfile(profile), test_email,
         signin::ConsentLevel::kSignin);
-    AccountCapabilitiesTestMutator mutator(&account.capabilities);
+    AccountCapabilitiesTestMutator mutator(&account);
     // Tests assume that this account is in Family Link.
     mutator.set_can_fetch_family_member_info(true);
     mutator.set_is_subject_to_parental_controls(
@@ -85,14 +86,14 @@ class FamilyLinkUserMetricsProviderTest : public testing::Test {
     signin::UpdateAccountInfoForAccount(
         IdentityManagerFactory::GetForProfile(profile), account);
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
     if (is_subject_to_parental_controls) {
       // Set Family Link `Permissions` switch (and its dependencies) to the
       // default value. Mimics the assignment by the `SupervisedUserPrefStore`.
       supervised_user_test_util::
           SetSupervisedUserExtensionsMayRequestPermissionsPref(profile, true);
     }
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
     return profile;
   }
 
@@ -305,7 +306,7 @@ TEST_F(FamilyLinkUserMetricsProviderTest,
       /*expected_bucket_count=*/1);
 }
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 class FamilyLinkUserMetricsProviderTestWithExtensionsPermissionsEnabled
     : public FamilyLinkUserMetricsProviderTest {
  protected:
@@ -384,7 +385,7 @@ TEST_F(FamilyLinkUserMetricsProviderTestWithExtensionsPermissionsEnabled,
       kSkipParentApprovalToInstallExtensionsHistogramName, ToggleState::kMixed,
       /*expected_bucket_count=*/1);
 }
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 TEST_F(FamilyLinkUserMetricsProviderTest,
        NoProfilesAddedShouldNotLogHistogram) {
@@ -515,7 +516,7 @@ class FamilyLinkUserMetricsProviderWithContentFiltersAndroidTest
  protected:
   virtual void SetUpFeatureList() {
     scoped_feature_list_.InitAndEnableFeature(
-        kSupervisedUserUseEmitDeviceLogRecordSeparately);
+        kSupervisedUserEmitLogRecordSeparately);
   }
 
   void SetUp() override {
@@ -575,8 +576,9 @@ class
       public testing::WithParamInterface<ContentFiltersTestCase> {
  protected:
   void SetUpFeatureList() override {
-    scoped_feature_list_.InitAndDisableFeature(
-        kSupervisedUserUseEmitDeviceLogRecordSeparately);
+    scoped_feature_list_.InitWithFeatureStates(
+        {{kSupervisedUserUseUrlFilteringService, true},
+         {kSupervisedUserEmitLogRecordSeparately, false}});
   }
 
   void CreateProfiles(std::size_t count) {
@@ -638,7 +640,8 @@ TEST_P(
       SupervisedUserLogRecord::Segment::kSupervisionEnabledLocally,
       /*expected_count=*/1);
   histogram_tester.ExpectBucketCount(
-      kFamilyLinkUserLogSegmentWebFilterHistogramName, WebFilterType::kDisabled,
+      kFamilyLinkUserLogSegmentWebFilterHistogramName,
+      WebFilterType::kAllowAllSites,
       /*expected_count=*/1);
 }
 

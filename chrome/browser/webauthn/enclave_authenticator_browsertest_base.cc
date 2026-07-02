@@ -36,10 +36,10 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/network_session_configurator/common/network_switches.h"
-#include "components/os_crypt/sync/os_crypt_mocker.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_service_impl.h"
+#include "components/sync/test/fake_server.h"
 #include "components/trusted_vault/test/mock_trusted_vault_throttling_connection.h"
 #include "components/trusted_vault/trusted_vault_connection.h"
 #include "components/webauthn/core/browser/passkey_model.h"
@@ -111,7 +111,6 @@ EnclaveAuthenticatorTestBase::EnclaveAuthenticatorTestBase()
   }
   scoped_icloud_drive_override_ = OverrideICloudDriveEnabled(false);
 #endif
-  OSCryptMocker::SetUp();
   scoped_vmodule_.InitWithSwitches("device_event_log_impl=2");
 
   auto security_domain_service_callback =
@@ -142,7 +141,6 @@ EnclaveAuthenticatorTestBase::EnclaveAuthenticatorTestBase()
 EnclaveAuthenticatorTestBase::~EnclaveAuthenticatorTestBase() {
   EnclaveManagerFactory::SetUrlLoaderFactoryForTesting(nullptr);
   CHECK(process_and_port_.first.Terminate(/*exit_code=*/1, /*wait=*/true));
-  OSCryptMocker::TearDown();
 }
 
 base::FilePath EnclaveAuthenticatorTestBase::GetTempDirPath() {
@@ -153,6 +151,7 @@ void EnclaveAuthenticatorTestBase::SetUpCommandLine(
     base::CommandLine* command_line) {
   SyncTest::SetUpCommandLine(command_line);
   command_line->AppendSwitch(switches::kIgnoreCertificateErrors);
+  command_line->AppendSwitch(switches::kDisableFakeServerFailureOutput);
 }
 
 void EnclaveAuthenticatorTestBase::SetUp() {
@@ -187,7 +186,7 @@ void EnclaveAuthenticatorTestBase::SetUpOnMainThread() {
   if (sync_feature_enabled_) {
     ASSERT_TRUE(sync_harness_->SetupSync());
   } else {
-    ASSERT_TRUE(sync_harness_->SignInPrimaryAccount());
+    ASSERT_TRUE(sync_harness_->SignInNoWaitForCompletion());
   }
   syncer::SyncServiceImpl* sync_service =
       SyncServiceFactory::GetAsSyncServiceImplForProfileForTesting(
@@ -226,6 +225,16 @@ void EnclaveAuthenticatorTestBase::EnableUVKeySupport(
     bool fake_hardware_backing) {
   fake_uv_provider_.emplace<crypto::ScopedFakeUserVerifyingKeyProvider>(
       fake_hardware_backing);
+}
+
+void EnclaveAuthenticatorTestBase::OverrideUVKeyAvailability(bool available) {
+  uvkey_override_ =
+      std::make_unique<crypto::ScopedUserVerifyingKeysSupportedOverride>(
+          base::BindLambdaForTesting(
+              [available](
+                  crypto::UserVerifyingKeysSupportedCallback uv_callback) {
+                std::move(uv_callback).Run(available);
+              }));
 }
 
 bool EnclaveAuthenticatorTestBase::IsUVPAA() {

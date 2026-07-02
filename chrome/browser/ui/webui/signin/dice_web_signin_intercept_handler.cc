@@ -13,6 +13,7 @@
 #include "base/notreached.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/enterprise/browser_management/management_identity.h"
 #include "chrome/browser/enterprise/browser_management/management_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
@@ -70,7 +71,7 @@ base::DictValue GetAccountInfoValue(const AccountInfo& info) {
   std::string avatar_badge_alt_text = "";
   if (info.IsManaged() == signin::Tribool::kTrue) {
     avatar_badge = kEnterprizeBadgeSource;
-  } else if (IsSupervisedUser(info.capabilities)) {
+  } else if (IsSupervisedUser(info.GetAccountCapabilities())) {
     avatar_badge = kSupervisedBadgeSource;
     avatar_badge_alt_text =
         l10n_util::GetStringUTF8(IDS_MANAGED_BY_PARENT_A11Y);
@@ -290,6 +291,11 @@ DiceWebSigninInterceptHandler::GetInterceptionParametersValue() {
                  color_utils::SkColorToRgbaString(
                      GetProfileHighlightColor(Profile::FromWebUI(web_ui()))));
   parameters.Set("useV2Design", GetShouldUseV2Design());
+  parameters.Set(
+      "useV2ProfileSwitchDesign",
+      base::FeatureList::IsEnabled(switches::kSigninInterceptGraphicUpdate) &&
+          bubble_parameters_.interception_type ==
+              WebSigninInterceptor::SigninInterceptionType::kProfileSwitch);
   parameters.Set("showManagedDisclaimer",
                  bubble_parameters_.show_managed_disclaimer);
 
@@ -353,7 +359,7 @@ std::string DiceWebSigninInterceptHandler::GetChromeSigninSubtitle() {
         IDS_SIGNIN_DICE_WEB_INTERCEPT_BUBBLE_CHROME_SIGNIN_SUBTITLE_SUPERVISED);
   }
   return l10n_util::GetStringUTF8(
-      base::FeatureList::IsEnabled(syncer::kReplaceSyncPromosWithSignInPromos)
+      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
           ? IDS_SIGNIN_DICE_WEB_INTERCEPT_BUBBLE_CHROME_SIGNIN_SUBTITLE_WITH_BOOKMARKS
           : IDS_SIGNIN_DICE_WEB_INTERCEPT_BUBBLE_CHROME_SIGNIN_SUBTITLE);
 }

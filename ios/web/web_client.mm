@@ -152,4 +152,13 @@ JSErrorReportLoggingLevel WebClient::GetJSErrorReportLoggingLevel(
   return JSErrorReportLoggingLevel::NONE;
 }
 
+CobaltController* WebClient::GetCobaltController(
+    BrowserState* browser_state) const {
+  return nullptr;
+}
+
+bool WebClient::IsSmoothScrollingSupported() const {
+  return false;
+}
+
 }  // namespace web

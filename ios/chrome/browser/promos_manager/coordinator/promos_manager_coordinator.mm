@@ -57,10 +57,13 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/credential_provider_promo_commands.h"
+#import "ios/chrome/browser/shared/public/commands/picture_in_picture_commands.h"
 #import "ios/chrome/browser/shared/public/commands/promos_manager_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/features/system_flags.h"
+#import "ios/chrome/browser/signin/model/authentication_service_factory.h"
+#import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/welcome_back/coordinator/welcome_back_display_handler.h"
 #import "ios/chrome/browser/welcome_back/model/features.h"
@@ -179,6 +182,10 @@
 - (void)stop {
   self.mediator = nil;
   [self dismissViewControllers];
+  _displayHandlerPromos.clear();
+  _viewProviderPromos.clear();
+  _banneredViewProviderPromos.clear();
+  _alertProviderPromos.clear();
 }
 
 // Display a promo if one is available.
@@ -202,7 +209,8 @@
   // Check if UI is no longer available before proceeding. It is possible that
   // while tracker is being initialized the UI can change and become not
   // available.
-  if (!IsUIAvailableForPromo(self.browser->GetSceneState())) {
+  if (!IsUIAvailableForPromo(self.browser->GetSceneState(),
+                             self.baseViewController)) {
     return;
   }
 
@@ -404,23 +412,7 @@
     //
     // These are niche edge cases that almost exclusively occur during local,
     // manual testing.
-    std::optional<promos_manager::Promo> maybeForcedPromo =
-        promos_manager::PromoForName(base::SysNSStringToUTF8(
-            experimental_flags::GetForcedPromoToDisplay()));
-
-    if (maybeForcedPromo.has_value()) {
-      promos_manager::Promo forcedPromo = maybeForcedPromo.value();
-
-      if ([self isPromoUnregistered:forcedPromo]) {
-        base::UmaHistogramEnumeration(
-            "IOS.PromosManager.Promo.ForcedDisplayFailure", forcedPromo);
-      }
-    } else {
-      base::UmaHistogramEnumeration("IOS.PromosManager.Promo.DisplayFailure",
-                                    promo);
-
-      [self.mediator deregisterPromo:promo];
-    }
+    [self.mediator deregisterPromo:promo];
   }
 }
 
@@ -572,9 +564,7 @@
 
   // What's New promo handler.
   _displayHandlerPromos[promos_manager::Promo::WhatsNew] =
-      [[WhatsNewPromoDisplayHandler alloc]
-          initWithPromosManager:PromosManagerFactory::GetForProfile(
-                                    self.profile)];
+      [[WhatsNewPromoDisplayHandler alloc] init];
 
   // Credentials provider promo handler.
   _displayHandlerPromos[promos_manager::Promo::CredentialProviderExtension] =
@@ -622,12 +612,31 @@
 }
 
 - (void)registerStandardPromoViewProviderPromos {
-  _viewProviderPromos[promos_manager::Promo::AllTabsDefaultBrowser] =
+  id<PictureInPictureCommands> PIPHandler = HandlerForProtocol(
+      self.browser->GetCommandDispatcher(), PictureInPictureCommands);
+  id<PromosManagerCommands> promosManagerHandler = HandlerForProtocol(
+      self.browser->GetCommandDispatcher(), PromosManagerCommands);
+
+  AllTabsDefaultBrowserPromoViewProvider* allTabsProvider =
       [[AllTabsDefaultBrowserPromoViewProvider alloc] init];
-  _viewProviderPromos[promos_manager::Promo::MadeForIOSDefaultBrowser] =
+  allTabsProvider.PIPHandler = PIPHandler;
+  allTabsProvider.promosManagerHandler = promosManagerHandler;
+  _viewProviderPromos[promos_manager::Promo::AllTabsDefaultBrowser] =
+      allTabsProvider;
+
+  MadeForIOSDefaultBrowserPromoViewProvider* madeForIOSProvider =
       [[MadeForIOSDefaultBrowserPromoViewProvider alloc] init];
-  _viewProviderPromos[promos_manager::Promo::StaySafeDefaultBrowser] =
+  madeForIOSProvider.PIPHandler = PIPHandler;
+  madeForIOSProvider.promosManagerHandler = promosManagerHandler;
+  _viewProviderPromos[promos_manager::Promo::MadeForIOSDefaultBrowser] =
+      madeForIOSProvider;
+
+  StaySafeDefaultBrowserPromoViewProvider* staySafeProvider =
       [[StaySafeDefaultBrowserPromoViewProvider alloc] init];
+  staySafeProvider.PIPHandler = PIPHandler;
+  staySafeProvider.promosManagerHandler = promosManagerHandler;
+  _viewProviderPromos[promos_manager::Promo::StaySafeDefaultBrowser] =
+      staySafeProvider;
 }
 
 - (void)registerBanneredPromoViewProviderPromos {
@@ -635,12 +644,24 @@
 }
 
 - (void)registerStandardPromoAlertProviderPromos {
+  ProfileIOS* profile = self.profile;
   // Post-restore sign-in promo handler.
   _alertProviderPromos[promos_manager::Promo::PostRestoreSignInAlert] =
-      [[PostRestoreSignInProvider alloc] initForBrowser:self.browser];
+      [[PostRestoreSignInProvider alloc]
+            initWithSyncService:SyncServiceFactory::GetForProfile(profile)
+          authenticationService:AuthenticationServiceFactory::GetForProfile(
+                                    profile)
+                identityManager:IdentityManagerFactory::GetForProfile(profile)
+                    prefService:profile->GetPrefs()];
 
-  _alertProviderPromos[promos_manager::Promo::PostRestoreDefaultBrowserAlert] =
+  PostRestoreDefaultBrowserPromoProvider* postRestoreProvider =
       [[PostRestoreDefaultBrowserPromoProvider alloc] init];
+  postRestoreProvider.PIPHandler = HandlerForProtocol(
+      self.browser->GetCommandDispatcher(), PictureInPictureCommands);
+  postRestoreProvider.promosManagerHandler = HandlerForProtocol(
+      self.browser->GetCommandDispatcher(), PromosManagerCommands);
+  _alertProviderPromos[promos_manager::Promo::PostRestoreDefaultBrowserAlert] =
+      postRestoreProvider;
 
   // Post-default browser abandonment promo handler.
   if (IsPostDefaultAbandonmentPromoEnabled()) {
@@ -676,19 +697,6 @@
   }
 
   return result;
-}
-
-// Checks if `promo` is properly registered within this coordinator.
-- (BOOL)isPromoUnregistered:(promos_manager::Promo)promo {
-  auto handler_it = _displayHandlerPromos.find(promo);
-  auto provider_it = _viewProviderPromos.find(promo);
-  auto bannered_provider_it = _banneredViewProviderPromos.find(promo);
-  auto alert_provider_it = _alertProviderPromos.find(promo);
-
-  return handler_it == _displayHandlerPromos.end() &&
-         provider_it == _viewProviderPromos.end() &&
-         bannered_provider_it == _banneredViewProviderPromos.end() &&
-         alert_provider_it == _alertProviderPromos.end();
 }
 
 @end

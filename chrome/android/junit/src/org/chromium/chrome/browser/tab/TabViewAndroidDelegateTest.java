@@ -26,7 +26,6 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.LooperMode;
 
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
@@ -43,7 +42,6 @@ import org.chromium.ui.mojom.VirtualKeyboardMode;
 
 /** Unit tests for the TabViewAndroidDelegate. */
 @RunWith(BaseRobolectricTestRunner.class)
-@LooperMode(LooperMode.Mode.LEGACY)
 @EnableFeatures(ContentFeatures.TOUCH_DRAG_AND_CONTEXT_MENU)
 @DisableFeatures(ChromeFeatureList.ANIMATED_IMAGE_DRAG_SHADOW)
 public class TabViewAndroidDelegateTest {
@@ -151,7 +149,7 @@ public class TabViewAndroidDelegateTest {
                 .onProvideAutofillVirtualStructure(
                         structure, View.AUTOFILL_FLAG_INCLUDE_NOT_IMPORTANT_VIEWS);
 
-        SparseArray<AutofillValue> values = new SparseArray();
+        SparseArray<AutofillValue> values = new SparseArray<>();
         mViewAndroidDelegate.autofill(values);
         verify(mTab).autofill(values);
     }

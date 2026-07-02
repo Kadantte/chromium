@@ -11,9 +11,9 @@
 #include "chrome/browser/extensions/api/side_panel/side_panel_service.h"
 #include "chrome/browser/extensions/extension_view_host.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/side_panel/side_panel_entry.h"
+#include "chrome/browser/ui/side_panel/side_panel_entry_observer.h"
 #include "chrome/browser/ui/views/extensions/extension_view_views.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_entry.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_entry_observer.h"
 #include "extensions/browser/extension_host.h"
 #include "extensions/browser/extension_icon_image.h"
 
@@ -41,7 +41,7 @@ class Extension;
 // SidePanelEntries for the associated extension and creates the view to be
 // shown if this extension's SidePanelEntry is active.
 // TODO(crbug.com/40264634): Separate into different classes for global vs
-// contextual extension side panels given the difference in behavior betweeen
+// contextual extension side panels given the difference in behavior between
 // these two panel types.
 class ExtensionSidePanelCoordinator : public ExtensionViewViews::Observer,
                                       public SidePanelService::Observer,
@@ -58,7 +58,7 @@ class ExtensionSidePanelCoordinator : public ExtensionViewViews::Observer,
       const ExtensionSidePanelCoordinator&) = delete;
   ~ExtensionSidePanelCoordinator() override;
 
-  static SidePanelEntry::PanelType GetPanelType();
+  static SidePanelType GetPanelType();
 
   // Returns the WebContents managed by `host_`.
   content::WebContents* GetHostWebContentsForTesting() const;

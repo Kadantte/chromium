@@ -15,7 +15,6 @@
 
 #include "base/command_line.h"
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
@@ -30,7 +29,7 @@
 #include "chrome/common/open_search_description_document_handler.mojom.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/renderer/actor/journal.h"
-#include "chrome/renderer/actor/page_stability_monitor.h"
+#include "chrome/renderer/actor/page_stability_monitor_delegate.h"
 #include "chrome/renderer/actor/tool_executor.h"
 #include "chrome/renderer/chrome_content_settings_agent_delegate.h"
 #include "chrome/renderer/media/media_feeds.h"
@@ -43,12 +42,14 @@
 #include "components/no_state_prefetch/renderer/no_state_prefetch_utils.h"
 #include "components/offline_pages/buildflags/buildflags.h"
 #include "components/optimization_guide/content/renderer/page_text_agent.h"
+#include "components/page_content_annotations/content/renderer/page_stability_monitor.h"
 #include "components/translate/content/renderer/translate_agent.h"
 #include "components/translate/core/common/translate_util.h"
 #include "components/web_cache/renderer/web_cache_impl.h"
 #include "content/public/common/bindings_policy.h"
 #include "content/public/common/buildflags.h"
 #include "content/public/common/content_features.h"
+#include "content/public/common/content_switches.h"
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_frame_visitor.h"
 #include "content/public/renderer/render_thread.h"
@@ -143,7 +144,7 @@ FrameHeaderMap& GetFrameHeaderMap() {
 // origins for OOM crashes. Keys are recorded here and not via
 // ChromeContentClient::SetActiveURL() because that method is only invoked in
 // response to IPC messages and most OOMs do not occur in response to an IPC.
-// https://crbug.com/1310046
+// https://crbug.com/40830140
 void UpdateLoadedOriginCrashKeys() {
   // Capture the origin for each RenderFrame.
   struct Visitor : public content::RenderFrameVisitor {
@@ -207,8 +208,15 @@ ChromeRenderFrameObserver::ChromeRenderFrameObserver(
   SetClientSidePhishingDetection();
 #endif
 
-  translate_agent_ =
-      new translate::TranslateAgent(render_frame, ISOLATED_WORLD_ID_TRANSLATE);
+  bool skip_translate = base::FeatureList::IsEnabled(features::kInitialWebUI) &&
+                        features::kInitialWebUIWithoutTranslate.Get() &&
+                        base::CommandLine::ForCurrentProcess()->HasSwitch(
+                            switches::kTopChromeWebUI);
+
+  if (!skip_translate) {
+    translate_agent_ = new translate::TranslateAgent(
+        render_frame, ISOLATED_WORLD_ID_TRANSLATE);
+  }
 }
 
 ChromeRenderFrameObserver::~ChromeRenderFrameObserver() = default;
@@ -627,6 +635,25 @@ void ChromeRenderFrameObserver::SetShouldDeferMediaLoad(bool should_defer) {
   prerender::SetShouldDeferMediaLoad(render_frame(), should_defer);
 }
 
+void ChromeRenderFrameObserver::InitializeTool(
+    actor::mojom::ToolInvocationPtr request,
+    InitializeToolCallback callback) {
+  if (!tool_executor_) {
+    tool_executor_ =
+        std::make_unique<actor::ToolExecutor>(render_frame(), *actor_journal_);
+  }
+
+  actor::mojom::InitializeToolResultPtr result =
+      tool_executor_->InitializeTool(std::move(request));
+  std::move(callback).Run(std::move(result));
+}
+
+void ChromeRenderFrameObserver::ExecuteTool(const actor::TaskId& task_id,
+                                            ExecuteToolCallback callback) {
+  CHECK(tool_executor_) << "ExecuteTool was called before InitializeTool";
+  tool_executor_->ExecuteTool(task_id, std::move(callback));
+}
+
 void ChromeRenderFrameObserver::InvokeTool(
     actor::mojom::ToolInvocationPtr request,
     InvokeToolCallback callback) {
@@ -650,8 +677,10 @@ void ChromeRenderFrameObserver::StartActorJournal(
 }
 
 void ChromeRenderFrameObserver::GetCrossDocumentScriptToolResult(
+    const base::UnguessableToken& execution_id,
     GetCrossDocumentScriptToolResultCallback callback) {
   render_frame()->GetWebFrame()->GetDocument().GetCrossDocumentScriptToolResult(
+      execution_id,
       base::BindOnce(
           [](GetCrossDocumentScriptToolResultCallback cb,
              blink::WebString result) { std::move(cb).Run(result.Utf8()); },
@@ -659,11 +688,15 @@ void ChromeRenderFrameObserver::GetCrossDocumentScriptToolResult(
 }
 
 void ChromeRenderFrameObserver::CreatePageStabilityMonitor(
-    mojo::PendingReceiver<actor::mojom::PageStabilityMonitor> monitor,
+    mojo::PendingReceiver<page_content_annotations::mojom::PageStabilityMonitor>
+        monitor,
     const actor::TaskId& task_id,
     bool supports_paint_stability) {
-  page_stability_monitor_ = std::make_unique<actor::PageStabilityMonitor>(
-      *render_frame(), supports_paint_stability, task_id, *actor_journal_);
+  page_stability_monitor_ =
+      std::make_unique<page_content_annotations::PageStabilityMonitor>(
+          *render_frame(), supports_paint_stability,
+          std::make_unique<actor::PageStabilityMonitorDelegate>(
+              task_id, *actor_journal_));
   page_stability_monitor_->Bind(std::move(monitor));
 }
 
@@ -675,6 +708,16 @@ void ChromeRenderFrameObserver::SetClientSidePhishingDetection() {
       safe_browsing::PhishingImageEmbedderDelegate::Create(render_frame());
 #endif
 }
+
+#if BUILDFLAG(ENABLE_PDF)
+void ChromeRenderFrameObserver::PdfPageCaptured(const std::u16string& contents,
+                                                const std::string& pdf_lang,
+                                                const GURL& page_url) {
+  if (translate_agent_) {
+    translate_agent_->PdfPageCaptured(contents, pdf_lang, page_url);
+  }
+}
+#endif
 
 void ChromeRenderFrameObserver::OnRenderFrameObserverRequest(
     mojo::PendingAssociatedReceiver<chrome::mojom::ChromeRenderFrame>
@@ -783,7 +826,7 @@ void ChromeRenderFrameObserver::CapturePageText(
   // Will swap out the string.
   if (phishing_classifier_) {
     phishing_classifier_->PageCaptured(
-        contents, layout_type == blink::WebMeaningfulLayout::kFinishedParsing);
+        layout_type == blink::WebMeaningfulLayout::kFinishedParsing);
   }
   if (phishing_image_embedder_) {
     phishing_image_embedder_->PageCaptured(

@@ -34,7 +34,6 @@
 #import "components/sync/service/sync_service_utils.h"
 #import "components/sync/service/sync_user_settings.h"
 #import "ios/chrome/browser/net/model/crurl.h"
-#import "ios/chrome/browser/passwords/coordinator/password_utils.h"
 #import "ios/chrome/browser/passwords/model/password_checkup_metrics.h"
 #import "ios/chrome/browser/settings/ui_bundled/cells/inline_promo_cell.h"
 #import "ios/chrome/browser/settings/ui_bundled/cells/inline_promo_item.h"
@@ -46,6 +45,7 @@
 #import "ios/chrome/browser/settings/ui_bundled/password/password_manager_view_controller_delegate.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_manager_view_controller_items.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_manager_view_controller_presentation_delegate.h"
+#import "ios/chrome/browser/settings/ui_bundled/password/password_utils.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_consumer.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_settings_commands.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_table_view_constants.h"
@@ -1059,6 +1059,10 @@ bool AreIssuesEqual(const std::vector<password_manager::AffiliatedGroup>& lhs,
 
 - (void)setShouldShowPasswordManagerWidgetPromo:
     (BOOL)shouldShowPasswordManagerWidgetPromo {
+  if (_shouldShowPasswordManagerWidgetPromo ==
+      shouldShowPasswordManagerWidgetPromo) {
+    return;
+  }
   _shouldShowPasswordManagerWidgetPromo = shouldShowPasswordManagerWidgetPromo;
 
   // Reload data to display the promo. No need to reload before the view is
@@ -1074,6 +1078,9 @@ bool AreIssuesEqual(const std::vector<password_manager::AffiliatedGroup>& lhs,
 
 - (void)setShouldShowTrustedVaultWidgetPromo:
     (BOOL)shouldShowTrustedVaultWidgetPromo {
+  if (_shouldShowTrustedVaultWidgetPromo == shouldShowTrustedVaultWidgetPromo) {
+    return;
+  }
   _shouldShowTrustedVaultWidgetPromo = shouldShowTrustedVaultWidgetPromo;
 
   // Reload data to display the promo. No need to reload before the view is

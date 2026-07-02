@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/audio/fuchsia/audio_output_stream_fuchsia.h"
 
 #include <fuchsia/media/cpp/fidl.h>
@@ -31,13 +26,8 @@ const uint32_t kBufferId = 0;
 
 std::optional<fuchsia::media::AudioRenderUsage> GetStreamUsage(
     const AudioParameters& parameters) {
-  int usage_flags = parameters.effects() &
-                    (AudioParameters::FUCHSIA_RENDER_USAGE_BACKGROUND |
-                     AudioParameters::FUCHSIA_RENDER_USAGE_MEDIA |
-                     AudioParameters::FUCHSIA_RENDER_USAGE_INTERRUPTION |
-                     AudioParameters::FUCHSIA_RENDER_USAGE_SYSTEM_AGENT |
-                     AudioParameters::FUCHSIA_RENDER_USAGE_COMMUNICATION);
-  switch (usage_flags) {
+  int usage = parameters.effects() & AudioParameters::FUCHSIA_RENDER_USAGE_MASK;
+  switch (usage) {
     case AudioParameters::FUCHSIA_RENDER_USAGE_BACKGROUND:
       return fuchsia::media::AudioRenderUsage::BACKGROUND;
     case AudioParameters::FUCHSIA_RENDER_USAGE_MEDIA:
@@ -56,7 +46,8 @@ std::optional<fuchsia::media::AudioRenderUsage> GetStreamUsage(
       }
       return fuchsia::media::AudioRenderUsage::MEDIA;
     default:
-      DLOG(FATAL) << "More than one FUCHSIA_RENDER_USAGE flag is set";
+      DLOG(FATAL) << "Invalid FUCHSIA_RENDER_USAGE value: "
+                  << (usage >> AudioParameters::FUCHSIA_RENDER_USAGE_SHIFT);
       return std::nullopt;
   }
 }

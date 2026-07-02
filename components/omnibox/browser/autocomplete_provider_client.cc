@@ -5,6 +5,7 @@
 #include "components/omnibox/browser/autocomplete_provider_client.h"
 
 #include "base/notreached.h"
+#include "components/omnibox/browser/omnibox_field_trial.h"
 
 history_clusters::HistoryClustersService*
 AutocompleteProviderClient::GetHistoryClustersService() {
@@ -16,8 +17,18 @@ AutocompleteProviderClient::GetHistoryEmbeddingsSearch() {
   return nullptr;
 }
 
+GeolocationHeaderService*
+AutocompleteProviderClient::GetGeolocationHeaderService() const {
+  return nullptr;
+}
+
 DocumentSuggestionsService*
 AutocompleteProviderClient::GetDocumentSuggestionsService() const {
+  return nullptr;
+}
+
+AiModeButtonService* AutocompleteProviderClient::GetAiModeButtonService()
+    const {
   return nullptr;
 }
 
@@ -75,6 +86,10 @@ bool AutocompleteProviderClient::IsOmniboxNextLensSearchChipEnabled() const {
 
 bool AutocompleteProviderClient::IsOmniboxNextAimPopupEnabled() const {
   return false;
+}
+
+bool AutocompleteProviderClient::IsGeminiStarterPackEnabled() const {
+  return OmniboxFieldTrial::IsStarterPackExpansionEnabled();
 }
 
 base::WeakPtr<AutocompleteProviderClient>

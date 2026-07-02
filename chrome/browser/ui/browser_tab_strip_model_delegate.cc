@@ -12,6 +12,8 @@
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "build/build_config.h"
+#include "chrome/browser/glic/public/glic_keyed_service.h"
+#include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
 #include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/reading_list/reading_list_model_factory.h"
@@ -19,12 +21,12 @@
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_live_tab_context.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/tab_helpers.h"
+#include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_group_deletion_dialog_controller.h"
@@ -54,10 +56,6 @@
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/gfx/range/range.h"
 
-#if BUILDFLAG(ENABLE_GLIC)
-#include "chrome/browser/glic/public/glic_keyed_service.h"
-#endif  // BUILDFLAG(ENABLE_GLIC)
-
 namespace chrome {
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -68,48 +66,13 @@ BrowserTabStripModelDelegate::BrowserTabStripModelDelegate(Browser* browser)
 
 BrowserTabStripModelDelegate::~BrowserTabStripModelDelegate() = default;
 
-#if BUILDFLAG(ENABLE_GLIC)
-bool BrowserTabStripModelDelegate::IsTabGlicPinned(tabs::TabHandle tab_handle) {
-  auto* service =
-      glic::GlicKeyedServiceFactory::GetGlicKeyedService(browser_->profile());
-
-  return service->sharing_manager().IsTabPinned(tab_handle);
-}
-
-bool BrowserTabStripModelDelegate::GlicPinTabs(
-    base::span<const tabs::TabHandle> tab_handles) {
-  auto* service =
-      glic::GlicKeyedServiceFactory::GetGlicKeyedService(browser_->profile());
-
-  return service->sharing_manager().PinTabs(tab_handles);
-}
-
-bool BrowserTabStripModelDelegate::GlicUnpinTabs(
-    base::span<const tabs::TabHandle> tab_handles) {
-  auto* service =
-      glic::GlicKeyedServiceFactory::GetGlicKeyedService(browser_->profile());
-
-  return service->sharing_manager().UnpinTabs(tab_handles);
-}
-
-void BrowserTabStripModelDelegate::OpenGlicWindowFromSharedTab() {
-  auto* service =
-      glic::GlicKeyedServiceFactory::GetGlicKeyedService(browser_->profile());
-
-  if (!service->IsWindowOrFreShowing()) {
-    service->ToggleUI(/*bwi=*/nullptr, /*prevent_close=*/true,
-                      glic::mojom::InvocationSource::kSharedTab);
-  }
-}
-
 void BrowserTabStripModelDelegate::GlicUnpinTabsFromAllConversations(
     base::span<const tabs::TabHandle> tab_handles) {
   auto* service =
       glic::GlicKeyedServiceFactory::GetGlicKeyedService(browser_->profile());
-  service->UnpinTabsFromAllInstances(tab_handles,
-                                     glic::GlicUnpinTrigger::kContextMenu);
+  service->instance_coordinator().UnpinTabsFromAllInstances(
+      tab_handles, glic::GlicUnpinTrigger::kContextMenu);
 }
-#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 // BrowserTabStripModelDelegate, TabStripModelDelegate implementation:
@@ -178,7 +141,7 @@ bool BrowserTabStripModelDelegate::CanDuplicateContentsAt(int index) {
 }
 
 bool BrowserTabStripModelDelegate::IsTabStripEditable() {
-  return browser_->window()->IsTabStripEditable();
+  return BrowserWindow::FromBrowser(browser_)->IsTabStripEditable();
 }
 
 content::WebContents* BrowserTabStripModelDelegate::DuplicateContentsAt(
@@ -262,6 +225,20 @@ void BrowserTabStripModelDelegate::CreateHistoricalGroup(
   }
 }
 
+void BrowserTabStripModelDelegate::CreateHistoricalSplit(
+    const split_tabs::SplitTabId& split_id) {
+  if (!BrowserSupportsHistoricalEntries()) {
+    return;
+  }
+
+  sessions::TabRestoreService* service =
+      TabRestoreServiceFactory::GetForProfile(browser_->profile());
+  if (service) {
+    service->CreateHistoricalSplit(browser_->GetFeatures().live_tab_context(),
+                                   split_id);
+  }
+}
+
 void BrowserTabStripModelDelegate::GroupAdded(
     const tab_groups::TabGroupId& group) {}
 
@@ -269,6 +246,13 @@ void BrowserTabStripModelDelegate::WillCloseGroup(
     const tab_groups::TabGroupId& group) {
   // Store updated information about the tab group in TabRestore.
   CreateHistoricalGroup(group);
+}
+
+void BrowserTabStripModelDelegate::WillCloseSplit(
+    const split_tabs::SplitTabId& split_id) {
+  if (base::FeatureList::IsEnabled(tabs::kSplitViewTabRestore)) {
+    CreateHistoricalSplit(split_id);
+  }
 }
 
 void BrowserTabStripModelDelegate::GroupCloseStopped(
@@ -280,14 +264,50 @@ void BrowserTabStripModelDelegate::GroupCloseStopped(
   }
 }
 
+void BrowserTabStripModelDelegate::SplitClosed(
+    const split_tabs::SplitTabId& split_id) {
+  if (!base::FeatureList::IsEnabled(tabs::kSplitViewTabRestore)) {
+    return;
+  }
+
+  if (!browser_ || !browser_->profile()) {
+    return;
+  }
+
+  sessions::TabRestoreService* service =
+      TabRestoreServiceFactory::GetForProfile(browser_->profile());
+  if (service) {
+    service->SplitClosed(split_id);
+  }
+}
+
+void BrowserTabStripModelDelegate::SplitCloseStopped(
+    const split_tabs::SplitTabId& split_id) {
+  if (!base::FeatureList::IsEnabled(tabs::kSplitViewTabRestore)) {
+    return;
+  }
+
+  if (!browser_ || !browser_->profile()) {
+    return;
+  }
+
+  sessions::TabRestoreService* service =
+      TabRestoreServiceFactory::GetForProfile(browser_->profile());
+  if (service) {
+    service->SplitCloseStopped(split_id);
+  }
+}
+
 bool BrowserTabStripModelDelegate::RunUnloadListenerBeforeClosing(
     content::WebContents* contents) {
-  return browser_->RunUnloadListenerBeforeClosing(contents);
+  return UnloadController::From(browser_)->RunUnloadListenerBeforeClosing(
+      contents);
 }
 
 bool BrowserTabStripModelDelegate::ShouldRunUnloadListenerBeforeClosing(
     content::WebContents* contents) {
-  return browser_->ShouldRunUnloadListenerBeforeClosing(contents);
+  return UnloadController::From(browser_)->ShouldRunUnloadListenerBeforeClosing(
+      contents);
 }
 
 bool BrowserTabStripModelDelegate::CanReload() const {
@@ -337,12 +357,13 @@ BrowserTabStripModelDelegate::GetBrowserWindowInterface() {
 
 void BrowserTabStripModelDelegate::NewSplitTab(
     std::vector<int> indices,
+    split_tabs::SplitTabLayout layout,
     split_tabs::SplitTabCreatedSource source) {
   if (indices.empty()) {
-    chrome::NewSplitTab(browser_, source);
+    chrome::NewSplitTab(browser_, layout, source);
   } else {
     browser_->tab_strip_model()->AddToNewSplit(
-        indices, split_tabs::SplitTabVisualData(), source);
+        indices, split_tabs::SplitTabVisualData(layout), source);
   }
 }
 
@@ -380,7 +401,7 @@ void BrowserTabStripModelDelegate::OnRemovingAllTabsFromGroups(
 // BrowserTabStripModelDelegate, private:
 
 void BrowserTabStripModelDelegate::CloseFrame() {
-  browser_->window()->Close();
+  browser_->GetWindow()->Close();
 }
 
 bool BrowserTabStripModelDelegate::BrowserSupportsHistoricalEntries() {

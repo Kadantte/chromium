@@ -11,8 +11,8 @@
 
 #include "base/uuid.h"
 #include "chrome/common/chromeos/extensions/api/diagnostics.h"
+#include "chromeos/ash/services/cros_healthd/public/mojom/cros_healthd_exception.mojom.h"
 #include "chromeos/crosapi/mojom/telemetry_diagnostic_routine_service.mojom.h"
-#include "chromeos/crosapi/mojom/telemetry_extension_exception.mojom.h"
 
 // This file contains helper functions used by the routine API to convert its
 // types to/from telemetry service types.
@@ -59,13 +59,6 @@ api::os_diagnostics::LegacyMemoryRoutineFinishedInfo UncheckedConvertPtr(
 
 // For legacy finished events.
 // TODO(b/331540565): Remove this function after the legacy event is removed.
-api::os_diagnostics::LegacyVolumeButtonRoutineFinishedInfo UncheckedConvertPtr(
-    crosapi::mojom::TelemetryDiagnosticVolumeButtonRoutineDetailPtr input,
-    base::Uuid uuid,
-    bool has_passed);
-
-// For legacy finished events.
-// TODO(b/331540565): Remove this function after the legacy event is removed.
 api::os_diagnostics::LegacyFanRoutineFinishedInfo UncheckedConvertPtr(
     crosapi::mojom::TelemetryDiagnosticFanRoutineDetailPtr input,
     base::Uuid uuid,
@@ -93,7 +86,7 @@ api::os_diagnostics::RoutineFinishedInfo UncheckedConvertPtr(
 }  // namespace unchecked
 
 api::os_diagnostics::ExceptionReason Convert(
-    crosapi::mojom::TelemetryExtensionException::Reason input);
+    ash::cros_healthd::mojom::Exception::Reason input);
 
 api::os_diagnostics::RoutineWaitingReason Convert(
     crosapi::mojom::TelemetryDiagnosticRoutineStateWaiting::Reason input);

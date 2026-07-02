@@ -59,8 +59,7 @@ static inline bool FeatureWithValidIdent(const String& media_feature,
                                          CSSValueID ident,
                                          const CSSParserContext& context) {
   if (media_feature == media_feature_names::kDisplayModeMediaFeature) {
-    return ident == CSSValueID::kFullscreen ||
-           ident == CSSValueID::kBorderless || ident == CSSValueID::kUnframed ||
+    return ident == CSSValueID::kFullscreen || ident == CSSValueID::kUnframed ||
            ident == CSSValueID::kStandalone ||
            ident == CSSValueID::kMinimalUi ||
            ident == CSSValueID::kWindowControlsOverlay ||
@@ -254,8 +253,7 @@ static inline bool FeatureWithValidIdent(const String& media_feature,
     }
   }
 
-  if (RuntimeEnabledFeatures::CSSFallbackContainerQueriesEnabled() &&
-      media_feature == media_feature_names::kFallbackMediaFeature) {
+  if (media_feature == media_feature_names::kFallbackMediaFeature) {
     return ident == CSSValueID::kNone;
   }
 
@@ -513,7 +511,7 @@ std::optional<MediaQueryExpValue> MediaQueryExpValue::Consume(
     return std::nullopt;
   }
 
-  DCHECK_EQ(media_feature, media_feature.LowerASCII())
+  DCHECK_EQ(media_feature, media_feature.ToAsciiLower())
       << "Under the assumption that custom properties in style() container "
          "queries are currently the only case sensitive features";
 
@@ -555,7 +553,10 @@ std::optional<MediaQueryExpValue> MediaQueryExpValue::Consume(
     return std::nullopt;
   }
 
-  if (!supports_element_dependent && value->IsElementDependent()) {
+  // TODO(crbug.com/475808971): We don't support random() outside element
+  // context except container style queries for now.
+  if (value->HasRandomFunctions() ||
+      (!supports_element_dependent && value->IsElementDependent())) {
     return std::nullopt;
   }
 
@@ -658,7 +659,7 @@ String MediaQueryExp::Serialize() const {
   // <mf-plain>  e.g. (width: 100px)
   if (!bounds_.IsRange()) {
     if (HasMediaFeature() || IsCustomMedia()) {
-      result.Append(media_feature_);
+      SerializeIdentifier(media_feature_, result);
     } else {
       result.Append(reference_value_->CssText());
     }
@@ -676,7 +677,7 @@ String MediaQueryExp::Serialize() const {
       result.Append(" ");
     }
     if (HasMediaFeature()) {
-      result.Append(media_feature_);
+      SerializeIdentifier(media_feature_, result);
     } else {
       result.Append(reference_value_->CssText());
     }

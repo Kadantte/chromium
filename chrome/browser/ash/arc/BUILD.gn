@@ -4,7 +4,7 @@
 
 import("//build/chromeos/crosier_tests.gni")
 import("//build/config/chrome_build.gni")
-import("//build/config/chromeos/ui_mode.gni")
+import("//build/config/chromeos/args.gni")
 
 assert(is_chromeos)
 
@@ -87,6 +87,7 @@ static_library("arc") {
     "//chromeos/ash/experiences/arc",
     "//chromeos/ash/experiences/arc:arc_app_constants",
     "//chromeos/ash/experiences/arc/mojom",
+    "//chromeos/ash/experiences/settings_ui",
     "//chromeos/components/mgs",
     "//chromeos/dbus/power",
     "//chromeos/dbus/power:power_manager_proto",
@@ -261,7 +262,6 @@ source_set("arc_util_impl") {
   deps = [
     ":arc_util",
     "//ash/constants",
-    "//chrome/app:generated_resources",
     "//chrome/browser:browser_process",
     "//chrome/browser/ash/arc/policy",
     "//chrome/browser/ash/arc/session",
@@ -272,6 +272,9 @@ source_set("arc_util_impl") {
     "//chrome/browser/ash/profiles",
     "//chrome/browser/chromeos/arc",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/profiles:profile_manager",
+    "//chrome/browser/tab_contents",
+    "//chrome/browser/ui:simple_message_box_headers",
     "//chrome/browser/ui/ash/login",
     "//chrome/browser/ui/ash/shelf",
     "//chromeos/ash/components/browser_context_helper",

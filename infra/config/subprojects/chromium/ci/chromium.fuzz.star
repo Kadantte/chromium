@@ -119,6 +119,7 @@ def _arch_short_name(target_arch, target_bits):
 def ci_builder(
         max_concurrent_invocations = None,
         chromium_config_name = None,
+        android_config_name = None,
         build_config = None,
         target_bits = None,
         target_arch = None,
@@ -154,6 +155,12 @@ def ci_builder(
     if platform_short_name:
         gn_configs.append(platform_short_name)
 
+    android_config = None
+    if android_config_name:
+        android_config = builder_config.android_config(
+            config = android_config_name,
+        )
+
     return ci.builder(
         triggering_policy = scheduler.greedy_batching(
             max_concurrent_invocations = max_concurrent_invocations,
@@ -173,6 +180,7 @@ def ci_builder(
                 target_bits = target_bits,
                 target_platform = target_platform,
             ),
+            android_config = android_config,
             clusterfuzz_archive = clusterfuzz_archive,
         ),
         gn_args = gn_args.config(configs = gn_configs),
@@ -184,9 +192,11 @@ def ci_builder(
     )
 
 def browser_builder(
-        max_concurrent_invocations = 4,
+        # Increasing this could overload the remote workers for build, so don't increase it much.
+        max_concurrent_invocations = 3,
         build_config = None,
         clusterfuzz_archive_name_prefix = None,
+        clusterfuzz_archive_schema_version = None,
         clusterfuzz_archive_subdir = None,
         clusterfuzz_gs_bucket = None,
         console_short_name = None,
@@ -204,12 +214,13 @@ def browser_builder(
         use_component_build = use_component_build,
         clusterfuzz_archive = builder_config.clusterfuzz_archive(
             archive_name_prefix = clusterfuzz_archive_name_prefix,
+            archive_schema_version = clusterfuzz_archive_schema_version,
             archive_subdir = clusterfuzz_archive_subdir,
             gs_acl = "public-read",
             gs_bucket = clusterfuzz_gs_bucket,
         ),
         targets = targets.bundle(
-            additional_compile_targets = ["chromium_builder_asan"],
+            additional_compile_targets = ["blackbox_fuzzing_targets"],
             mixins = ["chromium-tester-service-account"],
         ),
         console_short_name = console_short_name or default_console_short_name,
@@ -252,9 +263,11 @@ def fuzz_target_builder(
         use_component_build = True,
         chromium_extra_apply_configs = [],
         clusterfuzz_archive_name_prefix = None,
+        clusterfuzz_archive_schema_version = None,
         clusterfuzz_archive_subdir = None,
         clusterfuzz_ios_targets_only = None,
         clusterfuzz_v8_targets_only = None,
+        use_ssd_for_test_builder = False,
         contact_team_email = "chrome-fuzzing-core@google.com",
         **kwargs):
     if not name and not test_builder_name:
@@ -278,6 +291,9 @@ def fuzz_target_builder(
 
     if clusterfuzz_v8_targets_only != None:
         properties["v8_targets_only"] = clusterfuzz_v8_targets_only
+
+    if clusterfuzz_archive_schema_version != None:
+        properties["archive_schema_version"] = clusterfuzz_archive_schema_version
 
     # Creating a dict in this manner will result in an error if a named
     # argument we provide collides with a value already specified in `kwargs`,
@@ -331,6 +347,9 @@ def fuzz_target_builder(
     description = "Builds and runs fuzz target tests."
     if name:
         description += " Mirrors the build configuration of \"" + name + "\"."
+
+    if "ssd" in kwargs:
+        kwargs["ssd"] = use_ssd_for_test_builder
 
     ci_builder(
         name = test_builder_name,
@@ -393,21 +412,6 @@ browser_asan_builder(
         "lsan",
     ],
     siso_remote_jobs = 250,
-)
-
-browser_asan_builder(
-    name = "ASan Debug (32-bit x86 with V8-ARM)",
-    build_config = builder_config.build_config.DEBUG,
-    target_bits = 32,
-    target_platform = builder_config.target_platform.LINUX,
-    clusterfuzz_archive_name_prefix = "asan-v8-arm",
-    clusterfuzz_archive_subdir = "v8-arm",
-    console_category = "linux asan|x64 v8-ARM",
-    contact_team_email = "v8-infra@google.com",
-    gn_extra_configs = [
-        "v8_heap",
-        "v8_hybrid",
-    ],
 )
 
 browser_asan_builder(
@@ -481,7 +485,6 @@ ci.builder(
     gn_args = gn_args.config(
         configs = [
             "asan",
-            "lsan",
             "fuzzer",
             "v8_sandbox_testing",
             "release_builder",
@@ -491,7 +494,7 @@ ci.builder(
         ],
     ),
     targets = targets.bundle(
-        additional_compile_targets = ["chromium_builder_asan"],
+        additional_compile_targets = ["blackbox_fuzzing_targets"],
         mixins = ["chromium-tester-service-account"],
     ),
     # TODO(saelo): remove this once we've verified that the builder works.
@@ -501,6 +504,60 @@ ci.builder(
         short_name = "sbxtst",
     ),
     contact_team_email = "v8-infra@google.com",
+)
+
+ci_builder(
+    name = "android-desktop-x64-asan-rel",
+    description_html = "Android desktop x64 ASan release compile builder.",
+
+    # Build ChromePublic.apk
+    targets = targets.bundle(
+        additional_compile_targets = [
+            "chrome_public_apk",
+        ],
+    ),
+
+    # TODO(b/519161719): Enable gardening once green enough.
+    gardener_rotations = args.ignore_default(None),
+
+    # Android x64 release build.
+    build_config = builder_config.build_config.RELEASE,
+    target_arch = builder_config.target_arch.INTEL,
+    target_bits = 64,
+    target_platform = builder_config.target_platform.ANDROID,
+
+    # Same as android-desktop-x64-compile-rel builder.
+    android_config_name = "base_config",
+    chromium_config_name = "main_builder",
+    clusterfuzz_archive = builder_config.clusterfuzz_archive(
+        archive_name_prefix = "asan",
+
+        # TODO(https://crbug.com/525381517): Replace this with
+        # "android-release-desktop-x64/asan-android-release" and set
+        # `use_archive_path` to True.
+        archive_path = "linux-release-desktop-x64/asan-linux-release",
+        archive_subdir = "desktop-x64",
+        gs_acl = "public-read",
+        gs_bucket = "chromium-browser-asan",
+    ),
+    console_category = "android",
+    console_short_name = "asan-x64",
+    contact_team_email = "chrome-fuzzing-core@google.com",
+
+    # Same as chromium.android.desktop builders.
+    gclient_apply_configs = ["android"],
+
+    # Largely cribbed from android-desktop-x64-compile-rel.
+    gn_extra_configs = [
+        "android_desktop",
+        "android_builder",
+        "android_fastbuild",
+        "asan",
+        "minimal_symbols",
+        "v8_heap",
+        "webview_trichrome",
+        "webview_shell",
+    ],
 )
 
 def centipede_linux_asan_builder(
@@ -526,7 +583,7 @@ centipede_linux_asan_builder(
     branch_selector = branches.selector.LINUX_BRANCHES,
     clusterfuzz_archive_name_prefix = "centipede",
     console_short_name = "cent",
-    execution_timeout = 5 * time.hour,
+    execution_timeout = 6 * time.hour,
     gn_extra_configs = [
         "chromeos_codecs",
         "pdf_xfa",
@@ -648,10 +705,13 @@ def browser_msan_builder(**kwargs):
         build_config = builder_config.build_config.RELEASE,
         target_bits = 64,
         target_platform = builder_config.target_platform.LINUX,
+        clusterfuzz_archive_schema_version = 1,
         clusterfuzz_gs_bucket = "chromium-browser-msan",
         console_category = "linux msan",
         contact_team_email = "chrome-sanitizer-builder-owners@google.com",
         siso_remote_jobs = 250,
+        # TODO(498605824): Add back to gardener rotation.
+        gardener_rotations = args.ignore_default(None),
         **kwargs
     )
 
@@ -800,6 +860,7 @@ def browser_asan_win_builder(
             "clang",
             "fuzzer",
             "v8_heap",
+            "minimal_symbols",
         ] + gn_extra_configs,
         builderless = False,
         os = os.WINDOWS_DEFAULT,
@@ -881,7 +942,7 @@ libfuzzer_linux_asan_builder(
     build_config = builder_config.build_config.RELEASE,
     target_bits = 64,
     console_short_name = "linux",
-    execution_timeout = 4 * time.hour,
+    execution_timeout = 5 * time.hour,
     gn_extra_configs = [
         "mojo_fuzzer",
     ],
@@ -893,11 +954,12 @@ libfuzzer_linux_asan_builder(
 
 libfuzzer_linux_asan_builder(
     name = "Libfuzzer Upload Linux ASan Debug",
+    ssd = True,
     free_space = builders.free_space.high,
     build_config = builder_config.build_config.DEBUG,
     target_bits = 64,
     console_short_name = "linux-dbg",
-    execution_timeout = 4 * time.hour,
+    execution_timeout = 5 * time.hour,
     gn_extra_configs = [
         "disable_seed_corpus",
     ],
@@ -906,11 +968,55 @@ libfuzzer_linux_asan_builder(
     test_builder_name = "linux-x64-libfuzzer-asan-dbg-tests",
 )
 
+# TODO(crbug.com/447520906): Compare between Libfuzzer Upload Linux Asan with
+# AsanBrpV1 and with AsanBrpV2. After we verify AsanBrpV2 is able to find at
+# least the same issues as AsanBrpV2 finds, we will make AsanBrpV2 default
+# (Libfuzzer Upload Linux Asan will use AsanBrpV2) and remove this builder.
+libfuzzer_linux_asan_builder(
+    name = "Libfuzzer Upload Linux ASanBrpV2",
+    description_html = "This builder uploads libfuzzer fuzzers, for x64 using ASan with AsanBackupRefPtrV2.",
+    # TODO(crbug.com/447520906): Add to gardening rotation once the build
+    # is proven green.
+    gardener_rotations = args.ignore_default(None),
+    build_config = builder_config.build_config.RELEASE,
+    target_bits = 64,
+    clusterfuzz_archive_name_prefix = "libfuzzer-asan-brp-v2",
+    console_short_name = "linux-asan-brp-v2",
+    execution_timeout = 4 * time.hour,
+    gn_extra_configs = [
+        "mojo_fuzzer",
+        "enable_asan_backup_ref_ptr_v2",
+    ],
+    max_concurrent_invocations = 4,
+    siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CI,
+)
+
+# TODO(496589592): Deprecate this builder once archives using schema v1 are
+# tested and confirmed to work as intended on ClusterFuzz.
+libfuzzer_linux_asan_builder(
+    name = "Libfuzzer Upload Linux ASan Schema v1",
+    description_html = "This builder uploads linux libfuzzer fuzzers with archive schema v1, for x64 using ASan",
+    free_space = builders.free_space.high,
+    gardener_rotations = args.ignore_default(None),
+    build_config = builder_config.build_config.RELEASE,
+    target_bits = 64,
+    clusterfuzz_archive_name_prefix = "libfuzzer-schema-v1",
+    clusterfuzz_archive_schema_version = 1,
+    clusterfuzz_archive_subdir = "asan-schema-v1",
+    console_short_name = "linux-schema-v1",
+    execution_timeout = 4 * time.hour,
+    gn_extra_configs = [
+        "mojo_fuzzer",
+    ],
+    siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CI,
+)
+
 libfuzzer_linux_builder(
     name = "Libfuzzer Upload Linux MSan",
     build_config = builder_config.build_config.RELEASE,
     target_bits = 64,
     chromium_extra_apply_configs = ["msan"],
+    clusterfuzz_archive_schema_version = 1,
     console_short_name = "linux-msan",
     gn_extra_configs = [
         "msan",
@@ -1085,7 +1191,7 @@ libfuzzer_mac_asan_builder(
     cpu = cpu.ARM64,
     target_arch = builder_config.target_arch.ARM,
     console_short_name = "mac-arm64-asan",
-    swarming_mixins = ["mac_15_arm64"],
+    swarming_mixins = ["mac_default_arm64"],
     # Even if we don't actively fuzz this build configuration yet, it is useful
     # to test that things nominally work and do not regress.
     test_builder_name = "mac-arm64-libfuzzer-asan-rel-tests",

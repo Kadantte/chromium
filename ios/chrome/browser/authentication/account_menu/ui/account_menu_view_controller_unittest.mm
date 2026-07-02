@@ -9,6 +9,7 @@
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/metrics/user_action_tester.h"
 #import "base/test/scoped_feature_list.h"
+#import "components/sync/test/test_sync_service.h"
 #import "components/test/ios/test_utils.h"
 #import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/authentication/account_menu/ui/account_menu_data_source.h"
@@ -31,6 +32,8 @@
 #import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
@@ -56,6 +59,10 @@ UIImage* kPrimaryAccountAvatar = [[UIImage alloc] init];
 @interface FakeAccountMenuDataSource : NSObject <AccountMenuDataSource>
 @property(nonatomic, assign) ChromeAccountManagerService* accountManagerService;
 @property(nonatomic, strong) AccountErrorUIInfo* accountErrorUIInfo;
+
+// Redeclare properties as readwrite for testing.
+@property(nonatomic, strong, readwrite) NSString* primaryAccountEmail;
+@property(nonatomic, strong, readwrite) NSString* primaryAccountUserFullName;
 @end
 
 @implementation FakeAccountMenuDataSource {
@@ -128,6 +135,8 @@ class AccountMenuViewControllerTest : public PlatformTest {
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetFactoryWithDelegate(
             std::make_unique<FakeAuthenticationServiceDelegate>()));
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
     profile_ = std::move(builder).Build();
     fake_system_identity_manager_ =
         FakeSystemIdentityManager::FromSystemIdentityManager(
@@ -183,7 +192,6 @@ class AccountMenuViewControllerTest : public PlatformTest {
   NSIndexPath* path_for_sign_out_ = [NSIndexPath indexPathForRow:0 inSection:1];
   NSIndexPath* path_for_add_account_ = [NSIndexPath indexPathForRow:1
                                                           inSection:0];
-  raw_ptr<AuthenticationService, DanglingUntriaged> authentication_service_;
   raw_ptr<FakeSystemIdentityManager> fake_system_identity_manager_;
   base::UserActionTester user_actions_;
 
@@ -243,6 +251,7 @@ class AccountMenuViewControllerTest : public PlatformTest {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   std::unique_ptr<TestProfileIOS> profile_;
+  raw_ptr<AuthenticationService> authentication_service_;
 };
 
 // Test the view controller when it starts.
@@ -263,8 +272,8 @@ TEST_F(AccountMenuViewControllerTest, TestDefaultSetting) {
   CentralAccountView* table_header_view =
       static_cast<CentralAccountView*>(table_header_view_);
   EXPECT_EQ(table_header_view.avatarImage, kPrimaryAccountAvatar);
-  EXPECT_EQ(table_header_view.name, kPrimaryIdentity.userFullName);
-  EXPECT_EQ(table_header_view.email, kPrimaryIdentity.userEmail);
+  EXPECT_EQ(table_header_view.title, kPrimaryIdentity.userFullName);
+  EXPECT_EQ(table_header_view.subtitle, kPrimaryIdentity.userEmail);
   EXPECT_EQ(table_header_view.managed, true);
 }
 
@@ -399,4 +408,52 @@ TEST_F(AccountMenuViewControllerTest, TestUpdatePrimaryAccount) {
   EXPECT_EQ(2, [TableView() numberOfRowsInSection:0]);
   // Sign Out
   EXPECT_EQ(1, [TableView() numberOfRowsInSection:1]);
+}
+
+// Test the account menu with an identity with missing given name.
+TEST_F(AccountMenuViewControllerTest, TestMissingGivenName) {
+  FakeSystemIdentity* identity =
+      [FakeSystemIdentity fakeIdentityWithMissingGivenName];
+  fake_system_identity_manager_->AddIdentity(identity);
+
+  data_source_.primaryAccountEmail = identity.userEmail;
+  data_source_.primaryAccountUserFullName = identity.userFullName;
+
+  AccountMenuViewController* viewController =
+      [[AccountMenuViewController alloc] initWithHideEllipsisMenu:NO];
+  viewController.dataSource = data_source_;
+  viewController.mutator = mutator_;
+  [viewController view];
+
+  UITableView* tableView = viewController.view.subviews[0];
+  UIView* header = tableView.tableHeaderView;
+  EXPECT_TRUE([header isKindOfClass:[CentralAccountView class]]);
+  CentralAccountView* centralAccountView =
+      static_cast<CentralAccountView*>(header);
+  EXPECT_NSEQ(centralAccountView.title, identity.userFullName);
+  EXPECT_NSEQ(centralAccountView.subtitle, identity.userEmail);
+}
+
+// Test the account menu with an identity with missing names.
+TEST_F(AccountMenuViewControllerTest, TestMissingNames) {
+  FakeSystemIdentity* identity =
+      [FakeSystemIdentity fakeIdentityWithMissingNames];
+  fake_system_identity_manager_->AddIdentity(identity);
+
+  data_source_.primaryAccountEmail = identity.userEmail;
+  data_source_.primaryAccountUserFullName = identity.userFullName;
+
+  AccountMenuViewController* viewController =
+      [[AccountMenuViewController alloc] initWithHideEllipsisMenu:NO];
+  viewController.dataSource = data_source_;
+  viewController.mutator = mutator_;
+  [viewController view];
+
+  UITableView* tableView = viewController.view.subviews[0];
+  UIView* header = tableView.tableHeaderView;
+  EXPECT_TRUE([header isKindOfClass:[CentralAccountView class]]);
+  CentralAccountView* centralAccountView =
+      static_cast<CentralAccountView*>(header);
+  EXPECT_NSEQ(centralAccountView.title, identity.userEmail);
+  EXPECT_NSEQ(centralAccountView.subtitle, nil);
 }

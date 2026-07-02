@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "base/files/file_util.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/numerics/checked_math.h"
@@ -239,7 +240,6 @@ SharedStorageDatabase::SharedStorageDatabase(
     scoped_refptr<storage::SpecialStoragePolicy> special_storage_policy,
     std::unique_ptr<SharedStorageDatabaseOptions> options)
     : db_(sql::DatabaseOptions()
-              .set_preload(true)
               .set_wal_mode(base::FeatureList::IsEnabled(
                   blink::features::kSharedStorageAPIEnableWALForDatabase))
               // Prevent SQLite from trying to use mmap, as SandboxedVfs does
@@ -284,11 +284,6 @@ bool SharedStorageDatabase::Destroy() {
     return true;
 
   return sql::Database::Delete(db_path_);
-}
-
-void SharedStorageDatabase::TrimMemory() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  db_.TrimMemory();
 }
 
 SharedStorageDatabase::GetResult SharedStorageDatabase::Get(

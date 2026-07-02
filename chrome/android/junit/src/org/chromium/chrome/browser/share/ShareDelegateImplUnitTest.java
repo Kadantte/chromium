@@ -18,6 +18,7 @@ import static org.mockito.Mockito.verify;
 import android.app.Activity;
 import android.content.Context;
 import android.net.Uri;
+import android.os.Build;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -32,15 +33,16 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.stubbing.Answer;
 import org.robolectric.annotation.Config;
-import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.Callback;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.Features;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.data_sharing.DataSharingTabManager;
 import org.chromium.chrome.browser.enterprise.util.DataProtectionBridge;
-import org.chromium.chrome.browser.enterprise.util.DataProtectionBridgeJni;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
@@ -53,6 +55,8 @@ import org.chromium.chrome.browser.share.ShareDelegateImpl.ShareSheetDelegate;
 import org.chromium.chrome.browser.share.android_share_sheet.AndroidShareSheetController;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLauncher;
 import org.chromium.chrome.test.OverrideContextWrapperTestRule;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.share.ShareParams;
@@ -60,7 +64,9 @@ import org.chromium.components.browser_ui.util.AutomotiveUtils;
 import org.chromium.components.favicon.LargeIconBridgeJni;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.content_public.browser.RenderFrameHost;
+import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
 
@@ -72,7 +78,7 @@ import java.util.List;
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(
         manifest = Config.NONE,
-        sdk = {29, 34})
+        sdk = {BaseRobolectricTestRunner.MIN_SDK, 34})
 public class ShareDelegateImplUnitTest {
     @Rule public MockitoRule mockitoRule = MockitoJUnit.rule();
 
@@ -93,6 +99,10 @@ public class ShareDelegateImplUnitTest {
     @Mock private LargeIconBridgeJni mLargeIconBridgeJni;
     @Mock private Tracker mTracker;
     @Mock private DataSharingTabManager mDataSharingTabManager;
+    @Mock SigninAndHistorySyncActivityLauncher mSigninAndHistorySyncActivityLauncher;
+    @Mock ActivityResultTracker mActivityResultTracker;
+    @Mock ModalDialogManager mModalDialogManager;
+    @Mock SnackbarManager mSnackbarManager;
 
     @Mock private DataProtectionBridge.Natives mDataProtectionBridgeMock;
 
@@ -118,6 +128,9 @@ public class ShareDelegateImplUnitTest {
     private int mDelegateShareSheetHubEnabledCallCount;
     private int mShareHelperCallCount;
 
+    private final SettableMonotonicObservableSupplier<ModalDialogManager>
+            mModalDialogManagerSupplier = ObservableSuppliers.createMonotonic(mModalDialogManager);
+
     private void createShareDelegate(boolean isCustomTab, ShareSheetDelegate shareSheetDelegate) {
         mShareDelegate =
                 new ShareDelegateImpl(
@@ -129,7 +142,11 @@ public class ShareDelegateImplUnitTest {
                         () -> mProfile,
                         shareSheetDelegate,
                         isCustomTab,
-                        mDataSharingTabManager);
+                        mDataSharingTabManager,
+                        mSigninAndHistorySyncActivityLauncher,
+                        mActivityResultTracker,
+                        mModalDialogManagerSupplier,
+                        mSnackbarManager);
     }
 
     @Before
@@ -148,7 +165,7 @@ public class ShareDelegateImplUnitTest {
         LargeIconBridgeJni.setInstanceForTesting(mLargeIconBridgeJni);
         TrackerFactory.setTrackerForTests(mTracker);
         Mockito.doReturn(new WeakReference<>(mActivity)).when(mWindowAndroid).getActivity();
-        DataProtectionBridgeJni.setInstanceForTesting(mDataProtectionBridgeMock);
+        DataProtectionBridge.setInstanceForTesting(mDataProtectionBridgeMock);
 
         // TODO(crbug.com/406591712): Update to stubbing share methods when those are added.
         doAnswer(sShareIsAllowedByPolicy)
@@ -166,11 +183,11 @@ public class ShareDelegateImplUnitTest {
 
     @After
     public void tearDown() {
-        ShadowLooper.idleMainLooper();
+        RobolectricUtil.runAllBackgroundAndUi();
     }
 
     @Test
-    @Config(sdk = 29)
+    @Config(sdk = BaseRobolectricTestRunner.MIN_SDK)
     public void shareWithSharingHub() {
         // ShareHub is disabled on SDK 34+
 
@@ -190,7 +207,7 @@ public class ShareDelegateImplUnitTest {
     }
 
     @Test
-    @Config(sdk = 29)
+    @Config(sdk = BaseRobolectricTestRunner.MIN_SDK)
     public void shareLastUsedComponent() {
         // ShareHub is disabled on SDK 34+
 
@@ -234,7 +251,7 @@ public class ShareDelegateImplUnitTest {
     }
 
     @Test
-    @Config(sdk = 36)
+    @Config(sdk = BaseRobolectricTestRunner.MAX_SDK)
     public void share_withAndroidShareSheetForVPlus() {
         HistogramWatcher histogramWatcher =
                 HistogramWatcher.newBuilder()
@@ -458,7 +475,11 @@ public class ShareDelegateImplUnitTest {
                         any(),
                         anyInt(),
                         anyLong(),
-                        anyBoolean());
+                        anyBoolean(),
+                        any(),
+                        any(),
+                        any(),
+                        any());
     }
 
     private void testShareExpectNotAllowed(
@@ -478,13 +499,16 @@ public class ShareDelegateImplUnitTest {
                         any(),
                         anyInt(),
                         anyLong(),
-                        anyBoolean());
+                        anyBoolean(),
+                        any(),
+                        any(),
+                        any(),
+                        any());
     }
 
     @Test
     public void androidShareSheetDisableNonU() {
-        Assert.assertEquals(
-                android.os.Build.VERSION.SDK_INT < 34, mShareDelegate.isSharingHubEnabled());
+        Assert.assertEquals(Build.VERSION.SDK_INT < 34, mShareDelegate.isSharingHubEnabled());
     }
 
     @Test
@@ -694,7 +718,11 @@ public class ShareDelegateImplUnitTest {
                         any(),
                         anyInt(),
                         anyLong(),
-                        anyBoolean());
+                        anyBoolean(),
+                        any(),
+                        any(),
+                        any(),
+                        any());
 
         ShareParams params = mShareParamsCaptor.getValue();
         Assert.assertEquals(

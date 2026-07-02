@@ -28,6 +28,7 @@
 #include "base/values.h"
 #include "components/prefs/default_pref_store.h"
 #include "components/prefs/json_pref_store.h"
+#include "components/prefs/persistent_pref_store.h"
 #include "components/prefs/pref_notifier_impl.h"
 #include "components/prefs/pref_registry.h"
 
@@ -85,7 +86,11 @@ PrefService::~PrefService() {
 void PrefService::InitFromStorage(bool async) {
   if (!async) {
     if (!user_pref_store_->IsInitializationComplete()) {
-      user_pref_store_->ReadPrefs();
+      PersistentPrefStore::PrefReadError error = user_pref_store_->ReadPrefs();
+      // Synchronous reads shouldn't have async errors.
+      CHECK_NE(
+          error,
+          PersistentPrefStore::PREF_READ_ERROR_ASYNCHRONOUS_TASK_INCOMPLETE);
     }
     CheckPrefsLoaded();
     return;
@@ -486,6 +491,36 @@ base::Value* PrefService::GetMutableUserPref(std::string_view path,
   user_pref_store_->SetValueSilently(path, default_value->Clone(),
                                      GetWriteFlags(pref));
   user_pref_store_->GetMutableValue(path, &value);
+
+  if (!value) {
+    // TODO(crbug.com/40895218): This DumpWithoutCrashing is introduced to
+    // track occurrences of these cases where value is not found.
+    base::debug::DumpWithoutCrashing();
+
+    // Recovery: Check if any intermediate node is not a dict. If so, it's a
+    // type conflict. Clear the conflicting node and retry.
+    // For a path like "a.b.c", we check "a", then "a.b".
+    size_t prefix_length = path.find('.');
+    while (prefix_length != std::string_view::npos) {
+      std::string_view prefix = path.substr(0, prefix_length);
+      base::Value* prefix_value = nullptr;
+
+      // If the prefix exists but is not a dictionary, we have found the
+      // structural type conflict.
+      if (user_pref_store_->GetMutableValue(prefix, &prefix_value) &&
+          prefix_value && !prefix_value->is_dict()) {
+        user_pref_store_->RemoveValue(
+            prefix, WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
+        user_pref_store_->SetValueSilently(path, default_value->Clone(),
+                                           GetWriteFlags(pref));
+        user_pref_store_->GetMutableValue(path, &value);
+        break;
+      }
+
+      prefix_length = path.find('.', prefix_length + 1);
+    }
+  }
+
   return value;
 }
 
@@ -520,12 +555,14 @@ void PrefService::SetUserPrefValue(std::string_view path,
   user_pref_store_->SetValue(path, std::move(new_value), GetWriteFlags(pref));
 }
 
-void PrefService::UpdateCommandLinePrefStore(PrefStore* command_line_store) {
-  pref_value_store_->UpdateCommandLinePrefStore(command_line_store);
+void PrefService::UpdateCommandLinePrefStore(
+    scoped_refptr<PrefStore> command_line_store) {
+  pref_value_store_->UpdateCommandLinePrefStore(std::move(command_line_store));
 }
 
-void PrefService::UpdateExtensionPrefStore(PrefStore* extension_store) {
-  pref_value_store_->UpdateExtensionPrefStore(extension_store);
+void PrefService::UpdateExtensionPrefStore(
+    scoped_refptr<PrefStore> extension_store) {
+  pref_value_store_->UpdateExtensionPrefStore(std::move(extension_store));
 }
 
 ///////////////////////////////////////////////////////////////////////////////

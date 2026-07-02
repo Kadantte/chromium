@@ -239,9 +239,12 @@ source_set("common") {
     "origin_trials/trial_token_validator.cc",
     "page/color_provider_color_maps_mojom_traits.cc",
     "page/content_to_visible_time_reporter.cc",
+    "page/content_to_visible_time_request.cc",
     "page/drag_mojom_traits.cc",
     "page/drag_operation.cc",
     "page/page_zoom.cc",
+    "page/record_content_to_visible_time_request_mojom_traits.cc",
+    "page/source_effect_allowed_mojom_util.cc",
     "page_state/page_state.cc",
     "page_state/page_state_serialization.cc",
     "peerconnection/webrtc_ip_handling_policy.cc",
@@ -271,6 +274,7 @@ source_set("common") {
     "unique_name/unique_name_helper.cc",
     "use_counter/use_counter_feature.cc",
     "use_counter/use_counter_feature_tracker.cc",
+    "use_counter/webdx_feature_maps.cc",
     "user_agent/user_agent_metadata.cc",
     "view_source/rendering_preferences.cc",
     "web_package/signed_exchange_consts.cc",
@@ -279,6 +283,7 @@ source_set("common") {
     "web_preferences/web_preferences_mojom_traits.cc",
     "webid/login_status_account.cc",
     "webid/login_status_options.cc",
+    "webrtc/rtc_logging_mojom_traits.cc",
     "widget/constants.cc",
     "widget/device_emulation_params_mojom_traits.cc",
     "widget/visual_properties.cc",
@@ -349,10 +354,6 @@ source_set("common") {
   if (is_chromeos || is_android || is_win || is_castos || is_fuchsia) {
     defines = [ "ENABLE_PROTECTED_MEDIA_IDENTIFIER_PERMISSION" ]
   }
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 test("blink_common_unittests") {
@@ -426,12 +427,14 @@ source_set("common_unittests_sources") {
     "origin_trials/trial_token_unittest.cc",
     "origin_trials/trial_token_validator_unittest.cc",
     "page/content_to_visible_time_reporter_unittest.cc",
+    "page/content_to_visible_time_request_unittest.cc",
     "page_state/page_state_serialization_unittest.cc",
     "peerconnection/webrtc_ip_handling_policy_unittest.cc",
     "permissions_policy/document_policy_unittest.cc",
     "permissions_policy/policy_value_unittest.cc",
     "scheduler/web_scheduler_tracked_feature_unittest.cc",
     "security/address_space_feature_unittest.cc",
+    "service_worker/service_worker_loader_helpers_unittest.cc",
     "service_worker/service_worker_router_rule_mojom_traits_unittest.cc",
     "service_worker/service_worker_scope_match_unittest.cc",
     "shared_storage/module_script_downloader_unittest.cc",
@@ -543,6 +546,9 @@ if (use_fuzzing_engine_with_lpm) {
       "//third_party/blink/public/common:storage_key_proto_converter",
       "//third_party/libprotobuf-mutator",
     ]
+
+    # TODO(crbug.com/505034799): Migrate to FUZZ_TEST.
+    is_fuzztest_compatible = false
   }
 
   fuzzer_test("storage_key_string_fuzzer") {

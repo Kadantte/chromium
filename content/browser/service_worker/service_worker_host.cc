@@ -72,13 +72,13 @@ ServiceWorkerHost::~ServiceWorkerHost() {
 }
 
 void ServiceWorkerHost::CompleteStartWorkerPreparation(
-    int process_id,
+    ChildProcessId process_id,
     mojo::PendingReceiver<blink::mojom::BrowserInterfaceBroker> broker_receiver,
     mojo::PendingRemote<service_manager::mojom::InterfaceProvider>
         interface_provider_remote) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK_EQ(ChildProcessHost::kInvalidUniqueID, worker_process_id_);
-  DCHECK_NE(ChildProcessHost::kInvalidUniqueID, process_id);
+  DCHECK(!worker_process_id_);
+  DCHECK(process_id);
   worker_process_id_ = process_id;
   broker_receiver_.Bind(std::move(broker_receiver));
   remote_interfaces_.Bind(std::move(interface_provider_remote));
@@ -87,11 +87,13 @@ void ServiceWorkerHost::CompleteStartWorkerPreparation(
 void ServiceWorkerHost::CreateWebTransportConnector(
     mojo::PendingReceiver<blink::mojom::WebTransportConnector> receiver) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  // TODO(crbug.com/379869738): Remove GetUnsafeValue.
   mojo::MakeSelfOwnedReceiver(
       std::make_unique<WebTransportConnectorImpl>(
-          worker_process_id_, /*frame=*/nullptr, version_->key().origin(),
-          GetNetworkAnonymizationKey(),
-          version_->BuildClientSecurityState()->Clone()),
+          worker_process_id_.GetUnsafeValue(), /*frame=*/nullptr,
+          version_->key().origin(), GetNetworkAnonymizationKey(),
+          version_->BuildClientSecurityState()->Clone(),
+          version_->network_restrictions_id()),
       std::move(receiver));
 }
 
@@ -105,7 +107,8 @@ void ServiceWorkerHost::CreateWebSocketConnector(
           content::GlobalRenderFrameHostId(worker_process_id_,
                                            IPC::mojom::kRoutingIdNone),
           storage_key.origin(), storage_key.ToPartialNetIsolationInfo(),
-          version_->BuildClientSecurityState()->Clone()),
+          version_->BuildClientSecurityState()->Clone(),
+          version_->network_restrictions_id()),
       std::move(receiver));
 }
 
@@ -307,7 +310,9 @@ void ServiceWorkerHost::BindCacheStorageForBucket(
 }
 
 storage::BucketClientInfo ServiceWorkerHost::GetBucketClientInfo() const {
-  return storage::BucketClientInfo{worker_process_id(), token()};
+  // TODO(crbug.com/379869738) Remove GetUnsafeValue.
+  return storage::BucketClientInfo{worker_process_id().GetUnsafeValue(),
+                                   token()};
 }
 
 RenderProcessHost* ServiceWorkerHost::GetProcessHost() const {

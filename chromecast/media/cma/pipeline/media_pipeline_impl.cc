@@ -22,7 +22,7 @@
 #include "chromecast/media/cma/base/buffering_state.h"
 #include "chromecast/media/cma/base/coded_frame_provider.h"
 #include "chromecast/media/cma/pipeline/audio_pipeline_impl.h"
-#include "chromecast/media/cma/pipeline/cma_pipeline_buildflags.h"
+
 #include "chromecast/media/cma/pipeline/media_pipeline_observer.h"
 #include "chromecast/media/cma/pipeline/video_pipeline_impl.h"
 #include "media/base/timestamp_constants.h"
@@ -336,12 +336,7 @@ void MediaPipelineImpl::SetVolume(float volume) {
 
 base::TimeDelta MediaPipelineImpl::GetMediaTime() const {
   DCHECK(thread_checker_.CalledOnValidThread());
-#if BUILDFLAG(CMA_USE_ACCURATE_MEDIA_TIME)
-  base::TimeDelta time =
-      base::Microseconds(media_pipeline_backend_->GetCurrentPts());
-#else
   base::TimeDelta time = last_media_time_;
-#endif
   return (time == ::media::kNoTimestamp ? start_media_time_ : time);
 }
 
@@ -369,10 +364,12 @@ void MediaPipelineImpl::OnFlushDone(bool is_audio_stream) {
 
   if (pending_flush_task_->audio_flushed &&
       pending_flush_task_->video_flushed) {
-    // Stop the backend, so that the backend won't push their pending buffer,
-    // which may be invalidated later, to hardware. (b/25342604)
-    media_pipeline_backend_->Stop();
-    backend_state_ = BACKEND_STATE_INITIALIZED;
+    if (backend_state_ != BACKEND_STATE_UNINITIALIZED) {
+      // Stop the backend, so that the backend won't push their pending buffer,
+      // which may be invalidated later, to hardware. (b/25342604)
+      media_pipeline_backend_->Stop();
+      backend_state_ = BACKEND_STATE_INITIALIZED;
+    }
     metrics::CastMetricsHelper::GetInstance()->RecordApplicationEvent(
         "Cast.Platform.Ended");
 

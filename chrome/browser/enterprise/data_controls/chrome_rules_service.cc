@@ -7,8 +7,11 @@
 #include "base/memory/ptr_util.h"
 #include "base/no_destructor.h"
 #include "chrome/browser/profiles/profile.h"
-#include "components/enterprise/data_controls/core/browser/prefs.h"
 #include "components/prefs/pref_service.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/glic/host/guest_util.h"
+#endif
 
 namespace data_controls {
 
@@ -38,18 +41,6 @@ Verdict ChromeRulesService::GetPasteVerdict(
                         .source = GetAsActionSource(source),
                         .destination = GetAsActionDestination(destination),
                     });
-}
-
-bool ChromeRulesService::BlockScreenshots(const GURL& url) const {
-  return GetVerdict(Rule::Restriction::kScreenshot,
-                    {
-                        .source =
-                            {
-                                .url = url,
-                                .incognito = incognito_profile(),
-                            },
-                    })
-             .level() == Rule::Level::kBlock;
 }
 
 bool ChromeRulesService::incognito_profile() const {
@@ -84,6 +75,12 @@ ActionSourceOrDestination ChromeRulesService::ExtractPasteActionContext(
                            ->IsIncognitoProfile();
     action.other_profile = endpoint.browser_context() != profile_;
   }
+#if !BUILDFLAG(IS_ANDROID)
+  if (endpoint.web_contents() && (glic::IsGlicGuest(endpoint.web_contents()) ||
+                                  glic::IsGlicWebUI(endpoint.web_contents()))) {
+    action.gemini_in_chrome = true;
+  }
+#endif
   return action;
 }
 

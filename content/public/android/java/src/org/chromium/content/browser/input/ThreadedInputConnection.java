@@ -10,6 +10,7 @@ import static org.chromium.content.browser.input.StylusGestureConverter.createGe
 import android.annotation.SuppressLint;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.TextUtils;
@@ -24,14 +25,17 @@ import android.view.inputmethod.ExtractedTextRequest;
 import android.view.inputmethod.HandwritingGesture;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputContentInfo;
+import android.view.inputmethod.PreviewableHandwritingGesture;
 import android.view.inputmethod.SurroundingText;
 import android.view.inputmethod.TextAttribute;
+import android.webkit.MimeTypeMap;
 
 import androidx.annotation.RequiresApi;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.AconfigFlaggedApiDelegate;
 import org.chromium.base.ContextUtils;
+import org.chromium.base.FileUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.PostTask;
@@ -43,6 +47,7 @@ import org.chromium.content_public.browser.ContentFeatureMap;
 import org.chromium.content_public.common.ContentFeatures;
 import org.chromium.net.MimeTypeFilter;
 
+import java.io.InputStream;
 import java.util.Arrays;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Executor;
@@ -815,7 +820,9 @@ class ThreadedInputConnection extends BaseInputConnection implements ChromiumBas
                     "commitCorrection [%s]",
                     ImeUtils.getCorrectionInfoDebugString(correctionInfo));
         }
-        if (ContentFeatureMap.isEnabled(ContentFeatures.ANDROID_PK_AUTOCORRECT_UNDERLINE)) {
+        if (ContentFeatureMap.isEnabled(ContentFeatures.ANDROID_PK_AUTOCORRECT_UNDERLINE)
+                || ContentFeatureMap.isEnabled(
+                        ContentFeatures.ANDROID_PK_AUTOCORRECT_UNDERLINE_V2)) {
             PostTask.postTask(
                     TaskTraits.UI_DEFAULT, () -> mImeAdapter.commitCorrection(correctionInfo));
             return true;
@@ -880,6 +887,37 @@ class ThreadedInputConnection extends BaseInputConnection implements ChromiumBas
 
     @Override
     @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    public boolean previewHandwritingGesture(
+            PreviewableHandwritingGesture gesture, @Nullable CancellationSignal signal) {
+        if (!ContentFeatureMap.isEnabled(ContentFeatures.PREVIEW_HANDWRITING_GESTURE)) {
+            return false;
+        }
+        StylusWritingGestureData gestureData = StylusGestureConverter.previewGestureData(gesture);
+        if (gestureData == null) {
+            return false;
+        }
+        if (signal != null) {
+            signal.setOnCancelListener(
+                    () -> {
+                        // Post to the UI thread to interact with mImeAdapter
+                        PostTask.postTask(
+                                TaskTraits.UI_USER_BLOCKING,
+                                () -> {
+                                    mImeAdapter.cancelPreviewGesture();
+                                });
+                    });
+        }
+        // Callback should be run on the UI thread.
+        PostTask.postTask(
+                TaskTraits.UI_USER_BLOCKING,
+                () -> {
+                    mImeAdapter.previewGesture(gestureData);
+                });
+        return true;
+    }
+
+    @Override
+    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void performHandwritingGesture(
             HandwritingGesture gesture,
             @Nullable Executor executor,
@@ -921,25 +959,28 @@ class ThreadedInputConnection extends BaseInputConnection implements ChromiumBas
             return false;
         }
 
+        String extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType);
+        if (extension == null) {
+            return false;
+        }
+
         PostTask.postTask(
                 TaskTraits.USER_BLOCKING_MAY_BLOCK,
                 () -> {
                     inputContentInfo.requestPermission();
-                    try {
-                        String dataUrl =
-                                ImeUtils.getDataUrlFromContentUri(
-                                        ContextUtils.getApplicationContext()
-                                                .getContentResolver()
-                                                .openInputStream(inputContentInfo.getContentUri()),
-                                        mimeType);
+                    try (InputStream inputStream =
+                            ContextUtils.getApplicationContext()
+                                    .getContentResolver()
+                                    .openInputStream(inputContentInfo.getContentUri())) {
+                        if (inputStream == null) {
+                            throw new Error("Failed to open input stream.");
+                        }
+                        byte[] bytes = FileUtils.readStream(inputStream);
 
                         PostTask.postTask(
                                 TaskTraits.UI_DEFAULT,
-                                new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        mImeAdapter.commitContent(dataUrl);
-                                    }
+                                () -> {
+                                    mImeAdapter.commitContent(bytes, extension);
                                 });
                     } catch (Exception e) {
                         Log.e(TAG, "Failed to commit rich content.", e);

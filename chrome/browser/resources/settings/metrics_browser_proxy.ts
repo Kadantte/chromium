@@ -333,11 +333,14 @@ export enum AiPageInteractions {
   HISTORY_SEARCH_CLICK = 0,
   // COMPARE_CLICK = 1, // DEPRECATED
   COMPOSE_CLICK = 2,
-  TAB_ORGANIZATION_CLICK = 3,
+  // TAB_ORGANIZATION_CLICK = 3, // DEPRECATED
   // WALLPAPER_SEARCH_CLICK = 4, // DEPRECATED
   AUTOFILL_AI_CLICK = 5,
   PASSWORD_CHANGE_CLICK = 6,
-  MAX_VALUE = 7,
+  AI_SUGGESTIONS_CLICK = 7,
+  SKILLS_CLICK = 8,
+  INDIGO_CLICK = 9,
+  MAX_VALUE = 10,
 }
 // LINT.ThenChange(/tools/metrics/histograms/metadata/settings/enums.xml:SettingsAiPageInteractions)
 
@@ -379,20 +382,23 @@ export enum AiPageComposeInteractions {
 // LINT.ThenChange(/tools/metrics/histograms/metadata/settings/enums.xml:SettingsAiPageComposeInteractions)
 
 /**
- * Contains all recorded interactions in the AI Tab Organization settings page.
+ * Contains all recorded interactions in the AI Suggestions settings page.
  *
  * These values are persisted to logs. Entries should not be renumbered and
  * numeric values should never be reused.
  *
- * Must be kept in sync with the SettingsAiPageTabOrganizationInteractions enum
- * in histograms/metadata/settings/enums.xml
+ * Must be kept in sync with the SettingsAiPageSuggestionsInteractions enum in
+ * histograms/metadata/settings/enums.xml
  */
-// LINT.IfChange(AiPageTabOrganizationInteractions)
-export enum AiPageTabOrganizationInteractions {
-  LEARN_MORE_LINK_CLICKED = 0,
-  MAX_VALUE = 1,
+// LINT.IfChange(AiPageSuggestionsInteractions)
+export enum AiPageSuggestionsInteractions {
+  SUGGESTIONS_ENABLED = 0,
+  SUGGESTIONS_DISABLED = 1,
+  LEARN_MORE_LINK_CLICKED = 2,
+  SYNC_SETTINGS_LINK_CLICKED = 3,
+  MAX_VALUE = 4,
 }
-// LINT.ThenChange(/tools/metrics/histograms/metadata/settings/enums.xml:SettingsAiPageTabOrganizationInteractions)
+// LINT.ThenChange(/tools/metrics/histograms/metadata/settings/enums.xml:SettingsAiPageSuggestionsInteractions)
 
 /**
  * These values are persisted to logs. Entries should not be renumbered and
@@ -425,7 +431,8 @@ export enum YourSavedInfoDataCategory {
   CONTACT_INFO = 2,
   IDENTITY_DOCS = 3,
   TRAVEL = 4,
-  MAX_VALUE = 5,
+  SHOPPING = 5,
+  MAX_VALUE = 6,
 }
 // LINT.ThenChange(/tools/metrics/histograms/metadata/autofill/enums.xml:YourSavedInfoDataCategory)
 
@@ -453,7 +460,9 @@ export enum YourSavedInfoDataChip {
   FLIGHT_RESERVATIONS = 10,
   TRAVEL_INFO = 11,
   VEHICLES = 12,
-  MAX_VALUE = 13,
+  SHIPMENTS = 13,
+  ORDERS = 14,
+  MAX_VALUE = 15,
 }
 // LINT.ThenChange(/tools/metrics/histograms/metadata/autofill/enums.xml:YourSavedInfoDataChip)
 
@@ -649,10 +658,10 @@ export interface MetricsBrowserProxy {
 
   /**
    * Helper function that calls recordHistogram for the
-   * Settings.AiPage.TabOrganization.Interactions histogram
+   * Settings.AiPage.Suggestions.Interactions histogram
    */
-  recordAiPageTabOrganizationInteractions(
-      interaction: AiPageTabOrganizationInteractions): void;
+  recordAiPageSuggestionsInteractions(
+      interaction: AiPageSuggestionsInteractions): void;
 
   /**
    * Records a referrer to one of Autofill settings pages.
@@ -892,12 +901,12 @@ export class MetricsBrowserProxyImpl implements MetricsBrowserProxy {
     ]);
   }
 
-  recordAiPageTabOrganizationInteractions(
-      interaction: AiPageTabOrganizationInteractions): void {
+  recordAiPageSuggestionsInteractions(
+      interaction: AiPageSuggestionsInteractions): void {
     chrome.send('metricsHandler:recordInHistogram', [
-      'Settings.AiPage.TabOrganization.Interactions',
+      'Settings.AiPage.Suggestions.Interactions',
       interaction,
-      AiPageTabOrganizationInteractions.MAX_VALUE,
+      AiPageSuggestionsInteractions.MAX_VALUE,
     ]);
   }
 

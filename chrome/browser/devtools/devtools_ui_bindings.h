@@ -55,6 +55,7 @@ enum class PermissionAction;
 class DevToolsHttpServiceHandler;
 class DevToolsHttpServiceRegistry;
 class DevToolsUIBindingsDispatchHttpRequestTest;
+class DevToolsUIBindingsLoadNetworkResourceTest;
 class PortForwardingStatusSerializer;
 class Profile;
 
@@ -68,6 +69,7 @@ class DevToolsUIBindings : public DevToolsEmbedderMessageDispatcher::Delegate,
                            public DevToolsFileHelper::Delegate {
   friend class DevToolsUIBindingsDispatchHttpRequestTest;
   friend class DevToolsUIBindingsDispatchHttpRequestStreamingTest;
+  friend class DevToolsUIBindingsLoadNetworkResourceTest;
 
  public:
   class Delegate {
@@ -119,6 +121,7 @@ class DevToolsUIBindings : public DevToolsEmbedderMessageDispatcher::Delegate,
   ~DevToolsUIBindings() override;
 
   std::string GetTypeForMetrics() override;
+  bool MayAccessAllCookies() override;
 
   content::WebContents* web_contents() { return web_contents_; }
   Profile* profile() { return profile_; }
@@ -148,6 +151,13 @@ class DevToolsUIBindings : public DevToolsEmbedderMessageDispatcher::Delegate,
 
   void SetHttpServiceRegistryForTesting(
       std::unique_ptr<DevToolsHttpServiceRegistry> service_registry);
+  const std::map<std::string, std::string>& GetExtensionsAPIForTesting() const {
+    return extensions_api_;
+  }
+  void RegisterExtensionsAPIForTesting(const std::string& origin,
+                                       const std::string& script) {
+    RegisterExtensionsAPI(origin, script);
+  }
 
   static base::DictValue GetSyncInformationForProfile(Profile* profile);
 

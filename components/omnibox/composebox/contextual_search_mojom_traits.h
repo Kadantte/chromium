@@ -29,41 +29,38 @@ namespace mojo {
 template <>
 struct EnumTraits<composebox_query::mojom::ToolMode, omnibox::ToolMode> {
   static composebox_query::mojom::ToolMode ToMojom(omnibox::ToolMode input);
-  static bool FromMojom(composebox_query::mojom::ToolMode input,
-                        omnibox::ToolMode* output);
+  static omnibox::ToolMode FromMojom(composebox_query::mojom::ToolMode input);
 };
 
 template <>
 struct EnumTraits<composebox_query::mojom::ModelMode, omnibox::ModelMode> {
   static composebox_query::mojom::ModelMode ToMojom(omnibox::ModelMode input);
-  static bool FromMojom(composebox_query::mojom::ModelMode input,
-                        omnibox::ModelMode* output);
+  static omnibox::ModelMode FromMojom(composebox_query::mojom::ModelMode input);
 };
 
 template <>
 struct EnumTraits<composebox_query::mojom::InputType, omnibox::InputType> {
   static composebox_query::mojom::InputType ToMojom(omnibox::InputType input);
-  static bool FromMojom(composebox_query::mojom::InputType input,
-                        omnibox::InputType* output);
+  static omnibox::InputType FromMojom(composebox_query::mojom::InputType input);
 };
 
 template <>
 
-struct EnumTraits<composebox_query::mojom::FileUploadStatus,
-                  contextual_search::FileUploadStatus> {
-  static composebox_query::mojom::FileUploadStatus ToMojom(
-      contextual_search::FileUploadStatus input);
-  static bool FromMojom(composebox_query::mojom::FileUploadStatus input,
-                        contextual_search::FileUploadStatus* output);
+struct EnumTraits<composebox_query::mojom::ContextUploadStatus,
+                  contextual_search::ContextUploadStatus> {
+  static composebox_query::mojom::ContextUploadStatus ToMojom(
+      contextual_search::ContextUploadStatus input);
+  static contextual_search::ContextUploadStatus FromMojom(
+      composebox_query::mojom::ContextUploadStatus input);
 };
 
 template <>
-struct EnumTraits<composebox_query::mojom::FileUploadErrorType,
-                  contextual_search::FileUploadErrorType> {
-  static composebox_query::mojom::FileUploadErrorType ToMojom(
-      contextual_search::FileUploadErrorType input);
-  static bool FromMojom(composebox_query::mojom::FileUploadErrorType input,
-                        contextual_search::FileUploadErrorType* output);
+struct EnumTraits<composebox_query::mojom::ContextUploadErrorType,
+                  contextual_search::ContextUploadErrorType> {
+  static composebox_query::mojom::ContextUploadErrorType ToMojom(
+      contextual_search::ContextUploadErrorType input);
+  static contextual_search::ContextUploadErrorType FromMojom(
+      composebox_query::mojom::ContextUploadErrorType input);
 };
 
 template <>
@@ -86,6 +83,7 @@ struct StructTraits<composebox_query::mojom::ToolConfigDataView,
   static const std::string& hint_text(const omnibox::ToolConfig& config);
   static std::vector<omnibox::UrlParam> aim_url_params(
       const omnibox::ToolConfig& config);
+  static const std::string& menu_tooltip(const omnibox::ToolConfig& config);
 
   static bool Read(composebox_query::mojom::ToolConfigDataView data,
                    omnibox::ToolConfig* output);
@@ -99,6 +97,7 @@ struct StructTraits<composebox_query::mojom::ModelConfigDataView,
   static const std::string& hint_text(const omnibox::ModelConfig& config);
   static std::vector<omnibox::UrlParam> aim_url_params(
       const omnibox::ModelConfig& config);
+  static const std::string& menu_tooltip(const omnibox::ModelConfig& config);
 
   static bool Read(composebox_query::mojom::ModelConfigDataView data,
                    omnibox::ModelConfig* output);
@@ -151,9 +150,10 @@ struct StructTraits<composebox_query::mojom::InputStateDataView,
   static const std::optional<omnibox::SectionConfig>& model_section_config(
       const omnibox::InputState& input);
   static const std::string& hint_text(const omnibox::InputState& input);
-  static const std::map<omnibox::InputType, int>& max_instances(
+  static const std::map<omnibox::InputType, int>& max_inputs_by_type(
       const omnibox::InputState& input);
   static int32_t max_total_inputs(const omnibox::InputState& input);
+  static bool is_canvas_query_submitted(const omnibox::InputState& input);
 
   static bool Read(composebox_query::mojom::InputStateDataView data,
                    omnibox::InputState* output);

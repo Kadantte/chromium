@@ -16,12 +16,13 @@ import androidx.annotation.VisibleForTesting;
 import androidx.appcompat.content.res.AppCompatResources;
 
 import org.chromium.base.ContextUtils;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ActivityTabProvider;
-import org.chromium.chrome.browser.DefaultBrowserInfo;
+import org.chromium.chrome.browser.DefaultBrowserMenuUtils;
 import org.chromium.chrome.browser.app.appmenu.AppMenuPropertiesDelegateImpl;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
@@ -39,6 +40,7 @@ import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.toolbar.ToolbarManager;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuHandler;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuItemProperties;
+import org.chromium.components.browser_ui.accessibility.PageZoomManager;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.ui.modelutil.MVCListAdapter;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -95,9 +97,10 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
             boolean isIncognitoBranded,
             boolean isOffTheRecord,
             boolean isStartIconMenu,
-            Supplier<ReadAloudController> readAloudControllerSupplier,
+            MonotonicObservableSupplier<ReadAloudController> readAloudControllerSupplier,
             Supplier<ContextualPageActionController> contextualPageActionControllerSupplier,
             boolean hasClientPackage,
+            @Nullable PageZoomManager pageZoomManager,
             @Nullable OpenInAppMenuItemProvider openInAppMenuItemProvider) {
         super(
                 context,
@@ -109,6 +112,7 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
                 null,
                 bookmarkModelSupplier,
                 readAloudControllerSupplier,
+                pageZoomManager,
                 openInAppMenuItemProvider);
         mVerifier = verifier;
         mUiType = uiType;
@@ -142,7 +146,6 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
         boolean addToHomeScreenVisible = true;
         boolean requestDesktopSiteVisible = true;
         boolean tryAddingReadAloud = true;
-        boolean readerModePrefsVisible = false;
         boolean translateVisible = true;
         // When the icon row is visible, site info is a button in that row.
         // This is a separate menu item row for the site info shown within the icon row.
@@ -180,7 +183,6 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
             requestDesktopSiteVisible = false;
             addToHomeScreenVisible = false;
             tryAddingReadAloud = false;
-            readerModePrefsVisible = true;
         } else if (mUiType == CustomTabsUiType.MINIMAL_UI_WEBAPP) {
             requestDesktopSiteVisible = false;
             // For Webapps & WebAPKs Verifier#wasPreviouslyVerified() performs verification
@@ -260,6 +262,9 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
         // --- Icon Row ---
         if (iconRowVisible) {
             List<PropertyModel> iconModels = new ArrayList<>();
+            if (ChromeFeatureList.sThreeDotMenuBackButton.isEnabled()) {
+                iconModels.add(buildBackwardActionModel(currentTab));
+            }
             iconModels.add(buildForwardActionModel(currentTab));
 
             if (bookmarkItemVisible) {
@@ -270,7 +275,9 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
                 iconModels.add(buildDownloadActionModel(currentTab));
             }
 
-            iconModels.add(buildPageInfoModel(currentTab));
+            if (!ChromeFeatureList.sThreeDotMenuBackButton.isEnabled()) {
+                iconModels.add(buildPageInfoModel(currentTab));
+            }
             iconModels.add(buildReloadModel(currentTab));
 
             modelList.add(
@@ -339,8 +346,9 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
         }
 
         // --- Reader Mode ---
+        boolean shouldShowIconBeforeItem = shouldShowIconBeforeItem();
         if (shouldShowReaderModeItem()) {
-            modelList.add(buildReaderModeItem(currentTab));
+            modelList.add(buildReaderModeItem(currentTab, shouldShowIconBeforeItem));
         }
 
         // --- Share ---
@@ -364,11 +372,6 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
                             AppMenuHandler.AppMenuItemType.STANDARD,
                             buildModelForStandardMenuItem(
                                     R.id.find_in_page_id, R.string.menu_find_in_page, 0)));
-        }
-
-        // --- Reader Mode Prefs ---
-        if (readerModePrefsVisible) {
-            modelList.add(buildReaderModePrefsItem());
         }
 
         // --- Price Tracking / Price Insights ---
@@ -413,6 +416,11 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
             modelList.add(buildTranslateMenuItem(currentTab, false));
         }
 
+        // --- Site controls ---
+        if (shouldShowPageInfoItem()) {
+            modelList.add(buildPageInfoItem(currentTab, shouldShowIconBeforeItem));
+        }
+
         // --- Open with ---
         if (shouldShowOpenWithItem(currentTab)) {
             modelList.add(buildOpenWithItem(currentTab, false));
@@ -425,11 +433,9 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
 
         // --- Zoom ---
         if (zoomVisible) {
-            modelList.add(
-                    new MVCListAdapter.ListItem(
-                            AppMenuHandler.AppMenuItemType.STANDARD,
-                            buildModelForStandardMenuItem(
-                                    R.id.page_zoom_id, R.string.page_zoom_menu_title, 0)));
+            if (shouldShowPageZoomItem(currentTab)) {
+                modelList.add(buildPageZoomItem(currentTab));
+            }
         }
         return modelList;
     }
@@ -442,7 +448,7 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
         } else if (mIsOpenedByChrome) {
             title = context.getString(R.string.menu_open_in_new_tab);
         } else {
-            title = DefaultBrowserInfo.getTitleOpenInDefaultBrowser(false);
+            title = DefaultBrowserMenuUtils.getTitleOpenInDefaultBrowser(false);
         }
         PropertyModel model =
                 buildBaseModelForTextItem(R.id.open_in_browser_id)
@@ -481,7 +487,8 @@ public class CustomTabAppMenuPropertiesDelegate extends AppMenuPropertiesDelegat
     }
 
     @Override
-    public @Nullable Bundle getBundleForMenuItem(int itemId) {
+    public @Nullable Bundle getBundleForMenuItem(PropertyModel model) {
+        int itemId = model.get(AppMenuItemProperties.MENU_ITEM_ID);
         if (!mItemIdToIndexMap.containsKey(itemId)) {
             return null;
         }

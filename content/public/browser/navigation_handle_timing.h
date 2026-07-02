@@ -10,6 +10,7 @@
 #include "base/time/time.h"
 #include "content/common/content_export.h"
 #include "net/base/load_timing_internal_info.h"
+#include "net/dns/public/resolution_details.h"
 #include "net/http/alternate_protocol_usage.h"
 
 namespace content {
@@ -29,6 +30,11 @@ struct CONTENT_EXPORT NavigationHandleTiming {
         net::AdvertisedAltSvcState::kUnknown;
     // Whether QUIC is enabled in the HttpNetworkSession for the navigation.
     bool http_network_session_quic_enabled = false;
+    // The time taken for a SPDY/QUIC session to create an active stream due to
+    // max stream limits.
+    std::optional<base::TimeDelta> max_stream_limit_pending_delay;
+    // The details of the host resolution result.
+    std::optional<net::ResolutionDetails> resolution_details;
   };
 
   NavigationHandleTiming();
@@ -161,11 +167,28 @@ struct CONTENT_EXPORT NavigationHandleTiming {
   base::TimeDelta final_request_connect_delay;
   base::TimeDelta final_request_ssl_delay;
 
+  // Absolute timestamps for the first HTTP response ConnectTiming.
+  base::TimeTicks first_request_domain_lookup_start_time;
+  base::TimeTicks first_request_domain_lookup_end_time;
+  base::TimeTicks first_request_connect_start_time;
+  base::TimeTicks first_request_connect_end_time;
+  base::TimeTicks first_request_ssl_start_time;
+
+  // Absolute timestamps for the final HTTP response ConnectTiming.
+  base::TimeTicks final_request_domain_lookup_start_time;
+  base::TimeTicks final_request_domain_lookup_end_time;
+  base::TimeTicks final_request_connect_start_time;
+  base::TimeTicks final_request_connect_end_time;
+  base::TimeTicks final_request_ssl_start_time;
+
   // CreateStream related delay information.
   base::TimeDelta create_stream_delay;
 
   // HttpNetwork::Transaction connected callback delay information.
   base::TimeDelta connected_callback_delay;
+
+  // Whether the Accept-CH frame was received.
+  bool accept_ch_frame_received = false;
 
   // InitializeStream related delay information.
   base::TimeDelta initialize_stream_delay;

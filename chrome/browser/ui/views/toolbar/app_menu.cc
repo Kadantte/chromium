@@ -41,6 +41,7 @@
 #include "chrome/browser/ui/bookmarks/bookmark_stats.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
@@ -59,6 +60,7 @@
 #include "chrome/browser/ui/views/frame/app_menu_button.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
+#include "chrome/browser/ui/views/toolbar/app_menu_control.h"
 #include "chrome/browser/upgrade_detector/upgrade_detector.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/theme_resources.h"
@@ -97,6 +99,7 @@
 #include "ui/gfx/scoped_canvas.h"
 #include "ui/gfx/text_elider.h"
 #include "ui/gfx/text_utils.h"
+#include "ui/gfx/vector_icon_types.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/background.h"
@@ -111,6 +114,7 @@
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/controls/menu/menu_scroll_view_container.h"
 #include "ui/views/controls/menu/submenu_view.h"
+#include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/metadata/view_factory.h"
 #include "ui/views/style/typography.h"
@@ -336,9 +340,8 @@ class InMenuImageButton : public ImageButton {
 
   void Init(InMenuButtonBackground::ButtonType type,
             InMenuButtonBackground::ButtonShape shape,
-            const ui::ImageModel& image_model) {
+            const gfx::VectorIcon& vector_icon) {
     SetFocusBehavior(FocusBehavior::ALWAYS);
-    SetImageModel(views::Button::STATE_NORMAL, image_model);
     SetImageHorizontalAlignment(ImageButton::ALIGN_CENTER);
     SetImageVerticalAlignment(ImageButton::ALIGN_MIDDLE);
     SetBackground(std::make_unique<InMenuButtonBackground>(type, shape));
@@ -346,6 +349,15 @@ class InMenuImageButton : public ImageButton {
         gfx::Insets::TLBR(0, kHorizontalPadding, 0, kHorizontalPadding)));
 
     GetViewAccessibility().SetRole(ax::mojom::Role::kMenuItem);
+    SetImageModel(views::Button::STATE_NORMAL,
+                  ui::ImageModel::FromVectorIcon(vector_icon,
+                                                 ui::kColorMenuItemForeground));
+    SetImageModel(ImageButton::STATE_HOVERED,
+                  ui::ImageModel::FromVectorIcon(
+                      vector_icon, ui::kColorMenuItemForegroundSelected));
+    SetImageModel(ImageButton::STATE_PRESSED,
+                  ui::ImageModel::FromVectorIcon(
+                      vector_icon, ui::kColorMenuItemForegroundSelected));
   }
 };
 
@@ -409,6 +421,10 @@ void AddSignedInChipToProfileMenuItem(
               views::Builder<views::Label>()
                   .SetText(GetSigninStatusChipString(profile))
                   .CopyAddressTo(&profile_chip_label)
+                  .SetAutoColorReadabilityEnabled(false)
+                  .SetEnabledColor(item->IsSelected()
+                                       ? ui::kColorMenuItemForegroundSelected
+                                       : ui::kColorMenuItemForeground)
                   .SetBackground(views::CreateRoundedRectBackground(
                       item->IsSelected()
                           ? ui::kColorAppMenuProfileRowChipHovered
@@ -432,13 +448,16 @@ void AddSignedInChipToProfileMenuItem(
           .Build();
   profile_menu_subscription_list.push_back(
       item->AddSelectedChangedCallback(base::BindRepeating(
-          [](MenuItemView* menu_item_view, View* child_view,
+          [](MenuItemView* menu_item_view, views::Label* chip_label,
              int corner_radius) {
-            child_view->SetBackground(views::CreateRoundedRectBackground(
-                menu_item_view->IsSelected()
-                    ? ui::kColorAppMenuProfileRowChipHovered
-                    : ui::kColorAppMenuProfileRowChipBackground,
+            const bool selected = menu_item_view->IsSelected();
+            chip_label->SetBackground(views::CreateRoundedRectBackground(
+                selected ? ui::kColorAppMenuProfileRowChipHovered
+                         : ui::kColorAppMenuProfileRowChipBackground,
                 corner_radius));
+            chip_label->SetEnabledColor(
+                selected ? ui::kColorMenuItemForegroundSelected
+                         : ui::kColorMenuItemForeground);
           },
           item, profile_chip_label, profile_chip_corner_radii)));
   item->AddChildView(std::move(profile_chip));
@@ -485,14 +504,14 @@ class AppMenuView : public views::View {
       int accessible_name_id,
       bool add_accelerator_text,
       bool use_accessible_name_as_tooltip_text,
-      const ui::ImageModel image_model = ui::ImageModel()) {
+      const gfx::VectorIcon& vector_icon = gfx::VectorIcon::EmptyIcon()) {
     // Should only be invoked during construction when |menu_| is valid.
     DCHECK(menu_);
 
     std::unique_ptr<views::Button> menu_button;
     auto button = std::make_unique<InMenuImageButton>(std::move(callback));
     button->Init(type, InMenuButtonBackground::ButtonShape::kCircular,
-                 image_model);
+                 vector_icon);
     menu_button = std::move(button);
     menu_button->GetViewAccessibility().SetName(GetAccessibleNameForAppMenuItem(
         menu_model_, index, accessible_name_id, add_accelerator_text));
@@ -565,7 +584,7 @@ class FullscreenButton : public ImageButton {
         // mode on most ChromeOS devices which cannot be specified in the
         // standard way here, so omit the accelerator to avoid providing
         // misleading or confusing information to screen reader users.
-        // See crbug.com/1110468 for more context.
+        // See crbug.com/40708624 for more context.
         /*add_accelerator_text=*/false
 #else
         /*add_accelerator_text=*/true
@@ -686,7 +705,7 @@ class AppMenu::ZoomView : public AppMenuView, public views::WidgetObserver {
                                     base::Unretained(this)));
     // Disable full screen button when window is not resizable
     views::Widget* widget = views::Widget::GetWidgetForNativeWindow(
-        menu->browser_->window()->GetNativeWindow());
+        menu->browser_->GetWindow()->GetNativeWindow());
     if (widget) {
       widget_observation_.Observe(widget);
     }
@@ -694,15 +713,15 @@ class AppMenu::ZoomView : public AppMenuView, public views::WidgetObserver {
     const auto activate = [](ButtonMenuItemModel* menu_model, size_t index) {
       menu_model->ActivatedAt(index);
     };
-    auto image_model = ui::ImageModel::FromVectorIcon(
-        kZoomMinusMenuRefreshIcon, ui::kColorMenuItemForeground);
     decrement_button_ = CreateButtonWithAccessibleName(
         base::BindRepeating(activate, menu_model, decrement_index),
         IDS_ZOOM_MINUS2, InMenuButtonBackground::ButtonType::kNoBorder,
         decrement_index, IDS_ACCNAME_ZOOM_MINUS2,
         /*add_accelerator_text=*/false,
         /*use_accessible_name_as_tooltip_text=*/true,
-        /*image_model=*/image_model);
+        /*vector_icon=*/
+        features::IsRoundedIconsEnabled() ? kRemoveIcon
+                                          : kZoomMinusMenuRefreshOldIcon);
 
     auto zoom_label = std::make_unique<Label>(base::FormatPercent(100));
     zoom_label->SetAutoColorReadabilityEnabled(false);
@@ -731,14 +750,14 @@ class AppMenu::ZoomView : public AppMenuView, public views::WidgetObserver {
 
     zoom_label_ = AddChildView(std::move(zoom_label));
 
-    image_model = ui::ImageModel::FromVectorIcon(kZoomPlusMenuRefreshIcon,
-                                                 ui::kColorMenuItemForeground);
     increment_button_ = CreateButtonWithAccessibleName(
         base::BindRepeating(activate, menu_model, increment_index),
         IDS_ZOOM_PLUS2, InMenuButtonBackground::ButtonType::kNoBorder,
         increment_index, IDS_ACCNAME_ZOOM_PLUS2, /*add_accelerator_text=*/false,
         /*use_accessible_name_as_tooltip_text=*/true,
-        /*image_model=*/image_model);
+        /*vector_icon=*/
+        features::IsRoundedIconsEnabled() ? kAddIcon
+                                          : kZoomPlusMenuRefreshOldIcon);
 
     auto fullscreen_button = std::make_unique<FullscreenButton>(
         base::BindRepeating(
@@ -747,7 +766,9 @@ class AppMenu::ZoomView : public AppMenuView, public views::WidgetObserver {
             },
             menu, menu_model, fullscreen_index),
         CHECK_DEREF(menu_model), fullscreen_index);
-    const auto& fullscreen_icon = kFullscreenRefreshIcon;
+    const auto& fullscreen_icon = features::IsRoundedIconsEnabled()
+                                      ? kFullscreenIcon
+                                      : kFullscreenRefreshOldIcon;
     fullscreen_button->SetImageModel(
         ImageButton::STATE_NORMAL,
         ui::ImageModel::FromVectorIcon(fullscreen_icon,
@@ -861,8 +882,8 @@ class AppMenu::ZoomView : public AppMenuView, public views::WidgetObserver {
   }
 
   void UpdateFullScreenButton() {
-    const bool is_fullscreen = menu()->browser_->window() &&
-                               menu()->browser_->window()->IsFullscreen();
+    const bool is_fullscreen = menu()->browser_->GetWindow() &&
+                               menu()->browser_->GetWindow()->IsFullscreen();
     const bool can_fullscreen = menu()
                                     ->browser_->browser_window_features()
                                     ->exclusive_access_manager()
@@ -1024,8 +1045,14 @@ class AppMenu::RecentTabsMenuModelDelegate : public ui::MenuModelDelegate {
 
 // AppMenu ------------------------------------------------------------------
 
-AppMenu::AppMenu(Browser* browser, ui::MenuModel* model, int run_types)
-    : browser_(browser), model_(model), run_types_(run_types) {
+AppMenu::AppMenu(Browser* browser,
+                 ui::MenuModel* model,
+                 int run_types,
+                 base::RepeatingClosure on_menu_closed_callback)
+    : browser_(browser),
+      model_(model),
+      run_types_(run_types),
+      on_menu_closed_callback_(std::move(on_menu_closed_callback)) {
   global_error_observation_.Observe(
       GlobalErrorServiceFactory::GetForProfile(browser->profile()));
 
@@ -1107,7 +1134,7 @@ std::optional<SkColor> AppMenu::GetLabelColor(int command_id) const {
   // the content view for the menu's widget. The root MenuItemView itself is not
   // a member of a Widget hierarchy and thus does not have the necessary context
   // to correctly determine the label color as this requires querying the View's
-  // hosting widget (crbug.com/1233392).
+  // hosting widget (crbug.com/40780847).
   return GetLabelFontList(command_id)
              ? std::make_optional(
                    root_->GetSubmenu()->GetColorProvider()->GetColor(
@@ -1319,10 +1346,10 @@ bool AppMenu::GetAccelerator(int command_id,
   if (command_id == IDC_CREATE_NEW_TAB_GROUP_TOP_LEVEL) {
     // Same as 'Create new tab group' except the menu item is at the top level
     // of the app menu instead of in the tab groups submenu.
-      return browser_->browser_window_features()
-          ->accelerator_provider()
-          ->GetAcceleratorForCommandId(IDC_CREATE_NEW_TAB_GROUP, accelerator);
-    }
+    return browser_->browser_window_features()
+        ->accelerator_provider()
+        ->GetAcceleratorForCommandId(IDC_CREATE_NEW_TAB_GROUP, accelerator);
+  }
 
   if (IsTabGroupsCommand(command_id)) {
     return false;
@@ -1389,7 +1416,7 @@ void AppMenu::WillHideMenu(MenuItemView* menu) {
   }
 }
 
-bool AppMenu::ShouldCloseOnDragComplete() {
+bool AppMenu::ShouldCloseOnDragDropCompleted() {
   return false;
 }
 
@@ -1410,12 +1437,7 @@ void AppMenu::OnMenuClosed(views::MenuItemView* menu) {
     }
   }
 
-  // This can be called if the app menu was open during browser destruction, at
-  // which point BrowserView may be in the process of being torn down.
-  // Null-check BrowserView to guard against such cases.
-  if (auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser_)) {
-    browser_view->toolbar_button_provider()->GetAppMenuButton()->OnMenuClosed();
-  }
+  on_menu_closed_callback_.Run();
 
   if (bookmark_menu_delegate_.get()) {
     BookmarkMergedSurfaceService* service =
@@ -1718,7 +1740,7 @@ void AppMenu::CreateBookmarkMenu() {
 
   // TODO(oshima): Replace with views only API.
   views::Widget* parent = views::Widget::GetWidgetForNativeWindow(
-      browser_->window()->GetNativeWindow());
+      browser_->GetWindow()->GetNativeWindow());
   bookmark_menu_delegate_ = std::make_unique<BookmarkMenuDelegate>(
       browser_, parent, this, BookmarkLaunchLocation::kAppMenu);
   bookmark_menu_delegate_->BuildFullMenu(bookmark_menu_);

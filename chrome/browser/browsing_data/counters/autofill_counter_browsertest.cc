@@ -32,6 +32,7 @@
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager_test_utils.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_i18n_api.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
@@ -254,7 +255,6 @@ class AutofillCounterTest : public InProcessBrowserTest {
 IN_PROC_BROWSER_TEST_F(AutofillCounterTest, AutocompleteSuggestions) {
   browsing_data::AutofillCounter counter = GetCounter();
   counter.Init(browser()->profile()->GetPrefs(),
-               browsing_data::ClearBrowsingDataTab::ADVANCED,
                future.GetRepeatingCallback());
   counter.Restart();
   WaitForResult();
@@ -289,7 +289,6 @@ IN_PROC_BROWSER_TEST_F(AutofillCounterTest, AutocompleteSuggestions) {
 IN_PROC_BROWSER_TEST_F(AutofillCounterTest, Entities) {
   browsing_data::AutofillCounter counter = GetCounter();
   counter.Init(browser()->profile()->GetPrefs(),
-               browsing_data::ClearBrowsingDataTab::ADVANCED,
                future.GetRepeatingCallback());
   counter.Restart();
   WaitForResult();
@@ -324,7 +323,6 @@ IN_PROC_BROWSER_TEST_F(AutofillCounterTest, CreditCards) {
   browsing_data::AutofillCounter counter = GetCounter();
 
   counter.Init(profile->GetPrefs(),
-               browsing_data::ClearBrowsingDataTab::ADVANCED,
                future.GetRepeatingCallback());
   counter.Restart();
   WaitForResult();
@@ -368,7 +366,6 @@ IN_PROC_BROWSER_TEST_F(AutofillCounterTest, Addresses) {
   browsing_data::AutofillCounter counter = GetCounter();
 
   counter.Init(profile->GetPrefs(),
-               browsing_data::ClearBrowsingDataTab::ADVANCED,
                future.GetRepeatingCallback());
   counter.Restart();
 
@@ -426,7 +423,6 @@ IN_PROC_BROWSER_TEST_F(AutofillCounterTest, ComplexResult) {
   browsing_data::AutofillCounter counter = GetCounter();
 
   counter.Init(profile->GetPrefs(),
-               browsing_data::ClearBrowsingDataTab::ADVANCED,
                future.GetRepeatingCallback());
   counter.Restart();
 
@@ -480,7 +476,6 @@ IN_PROC_BROWSER_TEST_F(AutofillCounterTest, TimeRanges) {
   browsing_data::AutofillCounter counter = GetCounter();
 
   counter.Init(profile->GetPrefs(),
-               browsing_data::ClearBrowsingDataTab::ADVANCED,
                future.GetRepeatingCallback());
 
   for (size_t i = 0; i < std::size(test_cases); i++) {

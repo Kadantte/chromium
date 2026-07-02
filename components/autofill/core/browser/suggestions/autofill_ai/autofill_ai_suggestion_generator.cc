@@ -4,56 +4,80 @@
 
 #include "components/autofill/core/browser/suggestions/autofill_ai/autofill_ai_suggestion_generator.h"
 
+#include <stddef.h>
+
 #include <algorithm>
-#include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/check_deref.h"
+#include "base/check_op.h"
+#include "base/compiler_specific.h"
 #include "base/containers/extend.h"
 #include "base/containers/flat_map.h"
+#include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/containers/to_vector.h"
+#include "base/feature_list.h"
+#include "base/functional/callback.h"
+#include "base/functional/function_ref.h"
 #include "base/memory/raw_ref.h"
+#include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
-#include "base/types/strong_alias.h"
+#include "base/types/optional_ref.h"
 #include "base/types/zip.h"
+#include "build/buildflag.h"
+#include "components/affiliations/core/browser/affiliation_utils.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_normalization_utils.h"
-#include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_utils.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
 #include "components/autofill/core/browser/field_type_utils.h"
-#include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/filling/autofill_ai/field_filling_entity_util.h"
 #include "components/autofill/core/browser/filling/field_filling_util.h"
 #include "components/autofill/core/browser/form_processing/autofill_ai/determine_attribute_types.h"
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_labels.h"
+#include "components/autofill/core/browser/network/autofill_ai/personal_context_access_manager.h"
 #include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_utils.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
 #include "components/autofill/core/browser/suggestions/suggestion_util.h"
 #include "components/autofill/core/common/autofill_features.h"
-#include "components/autofill/core/common/autofill_prefs.h"
+#include "components/autofill/core/common/dense_set.h"
 #include "components/autofill/core/common/form_field_data.h"
 #include "components/autofill/core/common/unique_ids.h"
 #include "components/feature_engagement/public/feature_constants.h"
-#include "components/prefs/pref_service.h"
+#include "components/personal_context/core/personal_context_features.h"
 #include "components/strings/grit/components_strings.h"
+#include "net/base/registry_controlled_domains/registry_controlled_domain.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "url/gurl.h"
+#include "url/url_constants.h"
 
 namespace autofill {
 namespace {
+
+// Represents all the different UI sections for autofill ai data in Chrome
+// Settings.
+enum class AutofillAiUiSection {
+  kTravel,
+  kIdentityDocs,
+  kShopping,
+  kMaxValue = kShopping,
+};
 
 // Holds an assignment of AutofillFields to AttributeTypes.
 //
@@ -144,6 +168,16 @@ Suggestion CreateManageTravelSuggestion() {
   return suggestion;
 }
 
+// Returns a suggestion to manage AutofillAi shopping data.
+Suggestion CreateManageShoppingSuggestion() {
+  Suggestion suggestion(
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_AI_MANAGE_SHOPPING_SUGGESTION_MAIN_TEXT),
+      SuggestionType::kManageAutofillAiShopping);
+  suggestion.icon = Suggestion::Icon::kSettings;
+  return suggestion;
+}
+
 // Returns a suggestion to "Undo" Autofill.
 Suggestion CreateUndoSuggestion() {
   Suggestion suggestion(l10n_util::GetStringUTF16(IDS_AUTOFILL_UNDO_MENU_ITEM),
@@ -156,30 +190,34 @@ Suggestion CreateUndoSuggestion() {
 
 std::vector<Suggestion> GetFooterSuggestions(
     const FormFieldData& trigger_field,
-    bool suggestions_contain_travel_entity,
-    bool suggestions_contain_identity_docs_entity) {
+    const DenseSet<AutofillAiUiSection>& ui_sections) {
   std::vector<Suggestion> suggestions;
   suggestions.reserve(3);
 
   suggestions.emplace_back(SuggestionType::kSeparator);
-  if (trigger_field.is_autofilled()) {
+  // TODO(crbug.com/393114125): Change to use `AutofillField::field_modifiers_`.
+  if (trigger_field.is_autofilled_according_to_renderer()) {
     suggestions.emplace_back(CreateUndoSuggestion());
   }
   if (base::FeatureList::IsEnabled(
-          autofill::features::
-              kSuggestionManageButtonSplitForEnhancedAutofill)) {
-    CHECK(suggestions_contain_travel_entity ||
-          suggestions_contain_identity_docs_entity);
+          features::kSuggestionManageButtonSplitForEnhancedAutofill) &&
+      base::FeatureList::IsEnabled(features::kYourSavedInfoSettingsPage)) {
+    CHECK(!ui_sections.empty());
 
-    if (suggestions_contain_travel_entity &&
-        suggestions_contain_identity_docs_entity) {
+    if (ui_sections.size() > 1) {
       suggestions.emplace_back(CreateManageAutofillAiSuggestion());
-    } else if (suggestions_contain_travel_entity) {
-      suggestions.emplace_back(CreateManageTravelSuggestion());
-    } else if (suggestions_contain_identity_docs_entity) {
-      suggestions.emplace_back(CreateManageIdentityDocsSuggestion());
     } else {
-      NOTREACHED();
+      switch (*ui_sections.begin()) {
+        case AutofillAiUiSection::kTravel:
+          suggestions.emplace_back(CreateManageTravelSuggestion());
+          break;
+        case AutofillAiUiSection::kIdentityDocs:
+          suggestions.emplace_back(CreateManageIdentityDocsSuggestion());
+          break;
+        case AutofillAiUiSection::kShopping:
+          suggestions.emplace_back(CreateManageShoppingSuggestion());
+          break;
+      }
     }
   } else {
     suggestions.emplace_back(CreateManageAutofillAiSuggestion());
@@ -307,12 +345,14 @@ std::vector<const EntityInstance*> DedupedEntitiesForSuggestions(
     }
   }
 
-  auto is_server_entity = [](const EntityInstance& entity) {
-    switch (entity.record_type()) {
+  auto get_record_type_priority = [](EntityInstance::RecordType record_type) {
+    switch (record_type) {
       case EntityInstance::RecordType::kServerWallet:
-        return true;
+        return 2;
       case EntityInstance::RecordType::kLocal:
-        return false;
+        return 1;
+      case EntityInstance::RecordType::kPersonalContext:
+        return 0;
     }
     NOTREACHED();
   };
@@ -329,19 +369,17 @@ std::vector<const EntityInstance*> DedupedEntitiesForSuggestions(
                                                   fields_to_values[j].size();
       // Erase `i` iff:
       // - `i` is a proper subset of `j` for some `j`.
-      // - `i` is equal to `j` and `i` is not a server entity while `j` is.
-      // - `i` is equal to `j` for some j < i and `i` is not a server entity.
-      // - `i` is equal to `j` for some j < i and both `i` and `j` are server
-      // entities.
+      // - `i` is equal to `j` and `j` has higher priority than `i`.
+      // - `i` is equal to `j` and they have the same priority, but `j`
+      //   appears earlier in the list (higher frecency).
       const bool i_is_proper_subset_of_j = j_includes_i && !j_equals_i;
-      const bool i_is_server_entity = is_server_entity(*entities[i]);
-      const bool j_is_server_entity = is_server_entity(*entities[j]);
-      const bool i_and_j_are_server_entities =
-          i_is_server_entity && j_is_server_entity;
+      const int i_priority =
+          get_record_type_priority(entities[i]->record_type());
+      const int j_priority =
+          get_record_type_priority(entities[j]->record_type());
       if (i_is_proper_subset_of_j ||
           (j_equals_i &&
-           ((!i_is_server_entity && j_is_server_entity) ||
-            (i > j && (!i_is_server_entity || i_and_j_are_server_entities))))) {
+           (j_priority > i_priority || (j_priority == i_priority && i > j)))) {
         erase_i = true;
         break;
       }
@@ -354,52 +392,64 @@ std::vector<const EntityInstance*> DedupedEntitiesForSuggestions(
   return deduped_entities;
 }
 
-Suggestion::Icon GetSuggestionIcon(EntityType trigger_entity_type) {
+Suggestion::Icon GetSuggestionIcon(
+    EntityType trigger_entity_type,
+    EntityInstance::RecordType trigger_entity_record_type) {
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillAiNoFillingIconsExperiment)) {
+    return Suggestion::Icon::kNoIcon;
+  }
+#endif
+  const bool is_personal_context = trigger_entity_record_type ==
+                                   EntityInstance::RecordType::kPersonalContext;
   switch (trigger_entity_type.name()) {
     case EntityTypeName::kDriversLicense:
-      return Suggestion::Icon::kIdCard;
-    case EntityTypeName::kFlightReservation:
-      return Suggestion::Icon::kFlight;
     case EntityTypeName::kNationalIdCard:
-      return Suggestion::Icon::kIdCard;
+      return is_personal_context ? Suggestion::Icon::kIdCardSpark
+                                 : Suggestion::Icon::kIdCard;
+    case EntityTypeName::kFlightReservation:
+      return is_personal_context ? Suggestion::Icon::kFlightSpark
+                                 : Suggestion::Icon::kFlight;
+    case EntityTypeName::kOrder:
+      return is_personal_context ? Suggestion::Icon::kOrderSpark
+                                 : Suggestion::Icon::kOrder;
     case EntityTypeName::kPassport:
-      return Suggestion::Icon::kIdCard;
+      if (is_personal_context) {
+        return Suggestion::Icon::kPassportSpark;
+      }
+      return base::FeatureList::IsEnabled(
+                 features::kAutofillAiWalletPrivatePasses)
+                 ? Suggestion::Icon::kPassport
+                 : Suggestion::Icon::kIdCard;
     case EntityTypeName::kKnownTravelerNumber:
-      return Suggestion::Icon::kPersonCheck;
     case EntityTypeName::kRedressNumber:
-      return Suggestion::Icon::kPersonCheck;
+      return is_personal_context ? Suggestion::Icon::kIdCard2Spark
+                                 : Suggestion::Icon::kIdCard2;
     case EntityTypeName::kVehicle:
-      return Suggestion::Icon::kVehicle;
+      return is_personal_context ? Suggestion::Icon::kVehicleSpark
+                                 : Suggestion::Icon::kVehicle;
+    case EntityTypeName::kShipment:
+      return is_personal_context ? Suggestion::Icon::kShipmentSpark
+                                 : Suggestion::Icon::kShipment;
   }
   NOTREACHED();
 }
 
-bool IsTravelType(EntityType trigger_entity_type) {
+AutofillAiUiSection GetAutofillAiUiSection(EntityType trigger_entity_type) {
   switch (trigger_entity_type.name()) {
     case EntityTypeName::kFlightReservation:
     case EntityTypeName::kKnownTravelerNumber:
     case EntityTypeName::kRedressNumber:
     case EntityTypeName::kVehicle:
-      return true;
+      return AutofillAiUiSection::kTravel;
     case EntityTypeName::kDriversLicense:
     case EntityTypeName::kNationalIdCard:
     case EntityTypeName::kPassport:
-      return false;
-  }
-  NOTREACHED();
-}
-
-bool IsIdentityDocsType(EntityType trigger_entity_type) {
-  switch (trigger_entity_type.name()) {
-    case EntityTypeName::kDriversLicense:
-    case EntityTypeName::kNationalIdCard:
-    case EntityTypeName::kPassport:
-      return true;
-    case EntityTypeName::kFlightReservation:
-    case EntityTypeName::kKnownTravelerNumber:
-    case EntityTypeName::kRedressNumber:
-    case EntityTypeName::kVehicle:
-      return false;
+      return AutofillAiUiSection::kIdentityDocs;
+    case EntityTypeName::kOrder:
+    case EntityTypeName::kShipment:
+      return AutofillAiUiSection::kShopping;
   }
   NOTREACHED();
 }
@@ -461,6 +511,7 @@ bool CanFillSomeField(const EntityInstance& entity,
 }
 
 Suggestion GetSuggestionForEntity(
+    const FormStructure& form,
     const EntityInstance& entity,
     base::span<const AutofillFieldWithAttributeType> fields,
     const AutofillFieldWithAttributeType& trigger_field,
@@ -480,8 +531,12 @@ Suggestion GetSuggestionForEntity(
   Suggestion suggestion =
       Suggestion(main_text, SuggestionType::kFillAutofillAi);
   suggestion.labels = {{Suggestion::Text(std::move(label))}};
-  suggestion.payload = Suggestion::AutofillAiPayload(entity.guid());
-  suggestion.icon = GetSuggestionIcon(entity.type());
+
+  const bool requires_server_fetch = WillRequireServerFetch(
+      entity, form, trigger_field.field->section(), app_locale);
+  suggestion.payload =
+      Suggestion::AutofillAiPayload(entity.guid(), requires_server_fetch);
+  suggestion.icon = GetSuggestionIcon(entity.type(), entity.record_type());
   if (entity.record_type() == EntityInstance::RecordType::kServerWallet) {
     suggestion.iph_metadata = Suggestion::IPHMetadata(
         &feature_engagement::kIPHAutofillAiValuablesFeature);
@@ -527,78 +582,181 @@ std::vector<const EntityInstance*> OrderedEntitiesForSuggestion(
   return sorted_entities;
 }
 
+// Returns a valid GURL parsed from a domain string. If no scheme is present in
+// `domain`, prepends "https://" to allow GURL to parse it and retrieve a host.
+GURL GetGURLFromDomain(std::u16string_view domain) {
+  const std::string domain_str = base::UTF16ToUTF8(domain);
+  if (!domain_str.contains("://")) {
+    return GURL(base::StrCat(
+        {url::kHttpsScheme, url::kStandardSchemeSeparator, domain_str}));
+  }
+  return GURL(domain_str);
+}
+
+// Returns the domain-specific AttributeType for domain-constrained entity types
+// (e.g., kOrder, kShipment), or std::nullopt if the entity type is not
+// domain-constrained.
+std::optional<AttributeType> GetDomainFilterAttributeType(
+    const EntityType& type) {
+  switch (type.name()) {
+    case EntityTypeName::kOrder:
+      return AttributeType(AttributeTypeName::kOrderMerchantDomain);
+    case EntityTypeName::kShipment:
+      return AttributeType(AttributeTypeName::kShipmentCarrierDomain);
+    case EntityTypeName::kPassport:
+    case EntityTypeName::kDriversLicense:
+    case EntityTypeName::kVehicle:
+    case EntityTypeName::kNationalIdCard:
+    case EntityTypeName::kKnownTravelerNumber:
+    case EntityTypeName::kRedressNumber:
+    case EntityTypeName::kFlightReservation:
+      return std::nullopt;
+  }
+}
+
+// Returns whether the `entity` is allowed to be suggested on `page_url`.
+// For domain-constrained entity types (such as `kOrder` or `kShipment`), this
+// requires their associated domain to match the domain of `page_url` (via PSL
+// matching). For other entity types, returns true.
+bool IsAllowedForPageUrl(const EntityInstance& entity, const GURL& page_url) {
+  std::optional<AttributeType> domain_attr_type =
+      GetDomainFilterAttributeType(entity.type());
+  if (!domain_attr_type) {
+    return true;
+  }
+  base::optional_ref<const AttributeInstance> domain_attr =
+      entity.attribute(*domain_attr_type);
+  if (!domain_attr) {
+    return false;
+  }
+  const std::u16string domain_val = domain_attr->GetCompleteRawInfo();
+  if (domain_val.empty()) {
+    return false;
+  }
+  return affiliations::IsExtendedPublicSuffixDomainMatch(
+      GetGURLFromDomain(domain_val), page_url, {});
+}
+
 std::vector<const EntityInstance*> GetEntitiesForSuggestion(
     std::vector<const EntityInstance*> entities,
     const AttributeTypeAssignment& assignment,
     const FieldGlobalId& trigger_field_id,
-    const std::string& app_locale) {
+    const std::string& app_locale,
+    const GURL& page_url) {
   std::erase_if(entities, [&](const EntityInstance* entity) {
     base::optional_ref<const AutofillFieldWithAttributeType>
         trigger_field_with_type =
             FindField(assignment.Find(entity->type()), trigger_field_id);
     return !trigger_field_with_type ||
            !EntityShouldProduceSuggestion(*entity, *trigger_field_with_type,
-                                          app_locale);
+                                          app_locale) ||
+           !IsAllowedForPageUrl(*entity, page_url);
   });
   return DedupedEntitiesForSuggestions(
       OrderedEntitiesForSuggestion(std::move(entities)), assignment,
       app_locale);
 }
 
+// Returns true if the `field` is of an entity type that is currently being
+// prefetched. This is used to decide if pre-fetching suggestion should be
+// shown for a specific field.
+bool IsFetchingFillableEntity(const AutofillField& field,
+                              AutofillClient& client) {
+  PersonalContextAccessManager* access_manager =
+      client.GetPersonalContextAccessManager();
+  if (!access_manager) {
+    return false;
+  }
+  using RequestStatus = PersonalContextAccessManager::RequestStatus;
+  for (EntityType entity_type : DenseSet<EntityType>::all()) {
+    if (field.Type().GetAutofillAiType(entity_type) != UNKNOWN_TYPE) {
+      if (access_manager->ServerHasDataAvailable(entity_type) &&
+          access_manager->GetPrefetchStatusByEntityType(entity_type) ==
+              RequestStatus::kPending) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+std::vector<Suggestion> CreateFetchingAmbientSuggestions() {
+  Suggestion suggestion(
+      l10n_util::GetStringUTF16(IDS_AUTOFILL_AI_FETCHING_AMBIENT_DATA),
+      SuggestionType::kFetchingAmbientData);
+  return PrepareLoadingStateSuggestions({suggestion}, suggestion);
+}
+
 std::vector<Suggestion> CreateAutofillAiFillingSuggestions(
     const FormStructure& form,
-    const FormFieldData& trigger_field_data,
+    const AutofillField& trigger_field,
     base::span<const EntityInstance> entities_to_suggest,
     base::span<const EntityInstance> all_entities,
     const AttributeTypeAssignment& assignment,
-    std::string_view app_locale) {
-  CHECK(!entities_to_suggest.empty());
-  const AutofillField& trigger_field =
-      CHECK_DEREF(form.GetFieldById(trigger_field_data.global_id()));
+    AutofillClient& client) {
+  bool should_show_fetching_suggestions =
+      IsFetchingFillableEntity(trigger_field, client);
 
-  auto entities_to_suggest_ids = base::MakeFlatSet<EntityInstance::EntityId>(
-      entities_to_suggest, {}, &EntityInstance::guid);
+  if (entities_to_suggest.empty() && !should_show_fetching_suggestions) {
+    return {};
+  }
 
-  // Labels need to be consistent across the whole fill group. That is, as the
-  // user clicks around fields they need to see the same set of attributes as
-  // a combination of main text and labels. Therefore, entities that do not
-  // generate suggestions on a certain triggering field still affect label
-  // generation and should be taken into account.
-  std::vector<const EntityInstance*> other_entities_that_can_fill_section;
-  for (const EntityInstance& entity : all_entities) {
-    if (!entities_to_suggest_ids.contains(entity.guid()) &&
-        CanFillSomeField(entity, assignment.Find(entity.type()),
-                         std::string(app_locale))) {
-      other_entities_that_can_fill_section.push_back(&entity);
+  std::vector<Suggestion> suggestions;
+  DenseSet<AutofillAiUiSection> ui_sections;
+  bool contains_personal_context_entity = false;
+
+  if (!entities_to_suggest.empty()) {
+    auto entities_to_suggest_ids = base::MakeFlatSet<EntityInstance::EntityId>(
+        entities_to_suggest, {}, &EntityInstance::guid);
+
+    // Labels need to be consistent across the whole fill group. That is, as the
+    // user clicks around fields they need to see the same set of attributes as
+    // a combination of main text and labels. Therefore, entities that do not
+    // generate suggestions on a certain triggering field still affect label
+    // generation and should be taken into account.
+    std::vector<const EntityInstance*> other_entities_that_can_fill_section;
+    for (const EntityInstance& entity : all_entities) {
+      if (!entities_to_suggest_ids.contains(entity.guid()) &&
+          CanFillSomeField(entity, assignment.Find(entity.type()),
+                           std::string(client.GetAppLocale()))) {
+        other_entities_that_can_fill_section.push_back(&entity);
+      }
+    }
+
+    std::vector<std::u16string> labels = GetLabelsForSuggestions(
+        entities_to_suggest, other_entities_that_can_fill_section,
+        FindAttributesForField(assignment, trigger_field.global_id()),
+        client.GetAppLocale());
+
+    suggestions.reserve(entities_to_suggest.size());
+    CHECK_EQ(entities_to_suggest.size(), labels.size());
+    for (auto [entity, label] : base::zip(entities_to_suggest, labels)) {
+      base::span<const AutofillFieldWithAttributeType> fields_with_types =
+          assignment.Find(entity.type());
+      base::optional_ref<const AutofillFieldWithAttributeType>
+          trigger_field_with_type =
+              FindField(fields_with_types, trigger_field.global_id());
+      suggestions.push_back(GetSuggestionForEntity(
+          form, entity, fields_with_types, *trigger_field_with_type,
+          std::move(label), client.GetAppLocale()));
+      ui_sections.insert(GetAutofillAiUiSection(entity.type()));
+      contains_personal_context_entity |=
+          entity.record_type() == EntityInstance::RecordType::kPersonalContext;
+    }
+
+    if (contains_personal_context_entity &&
+        client.ShouldShowPersonalContextAutofillNotice()) {
+      Suggestion& suggestion =
+          suggestions.emplace_back(SuggestionType::kPersonalContextNotice);
+      suggestion.filtration_policy = Suggestion::FiltrationPolicy::kStatic;
     }
   }
 
-  std::vector<std::u16string> labels = GetLabelsForSuggestions(
-      entities_to_suggest, other_entities_that_can_fill_section,
-      FindAttributesForField(assignment, trigger_field.global_id()),
-      app_locale);
-
-  std::vector<Suggestion> suggestions;
-  suggestions.reserve(entities_to_suggest.size());
-  CHECK_EQ(entities_to_suggest.size(), labels.size());
-  bool contains_travel_entity = false;
-  bool contains_identity_docs_entity = false;
-  for (auto [entity, label] : base::zip(entities_to_suggest, labels)) {
-    base::span<const AutofillFieldWithAttributeType> fields_with_types =
-        assignment.Find(entity.type());
-    base::optional_ref<const AutofillFieldWithAttributeType>
-        trigger_field_with_type =
-            FindField(fields_with_types, trigger_field.global_id());
-    suggestions.push_back(GetSuggestionForEntity(entity, fields_with_types,
-                                                 *trigger_field_with_type,
-                                                 std::move(label), app_locale));
-    contains_travel_entity |= IsTravelType(entity.type());
-    contains_identity_docs_entity |= IsIdentityDocsType(entity.type());
+  if (should_show_fetching_suggestions) {
+    base::Extend(suggestions, CreateFetchingAmbientSuggestions());
   }
 
-  base::Extend(suggestions,
-               GetFooterSuggestions(trigger_field_data, contains_travel_entity,
-                                    contains_identity_docs_entity));
+  base::Extend(suggestions, GetFooterSuggestions(trigger_field, ui_sections));
   return suggestions;
 }
 
@@ -607,22 +765,17 @@ std::vector<Suggestion> CreateAutofillAiFillingSuggestions(
 AutofillAiSuggestionGenerator::AutofillAiSuggestionGenerator() = default;
 AutofillAiSuggestionGenerator::~AutofillAiSuggestionGenerator() = default;
 
-void AutofillAiSuggestionGenerator::FetchSuggestionData(
+void AutofillAiSuggestionGenerator::GenerateSuggestions(
     const FormData& form,
     const FormFieldData& trigger_field,
     const FormStructure* form_structure,
     const AutofillField* trigger_autofill_field,
-    const AutofillClient& client,
-    base::OnceCallback<
-        void(std::pair<SuggestionDataSource,
-                       std::vector<SuggestionGenerator::SuggestionData>>)>
-        callback) {
-  FetchSuggestionData(
+    AutofillClient& client,
+    base::OnceCallback<void(ReturnedSuggestions)> callback) {
+  GenerateSuggestions(
       form, trigger_field, form_structure, trigger_autofill_field, client,
-      [&callback](std::pair<SuggestionDataSource,
-                            std::vector<SuggestionGenerator::SuggestionData>>
-                      suggestion_data) {
-        std::move(callback).Run(std::move(suggestion_data));
+      [&callback](ReturnedSuggestions returned_suggestions) {
+        std::move(callback).Run(std::move(returned_suggestions));
       });
 }
 
@@ -631,36 +784,21 @@ void AutofillAiSuggestionGenerator::GenerateSuggestions(
     const FormFieldData& trigger_field,
     const FormStructure* form_structure,
     const AutofillField* trigger_autofill_field,
-    const AutofillClient& client,
-    const base::flat_map<SuggestionDataSource, std::vector<SuggestionData>>&
-        all_suggestion_data,
-    base::OnceCallback<void(ReturnedSuggestions)> callback) {
-  GenerateSuggestions(
-      form, trigger_field, form_structure, trigger_autofill_field, client,
-      all_suggestion_data,
-      [&callback](ReturnedSuggestions returned_suggestions) {
-        std::move(callback).Run(std::move(returned_suggestions));
-      });
-}
-
-void AutofillAiSuggestionGenerator::FetchSuggestionData(
-    const FormData& form,
-    const FormFieldData& trigger_field,
-    const FormStructure* form_structure,
-    const AutofillField* trigger_autofill_field,
-    const AutofillClient& client,
-    base::FunctionRef<
-        void(std::pair<SuggestionDataSource,
-                       std::vector<SuggestionGenerator::SuggestionData>>)>
-        callback) {
+    AutofillClient& client,
+    base::FunctionRef<void(ReturnedSuggestions)> callback) {
   const EntityDataManager* entity_manager = client.GetEntityDataManager();
   if (!entity_manager || !form_structure || !trigger_autofill_field) {
     callback({SuggestionDataSource::kAutofillAi, {}});
     return;
   }
 
-  if (!GetFieldsFillableByAutofillAi(*form_structure, client)
-           .contains(trigger_field.global_id()) ||
+  const bool is_fillable =
+      GetFieldsFillableByAutofillAi(*form_structure, client)
+          .contains(trigger_field.global_id());
+  const bool is_fetching_data_for_field =
+      IsFetchingFillableEntity(*trigger_autofill_field, client);
+
+  if ((!is_fillable && !is_fetching_data_for_field) ||
       SuppressSuggestionsForAutocompleteUnrecognizedField(
           *trigger_autofill_field, GetAcUnrecognizedBehavior(client))) {
     callback({SuggestionDataSource::kAutofillAi, {}});
@@ -671,51 +809,19 @@ void AutofillAiSuggestionGenerator::FetchSuggestionData(
       GetFillableEntityInstances(client),
       AttributeTypeAssignment(form_structure->fields(),
                               trigger_autofill_field->section()),
-      trigger_field.global_id(), client.GetAppLocale());
+      trigger_field.global_id(), client.GetAppLocale(),
+      client.GetLastCommittedPrimaryMainFrameURL());
 
-  std::vector<SuggestionData> suggestion_data = base::ToVector(
-      std::move(entities),
-      [](const EntityInstance* entity) { return SuggestionData(*entity); });
-
-  callback({SuggestionDataSource::kAutofillAi, std::move(suggestion_data)});
-}
-
-void AutofillAiSuggestionGenerator::GenerateSuggestions(
-    const FormData& form,
-    const FormFieldData& trigger_field,
-    const FormStructure* form_structure,
-    const AutofillField* trigger_autofill_field,
-    const AutofillClient& client,
-    const base::flat_map<SuggestionDataSource, std::vector<SuggestionData>>&
-        all_suggestion_data,
-    base::FunctionRef<void(ReturnedSuggestions)> callback) {
-  const EntityDataManager* entity_manager = client.GetEntityDataManager();
-  if (!entity_manager || !form_structure || !trigger_autofill_field) {
-    callback({FillingProduct::kAutofillAi, {}});
-    return;
-  }
-
-  auto it = all_suggestion_data.find(SuggestionDataSource::kAutofillAi);
-  std::vector<SuggestionData> autofill_ai_suggestion_data =
-      it != all_suggestion_data.end() ? it->second
-                                      : std::vector<SuggestionData>();
-  if (autofill_ai_suggestion_data.empty()) {
-    callback({FillingProduct::kAutofillAi, {}});
-    return;
-  }
-
-  std::vector<EntityInstance> entities_to_suggest = base::ToVector(
-      std::move(autofill_ai_suggestion_data),
-      [](SuggestionData& suggestion_data) {
-        return std::get<EntityInstance>(std::move(suggestion_data));
-      });
   std::vector<Suggestion> suggestions = CreateAutofillAiFillingSuggestions(
-      *form_structure, *trigger_autofill_field, entities_to_suggest,
+      *form_structure, *trigger_autofill_field,
+      base::ToVector(entities,
+                     [](const EntityInstance* entity) { return *entity; }),
       entity_manager->GetEntityInstances(),
       AttributeTypeAssignment(form_structure->fields(),
                               trigger_autofill_field->section()),
-      client.GetAppLocale());
-  callback({FillingProduct::kAutofillAi, std::move(suggestions)});
+      client);
+
+  callback({SuggestionDataSource::kAutofillAi, std::move(suggestions)});
 }
 
 }  // namespace autofill

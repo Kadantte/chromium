@@ -9,8 +9,12 @@
 #include "base/mac/mac_util.h"
 #include "build/branding_buildflags.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/browser_features.h"
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/feedback/report_unsafe_site_dialog.h"
 #include "chrome/browser/ui/cocoa/accelerators_cocoa.h"
 #include "chrome/browser/ui/cocoa/history_menu_bridge.h"
+#include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/grit/branded_strings.h"
@@ -304,6 +308,12 @@ NSMenuItem* BuildViewMenu(NSApplication* nsapp,
                   .command_id(IDC_SHOW_AI_MODE_OMNIBOX_BUTTON),
               Item(IDS_CONTEXT_MENU_SHOW_SEARCH_TOOLS)
                   .command_id(IDC_SHOW_SEARCH_TOOLS),
+              Item(IDS_SWITCH_TO_VERTICAL_TAB)
+                  .command_id(IDC_TOGGLE_VERTICAL_TABS)
+                  .remove_if(!tabs::IsVerticalTabsFeatureEnabled()),
+              Item(IDS_VERTICAL_TABS_VIEW_MENU_TOGGLE_COLLAPSE)
+                  .command_id(IDC_TOGGLE_VERTICAL_TABS_COLLAPSE)
+                  .remove_if(!tabs::IsVerticalTabsFeatureEnabled()),
               Item(IDS_CUSTOMIZE_TOUCH_BAR)
                   .tag(IDC_CUSTOMIZE_TOUCH_BAR)
                   .action(@selector(toggleTouchBarCustomizationPalette:))
@@ -409,12 +419,15 @@ NSMenuItem* BuildBookmarksMenu(NSApplication* nsapp,
     return nil;
   }
 
+  const int bookmarks_manager_string_id =
+      features::IsMenuSimplificationEnabled() ? IDS_BOOKMARK_MANAGER_V2
+                                              : IDS_BOOKMARK_MANAGER;
   // clang-format off
   NSMenuItem* item =
       Item(IDS_BOOKMARKS_MENU)
           .tag(IDC_BOOKMARKS_MENU)
           .submenu({
-              Item(IDS_BOOKMARK_MANAGER)
+              Item(bookmarks_manager_string_id)
                   .command_id(IDC_SHOW_BOOKMARK_MANAGER),
               Item().is_separator()
                   .tag(IDC_BOOKMARK_THIS_TAB),
@@ -435,7 +448,7 @@ NSMenuItem* BuildGroupsMenu(NSApplication* nsapp,
                             const std::u16string& product_name,
                             bool is_pwa,
                             bool is_rtl) {
-  if (!base::FeatureList::IsEnabled(features::kShowTabGroupsMacSystemMenu)) {
+  if (!features::IsShowTabGroupsMacSystemMenuEnabled()) {
     return nil;
   }
 
@@ -589,17 +602,25 @@ NSMenuItem* BuildHelpMenu(NSApplication* nsapp,
   }
 
   // clang-format off
+  std::vector<Item> items = {};
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  items.push_back(Item(IDS_FEEDBACK_MAC).command_id(IDC_FEEDBACK));
+  bool is_profile_loaded =
+      g_browser_process && g_browser_process->profile_manager() &&
+      g_browser_process->profile_manager()->GetLastUsedProfileIfLoaded();
+  if (is_profile_loaded && feedback::ReportUnsafeSiteDialog::IsEnabled(
+                               *(g_browser_process->profile_manager()
+                                     ->GetLastUsedProfileIfLoaded()))) {
+    items.push_back(Item(IDS_REPORT_UNSAFE_SITE)
+                        .command_id(IDC_REPORT_UNSAFE_SITE));
+  }
+#endif
+  items.push_back(Item(IDS_HELP_MAC)
+                      .string_format_1(product_name)
+                      .command_id(IDC_HELP_PAGE_VIA_MENU));
   NSMenuItem* item =
       Item(IDS_HELP_MENU_MAC)
-          .submenu({
-#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-              Item(IDS_FEEDBACK_MAC)
-                  .command_id(IDC_FEEDBACK),
-#endif
-              Item(IDS_HELP_MAC)
-                  .string_format_1(product_name)
-                  .command_id(IDC_HELP_PAGE_VIA_MENU),
-          })
+          .submenu(items)
           .Build();
   // clang-format on
 

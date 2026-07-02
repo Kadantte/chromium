@@ -25,9 +25,6 @@
 #include "base/values.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_data_delegate.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
-#include "chrome/browser/extensions/cws_item_service.pb.h"
-#include "chrome/browser/extensions/webstore_data_fetcher.h"
-#include "chrome/browser/extensions/webstore_install_helper.h"
 #include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/account_id/account_id.h"
@@ -36,11 +33,14 @@
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/browser/crx_file_info.h"
+#include "extensions/browser/cws_item_service.pb.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_util.h"
 #include "extensions/browser/image_loader.h"
 #include "extensions/browser/install/crx_install_error.h"
 #include "extensions/browser/sandboxed_unpacker.h"
+#include "extensions/browser/webstore_data_fetcher.h"
+#include "extensions/browser/webstore_install_helper.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension_resource.h"
 #include "extensions/common/extension_urls.h"
@@ -204,7 +204,7 @@ class KioskAppData::WebstoreDataParser
   void Start(const std::string& app_id,
              const std::string& manifest,
              const GURL& icon_url,
-             network::mojom::URLLoaderFactory* loader_factory) {
+             scoped_refptr<network::SharedURLLoaderFactory> loader_factory) {
     scoped_refptr<extensions::WebstoreInstallHelper> webstore_helper =
         new extensions::WebstoreInstallHelper(this, app_id, manifest, icon_url);
     webstore_helper->Start(loader_factory);
@@ -505,7 +505,7 @@ void KioskAppData::OnFetchItemSnippetParseSuccess(
   // WebstoreDataParser deletes itself when done.
   (new WebstoreDataParser(weak_factory_.GetWeakPtr()))
       ->Start(app_id(), item_snippet.manifest(), icon_url,
-              shared_url_loader_factory_.get());
+              shared_url_loader_factory_);
 }
 
 void KioskAppData::OnWebstoreResponseParseFailure(

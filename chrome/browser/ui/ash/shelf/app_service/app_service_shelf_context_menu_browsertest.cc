@@ -5,6 +5,7 @@
 #include "ash/public/cpp/app_menu_constants.h"
 #include "ash/public/cpp/shelf_item_delegate.h"
 #include "ash/public/cpp/shelf_model.h"
+#include "ash/resources/vector_icons/vector_icons.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/stack_allocated.h"
 #include "base/run_loop.h"
@@ -43,6 +44,7 @@
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/display/display.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/vector_icons.h"
@@ -108,11 +110,14 @@ class AppServiceShelfContextMenuWebAppBrowserTest
 
   const gfx::VectorIcon& GetExpectedLaunchNewIcon(int command_id) {
     if (command_id == ash::USE_LAUNCH_TYPE_REGULAR) {
-      return views::kNewTabIcon;
+      return features::IsRoundedIconsEnabled() ? views::kTabIcon
+                                               : views::kNewTabOldIcon;
     } else if (command_id == ash::USE_LAUNCH_TYPE_WINDOW) {
-      return views::kNewWindowIcon;
+      return features::IsRoundedIconsEnabled() ? views::kNewWindowIcon
+                                               : views::kNewWindowOldIcon;
     } else {
-      return views::kOpenIcon;
+      return features::IsRoundedIconsEnabled() ? views::kArrowOutwardIcon
+                                               : views::kOpenOldIcon;
     }
   }
 
@@ -193,7 +198,8 @@ IN_PROC_BROWSER_TEST_P(AppServiceShelfContextMenuWebAppBrowserTest,
 
   // App window should have tab strip.
   Browser* app_browser = web_app::LaunchWebAppBrowser(profile, app_id);
-  EXPECT_TRUE(app_browser->app_controller()->has_tab_strip());
+  EXPECT_TRUE(
+      web_app::AppBrowserController::From(app_browser)->has_tab_strip());
 }
 
 IN_PROC_BROWSER_TEST_P(AppServiceShelfContextMenuWebAppBrowserTest,
@@ -318,7 +324,8 @@ IN_PROC_BROWSER_TEST_F(AppServiceShelfContextMenuTabbedWebAppBrowserTest,
 
   // App window should have tab strip.
   Browser* app_browser = web_app::LaunchWebAppBrowser(profile, app_id);
-  EXPECT_TRUE(app_browser->app_controller()->has_tab_strip());
+  EXPECT_TRUE(
+      web_app::AppBrowserController::From(app_browser)->has_tab_strip());
 }
 
 class AppServiceShelfContextMenuNonTabbedWebAppBrowserTest
@@ -364,7 +371,8 @@ IN_PROC_BROWSER_TEST_F(AppServiceShelfContextMenuNonTabbedWebAppBrowserTest,
 
   // App window should not have a tab strip since the flag is disabled.
   Browser* app_browser = web_app::LaunchWebAppBrowser(profile, app_id);
-  EXPECT_FALSE(app_browser->app_controller()->has_tab_strip());
+  EXPECT_FALSE(
+      web_app::AppBrowserController::From(app_browser)->has_tab_strip());
 }
 
 class AppServiceShelfContextMenuCrostiniAppBrowserTest
@@ -409,7 +417,8 @@ IN_PROC_BROWSER_TEST_F(AppServiceShelfContextMenuCrostiniAppBrowserTest,
   EXPECT_EQ(menu_section->menu_model->GetIconAt(menu_section->command_index)
                 .GetVectorIcon()
                 .vector_icon(),
-            &views::kOpenIcon);
+            &(features::IsRoundedIconsEnabled() ? views::kArrowOutwardIcon
+                                                : views::kOpenOldIcon));
 }
 
 IN_PROC_BROWSER_TEST_F(AppServiceShelfContextMenuCrostiniAppBrowserTest,
@@ -438,7 +447,7 @@ IN_PROC_BROWSER_TEST_F(AppServiceShelfContextMenuCrostiniAppBrowserTest,
   EXPECT_EQ(menu_section->menu_model->GetIconAt(menu_section->command_index)
                 .GetVectorIcon()
                 .vector_icon(),
-            &kShutdownGuestOsIcon);
+            &ash::kShutdownGuestOsIcon);
 }
 
 IN_PROC_BROWSER_TEST_F(AppServiceShelfContextMenuCrostiniAppBrowserTest,
@@ -468,12 +477,11 @@ IN_PROC_BROWSER_TEST_F(AppServiceShelfContextMenuCrostiniAppBrowserTest,
   EXPECT_GT(menu_section->command_index, 0u);
   EXPECT_FALSE(
       menu_section->menu_model->GetSubmenuModelAt(menu_section->command_index));
-  EXPECT_NE(menu_section->menu_model->GetLabelAt(menu_section->command_index)
-                .find(base::ASCIIToUTF16(bruschetta::GetBruschettaDisplayName(
-                    browser()->profile()))),
-            std::string::npos);
+  EXPECT_EQ(menu_section->menu_model->GetLabelAt(menu_section->command_index),
+            u"Shut down Bruschetta");
+
   EXPECT_EQ(menu_section->menu_model->GetIconAt(menu_section->command_index)
                 .GetVectorIcon()
                 .vector_icon(),
-            &kShutdownGuestOsIcon);
+            &ash::kShutdownGuestOsIcon);
 }

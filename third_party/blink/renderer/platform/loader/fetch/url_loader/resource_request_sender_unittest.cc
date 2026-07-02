@@ -242,12 +242,11 @@ class MockLoader : public network::mojom::URLLoader {
 
   // network::mojom::URLLoader implementation:
   void FollowRedirect(
-      const std::vector<std::string>& removed_headers,
-      const net::HttpRequestHeaders& modified_headers,
-      const net::HttpRequestHeaders& modified_cors_exempt_headers,
+      network::HttpRequestHeadersUpdateParams headers_update_params,
       const std::optional<GURL>& new_url) override {
     if (follow_redirect_callback_) {
-      follow_redirect_callback_.Run(removed_headers, modified_headers);
+      follow_redirect_callback_.Run(headers_update_params.removed_headers,
+                                    headers_update_params.modified_headers);
     }
   }
   void SetPriority(net::RequestPriority priority,
@@ -288,6 +287,9 @@ class DummyCodeCacheHost final : public mojom::blink::CodeCacheHost {
                                     const KURL& url,
                                     base::Time expected_response_time,
                                     mojo_base::BigBuffer data) override {}
+  void DidGenerateSourceKeyedCacheableMetadata(
+      const blink::Vector<uint8_t>& script_hash,
+      mojo_base::BigBuffer data) override {}
   void FetchCachedCode(mojom::blink::CodeCacheType cache_type,
                        const KURL& url,
                        FetchCachedCodeCallback callback) override {

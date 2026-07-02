@@ -116,7 +116,6 @@
     _activeProviders = [NSMutableSet set];
     _startupWaitDuration = base::TimeDelta();
     _hasStartupWaitDuration = NO;
-    [self registerBackgroundRefreshTask];
   }
   return self;
 }
@@ -135,8 +134,11 @@
 
 - (void)appState:(AppState*)appState
     willTransitionToInitStage:(AppInitStage)nextInitStage {
-  if (nextInitStage > AppInitStage::kBrowserObjectsForBackgroundHandlers &&
-      _pendingTask) {
+  if (nextInitStage == AppInitStage::kStart) {
+    [self registerBackgroundRefreshTask];
+  } else if (nextInitStage >
+                 AppInitStage::kBrowserObjectsForBackgroundHandlers &&
+             _pendingTask) {
     [self executeProvidersForTask:_pendingTask];
   }
 }
@@ -367,14 +369,12 @@
     // No provider provided a usable refresh interval.
     return;
   }
-  NSTimeInterval delayInSeconds = delay.InSecondsF();
 
   // TODO(crbug.com/354918222): coalesce multiple requests so there's only ever
   // a single scheduled refresh pending.
   BGAppRefreshTaskRequest* request = [[BGAppRefreshTaskRequest alloc]
       initWithIdentifier:kAppBackgroundRefreshTaskIdentifier];
-  request.earliestBeginDate =
-      [NSDate dateWithTimeIntervalSinceNow:delayInSeconds];
+  request.earliestBeginDate = (base::Time::Now() + delay).ToNSDate();
   NSError* error = nil;
   [BGTaskScheduler.sharedScheduler submitTaskRequest:request error:&error];
   BGTaskSchedulerErrorActions action = BGTaskSchedulerErrorActions::kUnknown;

@@ -16,17 +16,14 @@ export function getHtml(this: SimpleActionMenuElement) {
       ?non-modal="${this.nonModal}"
       tabindex="-1">
     ${this.menuItems.map((item, index) => html`
-      <hr class="sp-hr has-header-${this.doesItemHaveHeaderSeparator_(item)}">
-      <span class="has-header-${this.doesItemHaveHeader_(item)} header-style">
-          ${item.header?.title}
-      </span>
       <button
           class="dropdown-item"
           style="${item.style}"
+          aria-label="${item.ariaLabel}"
           @click="${this.onClick_}"
           data-index="${index}">
         <cr-icon
-            class="button-image check-mark check-mark-showing-${this.isItemSelected_(index, item)}"
+            class="button-image check-mark check-mark-showing-${this.isItemSelected_(index)}"
             icon="read-anything-20:check-mark"
             aria-label="$i18n{selected}">
         </cr-icon>

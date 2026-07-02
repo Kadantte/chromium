@@ -270,6 +270,12 @@ viz::SharedImageFormat VideoPixelFormatToMultiPlanarSharedImageFormat(
       return viz::MultiPlaneFormat::kNV12A;
     case PIXEL_FORMAT_I420A:
       return viz::MultiPlaneFormat::kI420A;
+    case PIXEL_FORMAT_I422A:
+      return viz::SharedImageFormat::MultiPlane(
+          PlaneConfig::kY_U_V_A, Subsampling::k422, ChannelFormat::k8);
+    case PIXEL_FORMAT_I444A:
+      return viz::SharedImageFormat::MultiPlane(
+          PlaneConfig::kY_U_V_A, Subsampling::k444, ChannelFormat::k8);
     case PIXEL_FORMAT_NV16:
     case PIXEL_FORMAT_NV24:
     case PIXEL_FORMAT_P010LE:
@@ -289,8 +295,6 @@ viz::SharedImageFormat VideoPixelFormatToMultiPlanarSharedImageFormat(
     case PIXEL_FORMAT_XB30:
     case PIXEL_FORMAT_BGRA:
     case PIXEL_FORMAT_RGBAF16:
-    case PIXEL_FORMAT_I422A:
-    case PIXEL_FORMAT_I444A:
     case PIXEL_FORMAT_YUV420AP10:
     case PIXEL_FORMAT_YUV422AP10:
     case PIXEL_FORMAT_YUV444AP10:
@@ -340,6 +344,28 @@ class CopyingSyncTokenClient : public VideoFrame::SyncTokenClient {
  private:
   gpu::SyncToken sync_token_;
 };
+
+void ReturnTexture(
+    scoped_refptr<VideoFrame> video_frame,
+    scoped_refptr<viz::RasterContextProvider> raster_context_provider,
+    const gpu::SyncToken& original_release_token,
+    const gpu::SyncToken& new_release_token,
+    bool lost_resource) {
+  // Note: This method is called for each plane texture in the frame! Which
+  // means it may end up receiving the same `new_release_token` multiple times.
+  if (lost_resource) {
+    video_frame->SetLostSharedImageResource();
+    return;
+  }
+
+  if (!new_release_token.HasData()) {
+    return;
+  }
+
+  ResourceSyncTokenClient client(raster_context_provider->RasterInterface(),
+                                 original_release_token, new_release_token);
+  video_frame->UpdateReleaseSyncToken(&client);
+}
 
 }  // namespace
 
@@ -533,9 +559,8 @@ void VideoResourceUpdater::ObtainFrameResource(
   frame_resource_id_ = resource_provider_->ImportResource(
       external_resource.resource,
       std::move(external_resource.release_callback));
-  TRACE_EVENT_INSTANT1("media", "VideoResourceUpdater::ObtainFrameResource",
-                       TRACE_EVENT_SCOPE_THREAD, "Timestamp",
-                       video_frame->timestamp().InMicroseconds());
+  TRACE_EVENT_INSTANT("media", "VideoResourceUpdater::ObtainFrameResource",
+                      "Timestamp", video_frame->timestamp().InMicroseconds());
 }
 
 void VideoResourceUpdater::ReleaseFrameResource() {
@@ -828,7 +853,7 @@ VideoFrameExternalResource VideoResourceUpdater::CreateForHardwareFrame(
   }
 
 #if BUILDFLAG(IS_ANDROID)
-  transfer_resource.ycbcr_info = video_frame->ycbcr_info();
+  transfer_resource.ycbcr_info = video_frame->metadata().ycbcr_info;
   transfer_resource.is_backed_by_surface_view =
       video_frame->metadata().in_surface_view;
 #endif
@@ -840,8 +865,8 @@ VideoFrameExternalResource VideoResourceUpdater::CreateForHardwareFrame(
 
   external_resource.resource = std::move(transfer_resource);
   external_resource.release_callback = base::BindOnce(
-      &VideoResourceUpdater::ReturnTexture, weak_ptr_factory_.GetWeakPtr(),
-      video_frame, original_release_token);
+      &ReturnTexture, video_frame, base::WrapRefCounted(context_provider_),
+      original_release_token);
   return external_resource;
 }
 
@@ -1284,27 +1309,6 @@ gpu::raster::RasterInterface* VideoResourceUpdater::RasterInterface() {
   auto* ri = context_provider_->RasterInterface();
   CHECK(ri);
   return ri;
-}
-
-void VideoResourceUpdater::ReturnTexture(
-    scoped_refptr<VideoFrame> video_frame,
-    const gpu::SyncToken& original_release_token,
-    const gpu::SyncToken& new_release_token,
-    bool lost_resource) {
-  // Note: This method is called for each plane texture in the frame! Which
-  // means it may end up receiving the same `new_release_token` multiple times.
-
-  if (lost_resource) {
-    return;
-  }
-
-  if (!new_release_token.HasData()) {
-    return;
-  }
-
-  ResourceSyncTokenClient client(RasterInterface(), original_release_token,
-                                 new_release_token);
-  video_frame->UpdateReleaseSyncToken(&client);
 }
 
 void VideoResourceUpdater::RecycleResource(uint32_t resource_id,

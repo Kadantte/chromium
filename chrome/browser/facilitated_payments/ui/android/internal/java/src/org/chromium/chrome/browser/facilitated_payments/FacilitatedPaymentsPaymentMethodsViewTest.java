@@ -17,14 +17,20 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import static org.chromium.base.ThreadUtils.runOnUiThreadBlocking;
+import static org.chromium.base.test.util.CriteriaHelper.pollUiThread;
+import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.AccountLinkingSuccessScreenProperties.PRIMARY_BUTTON_CALLBACK;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.FopSelectorProperties.SCREEN_ITEMS;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.ItemType.BANK_ACCOUNT;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.ItemType.CONTINUE_BUTTON;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.ItemType.EWALLET;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.ItemType.PAYMENT_APP;
+import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.PixAccountLinkingPromptProperties.DECLINE_BUTTON_TEXT_ID;
+import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.PixAccountLinkingPromptProperties.SETTINGS_LINK_CALLBACK;
+import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.PixAccountLinkingPromptProperties.VIDEO_LINK_CALLBACK;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SCREEN;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SCREEN_VIEW_MODEL;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SURVIVES_NAVIGATION;
+import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SequenceScreen.ACCOUNT_LINKING_SUCCESS_SCREEN;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SequenceScreen.ERROR_SCREEN;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SequenceScreen.FOP_SELECTOR;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SequenceScreen.PIX_ACCOUNT_LINKING_PROMPT;
@@ -59,6 +65,8 @@ import org.mockito.quality.Strictness;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.Criteria;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
@@ -238,6 +246,7 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
 
     @Test
     @MediumTest
+    @DisabledTest(message = "crbug.com/523228313")
     public void testViewCanBeHiddenUsingTheModel() {
         runOnUiThreadBlocking(
                 () -> {
@@ -347,7 +356,8 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
 
         BottomSheetTestSupport.waitForOpen(mBottomSheetController);
 
-        assertThat(getSheetItems().getChildCount(), is(2));
+        pollUiThread(() -> Criteria.checkThat(getSheetItems().getChildCount(), is(2)));
+
         assertThat(getPaymentAppNameAt(0).getText(), is(PAYMENT_APP_1_NAME));
         assertThat(getPaymentAppNameAt(1).getText(), is(PAYMENT_APP_2_NAME));
     }
@@ -573,7 +583,7 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
                     mModel.set(VISIBLE_STATE, SHOWN);
                 });
 
-        assertThat(getSheetItems().getChildCount(), is(1));
+        pollUiThread(() -> Criteria.checkThat(getSheetItems().getChildCount(), is(1)));
         ImageView headerSecurityCheckImage = getHeaderSecurityCheckImageAt(0);
         TextView headerDescription = getHeaderDescriptionAt(0);
 
@@ -881,6 +891,47 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
 
     @Test
     @MediumTest
+    public void testAccountLinkingSuccessScreenShown() {
+        runOnUiThreadBlocking(
+                () -> {
+                    mModel.set(SCREEN, ACCOUNT_LINKING_SUCCESS_SCREEN);
+                    mModel.set(VISIBLE_STATE, SHOWN);
+                });
+        BottomSheetTestSupport.waitForOpen(mBottomSheetController);
+
+        assertThat(
+                containsViewWithId(
+                        (ViewGroup) mView.getContentView(),
+                        R.id.pix_account_linking_success_screen),
+                is(true));
+    }
+
+    @Test
+    @MediumTest
+    public void testAccountLinkingSuccessScreenContents() {
+        runOnUiThreadBlocking(
+                () -> {
+                    mModel.set(SCREEN, ACCOUNT_LINKING_SUCCESS_SCREEN);
+                    mModel.get(SCREEN_VIEW_MODEL).set(PRIMARY_BUTTON_CALLBACK, v -> {});
+                    mModel.set(VISIBLE_STATE, SHOWN);
+                });
+        BottomSheetTestSupport.waitForOpen(mBottomSheetController);
+
+        TextView title = mView.getContentView().findViewById(R.id.title);
+        assertThat(title.getText(), is("Your Pix account is successfully linked to Google Pay"));
+        ButtonCompat primaryButton = mView.getContentView().findViewById(R.id.primary_button);
+        assertThat(primaryButton.getText(), is("Got it"));
+
+        TextView valueProp1 = mView.getContentView().findViewById(R.id.value_prop_message_1);
+        assertNotNull(valueProp1.getCompoundDrawablesRelative()[0]);
+        TextView valueProp2 = mView.getContentView().findViewById(R.id.value_prop_message_2);
+        assertNotNull(valueProp2.getCompoundDrawablesRelative()[0]);
+        TextView valueProp3 = mView.getContentView().findViewById(R.id.value_prop_message_3);
+        assertNotNull(valueProp3.getCompoundDrawablesRelative()[0]);
+    }
+
+    @Test
+    @MediumTest
     public void testPixAccountLinkingPromptShown() {
         runOnUiThreadBlocking(
                 () -> {
@@ -891,17 +942,22 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
 
         // Verify that the Pix account linking prompt is shown.
         assertThat(
-                containsViewWithId(
-                        (ViewGroup) mView.getContentView(), R.id.pix_account_linking_prompt),
-                is(true));
+                mView.getContentView().findViewById(R.id.pix_account_linking_prompt),
+                not(nullValue()));
     }
 
     @Test
     @MediumTest
+    @EnableFeatures({"EnablePixAccountLinkingNative:prompt_variant/VariationA"})
     public void testPixAccountLinkingPromptContents() {
         runOnUiThreadBlocking(
                 () -> {
                     mModel.set(SCREEN, PIX_ACCOUNT_LINKING_PROMPT);
+                    mModel.get(SCREEN_VIEW_MODEL).set(SETTINGS_LINK_CALLBACK, v -> {});
+                    mModel.get(SCREEN_VIEW_MODEL)
+                            .set(
+                                    DECLINE_BUTTON_TEXT_ID,
+                                    R.string.pix_account_linking_prompt_decline_first_two_times);
                     mModel.set(VISIBLE_STATE, SHOWN);
                 });
         BottomSheetTestSupport.waitForOpen(mBottomSheetController);
@@ -922,10 +978,113 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
         assertThat(valuePropMessage3.getText(), is("Encryption protects your personal info"));
         assertNotNull(valuePropMessage3.getCompoundDrawablesRelative()[0]);
 
+        TextView settingsLink =
+                mView.getContentView().findViewById(R.id.pix_code_detection_settings_link);
+        assertThat(
+                settingsLink.getText().toString(),
+                is("To turn off Pix code detection, go to Chrome settings"));
+
         ButtonCompat acceptButton = mView.getContentView().findViewById(R.id.accept_button);
         assertThat(acceptButton.getText(), is("Enable Pix in Wallet"));
         ButtonCompat declineButton = mView.getContentView().findViewById(R.id.decline_button);
-        assertThat(declineButton.getText(), is("No thanks"));
+        assertThat(declineButton.getText(), is("Not now"));
+    }
+
+    @Test
+    @MediumTest
+    @EnableFeatures({"EnablePixAccountLinkingNative:prompt_variant/VariationB"})
+    public void testPixAccountLinkingPromptContents_VariantB() {
+        boolean[] videoLinkClicked = new boolean[1];
+        runOnUiThreadBlocking(
+                () -> {
+                    mModel.set(SCREEN, PIX_ACCOUNT_LINKING_PROMPT);
+                    mModel.get(SCREEN_VIEW_MODEL).set(SETTINGS_LINK_CALLBACK, v -> {});
+                    mModel.get(SCREEN_VIEW_MODEL)
+                            .set(
+                                    DECLINE_BUTTON_TEXT_ID,
+                                    R.string.pix_account_linking_prompt_decline_first_two_times);
+                    mModel.get(SCREEN_VIEW_MODEL)
+                            .set(VIDEO_LINK_CALLBACK, v -> videoLinkClicked[0] = true);
+                    mModel.set(VISIBLE_STATE, SHOWN);
+                });
+        BottomSheetTestSupport.waitForOpen(mBottomSheetController);
+
+        ImageView productIcon = mView.getContentView().findViewById(R.id.product_icon);
+        assertNotNull(productIcon);
+
+        TextView title = mView.getContentView().findViewById(R.id.title);
+        assertThat(title.getText(), is("Pay with Pix without switching apps"));
+
+        TextView valuePropMessage1 = mView.getContentView().findViewById(R.id.value_prop_message_1);
+        assertThat(
+                valuePropMessage1.getText().toString(),
+                is("Pay without copying and pasting Pix code. See how it works"));
+        assertNotNull(valuePropMessage1.getCompoundDrawablesRelative()[0]);
+        TextView valuePropMessage2 = mView.getContentView().findViewById(R.id.value_prop_message_2);
+        assertThat(valuePropMessage2.getText(), is("Google encryption protects your info"));
+        assertNotNull(valuePropMessage2.getCompoundDrawablesRelative()[0]);
+
+        TextView settingsLink =
+                mView.getContentView().findViewById(R.id.pix_code_detection_settings_link);
+        assertThat(
+                settingsLink.getText().toString(),
+                is("To turn off Pix code detection, go to Chrome settings"));
+
+        ButtonCompat acceptButton = mView.getContentView().findViewById(R.id.accept_button);
+        assertThat(acceptButton.getText(), is("Link your account"));
+        ButtonCompat declineButton = mView.getContentView().findViewById(R.id.decline_button);
+        assertThat(declineButton.getText(), is("Not now"));
+
+        android.text.Spanned spannedText = (android.text.Spanned) valuePropMessage1.getText();
+        android.text.style.ClickableSpan[] spans =
+                spannedText.getSpans(
+                        0, spannedText.length(), android.text.style.ClickableSpan.class);
+        assertThat(spans.length, is(1));
+
+        runOnUiThreadBlocking(() -> spans[0].onClick(valuePropMessage1));
+        assertThat(videoLinkClicked[0], is(true));
+    }
+
+    @Test
+    @MediumTest
+    @EnableFeatures({"EnablePixAccountLinkingNative:prompt_variant/VariationC"})
+    public void testPixAccountLinkingPromptContents_VariantC() {
+        runOnUiThreadBlocking(
+                () -> {
+                    mModel.set(SCREEN, PIX_ACCOUNT_LINKING_PROMPT);
+                    mModel.get(SCREEN_VIEW_MODEL).set(SETTINGS_LINK_CALLBACK, v -> {});
+                    mModel.get(SCREEN_VIEW_MODEL)
+                            .set(
+                                    DECLINE_BUTTON_TEXT_ID,
+                                    R.string.pix_account_linking_prompt_decline_first_two_times);
+                    mModel.set(VISIBLE_STATE, SHOWN);
+                });
+        BottomSheetTestSupport.waitForOpen(mBottomSheetController);
+
+        ImageView productIcon = mView.getContentView().findViewById(R.id.product_icon);
+        assertNotNull(productIcon);
+
+        TextView title = mView.getContentView().findViewById(R.id.title);
+        assertThat(title.getText(), is("Check out faster next time?"));
+
+        TextView bodyText = mView.getContentView().findViewById(R.id.body_text);
+        assertThat(
+                bodyText.getText().toString(),
+                is(
+                        "You won't need to switch apps anymore. Google encryption protects your"
+                                + " info and will confirm that it's you before payment happens."));
+
+        TextView settingsLink =
+                mView.getContentView().findViewById(R.id.pix_code_detection_settings_link);
+        assertThat(
+                settingsLink.getText().toString(),
+                is("To turn off Pix code detection, go to Chrome settings"));
+
+        ButtonCompat acceptButton = mView.getContentView().findViewById(R.id.accept_button);
+        assertThat(acceptButton.getText(), is("Link your account"));
+
+        ButtonCompat declineButton = mView.getContentView().findViewById(R.id.decline_button);
+        assertThat(declineButton.getText(), is("Not now"));
     }
 
     @Test

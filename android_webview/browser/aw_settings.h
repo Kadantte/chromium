@@ -76,6 +76,7 @@ class AwSettings : public content::WebContentsObserver {
 
   bool GetAllowFileAccessFromFileURLs();
   bool GetJavaScriptEnabled();
+  bool GetShouldDownloadFavicons();
   bool GetJavaScriptCanOpenWindowsAutomatically();
   bool GetAllowThirdPartyCookies();
   MixedContentMode GetMixedContentMode();
@@ -118,6 +119,9 @@ class AwSettings : public content::WebContentsObserver {
       const base::android::JavaRef<jobject>& obj);
   void UpdateAllowFileAccessLocked(JNIEnv* env,
                                    const base::android::JavaRef<jobject>& obj);
+  void UpdateDownloadFaviconsEnabledLocked(
+      JNIEnv* env,
+      const base::android::JavaRef<jobject>& obj);
   void UpdateMixedContentModeLocked(JNIEnv* env,
                                     const base::android::JavaRef<jobject>& obj);
   void UpdateAttributionBehaviorLocked(
@@ -133,6 +137,9 @@ class AwSettings : public content::WebContentsObserver {
       JNIEnv* env,
       const base::android::JavaRef<jobject>& obj);
   void UpdateBackForwardCacheSettingsMaxPagesInCacheLocked(
+      JNIEnv* env,
+      const base::android::JavaRef<jobject>& obj);
+  void UpdateBackForwardCacheSettingsKeepForwardEntriesLocked(
       JNIEnv* env,
       const base::android::JavaRef<jobject>& obj);
   void UpdateGeolocationEnabledLocked(
@@ -154,9 +161,16 @@ class AwSettings : public content::WebContentsObserver {
   bool GetEnterpriseAuthenticationAppLinkPolicyEnabled(
       JNIEnv* env,
       const base::android::JavaRef<jobject>& obj);
+
   inline bool enterprise_authentication_app_link_policy_enabled() {
     return enterprise_authentication_app_link_policy_enabled_;
   }
+
+  // called from Java for the value of the public getDownloadFaviconsEnabled()
+  // API returns the value of AwSettings::ShouldDownloadFavicons()
+  bool GetShouldDownloadFaviconsOnNavigation(JNIEnv* env);
+
+  bool ShouldDownloadFavicon();
 
   base::android::ScopedJavaLocalRef<jobjectArray>
   UpdateXRequestedWithAllowListOriginMatcher(
@@ -178,6 +192,7 @@ class AwSettings : public content::WebContentsObserver {
   bool javascript_enabled_{false};
   bool javascript_can_open_windows_automatically_{false};
   bool allow_third_party_cookies_{false};
+  bool download_favicons_{true};
   bool allow_file_access_{false};
   bool allow_file_access_from_file_urls_{false};
   bool enterprise_authentication_app_link_policy_enabled_{true};
@@ -188,6 +203,7 @@ class AwSettings : public content::WebContentsObserver {
   bool bfcache_enabled_in_java_settings_{false};
   int back_forward_cache_timeout_in_seconds_{0};
   int back_forward_cache_max_pages_in_cache_{0};
+  bool back_forward_cache_keep_forward_entries_{true};
   bool geolocation_enabled_{false};
 
   // Whether the settings that would affect the initial page scale is set to a

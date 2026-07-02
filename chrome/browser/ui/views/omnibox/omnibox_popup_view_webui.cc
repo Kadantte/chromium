@@ -11,7 +11,6 @@
 
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
-#include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "build/build_config.h"
@@ -31,6 +30,7 @@
 #include "chrome/browser/ui/views/omnibox/rounded_omnibox_results_frame.h"
 #include "chrome/browser/ui/views/theme_copying_widget.h"
 #include "chrome/browser/ui/webui/searchbox/webui_omnibox_handler.h"
+#include "chrome/browser/ui/webui/top_chrome/webui_contents_preload_manager.h"
 #include "components/omnibox/browser/omnibox_prefs.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "ui/accessibility/ax_node_data.h"
@@ -45,15 +45,30 @@
 #include "ui/views/views_features.h"
 #include "ui/views/widget/widget.h"
 
-OmniboxPopupViewWebUI::OmniboxPopupViewWebUI(OmniboxViewViews* omnibox_view,
-                                             OmniboxController* controller,
-                                             LocationBarView* location_bar_view)
+OmniboxPopupViewWebUI::OmniboxPopupViewWebUI(
+    OmniboxView* omnibox_view,
+    OmniboxController* controller,
+    LocationBar* location_bar,
+    OmniboxPopupPresenterDelegate& presenter_delegate)
+    : OmniboxPopupViewWebUI(
+          omnibox_view,
+          controller,
+          location_bar,
+          presenter_delegate,
+          std::make_unique<OmniboxPopupPresenter>(location_bar,
+                                                  presenter_delegate,
+                                                  controller)) {}
+
+OmniboxPopupViewWebUI::OmniboxPopupViewWebUI(
+    OmniboxView* omnibox_view,
+    OmniboxController* controller,
+    LocationBar* location_bar,
+    OmniboxPopupPresenterDelegate& presenter_delegate,
+    std::unique_ptr<OmniboxPopupPresenterBase> presenter)
     : OmniboxPopupView(controller),
-      construction_time_(base::TimeTicks::Now()),
       omnibox_view_(omnibox_view),
-      location_bar_view_(location_bar_view) {
-  presenter_ =
-      std::make_unique<OmniboxPopupPresenter>(location_bar_view, controller);
+      location_bar_(location_bar),
+      presenter_(std::move(presenter)) {
   controller->edit_model()->set_popup_view(this);
   edit_model_observation_.Observe(controller->edit_model());
 }
@@ -66,17 +81,34 @@ bool OmniboxPopupViewWebUI::IsOpen() const {
   return presenter_->IsShown();
 }
 
+OmniboxPopupPresenterBase* OmniboxPopupViewWebUI::presenter() {
+  return presenter_.get();
+}
+
 void OmniboxPopupViewWebUI::InvalidateLine(size_t line) {}
 
 void OmniboxPopupViewWebUI::UpdatePopupAppearance() {
+  const bool has_results =
+      !controller()->autocomplete_controller()->result().empty();
+  // TODO(crbug.com/498556249): Consolidate/correct chip visibility logic.
+  // As written the code below is a bit misleading as the actual decision of
+  // whether or not to show chips is made in WebUI Typescript. This manifests as
+  // a bug where the popup will be visible if the user types something and
+  // backspaces when chips are enabled but no chips are actually shown due to
+  // the Typescript logic.
+  const bool has_contextual_chips =
+      controller()->autocomplete_controller()->result().has_contextual_chips();
+  const bool contextual_chips_feature_enabled =
+      omnibox::IsAimPopupEnabled(location_bar_->GetProfile()) &&
+      omnibox::kShowLensSearchChip.Get();
+  const bool has_results_or_chips =
+      has_results || (contextual_chips_feature_enabled && has_contextual_chips);
   const bool should_be_visible =
       controller()->popup_state_manager()->popup_state() !=
           OmniboxPopupState::kAim &&
-      (!controller()->autocomplete_controller()->result().empty() ||
-       controller()
-           ->autocomplete_controller()
-           ->result()
-           .has_contextual_chips()) &&
+      (has_results_or_chips ||
+       (base::FeatureList::IsEnabled(omnibox::kWebUIOmniboxFullPopup) &&
+        controller()->edit_model()->has_focus())) &&
       !omnibox_view_->IsImeShowingPopup();
 
   if (!should_be_visible) {
@@ -96,20 +128,36 @@ void OmniboxPopupViewWebUI::UpdatePopupAppearance() {
     const bool was_visible = IsOpen();
 
     presenter_->Show();
-    // Update the popup state manager that the classic popup is opening.
+    if (!was_visible) {
+      // Set the request time to now when the popup is first shown. This ensures
+      // that latency is measured from the user interaction to show, even if the
+      // WebUI was preloaded at startup.
+      WebUIContentsPreloadManager::GetInstance()->SetRequestTime(
+          presenter_->GetWebUIContent()->GetWebContents(),
+          base::TimeTicks::Now());
+    }
+    // Update the popup state manager to reflect the appropriate "opened" state.
     controller()->popup_state_manager()->SetPopupState(
         OmniboxPopupState::kClassic);
 
     if (!was_visible) {
-      if (!construction_time_.is_null()) {
+      if (!logged_first_shown_metric_) {
         const base::TimeDelta delta =
-            base::TimeTicks::Now() - construction_time_;
-        construction_time_ = base::TimeTicks();
+            base::TimeTicks::Now() - construction_time();
+        logged_first_shown_metric_ = true;
         base::UmaHistogramTimes(
             base::StrCat({presenter_->GetPopupMetricPrefix(),
                           ".ConstructionToFirstShownDuration"}),
             delta);
       }
+    }
+
+    auto* controller = presenter()
+                           ->GetWebUIContent()
+                           ->contents_wrapper()
+                           ->GetWebUIController();
+    if (auto* handler = controller ? controller->omnibox_handler() : nullptr) {
+      handler->SetAimButtonVisible(omnibox_view_->AimButtonVisible());
     }
   }
 }
@@ -127,7 +175,28 @@ void OmniboxPopupViewWebUI::OnDragCanceled() {}
 void OmniboxPopupViewWebUI::GetPopupAccessibleNodeData(
     ui::AXNodeData* node_data) const {}
 
-raw_ptr<OmniboxPopupViewWebUI>
-OmniboxPopupViewWebUI::GetOmniboxPopupViewWebUI() {
-  return this;
+void OmniboxPopupViewWebUI::StepSelection(
+    OmniboxPopupSelection::Direction direction,
+    OmniboxPopupSelection::Step step) {
+  auto* controller =
+      presenter()->GetWebUIContent()->contents_wrapper()->GetWebUIController();
+  if (auto* handler = controller ? controller->omnibox_handler() : nullptr) {
+    handler->SetAimButtonVisible(omnibox_view_->AimButtonVisible());
+    handler->StepSelection(direction, step);
+  }
+}
+
+void OmniboxPopupViewWebUI::OpenCurrentSelection(
+    WindowOpenDisposition disposition) {
+  auto* controller =
+      presenter()->GetWebUIContent()->contents_wrapper()->GetWebUIController();
+  if (auto* handler = controller ? controller->omnibox_handler() : nullptr) {
+    handler->OpenCurrentSelection(disposition);
+  }
+}
+
+bool OmniboxPopupViewWebUI::IsSelectionPopupControlled() const {
+  return base::FeatureList::IsEnabled(
+             omnibox::kWebUIOmniboxPopupSelectionControl) &&
+         IsOpen();
 }

@@ -22,6 +22,27 @@
 
 namespace glic {
 
+namespace {
+
+const std::vector<GURL>& GetUrlAllowList() {
+  static const base::NoDestructor<std::vector<GURL>> kUrlAllowList{
+      {GURL(), GURL(url::kAboutBlankURL),
+       GURL(chrome::kChromeUINewTabPageThirdPartyURL),
+       chrome::ChromeUINewTabPageURLAsGURL(), chrome::ChromeUINewTabURLAsGURL(),
+#if BUILDFLAG(IS_ANDROID)
+       GURL(chrome::kChromeUINativeNewTabURL),
+#endif
+#if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
+       // NEEDS_ANDROID_IMPL: what's new page
+       // "What's New" does not exist in the form of a tab on ChromeOS.
+       GURL(chrome::kChromeUIWhatsNewURL)
+#endif
+      }};
+  return *kUrlAllowList;
+}
+
+}  // namespace
+
 bool IsBrowserValidForSharingInProfile(
     BrowserWindowInterface* browser_interface,
     Profile* profile) {
@@ -30,24 +51,27 @@ bool IsBrowserValidForSharingInProfile(
          !profile->IsOffTheRecord();
 }
 
+bool IsTabValidForPinningInProfile(tabs::TabInterface* tab, Profile* profile) {
+  return tab && profile && tab->GetProfile() == profile &&
+         !profile->IsOffTheRecord();
+}
+
 bool IsTabValidForSharing(content::WebContents* web_contents) {
-  // We allow allow blank pages to avoid flicker during transitions.
-  static const base::NoDestructor<std::vector<GURL>> kUrlAllowList{
-      {GURL(), GURL(url::kAboutBlankURL),
-       GURL(chrome::kChromeUINewTabPageThirdPartyURL),
-       GURL(chrome::kChromeUINewTabPageURL), GURL(chrome::kChromeUINewTabURL),
-#if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
-       // NEEDS_ANDROID_IMPL: what's new page
-       // "What's New" does not exist in the form of a tab on ChromeOS.
-       GURL(chrome::kChromeUIWhatsNewURL)
-#endif
-      }};
   if (!web_contents) {
     return false;
   }
   const GURL& url = web_contents->GetLastCommittedURL();
   return url.SchemeIsHTTPOrHTTPS() || url.SchemeIsFile() ||
-         std::ranges::contains(*kUrlAllowList, url);
+         std::ranges::contains(GetUrlAllowList(), url);
+}
+
+bool IsTabValidForSharing(tabs::TabInterface* tab) {
+  if (!tab) {
+    return false;
+  }
+  const GURL url = tab->GetURL();
+  return url.SchemeIsHTTPOrHTTPS() || url.SchemeIsFile() ||
+         std::ranges::contains(GetUrlAllowList(), url);
 }
 
 GlicPinEvent GetEmptyPinEvent() {
@@ -85,13 +109,9 @@ bool GlicActiveTabForProfileTracker::IsBrowserActiveForProfile(
 
 void GlicActiveTabForProfileTracker::UpdateActiveTabSubscription(
     BrowserWindowInterface* browser) {
+  tab_list_observation_.Reset();
   if (IsBrowserActiveForProfile(browser)) {
-    active_tab_subscription_ = RegisterActiveTabDidChange(
-        browser,
-        base::BindRepeating(&GlicActiveTabForProfileTracker::OnActiveTabChanged,
-                            base::Unretained(this)));
-  } else {
-    active_tab_subscription_ = {};
+    tab_list_observation_.Observe(TabListInterface::From(browser));
   }
 }
 
@@ -103,13 +123,20 @@ void GlicActiveTabForProfileTracker::OnBrowserActivated(
 
 void GlicActiveTabForProfileTracker::OnBrowserDeactivated(
     BrowserWindowInterface* browser) {
-  active_tab_subscription_ = {};
+  tab_list_observation_.Reset();
 
   UpdateActiveTab();
 }
 
 void GlicActiveTabForProfileTracker::OnActiveTabChanged(
-    BrowserWindowInterface* browser) {
+    TabListInterface& tab_list,
+    tabs::TabInterface* tab) {
+  UpdateActiveTab();
+}
+
+void GlicActiveTabForProfileTracker::OnTabListDestroyed(
+    TabListInterface& tab_list) {
+  tab_list_observation_.Reset();
   UpdateActiveTab();
 }
 

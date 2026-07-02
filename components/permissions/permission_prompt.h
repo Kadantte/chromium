@@ -12,7 +12,8 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "components/permissions/features.h"
-#include "components/permissions/permission_uma_util.h"
+#include "components/permissions/permission_request_data.h"
+#include "components/permissions/permission_uma_constants.h"
 #include "components/permissions/prediction_service/permission_ui_selector.h"
 #include "components/permissions/resolvers/permission_prompt_options.h"
 #include "ui/gfx/geometry/rect.h"
@@ -77,6 +78,10 @@ class PermissionPrompt {
     virtual void SwitchToLoudPrompt() = 0;
 
     virtual GeolocationAccuracy GetInitialGeolocationAccuracySelection()
+        const = 0;
+
+    // Returns the type of geolocation prompt that should be shown.
+    virtual std::optional<GeolocationPromptType> GetGeolocationPromptType()
         const = 0;
 
     // Called to explicitly finalize the request, if
@@ -152,6 +157,7 @@ class PermissionPrompt {
   static std::unique_ptr<PermissionPrompt> Create(
       content::WebContents* web_contents,
       Delegate* delegate);
+
   virtual ~PermissionPrompt() = default;
 
   // Updates where the prompt should be anchored. ex: fullscreen toggle.

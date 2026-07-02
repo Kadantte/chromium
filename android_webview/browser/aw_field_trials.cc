@@ -12,13 +12,13 @@
 #include "base/check.h"
 #include "base/metrics/persistent_histogram_allocator.h"
 #include "base/path_service.h"
+#include "components/content_settings/core/common/features.h"
 #include "components/history/core/browser/features.h"
 #include "components/input/features.h"
 #include "components/metrics/persistent_histograms.h"
 #include "components/payments/content/android/payment_feature_map.h"
 #include "components/permissions/features.h"
 #include "components/safe_browsing/core/common/features.h"
-#include "components/stylus_handwriting/android/stylus_handwriting_feature_map.h"
 #include "components/variations/feature_overrides.h"
 #include "components/viz/common/features.h"
 #include "content/public/common/content_features.h"
@@ -32,7 +32,6 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/features_generated.h"
 #include "ui/android/ui_android_features.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/gl/gl_features.h"
 #include "ui/gl/gl_switches.h"
 
@@ -71,6 +70,18 @@ void AwFieldTrials::RegisterFeatureOverrides(base::FeatureList* feature_list) {
   aw_feature_overrides.DisableFeature(
       input::features::kUpdateScrollPredictorInputMapping);
 
+  // TODO(crbug.com/444669046): Disable ScrollPredictorEnhancements refined
+  // prediction on WebView by default so it can be rolled out via Finch.
+  aw_feature_overrides.DisableFeature(
+      blink::features::kScrollPredictorRefinedHasPrediction);
+
+  // InputVizard is disabled on WebView as it is a Chrome-only feature that
+  // moves input handling to the VizCompositor thread, which is out of scope
+  // for WebView's Synchronous Compositor architecture.
+  aw_feature_overrides.DisableFeature(input::features::kInputOnViz);
+  aw_feature_overrides.DisableFeature(
+      input::features::kInputVizardSpeculativeTransfer);
+
   // Disable enforcing `noopener` on Blob URL navigations on WebView.
   aw_feature_overrides.DisableFeature(
       blink::features::kEnforceNoopenerOnBlobURLNavigation);
@@ -83,7 +94,7 @@ void AwFieldTrials::RegisterFeatureOverrides(base::FeatureList* feature_list) {
   aw_feature_overrides.DisableFeature(ui::kAndroidHDR);
 
   // Disable launch_handler on WebView.
-  aw_feature_overrides.DisableFeature(::features::kAndroidWebAppLaunchHandler);
+  aw_feature_overrides.DisableFeature(blink::features::kWebAppLaunchQueue);
 
   // Disable Reducing User Agent minor version on WebView.
   aw_feature_overrides.DisableFeature(
@@ -101,9 +112,7 @@ void AwFieldTrials::RegisterFeatureOverrides(base::FeatureList* feature_list) {
   // enable these optimizations in WebView though they are not fundamentally
   // impossible.
   aw_feature_overrides.DisableFeature(
-      blink::features::kLowLatencyCanvas2dImageChromium);
-  aw_feature_overrides.DisableFeature(
-      blink::features::kLowLatencyWebGLImageChromium);
+      blink::features::kLowLatencyUsageSupportedForCanvas);
 
   // Disable Shared Storage on WebView.
   aw_feature_overrides.DisableFeature(network::features::kSharedStorageAPI);
@@ -113,11 +122,6 @@ void AwFieldTrials::RegisterFeatureOverrides(base::FeatureList* feature_list) {
 
   // Disable scrollbar-width on WebView.
   aw_feature_overrides.DisableFeature(blink::features::kScrollbarWidth);
-
-  // TODO(crbug.com/402144902): Remove this once webview experiment has
-  // concluded.
-  aw_feature_overrides.DisableFeature(
-      ::features::kSendEmptyGestureScrollUpdate);
 
   // Disable Populating the VisitedLinkDatabase on WebView.
   aw_feature_overrides.DisableFeature(history::kPopulateVisitedLinkDatabase);
@@ -139,6 +143,11 @@ void AwFieldTrials::RegisterFeatureOverrides(base::FeatureList* feature_list) {
   // expose the PaymentRequest.securePaymentConfirmationAvailability API.
   aw_feature_overrides.DisableFeature(
       blink::features::kSecurePaymentConfirmationAvailabilityAPI);
+
+  // WebView does not support Secure Payment Confirmation, and thus should not
+  // expose the PaymentRequest.securePaymentConfirmationCapabilities API.
+  aw_feature_overrides.DisableFeature(
+      blink::features::kSecurePaymentConfirmationCapabilities);
 
   // WebView does not support handling payment links.
   aw_feature_overrides.DisableFeature(blink::features::kPaymentLinkDetection);
@@ -233,7 +242,6 @@ void AwFieldTrials::RegisterFeatureOverrides(base::FeatureList* feature_list) {
 
   // Disabling the permission element as it needs embedder support in order to
   // function and the webview permission manager cannot support it.
-  aw_feature_overrides.DisableFeature(blink::features::kPermissionElement);
   aw_feature_overrides.DisableFeature(blink::features::kGeolocationElement);
   aw_feature_overrides.DisableFeature(blink::features::kUserMediaElement);
   aw_feature_overrides.DisableFeature(blink::features::kInstallElement);
@@ -291,8 +299,6 @@ void AwFieldTrials::RegisterFeatureOverrides(base::FeatureList* feature_list) {
   // policy currently blocks iframes from using it. crbug.com/442879527
   aw_feature_overrides.DisableFeature(
       network::features::kLocalNetworkAccessChecks);
-  aw_feature_overrides.DisableFeature(
-      network::features::kLocalNetworkAccessChecksSplitPermissions);
 
   // Disable background media for WebView, until we have consensus on long-term
   // behavior crbug.com/453706851
@@ -311,10 +317,34 @@ void AwFieldTrials::RegisterFeatureOverrides(base::FeatureList* feature_list) {
   // See crbug.com/1309151.
   aw_feature_overrides.DisableFeature(::features::kGpuShaderDiskCache);
 
+  // GpuPersistentCache is enabled by default on Clank but not on WebView yet.
+  // Disable it by default so it can be rolled out using Finch.
+  aw_feature_overrides.DisableFeature(::features::kGpuPersistentCache);
+
   // Don't pass the data about browser window position on screen to WebView.
   aw_feature_overrides.DisableFeature(ui::kAndroidUseCorrectWindowBounds);
 
-  // Launched for WebView. Experimentation needed for Chrome on Android.
-  aw_feature_overrides.EnableFeature(
-      stylus_handwriting::android::kProbeStylusWritingInBackground);
+
+  // As WebSettings.setAllowContentAccess() allows this to be controlled by
+  // the WebView's host, we keep the old behavior for content:// URLs.
+  aw_feature_overrides.DisableFeature(blink::features::kContentSchemeIsLocal);
+
+  // TODO(crbug.com/489450060): Disable DirectReceiver on Viz for WebView until
+  // its Viz thread is updated to handle IO.
+  aw_feature_overrides.DisableFeature(
+      ::features::kVizDirectCompositorThreadIpcFrameSinkManager);
+
+  // Disable `PrefetchRequestStatusListenerAsync` on WebView to run an
+  // experiment on WebView.
+  aw_feature_overrides.DisableFeature(
+      ::features::kPrefetchRequestStatusListenerAsync);
+
+  // Disable prefetch ahead of prerender on WebView.
+  aw_feature_overrides.DisableFeature(
+      ::features::kPrerender2FallbackPrefetchSpecRules);
+
+  // Disable approximate geolocation permission on WebView for now because the
+  // workaround for crbug.com/502587667 will break CTS tests for Geolocation.
+  aw_feature_overrides.DisableFeature(
+      content_settings::features::kApproximateGeolocationPermission);
 }

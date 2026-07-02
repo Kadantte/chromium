@@ -613,10 +613,6 @@ TEST_F(PredictionManagerTest, AddObserverForOptimizationTargetModel) {
   prediction_model_fetcher()->SetExpectedModelMetadataForOptimizationTarget(
       proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD, model_metadata);
   histogram_tester.ExpectTotalCount(
-      "OptimizationGuide.PredictionManager.RegistrationTimeSinceServiceInit."
-      "PainfulPageLoad",
-      0);
-  histogram_tester.ExpectTotalCount(
       "OptimizationGuide.PredictionManager.FirstModelFetchSinceServiceInit", 0);
 
   FakeOptimizationTargetModelObserver observer;
@@ -630,10 +626,6 @@ TEST_F(PredictionManagerTest, AddObserverForOptimizationTargetModel) {
       "OptimizationGuide.PredictionManager.ModelAvailableAtRegistration."
       "PainfulPageLoad",
       false, 1);
-  histogram_tester.ExpectTotalCount(
-      "OptimizationGuide.PredictionManager.RegistrationTimeSinceServiceInit."
-      "PainfulPageLoad",
-      1);
 
   EXPECT_TRUE(prediction_model_fetcher()->models_fetched());
   // Make sure the test histogram is recorded. We don't check for value here
@@ -809,7 +801,7 @@ TEST_F(PredictionManagerTest,
   base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
       switches::kModelOverride,
       base::StringPrintf("OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD:%s:%s",
-                         fake_path.AsUTF8Unsafe(), encoded_metadata.c_str()));
+                         fake_path.AsUTF8Unsafe(), encoded_metadata));
 
   CreatePredictionManager();
 

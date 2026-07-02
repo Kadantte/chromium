@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-
 #import "content/app_shim_remote_cocoa/render_widget_host_view_cocoa.h"
 
 #include <AppKit/AppKit.h>
@@ -36,17 +35,18 @@
 #include "skia/ext/skia_utils_mac.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/input/input_handler.mojom.h"
-#include "third_party/blink/public/platform/web_text_input_type.h"
 #include "ui/accessibility/accessibility_features.h"
 #import "ui/accessibility/platform/browser_accessibility_cocoa.h"
 #import "ui/accessibility/platform/browser_accessibility_mac.h"
 #include "ui/accessibility/platform/browser_accessibility_manager_mac.h"
 #import "ui/base/clipboard/clipboard_util_mac.h"
 #import "ui/base/cocoa/appkit_utils.h"
+#import "ui/base/cocoa/menu_utils.h"
 #import "ui/base/cocoa/nsmenu_additions.h"
 #import "ui/base/cocoa/nsmenuitem_additions.h"
 #include "ui/base/cocoa/remote_accessibility_api.h"
 #import "ui/base/cocoa/touch_bar_util.h"
+#include "ui/base/ime/text_input_flags.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
@@ -125,6 +125,19 @@ constexpr int kWrapAroundDistance = 10000;
 // Whether a keyboard event has been reserved by macOS.
 BOOL EventIsReservedBySystem(NSEvent* event) {
   return content::GetSystemHotkeyMap()->IsEventReserved(event);
+}
+
+NSEvent* CreateContextMenuKeyDownEvent(NSEvent* source_event) {
+  return [NSEvent keyEventWithType:NSEventTypeKeyDown
+                          location:source_event.locationInWindow
+                     modifierFlags:0
+                         timestamp:source_event.timestamp
+                      windowNumber:source_event.windowNumber
+                           context:nil
+                        characters:@""
+       charactersIgnoringModifiers:@""
+                         isARepeat:source_event.isARepeat
+                           keyCode:kVK_ContextualMenu];
 }
 
 // Extract underline information from an attributed string. Inspired by
@@ -246,6 +259,9 @@ void ExtractUnderlines(NSAttributedString* string,
 
   // Controlled by setShowingContextMenu.
   BOOL _showingContextMenu;
+
+  // Controlled by setSupportsAutoFill.
+  BOOL _supportsAutoFill;
 
   // Set during -setFrame to avoid spamming host_ with origin and size
   // changes.
@@ -554,23 +570,30 @@ static NSWindow* __weak _deferredResignKeyWindow;
 
 - (void)requestTextSuggestions {
   auto* touchBarItem = _candidateListTouchBarItem;
-  if (!touchBarItem)
+  if (!touchBarItem) {
     return;
+  }
   [touchBarItem
       updateWithInsertionPointVisibility:_textSelectionRange.is_empty()];
-  if (_textInputType == ui::TEXT_INPUT_TYPE_PASSWORD)
+  if (_textInputType == ui::TEXT_INPUT_TYPE_PASSWORD ||
+      _textInputFlags & ui::TEXT_INPUT_FLAG_HAS_BEEN_PASSWORD ||
+      _textInputFlags & ui::TEXT_INPUT_FLAG_HAS_BEEN_CUSTOM_PASSWORD) {
     return;
-  if (!touchBarItem.candidateListVisible)
+  }
+  if (!touchBarItem.candidateListVisible) {
     return;
+  }
   if (!_textSelectionRange.IsValid() ||
-      _availableTextOffset > _textSelectionRange.GetMin())
+      _availableTextOffset > _textSelectionRange.GetMin()) {
     return;
+  }
 
   NSRange selectionRange = _textSelectionRange.ToNSRange();
   NSString* selectionText = base::SysUTF16ToNSString(_availableText);
   selectionRange.location -= _availableTextOffset;
-  if (NSMaxRange(selectionRange) > selectionText.length)
+  if (NSMaxRange(selectionRange) > selectionText.length) {
     return;
+  }
 
   // TODO: Fetch the spell document tag from the renderer (or equivalent).
   _textSuggestionsSequenceNumber = [self.spellChecker
@@ -595,26 +618,33 @@ static NSWindow* __weak _deferredResignKeyWindow;
 }
 
 - (NSTextCheckingType)allowedTextCheckingTypes {
-  if (_textInputType == ui::TEXT_INPUT_TYPE_NONE)
+  if (_textInputType == ui::TEXT_INPUT_TYPE_NONE) {
     return 0;
-  if (_textInputType == ui::TEXT_INPUT_TYPE_PASSWORD)
+  }
+  if (_textInputType == ui::TEXT_INPUT_TYPE_PASSWORD) {
     return 0;
-  if (_textInputFlags & blink::kWebTextInputFlagAutocorrectOff)
+  }
+  if (_textInputFlags & ui::TEXT_INPUT_FLAG_AUTOCORRECT_OFF) {
     return 0;
+  }
   NSTextCheckingType checkingTypes = NSTextCheckingTypeReplacement;
-  if (!(_textInputFlags & blink::kWebTextInputFlagSpellcheckOff))
+  if (!(_textInputFlags & ui::TEXT_INPUT_FLAG_SPELLCHECK_OFF)) {
     checkingTypes |= NSTextCheckingTypeQuote | NSTextCheckingTypeDash;
+  }
   return checkingTypes;
 }
 
 - (NSTextCheckingType)enabledTextCheckingTypes {
   NSTextCheckingType checkingTypes = 0;
-  if (self.automaticQuoteSubstitutionEnabled)
+  if (self.automaticQuoteSubstitutionEnabled) {
     checkingTypes |= NSTextCheckingTypeQuote;
-  if (self.automaticDashSubstitutionEnabled)
+  }
+  if (self.automaticDashSubstitutionEnabled) {
     checkingTypes |= NSTextCheckingTypeDash;
-  if (self.automaticTextReplacementEnabled)
+  }
+  if (self.automaticTextReplacementEnabled) {
     checkingTypes |= NSTextCheckingTypeReplacement;
+  }
   return checkingTypes;
 }
 
@@ -623,10 +653,14 @@ static NSWindow* __weak _deferredResignKeyWindow;
 }
 
 - (bool)canTransformText {
-  if (_textInputType == ui::TEXT_INPUT_TYPE_NONE)
+  if (_textInputType == ui::TEXT_INPUT_TYPE_NONE) {
     return NO;
-  if (_textInputType == ui::TEXT_INPUT_TYPE_PASSWORD)
+  }
+  if (_textInputType == ui::TEXT_INPUT_TYPE_PASSWORD ||
+      _textInputFlags & ui::TEXT_INPUT_FLAG_HAS_BEEN_PASSWORD ||
+      _textInputFlags & ui::TEXT_INPUT_FLAG_HAS_BEEN_CUSTOM_PASSWORD) {
     return NO;
+  }
 
   return YES;
 }
@@ -792,6 +826,20 @@ static NSWindow* __weak _deferredResignKeyWindow;
       [self acceptsMouseEventsOption] > AcceptMouseEvents::kWhenInActiveWindow;
 }
 
+- (BOOL)shouldBecomeFirstResponderOnRightClick {
+  if (![self acceptsFirstResponder]) {
+    return NO;
+  }
+
+  if (_responderDelegate &&
+      [_responderDelegate respondsToSelector:@selector
+                          (shouldBecomeFirstResponderOnRightClick)]) {
+    return [_responderDelegate shouldBecomeFirstResponderOnRightClick];
+  }
+
+  return NO;
+}
+
 - (AcceptTooltipEvents)acceptsTooltipEvents {
   // The embedder may override this behavior to mimic native UI.
   if (_responderDelegate &&
@@ -918,6 +966,10 @@ static NSWindow* __weak _deferredResignKeyWindow;
   _hostHelper->ForwardMouseEvent(webEvent);
 }
 
+- (void)setSupportsAutoFill:(BOOL)supports {
+  _supportsAutoFill = supports;
+}
+
 - (BOOL)shouldIgnoreMouseEvent:(NSEvent*)theEvent {
   NSWindow* window = self.window;
   if (theEvent.type == NSEventTypeMouseMoved) {
@@ -986,6 +1038,17 @@ static NSWindow* __weak _deferredResignKeyWindow;
     }
   }
 
+  // By default, a right mouse event does not make the view the first
+  // responder. Consequently, the page does not receive focus or blur events.
+  // This causes unintuitive behavior for WebUI-based menus that rely on blur
+  // events to dismiss themselves. Therefore, we allow the embedder to decide
+  // whether to make the view the first responder on a right mouse down.
+  if (theEvent.type == NSEventTypeRightMouseDown &&
+      [self shouldBecomeFirstResponderOnRightClick] &&
+      [self.window firstResponder] != self) {
+    [self.window makeFirstResponder:self];
+  }
+
   if (_responderDelegate &&
       [_responderDelegate respondsToSelector:@selector(handleEvent:)]) {
     BOOL handled = [_responderDelegate handleEvent:theEvent];
@@ -1023,8 +1086,32 @@ static NSWindow* __weak _deferredResignKeyWindow;
 
   // Because |updateCursor:| changes the current cursor, we have to reset it to
   // the default cursor on mouse exit.
-  if (type == NSEventTypeMouseExited)
+  if (type == NSEventTypeMouseExited) {
     [[NSCursor arrowCursor] set];
+  }
+
+  // In macOS immersive fullscreen, the browser UI is held in an AppKit-managed
+  // `NSToolbarFullScreenWindow`. When this toolbar auto-hides, the window
+  // becomes invisible but remains positioned at the top of the screen.
+  // Mouse events pass through it to this view, but a macOS bug causes the OS
+  // to forcefully reset the system cursor to the default arrow when the mouse
+  // crosses the bottom boundary of that invisible window.
+  //
+  // To fix this, this code detect spurious cursor resets during mouse move by
+  // checking if `currentSystemCursor` diverged from Chrome's `_currentCursor`
+  // state. If it did, we forcefully re-apply our cursor.
+  //
+  // This is safe for overlapping UI (like popups or context menus), which will
+  // intercept the mouse event before it reaches here, meaning we won't
+  // improperly override their cursors.
+  if (type == NSEventTypeMouseMoved || type == NSEventTypeLeftMouseDragged ||
+      type == NSEventTypeRightMouseDragged ||
+      type == NSEventTypeOtherMouseDragged) {
+    if ([self shouldChangeCurrentCursor] &&
+        [NSCursor currentSystemCursor] != _currentCursor) {
+      [_currentCursor set];
+    }
+  }
 
   if ([self shouldIgnoreMouseEvent:theEvent]) {
     // If this is the first such event, send a mouse exit to the host view.
@@ -1176,7 +1263,7 @@ static NSWindow* __weak _deferredResignKeyWindow;
   // to perform browser commands such as switching tabs. We only want to handle
   // key equivalents if we're first responder in the keyWindow.
   if (![[self window] isKeyWindow] || [[self window] firstResponder] != self) {
-    TRACE_EVENT_INSTANT0("browser", "NotKeyWindow", TRACE_EVENT_SCOPE_THREAD);
+    TRACE_EVENT_INSTANT("browser", "NotKeyWindow");
     return NO;
   }
 
@@ -1211,6 +1298,22 @@ static NSWindow* __weak _deferredResignKeyWindow;
   // equivalent that Cocoa uses for toggling the input language. In this case,
   // that's actually a good thing, though -- see http://crbug.com/26115 .)
   return YES;
+}
+
+- (void)contextMenuKeyDown:(NSEvent*)event {
+  // Preserve existing Ctrl+Return behavior while typing in inputs.
+  if (_textInputType == ui::TEXT_INPUT_TYPE_NONE) {
+    NSEvent* context_menu_event = CreateContextMenuKeyDownEvent(event);
+
+    if (context_menu_event) {
+      [self keyEvent:context_menu_event wasKeyEquivalent:NO];
+      return;
+    }
+  }
+
+  if (@available(macOS 15.0, *)) {
+    [super contextMenuKeyDown:event];
+  }
 }
 
 - (EventHandled)keyEvent:(NSEvent*)theEvent {
@@ -1793,8 +1896,9 @@ static NSWindow* __weak _deferredResignKeyWindow;
   [self performDeferredResignKeyWindow];
   if ([_responderDelegate respondsToSelector:@selector(windowDidBecomeKey)])
     [_responderDelegate windowDidBecomeKey];
-  if ([self window].isKeyWindow)
+  if ([self window].keyWindow) {
     _host->OnWindowIsKeyChanged(true);
+  }
 }
 
 - (void)windowDidResignKey:(NSNotification*)notification {
@@ -2195,7 +2299,7 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
 }
 
 - (BOOL)drawsVerticallyForCharacterAtIndex:(NSUInteger)charIndex {
-  return !!(_textInputFlags & blink::kWebTextInputFlagVertical);
+  return !!(_textInputFlags & ui::TEXT_INPUT_FLAG_VERTICAL);
 }
 
 - (NSRect)firstRectForCharacterRange:(NSRange)theRange
@@ -2205,6 +2309,7 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
   bool success = false;
   if (actualRange)
     gfxActualRange = gfx::Range::FromPossiblyInvalidNSRange(*actualRange);
+
   _host->SyncGetFirstRectForRange(
       gfx::Range::FromPossiblyInvalidNSRange(theRange), &gfxRect,
       &gfxActualRange, &success);
@@ -2226,7 +2331,7 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
   rect = [self convertRect:rect toView:nil];
   rect = [[self window] convertRectToScreen:rect];
 
-  if (_textInputFlags & blink::kWebTextInputFlagVertical) {
+  if (_textInputFlags & ui::TEXT_INPUT_FLAG_VERTICAL) {
     // Google Japanese Input doesn't use the result of
     // drawsVerticallyForCharacterAtIndex. So we'd like to ask it to show its
     // horizontal candidate window at the right side of the caret if the text
@@ -2300,19 +2405,34 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
 // Each RenderWidgetHostViewCocoa has its own input context, but we return
 // nil when the caret is in non-editable content or password box to avoid
 // making input methods do their work.
-// We disable input method inside password field as it is normal for Mac OS X
+//
+// We disable input method inside password field as it is normal for macOS
 // password input fields to not allow dead keys or non ASCII input methods.
 // There is also a privacy risk if the composition candidate window shows your
 // password when the user is "composing" inside a password field. See
-// crbug.com/1196101 for more info.
+// https://crbug.com/40759416 for more info.
+//
+// If AutoFill support has been disabled and we're currently showing a native
+// context menu, then we return nil in order to ensure that macOS does NOT add
+// any "AutoFill" items (contact, passwords, etc.) to the menu. This logic
+// mirrors `ui/views/cocoa/text_input_host.mm`.
 - (NSTextInputContext*)inputContext {
-  switch (_textInputType) {
-    case ui::TEXT_INPUT_TYPE_NONE:
-    case ui::TEXT_INPUT_TYPE_PASSWORD:
-      return nil;
-    default:
-      return [super inputContext];
+  if (_textInputType == ui::TEXT_INPUT_TYPE_NONE ||
+      _textInputType == ui::TEXT_INPUT_TYPE_PASSWORD) {
+    return nil;
   }
+
+  if (_textInputFlags & ui::TEXT_INPUT_FLAG_HAS_BEEN_PASSWORD ||
+      _textInputFlags & ui::TEXT_INPUT_FLAG_HAS_BEEN_CUSTOM_PASSWORD) {
+    return nil;
+  }
+
+  if (!_supportsAutoFill &&
+      ui::GetActiveCocoaMenuAnchorLocation().has_value()) {
+    return nil;
+  }
+
+  return [super inputContext];
 }
 
 - (BOOL)hasMarkedText {
@@ -2452,7 +2572,7 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
   // handle the command in the key event handler. Otherwise we can just handle
   // it here.
   if ([self isHandlingKeyDown]) {
-    if ((_textInputFlags & blink::kWebTextInputFlagVertical)) {
+    if ((_textInputFlags & ui::TEXT_INPUT_FLAG_VERTICAL)) {
       // Commands assigned to arrow keys are ignored and Blink handles key down
       // events because macOS doesn't work well with some vertical writing
       // modes. See editing_behavior.cc.

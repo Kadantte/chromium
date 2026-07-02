@@ -13,7 +13,6 @@
 #include <optional>
 #include <ostream>
 
-#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/numerics/angle_conversions.h"
 #include "base/strings/stringprintf.h"
@@ -1632,13 +1631,13 @@ double ComputeDecompRecompError(const Transform& transform) {
   DecomposedTransform decomp = *transform.Decompose();
   Transform composed = Transform::Compose(decomp);
 
-  float expected[16];
-  float actual[16];
+  std::array<float, 16> expected;
+  std::array<float, 16> actual;
   transform.GetColMajorF(expected);
   composed.GetColMajorF(actual);
   double sse = 0;
   for (int i = 0; i < 16; i++) {
-    double diff = UNSAFE_TODO(expected[i]) - UNSAFE_TODO(actual[i]);
+    double diff = expected[i] - actual[i];
     sse += diff * diff;
   }
   return sse;
@@ -2022,7 +2021,11 @@ TEST(XFormTest, MakeRotation) {
 }
 
 TEST(XFormTest, ColMajorF) {
-  float data[] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17};
+  // clang-format off
+  auto data = std::to_array<float>({
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17
+  });
+  // clang-format on
   auto transform = Transform::ColMajorF(data);
 
   EXPECT_ROW0_EQ(2.0, 6.0, 10.0, 14.0, transform);
@@ -2030,10 +2033,9 @@ TEST(XFormTest, ColMajorF) {
   EXPECT_ROW2_EQ(4.0, 8.0, 12.0, 16.0, transform);
   EXPECT_ROW3_EQ(5.0, 9.0, 13.0, 17.0, transform);
 
-  float data1[16];
+  std::array<float, 16> data1;
   transform.GetColMajorF(data1);
-  for (int i = 0; i < 16; i++)
-    UNSAFE_TODO(EXPECT_EQ(data1[i], data[i]));
+  EXPECT_EQ(data1, data);
   EXPECT_EQ(transform, Transform::ColMajorF(data1));
 }
 
@@ -3902,7 +3904,7 @@ TEST(XFormTest, PostConcatAxisTransform2d) {
 }
 
 TEST(XFormTest, ClampOutput) {
-  double entries[][2] = {
+  std::array<std::array<double, 2>, 6> entries = {{
       // The first entry is used to initialize the transform.
       // The second entry is used to initialize the object to be mapped.
       {std::numeric_limits<float>::max(),
@@ -3918,11 +3920,11 @@ TEST(XFormTest, ClampOutput) {
           std::numeric_limits<float>::lowest(),
           -std::numeric_limits<float>::infinity(),
       },
-  };
+  }};
 
-  for (double* entry : entries) {
+  for (const auto& entry : entries) {
     const float mv = entry[0];
-    const float factor = UNSAFE_TODO(entry[1]);
+    const float factor = entry[1];
 
     auto is_valid_point = [&](const PointF& p) -> bool {
       return std::isfinite(p.x()) && std::isfinite(p.y());

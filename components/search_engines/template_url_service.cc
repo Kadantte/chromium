@@ -62,6 +62,7 @@
 #include "components/search_engines/template_url_service_client.h"
 #include "components/search_engines/template_url_service_observer.h"
 #include "components/search_engines/template_url_starter_pack_data.h"
+#include "components/search_engines/ui_utils.h"
 #include "components/search_engines/util.h"
 #include "components/sync/base/features.h"
 #include "components/sync/model/sync_change.h"
@@ -252,7 +253,7 @@ std::unique_ptr<TemplateURL> UpdateExistingURLWithAccountData(
 // If the TemplateURLData comes from a prepopulated URL available in the current
 // country, update all its fields save for the keyword, short name and id so
 // that they match the internal prepopulated URL. TemplateURLs not coming from
-// a prepopulated URL are not modified.
+// a regional prepopulated URL are not modified.
 TemplateURLData UpdateTemplateURLDataIfPrepopulated(
     const TemplateURLData& data,
     const TemplateURLPrepopulateData::Resolver& prepopulate_data_resolver) {
@@ -261,17 +262,14 @@ TemplateURLData UpdateTemplateURLDataIfPrepopulated(
     return data;
   }
 
-  std::vector<std::unique_ptr<TemplateURLData>> prepopulated_urls =
-      prepopulate_data_resolver.GetPrepopulatedEngines();
-
-  TemplateURL turl(data);
-  for (const auto& url : prepopulated_urls) {
-    if (url->prepopulate_id == prepopulate_id) {
-      MergeIntoEngineData(&turl, url.get());
-      return *url;
-    }
+  std::unique_ptr<TemplateURLData> prepopulated_url =
+      prepopulate_data_resolver.GetPrepopulatedEngine(prepopulate_id);
+  if (!prepopulated_url) {
+    return data;
   }
-  return data;
+
+  MergeIntoEngineData(data, *prepopulated_url.get());
+  return *prepopulated_url;
 }
 
 // Explicitly converts from ActiveStatus enum in sync protos to enum in
@@ -570,7 +568,29 @@ class TemplateURLService::PreLoadingProviders {
   TemplateURLService::OwnedTemplateURLVector search_engines_;
 };
 
+// TemplateURLService::CategorizedTemplateUrls --------------------------------
+
+TemplateURLService::CategorizedTemplateUrls::CategorizedTemplateUrls() =
+    default;
+TemplateURLService::CategorizedTemplateUrls::~CategorizedTemplateUrls() =
+    default;
+TemplateURLService::CategorizedTemplateUrls::CategorizedTemplateUrls(
+    const CategorizedTemplateUrls& other) = default;
+
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+// TemplateURLService::PrepopulatedAndRecentlyVisitedTemplateUrls -------------
+
+TemplateURLService::PrepopulatedAndRecentlyVisitedTemplateUrls::
+    PrepopulatedAndRecentlyVisitedTemplateUrls() = default;
+TemplateURLService::PrepopulatedAndRecentlyVisitedTemplateUrls::
+    ~PrepopulatedAndRecentlyVisitedTemplateUrls() = default;
+TemplateURLService::PrepopulatedAndRecentlyVisitedTemplateUrls::
+    PrepopulatedAndRecentlyVisitedTemplateUrls(
+        const PrepopulatedAndRecentlyVisitedTemplateUrls& other) = default;
+#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+
 // TemplateURLService ---------------------------------------------------------
+
 TemplateURLService::TemplateURLService(
     PrefService& prefs,
     search_engines::SearchEngineChoiceService& search_engine_choice_service,
@@ -1168,18 +1188,21 @@ bool TemplateURLService::ResetPlayAPISearchEngine(
     }
   }
 
-  // 1.B) We can only have 1 Play API engine at a time. we have to remove the
-  // old one, if it exits. If it's the current default, we'll have to remove it
-  // first.
-  auto found = std::ranges::find_if(template_urls_, [](const auto& turl) {
-    return turl->GetRegulatoryExtensionType() ==
-           RegulatoryExtensionType::kAndroidEEA;
-  });
+  // 1.B) We can only have 1 Play API engine at a time. Collect and remove all
+  // old ones.
+  std::vector<TemplateURL*> old_play_api_engines;
+  for (const auto& turl : template_urls_) {
+    if (turl->GetRegulatoryExtensionType() ==
+        RegulatoryExtensionType::kAndroidEEA) {
+      old_play_api_engines.push_back(turl.get());
+    }
+  }
 
-  if (found != template_urls_.cend()) {
-    // There is already an old Play API engine. To proceed we'll need to remove
-    // it.
-    TemplateURL* old_play_api_engine = found->get();
+  base::UmaHistogramCounts100(
+      "Search.ChoiceDebug.PreexistingProgramTaggedEntries",
+      old_play_api_engines.size());
+
+  for (TemplateURL* old_play_api_engine : old_play_api_engines) {
     old_play_keyword = old_play_api_engine->keyword();
     if (old_play_api_engine == default_search_provider_) {
       // The DSE can't be removed from the loaded engines. We need to clear the
@@ -1212,7 +1235,7 @@ bool TemplateURLService::ResetPlayAPISearchEngine(
   if (CanMakeDefault(new_play_api_turl_ptr)) {
     SetUserSelectedDefaultSearchProvider(
         new_play_api_turl_ptr,
-        search_engines::ChoiceMadeLocation::kChoiceScreen);
+        search_engines::ChoiceMadeLocation::kDeviceChoiceImport);
   }
 
   CHECK(default_search_provider_);
@@ -1329,6 +1352,88 @@ const TemplateURL* TemplateURLService::GetDefaultSearchProvider() const {
                  : pre_loading_providers_->default_search_provider();
 }
 
+const TemplateURLService::CategorizedTemplateUrls
+TemplateURLService::GetCategorizedTemplateURLs(
+    template_url_starter_pack_data::StarterPackIdSet
+        disabled_starter_pack_ids) {
+  CategorizedTemplateUrls data;
+
+  for (TemplateURL* url : GetTemplateURLs()) {
+    // Exclude those URL's that cannot be enabled or should be hidden.
+    if (disabled_starter_pack_ids.Has(url->starter_pack_id()) ||
+        HiddenFromLists(url)) {
+      continue;
+    }
+
+    const bool is_starter_pack =
+        url->starter_pack_id() !=
+        template_url_starter_pack_data::StarterPackId::kNone;
+    const bool is_extension = url->type() == TemplateURL::OMNIBOX_API_EXTENSION;
+
+    if (ShowInDefaultList(url)) {
+      data.active_site_shortcuts.push_back(url);
+    } else if (is_starter_pack || is_extension) {
+      if (ShowInActivesList(url)) {
+        data.active_feature_shortcuts.push_back(url);
+      } else {
+        data.inactive_feature_shortcuts.push_back(url);
+      }
+    } else {
+      if (ShowInActivesList(url)) {
+        data.active_site_shortcuts.push_back(url);
+      } else {
+        data.inactive_site_shortcuts.push_back(url);
+      }
+    }
+  }
+
+  std::ranges::sort(
+      data.active_site_shortcuts,
+      internal::OrderTemplateUrlsByPrepopulatedAndManagedAndAlphabetically(
+          prepopulate_data_resolver_->GetPrepopulatedEngines()));
+  std::ranges::sort(data.inactive_site_shortcuts,
+                    internal::OrderTemplateUrlsByManagedAndAlphabetically());
+
+  return data;
+}
+
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+TemplateURLService::PrepopulatedAndRecentlyVisitedTemplateUrls
+TemplateURLService::GetPrepopulatedAndRecentlyVisitedTemplateURLs() {
+  PrepopulatedAndRecentlyVisitedTemplateUrls data;
+
+  for (TemplateURL* url : GetTemplateURLs()) {
+    if (HiddenFromLists(url)) {
+      continue;
+    }
+
+    if (ShowInDefaultList(url)) {
+      data.prepopulated_urls.push_back(url);
+      continue;
+    }
+
+    const bool is_starter_pack =
+        url->starter_pack_id() !=
+        template_url_starter_pack_data::StarterPackId::kNone;
+    const bool is_extension = url->type() == TemplateURL::OMNIBOX_API_EXTENSION;
+
+    if (is_starter_pack || is_extension) {
+      continue;
+    }
+
+    data.recently_visited_urls.push_back(url);
+  }
+
+  std::ranges::sort(
+      data.prepopulated_urls,
+      internal::OrderTemplateUrlsByPrepopulatedAndManagedAndAlphabetically(
+          prepopulate_data_resolver_->GetPrepopulatedEngines()));
+  internal::SortAndFilterRecentlyVisitedURLs(data.recently_visited_urls);
+
+  return data;
+}
+#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+
 url::Origin TemplateURLService::GetDefaultSearchProviderOrigin() const {
   const TemplateURL* template_url = GetDefaultSearchProvider();
   if (template_url) {
@@ -1352,7 +1457,19 @@ TemplateURLService::GetDefaultSearchProviderIgnoringExtensions() const {
         return TemplateURL::MatchesData(turl_to_check.get(), next_search.get(),
                                         search_terms_data());
       });
-  return iter == template_urls_.end() ? nullptr : iter->get();
+
+  if (iter != template_urls_.end()) {
+    return iter->get();
+  }
+
+  // If a strict match failed, try to match by GUID.
+  // TODO(http://crbug.com/498242147): Properly address this mismatch.
+  const TemplateURL* guid_match = GetTemplateURLForGUID(next_search->sync_guid);
+  if (guid_match) {
+    return guid_match;
+  }
+
+  return nullptr;
 }
 
 bool TemplateURLService::IsSearchResultsPageFromDefaultSearchProvider(
@@ -1416,7 +1533,8 @@ void TemplateURLService::RepairPrepopulatedSearchEngines() {
       prepopulate_data_resolver_->GetPrepopulatedEngines();
   DCHECK(!prepopulated_urls.empty());
   ActionsFromCurrentData actions(CreateActionsFromCurrentPrepopulateData(
-      &prepopulated_urls, template_urls_, default_search_provider_));
+      &prepopulated_urls, template_urls_, default_search_provider_,
+      prepopulate_data_resolver_.get()));
 
   // Remove items.
   for (auto i = actions.removed_engines.begin();
@@ -1749,7 +1867,8 @@ void TemplateURLService::OnWebDataServiceRequestDone(
               regional_capabilities::CountryAccessKey(
                   regional_capabilities::CountryAccessReason::
                       kTemplateURLServiceDatabaseMetadataCaching)));
-
+      web_data_service_->SetPrepopulatedEnginesMigrationEnabled(
+          updated_keywords_metadata.prepopulated_engines_migration_enabled);
     }
 
     if (updated_keywords_metadata.HasStarterPackData()) {
@@ -2734,6 +2853,13 @@ bool TemplateURLService::Update(TemplateURL* existing_turl,
       ProcessTemplateURLChange(FROM_HERE, existing_turl,
                                syncer::SyncChange::ACTION_UPDATE);
     }
+
+    if (!applying_default_search_engine_change_ &&
+        GetDefaultSearchProvider() == existing_turl &&
+        default_search_provider_source_ == DefaultSearchManager::FROM_USER) {
+      default_search_manager_.SetUserSelectedDefaultSearchEngine(
+          existing_turl->data());
+    }
   }
 
   return true;
@@ -3013,8 +3139,6 @@ void TemplateURLService::ApplyEnterpriseSearchChanges(
   CHECK(loaded_);
 
   Scoper scoper(this);
-
-  LogSearchPolicyConflict(policy_search_engines);
 
   base::flat_set<std::u16string> new_keywords;
   std::ranges::transform(
@@ -3618,45 +3742,3 @@ void TemplateURLService::AddOverriddenKeywordForTemplateURL(
   }
 }
 
-void TemplateURLService::LogSearchPolicyConflict(
-    const TemplateURLService::OwnedTemplateURLVector& policy_search_engines) {
-  if (policy_search_engines.empty()) {
-    // No need to record conflict histograms if the SearchSettings policy
-    // doesn't create any search engine.
-    return;
-  }
-
-  bool has_conflict_with_featured = false;
-  bool has_conflict_with_non_featured = false;
-  for (const auto& policy_turl : policy_search_engines) {
-    const std::u16string& keyword = policy_turl->keyword();
-    CHECK(!keyword.empty());
-
-    const auto match_range = keyword_to_turl_.equal_range(keyword);
-    bool conflicts_with_active =
-        std::any_of(match_range.first, match_range.second,
-                    [](const KeywordToTURL::value_type& entry) {
-                      return !entry.second->CreatedByPolicy() &&
-                             !entry.second->safe_for_autoreplace();
-                    });
-    SearchPolicyConflictType type =
-        conflicts_with_active
-            ? (policy_turl->featured_by_policy()
-                   ? SearchPolicyConflictType::kWithFeatured
-                   : SearchPolicyConflictType::kWithNonFeatured)
-            : SearchPolicyConflictType::kNone;
-    base::UmaHistogramEnumeration(kSearchPolicyConflictCountHistogramName,
-                                  type);
-
-    has_conflict_with_featured |=
-        type == SearchPolicyConflictType::kWithFeatured;
-    has_conflict_with_non_featured |=
-        type == SearchPolicyConflictType::kWithNonFeatured;
-  }
-
-  base::UmaHistogramBoolean(kSearchPolicyHasConflictWithFeaturedHistogramName,
-                            has_conflict_with_featured);
-  base::UmaHistogramBoolean(
-      kSearchPolicyHasConflictWithNonFeaturedHistogramName,
-      has_conflict_with_non_featured);
-}

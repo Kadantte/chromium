@@ -22,6 +22,8 @@ suite('Toolbar Settings Menu', () => {
   let menuButton: CrIconButtonElement;
   let settingsMenu: SettingsMenuElement;
 
+  const preventResizeClose = (e: Event) => e.stopImmediatePropagation();
+
   async function createToolbar(): Promise<void> {
     toolbar = document.createElement('read-anything-toolbar');
     document.body.appendChild(toolbar);
@@ -59,12 +61,19 @@ suite('Toolbar Settings Menu', () => {
     menuButton = moreButton;
 
     settingsMenu = toolbar.$.settingsMenu;
-    menuButton.click();
 
+    // cr-action-menu listens for window resizes to auto-close. In headless
+    // test environments, the constrained viewport and deferred layout
+    // calculations when opening a <dialog> often trigger phantom resize events,
+    // causing the menu to close immediately and flake the test.
+    window.addEventListener('resize', preventResizeClose, true);
+
+    menuButton.click();
     await microtasksFinished();
   });
 
   teardown(async () => {
+    window.removeEventListener('resize', preventResizeClose, true);
     if (settingsMenu) {
       const lazyMenu = settingsMenu.$.lazyMenu.getIfExists();
       if (lazyMenu && lazyMenu.open) {
@@ -76,6 +85,16 @@ suite('Toolbar Settings Menu', () => {
 
   test('settings is dropdown menu for more', () => {
     assertTrue(settingsMenu.$.lazyMenu.get().open);
+  });
+
+  test('isSpeechActive is passed to settings menu', async () => {
+    toolbar.isSpeechActive = true;
+    await microtasksFinished();
+    assertTrue(settingsMenu.isSpeechActive);
+
+    toolbar.isSpeechActive = false;
+    await microtasksFinished();
+    assertFalse(settingsMenu.isSpeechActive);
   });
 
   test('settings menu opens submenus on click', () => {
@@ -277,4 +296,36 @@ suite('Toolbar Settings Menu', () => {
     const closeButton = getButton('close');
     assertFalse(!!closeButton);
   });
+
+  test(
+      'opened menu is not closed if mouse moves directly into the submenu',
+      () => {
+        const targetItem = getMenuItem(SettingsOption.FONT);
+        assertTrue(!!targetItem);
+        const timer = new MockTimer();
+        timer.install();
+
+        targetItem.dispatchEvent(new PointerEvent(
+            'pointerenter', {bubbles: true, cancelable: true, view: window}));
+        timer.tick(MENU_SHOW_DELAY_MS + 10);
+
+        const fontSubmenu = toolbar.$.fontMenu;
+        assertTrue(fontSubmenu.$.menu.$.lazyMenu.get().open);
+
+        // Simulate that mouse moved out of item, but we specify that the new
+        // element is directly under the cursor.
+        targetItem.dispatchEvent(new PointerEvent('pointerleave', {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          relatedTarget: fontSubmenu,
+        }));
+
+        timer.tick(MENU_SHOW_DELAY_MS + 10);
+        timer.uninstall();
+
+        const actionMenu = settingsMenu.$.lazyMenu.get();
+        assertTrue(actionMenu.open);
+        assertTrue(fontSubmenu.$.menu.$.lazyMenu.get().open);
+      });
 });

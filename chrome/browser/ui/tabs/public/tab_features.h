@@ -16,7 +16,6 @@
 class AskBeforeHttpDialogController;
 class BookmarkPageActionController;
 class CollaborationMessagingPageActionController;
-class ContextualTasksPageActionController;
 class CookieControlsPageActionController;
 class FileSystemAccessPageActionController;
 class FromGWSNavigationAndKeepAliveRequestObserver;
@@ -41,6 +40,7 @@ class QwacWebContentsObserver;
 class ManagePasswordsPageActionController;
 class BookmarkBarPreloadPipelineManager;
 class NewTabPagePreloadPipelineManager;
+class SearchPromotionNavigationObserver;
 
 namespace skills {
 class SkillsUiTabControllerInterface;
@@ -56,6 +56,10 @@ class ContentAnnotatorTabHelper;
 
 namespace autofill {
 class BubbleManager;
+class OmniboxAutofillBubbleController;
+class OmniboxAutofillPageActionController;
+class PaymentsChurnedUsersBubbleController;
+class PaymentsChurnedUsersPageActionController;
 }  // namespace autofill
 
 namespace actor {
@@ -68,8 +72,9 @@ class ActorUiTabControllerInterface;
 
 namespace commerce {
 class CommerceUiTabHelper;
-class PriceInsightsPageActionViewController;
 class DiscountsPageActionViewController;
+class InStockNotificationManager;
+class PriceInsightsPageActionViewController;
 }  // namespace commerce
 
 namespace enterprise_data_protection {
@@ -85,7 +90,7 @@ class WebContents;
 }  // namespace content
 
 namespace contextual_cueing {
-class ContextualCueingHelper;
+class ContextualCueingWebContentsObserver;
 }  // namespace contextual_cueing
 
 namespace contextual_tasks {
@@ -100,14 +105,14 @@ namespace extensions {
 class ExtensionSidePanelManager;
 }  // namespace extensions
 
-#if BUILDFLAG(ENABLE_GLIC)
 namespace glic {
 class GlicInstanceHelper;
 class GlicTabIndicatorHelper;
 class GlicSidePanelCoordinator;
+class GlicSelectionObserver;
 class SelectionOverlayController;
+class GlicPageFeaturesManager;
 }  // namespace glic
-#endif  // BUILDFLAG(ENABLE_GLIC)
 
 namespace memory_saver {
 class MemorySaverChipController;
@@ -121,15 +126,11 @@ namespace permissions {
 class PermissionIndicatorsTabData;
 }  // namespace permissions
 
-namespace privacy_sandbox {
-class PrivacySandboxTabObserver;
-}  // namespace privacy_sandbox
-
-#if BUILDFLAG(ENABLE_GLIC) && !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID)
 namespace skills {
 class SkillsUpdateObserver;
 }  // namespace skills
-#endif  // BUILDFLAG(ENABLE_GLIC) && !BUILDFLAG(IS_ANDROID)
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 namespace sync_sessions {
 class SyncSessionsRouterTabHelper;
@@ -171,11 +172,21 @@ class ProtocolHandlerPickerCoordinator;
 }  // namespace web_app
 #endif
 
+namespace indigo {
+class IndigoPageActionController;
+}  // namespace indigo
+
+namespace multistep_filter {
+class ChromeFilterNavigationObserver;
+class FilterUiController;
+}  // namespace multistep_filter
+
 namespace tabs {
 
 class ContextHighlightTabFeature;
 class InactiveWindowMouseEventController;
 class TabAlertController;
+class TabAttachmentTracker;
 class TabCreationMetricsController;
 class TabDialogManager;
 class TabInterface;
@@ -215,12 +226,6 @@ class TabFeatures {
       std::unique_ptr<customize_chrome::SidePanelController>
           customize_chrome_side_panel_controller);
 
-  // This side-panel registry is tab-scoped. It is different from the browser
-  // window scoped SidePanelRegistry.
-  SidePanelRegistry* side_panel_registry() {
-    return side_panel_registry_.get();
-  }
-
   // TODO(crbug.com/447418049): This will be removed in the future when
   // ownership of this controller is migrated to ReadAnythingController.
   ReadAnythingSidePanelController* read_anything_side_panel_controller() {
@@ -229,15 +234,6 @@ class TabFeatures {
 
   commerce::CommerceUiTabHelper* commerce_ui_tab_helper() {
     return commerce_ui_tab_helper_.get();
-  }
-
-  contextual_tasks::ContextualTasksTabVisitTracker*
-  contextual_tasks_tab_visit_tracker() {
-    return contextual_tasks_tab_visit_tracker_.get();
-  }
-
-  privacy_sandbox::PrivacySandboxTabObserver* privacy_sandbox_tab_observer() {
-    return privacy_sandbox_tab_observer_.get();
   }
 
   extensions::ExtensionSidePanelManager* extension_side_panel_manager() {
@@ -280,11 +276,6 @@ class TabFeatures {
     return manage_passwords_page_action_controller_.get();
   }
 
-  tab_groups::CollaborationMessagingTabData*
-  collaboration_messaging_tab_data() {
-    return collaboration_messaging_tab_data_.get();
-  }
-
   zoom::ZoomViewController* zoom_view_controller() {
     return zoom_view_controller_.get();
   }
@@ -301,10 +292,6 @@ class TabFeatures {
     return record_replay_client_.get();
   }
 #endif
-
-  lens::TabContextualizationController* tab_contextualization_controller() {
-    return tab_contextualization_controller_.get();
-  }
 
   PwaInstallPageActionController* pwa_install_page_action_controller() {
     return pwa_install_page_action_controller_.get();
@@ -335,6 +322,11 @@ class TabFeatures {
 
   TabCreationMetricsController* tab_creation_metrics_controller() {
     return tab_creation_metrics_controller_.get();
+  }
+
+  autofill::PaymentsChurnedUsersPageActionController*
+  payments_churned_users_page_action_controller() {
+    return payments_churned_users_page_action_controller_.get();
   }
 
   autofill::BubbleManager* autofill_bubble_manager() {
@@ -397,13 +389,12 @@ class TabFeatures {
 
   // Responsible for commerce related features.
   std::unique_ptr<commerce::CommerceUiTabHelper> commerce_ui_tab_helper_;
+  std::unique_ptr<commerce::InStockNotificationManager>
+      in_stock_notification_manager_;
 
   // Responsible for updating status indicator of the pinned translate button.
   std::unique_ptr<PinnedTranslateActionListener>
       pinned_translate_action_listener_;
-
-  std::unique_ptr<privacy_sandbox::PrivacySandboxTabObserver>
-      privacy_sandbox_tab_observer_;
 
   // The tab-scoped extension side-panel manager. There is a separate
   // window-scoped extension side-panel manager.
@@ -486,11 +477,6 @@ class TabFeatures {
   std::unique_ptr<tab_groups::CollaborationMessagingTabData>
       collaboration_messaging_tab_data_;
 
-  // Controller to trigger when the contextual task page action chip to
-  // show/hide.
-  std::unique_ptr<ContextualTasksPageActionController>
-      contextual_tasks_page_action_controller_;
-
   // Responsible for managing the "Show Collaboration History" page action.
   std::unique_ptr<CollaborationMessagingPageActionController>
       collaboration_messaging_page_action_controller_;
@@ -507,13 +493,14 @@ class TabFeatures {
   std::unique_ptr<BookmarkPageActionController>
       bookmark_page_action_controller_;
 
-#if BUILDFLAG(ENABLE_GLIC)
   std::unique_ptr<glic::GlicInstanceHelper> glic_instance_helper_;
   std::unique_ptr<glic::GlicTabIndicatorHelper> glic_tab_indicator_helper_;
   std::unique_ptr<glic::GlicSidePanelCoordinator> glic_side_panel_coordinator_;
+  std::unique_ptr<glic::GlicSelectionObserver> glic_selection_observer_;
   std::unique_ptr<glic::SelectionOverlayController>
       glic_selection_overlay_controller_;
-#endif  // BUILDFLAG(ENABLE_GLIC)
+
+  std::unique_ptr<glic::GlicPageFeaturesManager> glic_page_features_manager_;
 
   std::unique_ptr<memory_saver::MemorySaverChipController>
       memory_saver_chip_controller_;
@@ -532,6 +519,9 @@ class TabFeatures {
 
   std::unique_ptr<ContextHighlightTabFeature> context_highlight_tab_feature_;
 
+  std::unique_ptr<contextual_cueing::ContextualCueingWebContentsObserver>
+      contextual_cueing_web_contents_observer_;
+
   std::unique_ptr<TabUIHelper> tab_ui_helper_;
 
   std::unique_ptr<QwacWebContentsObserver> qwac_web_contents_observer_;
@@ -543,6 +533,24 @@ class TabFeatures {
       tab_creation_metrics_controller_;
 
   std::unique_ptr<autofill::BubbleManager> autofill_bubble_manager_;
+
+  // Responsible for managing the "Payments Churned Users" page action.
+  std::unique_ptr<autofill::PaymentsChurnedUsersPageActionController>
+      payments_churned_users_page_action_controller_;
+
+  // Responsible for managing the "Autofill payment" page action.
+  std::unique_ptr<autofill::OmniboxAutofillPageActionController>
+      omnibox_autofill_page_action_controller_;
+
+  // Responsible for managing the bubble that displays after the
+  // "Autofill payment" chip is clicked.
+  std::unique_ptr<autofill::OmniboxAutofillBubbleController>
+      omnibox_autofill_bubble_controller_;
+
+  // Responsible for managing the bubble that prompts a user to turn on payments
+  // autofill if they have turned it off.
+  std::unique_ptr<autofill::PaymentsChurnedUsersBubbleController>
+      payments_churned_users_bubble_controller_;
 
   std::unique_ptr<AskBeforeHttpDialogController>
       ask_before_http_dialog_controller_;
@@ -579,17 +587,33 @@ class TabFeatures {
   std::unique_ptr<contextual_tasks::ContextualTasksTabVisitTracker>
       contextual_tasks_tab_visit_tracker_;
 
-#if BUILDFLAG(ENABLE_GLIC) && !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID)
   std::unique_ptr<skills::SkillsUpdateObserver> skills_update_observer_;
-#endif  // BUILDFLAG(ENABLE_GLIC) && !BUILDFLAG(IS_ANDROID)
+#endif  //  !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   std::unique_ptr<enterprise_reporting::SaasUsageNavigationObserver>
       saas_usage_navigation_observer_;
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
 
+#if BUILDFLAG(IS_WIN)
+  std::unique_ptr<SearchPromotionNavigationObserver>
+      search_promotion_navigation_observer_;
+#endif
+
   std::unique_ptr<accessibility_annotator::ContentAnnotatorTabHelper>
       content_annotator_tab_helper_;
+
+#if !BUILDFLAG(IS_ANDROID)
+  std::unique_ptr<indigo::IndigoPageActionController>
+      indigo_page_action_controller_;
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+  std::unique_ptr<multistep_filter::FilterUiController> filter_ui_controller_;
+  std::unique_ptr<multistep_filter::ChromeFilterNavigationObserver>
+      filter_navigation_observer_;
+
+  std::unique_ptr<TabAttachmentTracker> tab_attachment_tracker_;
 
   // Must be the last member.
   base::WeakPtrFactory<TabFeatures> weak_factory_{this};

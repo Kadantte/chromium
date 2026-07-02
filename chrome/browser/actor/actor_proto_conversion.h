@@ -11,11 +11,13 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/safe_ref.h"
 #include "base/types/expected.h"
-#include "chrome/browser/actor/aggregated_journal.h"
 #include "chrome/browser/page_content_annotations/multi_source_page_context_fetcher.h"
 #include "chrome/common/actor.mojom-forward.h"
 #include "chrome/common/actor/action_result.h"
+#include "components/actor/core/aggregated_journal.h"
+#include "components/actor/public/mojom/actor_types.mojom-forward.h"
 #include "components/optimization_guide/proto/features/actions_data.pb.h"
+#include "components/page_content_annotations/content/page_context_fetcher.h"
 #include "components/tabs/public/tab_interface.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
@@ -29,10 +31,6 @@ namespace optimization_guide::proto {
 class Actions;
 }  // namespace optimization_guide::proto
 
-namespace page_content_annotations {
-struct FetchPageContextResult;
-}  // namespace page_content_annotations
-
 namespace actor {
 class ActorTask;
 class ToolRequest;
@@ -44,8 +42,9 @@ using ToolRequestList = std::vector<std::unique_ptr<ToolRequest>>;
 // Result type returned from the BuildToolRequest functions below. Aliased for
 // convenience. on failure, the error value contains the index of the action in
 // the list that failed to convert.
-using BuildToolRequestResult =
-    base::expected<ToolRequestList, size_t /*index_of_failed_action*/>;
+using BuildToolRequestResult = base::expected<
+    ToolRequestList,
+    std::pair<size_t /*index_of_failed_action*/, mojom::ActionResultCode>>;
 
 // Builds a vector of ToolRequests usable for ActorKeyedService::PerformActions
 // out of the given proto::Actions proto. If an action failed to convert,
@@ -60,29 +59,43 @@ BuildToolRequestResult BuildToolRequest(
 void BuildActionsResultWithObservations(
     content::BrowserContext& browser_context,
     base::TimeTicks start_time,
-    mojom::ActionResultCode result_code,
-    std::optional<size_t> index_of_failed_action,
     std::vector<actor::ActionResultWithLatencyInfo> action_results,
     const ActorTask& task,
     bool skip_async_observation_information,
+    std::optional<page_content_annotations::ScreenshotOptions::
+                      ScreenshotCollectionOptions>
+        screenshot_collection_options,
     base::OnceCallback<
         void(base::TimeTicks start_time,
-             mojom::ActionResultCode result_code,
-             std::optional<size_t> index_of_failed_action,
              std::vector<actor::ActionResultWithLatencyInfo> action_results,
              actor::TaskId task_id,
              bool skip_async_observation_information,
+             std::optional<page_content_annotations::ScreenshotOptions::
+                               ScreenshotCollectionOptions>
+                 screenshot_collection_options,
              std::unique_ptr<optimization_guide::proto::ActionsResult>,
              std::unique_ptr<actor::AggregatedJournal::PendingAsyncEntry>)>
         callback);
 
+// Converts the ScreenshotCollectionOptions proto to the
+// FetchPageContextOptions::ScreenshotCollectionOptions struct.
+std::optional<
+    page_content_annotations::ScreenshotOptions::ScreenshotCollectionOptions>
+GetScreenshotCollectionOptions(
+    const optimization_guide::proto::Actions& actions);
+
 // For testing: when set, the callback is used to fill in the TabObservation
 // using the resulting FetchPageContextResult allowing tests to verify error
 // handling of the fetch.
+using TabObservationResultOverrideCallback = base::RepeatingCallback<void(
+    optimization_guide::proto::TabObservation*,
+    const page_content_annotations::FetchPageContextResult&)>;
+
 void SetTabObservationResultOverrideForTesting(
-    base::RepeatingCallback<void(
-        optimization_guide::proto::TabObservation*,
-        const page_content_annotations::FetchPageContextResult&)> callback);
+    TabObservationResultOverrideCallback callback);
+
+TabObservationResultOverrideCallback&
+GetTabObservationResultOverrideForTesting();
 
 optimization_guide::proto::ActionsResult BuildErrorActionsResult(
     mojom::ActionResultCode result_code,
@@ -106,7 +119,7 @@ void CopyScriptToolResults(
       auto* script_tool_result = proto.add_script_tool_results();
       script_tool_result->set_index_of_script_tool_action(i);
       script_tool_result->set_result(*response->result);
-      script_tool_result->set_tool_name(response->name);
+      script_tool_result->set_tool_name(response->tool->name);
       script_tool_result->set_input_arguments(response->input_arguments);
       auto* tool = script_tool_result->mutable_tool();
       tool->set_name(response->tool->name);
@@ -129,7 +142,7 @@ CreateActorJournalFetchPageProgressListener(
     const GURL& url,
     TaskId task_id);
 
-std::string ToBase64(const optimization_guide::proto::Actions& actions);
+std::string ToBase64(const google::protobuf::MessageLite& proto);
 
 std::optional<mojom::ActionResultCode> MaybeGetErrorCodeForTab(
     tabs::TabInterface* tab);

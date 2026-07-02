@@ -5,7 +5,7 @@
 #import "ios/chrome/browser/settings/ui_bundled/bwg/coordinator/gemini_settings_coordinator.h"
 
 #import "ios/chrome/browser/settings/ui_bundled/bwg/coordinator/gemini_settings_mediator.h"
-#import "ios/chrome/browser/settings/ui_bundled/bwg/ui/bwg_settings_view_controller.h"
+#import "ios/chrome/browser/settings/ui_bundled/bwg/ui/gemini_settings_view_controller.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
@@ -13,10 +13,11 @@
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
+#import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 
 @implementation GeminiSettingsCoordinator {
   // View controller presented by this coordinator.
-  BWGSettingsViewController* _viewController;
+  GeminiSettingsViewController* _viewController;
   // Mediator used by this coordinator.
   GeminiSettingsMediator* _mediator;
 }
@@ -39,11 +40,12 @@
   _mediator = [[GeminiSettingsMediator alloc]
       initWithAuthService:AuthenticationServiceFactory::GetForProfile(
                               self.profile)
-              prefService:self.profile->GetPrefs()];
+              prefService:self.profile->GetPrefs()
+          identityManager:IdentityManagerFactory::GetForProfile(self.profile)];
   _mediator.sceneHandler = HandlerForProtocol(commandDispatcher, SceneCommands);
 
-  _viewController =
-      [[BWGSettingsViewController alloc] initWithStyle:ChromeTableViewStyle()];
+  _viewController = [[GeminiSettingsViewController alloc]
+      initWithStyle:ChromeTableViewStyle()];
   _viewController.mutator = _mediator;
   _mediator.consumer = _viewController;
 

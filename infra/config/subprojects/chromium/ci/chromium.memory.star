@@ -149,7 +149,6 @@ linux_memory_builder(
                 ],
             ),
             "linux-jammy",
-            "retry_only_failed_tests",
         ],
         per_test_modifications = {
             "accessibility_unittests": targets.mixin(
@@ -176,6 +175,9 @@ linux_memory_builder(
                     hard_timeout_sec = 5400,  # 90 minutes,
                     shards = 70,
                 ),
+            ),
+            "components_browsertests": targets.mixin(
+                ci_only = True,
             ),
             "components_unittests": targets.mixin(
                 # These are very slow on the ASAN trybot for some reason.
@@ -211,9 +213,6 @@ linux_memory_builder(
                 "linux_nvidia_gtx_1660_stable",
             ],
             "interactive_ui_tests": targets.mixin(
-                # Only retry the individual failed tests instead of rerunning entire
-                # shards.
-                retry_only_failed_tests = True,
                 # These are slow on the ASan trybot for some reason, crbug.com/1257927
                 swarming = targets.swarming(
                     shards = 12,
@@ -228,13 +227,10 @@ linux_memory_builder(
             ),
             "sync_integration_tests": targets.mixin(
                 swarming = targets.swarming(
-                    shards = 4,
+                    shards = 8,
                 ),
             ),
             "unit_tests": targets.mixin(
-                # Only retry the individual failed tests instead of rerunning entire
-                # shards.
-                retry_only_failed_tests = True,
                 # These are slow on the ASAN trybot for some reason.
                 # crbug.com/1257927
                 swarming = targets.swarming(
@@ -345,12 +341,18 @@ linux_memory_builder(
             "interactive_ui_tests": targets.mixin(
                 # Slow on certain debug builders, see crbug.com/1513713.
                 swarming = targets.swarming(
-                    shards = 10,
+                    shards = 15,
+                ),
+            ),
+            "sync_integration_tests": targets.mixin(
+                swarming = targets.swarming(
+                    shards = 6,
                 ),
             ),
         },
     ),
     cores = 32,
+    ssd = True,
     console_view_entry = consoles.console_view_entry(
         category = "cfi",
         short_name = "lnx",
@@ -483,7 +485,7 @@ linux_memory_builder(
             ),
             "sync_integration_tests": targets.mixin(
                 swarming = targets.swarming(
-                    shards = 6,
+                    shards = 12,
                 ),
             ),
             "unit_tests": targets.mixin(
@@ -615,6 +617,11 @@ linux_memory_builder(
             "services_unittests": targets.remove(
                 reason = "https://crbug.com/831676",
             ),
+            "sync_integration_tests": targets.mixin(
+                swarming = targets.swarming(
+                    shards = 6,
+                ),
+            ),
             "unit_tests": targets.mixin(
                 # These are very slow on the Chrome OS MSAN trybot for some reason.
                 # crbug.com/865455
@@ -705,7 +712,7 @@ linux_memory_builder(
         per_test_modifications = {
             "browser_tests": targets.mixin(
                 swarming = targets.swarming(
-                    shards = 52,
+                    shards = 70,
                 ),
             ),
             "content_browsertests": targets.mixin(
@@ -722,11 +729,16 @@ linux_memory_builder(
             ),
             "interactive_ui_tests": targets.mixin(
                 swarming = targets.swarming(
-                    shards = 15,
+                    shards = 20,
                 ),
             ),
             "services_unittests": targets.remove(
                 reason = "https://crbug.com/831676",
+            ),
+            "sync_integration_tests": targets.mixin(
+                swarming = targets.swarming(
+                    shards = 6,
+                ),
             ),
         },
     ),
@@ -808,7 +820,6 @@ linux_memory_builder(
                 ],
             ),
             "linux-jammy",
-            "retry_only_failed_tests",
         ],
         per_test_modifications = {
             "blink_unittests": targets.mixin(
@@ -855,9 +866,6 @@ linux_memory_builder(
             "interactive_ui_tests": targets.mixin(
                 # https://crbug.com/1498240
                 ci_only = True,
-                # Only retry the individual failed tests instead of rerunning entire
-                # shards.
-                retry_only_failed_tests = True,
                 # These are slow on the TSan bots for some reason, crbug.com/1257927
                 swarming = targets.swarming(
                     # Adjusted for testing, see https://crbug.com/1179567
@@ -1045,7 +1053,7 @@ ci.builder(
             ),
             "sync_integration_tests": targets.mixin(
                 swarming = targets.swarming(
-                    shards = 3,
+                    shards = 8,
                 ),
             ),
             "unit_tests": targets.mixin(
@@ -1104,7 +1112,7 @@ ci.builder(
     ),
     targets = targets.bundle(
         targets = [
-            "chromium_webkit_isolated_scripts",
+            "chromium_blink_isolated_scripts",
         ],
         mixins = [
             "linux-jammy",
@@ -1184,7 +1192,7 @@ ci.builder(
     ),
     targets = targets.bundle(
         targets = [
-            "chromium_webkit_isolated_scripts",
+            "chromium_blink_isolated_scripts",
         ],
         additional_compile_targets = [
             "blink_tests",
@@ -1265,7 +1273,7 @@ ci.builder(
     ),
     targets = targets.bundle(
         targets = [
-            "chromium_webkit_isolated_scripts",
+            "chromium_blink_isolated_scripts",
         ],
         mixins = [
             "linux-jammy",
@@ -1412,13 +1420,18 @@ ci.builder(
                     "--test-launcher-jobs=3",
                 ],
                 swarming = targets.swarming(
-                    shards = 2,
+                    shards = 6,
                 ),
             ),
             "unit_tests": targets.mixin(
                 swarming = targets.swarming(
                     # ASAN bot is slow: https://crbug.com/1484550#c4
                     shards = 4,
+                ),
+            ),
+            "updater_tests": targets.mixin(
+                swarming = targets.swarming(
+                    shards = 2,
                 ),
             ),
             "updater_tests_system": targets.mixin(

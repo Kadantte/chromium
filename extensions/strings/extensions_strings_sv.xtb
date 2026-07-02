@@ -11,10 +11,12 @@
 <translation id="1556537182262721003">Det gick inte att flytta tilläggskatalogen till profilen.</translation>
 <translation id="1610570795592207282">Det gick inte att läsa in CSS-filen <ph name="RELATIVE_PATH" /> för skriptet.</translation>
 <translation id="1616298854599875024">Det gick inte att importera tillägget <ph name="IMPORT_NAME" /> eftersom det inte är en delad modul</translation>
+<translation id="1757786065507923842">Begäran om förälders tillåtelse misslyckades.</translation>
 <translation id="1803557475693955505">Det gick inte att läsa in bakgrundssidan <ph name="BACKGROUND_PAGE" />.</translation>
 <translation id="1875387611427697908">Kan endast installeras från <ph name="CHROME_WEB_STORE" /></translation>
 <translation id="2131077480075264">Det går inte att installera <ph name="APP_NAME" /> eftersom den inte tillåts av <ph name="IMPORT_NAME" /></translation>
 <translation id="2159915644201199628">Det gick inte att avkoda bilden: <ph name="IMAGE_NAME" /></translation>
+<translation id="2193567467390483943">Din förälder har inte godkänt det här tillägget</translation>
 <translation id="2350172092385603347">Lokalisering används, men default_locale specificeras inte i manifestet.</translation>
 <translation id="2576842806987913196">Det finns redan en CRX-fil med det här namnet.</translation>
 <translation id="2662876636500006917">Chrome webbshop</translation>
@@ -25,13 +27,16 @@
 <translation id="3115238746683532089">Okänd produkt (<ph name="PRODUCT_ID" />) från leverantören <ph name="VENDOR_ID" /> (serienummer <ph name="SERIAL_NUMBER" />)</translation>
 <translation id="3144135466825225871">Det gick inte att ersätta CRX-filen. Kontrollera om filen används.</translation>
 <translation id="3163201441334626963">Okänd produkt (<ph name="PRODUCT_ID" />) från leverantören <ph name="VENDOR_ID" /></translation>
+<translation id="3174723475300476613">Åtkomst till detta tillägg blockeras av organisationen.</translation>
 <translation id="3242289508736283383">En app med manifestattributet kiosk_only måste installeras i kioskläget i ChromeOS</translation>
+<translation id="3364986687961713424">Från administratören: <ph name="ADMIN_MESSAGE" /></translation>
 <translation id="3393440416772303020"><ph name="PRODUCT_NAME" /> (serienummer <ph name="SERIAL_NUMBER" />)</translation>
 <translation id="3466070586188012397"><ph name="PRODUCT_NAME" /> från leverantören <ph name="VENDOR_ID" /> (serienummer <ph name="SERIAL_NUMBER" />)</translation>
 <translation id="3561217442734750519">Det angivna värdet för den privata nyckeln måste vara en giltig sökväg.</translation>
 <translation id="3834775135533257713">Det gick inte att lägga till appen <ph name="TO_INSTALL_APP_NAME" /> eftersom den inte fungerar med <ph name="INSTALLED_APP_NAME" />.</translation>
 <translation id="388442998277590542">Det gick inte att läsa in alternativsidan <ph name="OPTIONS_PAGE" />.</translation>
 <translation id="3984413272403535372">Ett fel uppstod när tillägget skulle signeras.</translation>
+<translation id="4094452115117798451">Åtkomst till den här tilläggskategorin blockeras av organisationen.</translation>
 <translation id="4233778200880751280">Det gick inte att ladda informationssidan <ph name="ABOUT_PAGE" />.</translation>
 <translation id="424963718355121712">Appar måste visas från värden de är kopplade till</translation>
 <translation id="4306119971288449206">Apparna måste visas med content-type <ph name="CONTENT_TYPE" /></translation>
@@ -64,6 +69,7 @@
 <translation id="7003844668372540529">Okänd produkt (<ph name="PRODUCT_ID" />) från <ph name="VENDOR_NAME" /></translation>
 <translation id="7068383018033524534">Manifestfilen är ogiltig</translation>
 <translation id="7217838517480956708">Administratören av den här enheten kräver att <ph name="EXTENSION_NAME" /> ska installeras. Det kan inte tas bort eller ändras.</translation>
+<translation id="7287143125007575591">Åtkomst nekad.</translation>
 <translation id="7612608473764576263">Det angivna värdet för den privata nyckeln måste ha giltigt format (PEM-kodad RSA-nyckel i PKCS#8-format).</translation>
 <translation id="765293928828334535">Appar, tillägg och användarskript kan inte läggas till från webbplatsen</translation>
 <translation id="7876803335449432072">Det gick inte att läsa in filen <ph name="RELATIVE_PATH" /> för innehållsskriptet. Innehållsskriptets stilmallar kan endast läsas in från stilmallsfiler som stöds, t.ex. .css-filer.</translation>

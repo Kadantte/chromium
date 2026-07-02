@@ -13,9 +13,11 @@
 #include "third_party/blink/renderer/core/frame/frame_test_helpers.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/visual_viewport.h"
+#include "third_party/blink/renderer/core/layout/geometry/axis.h"
 #include "third_party/blink/renderer/core/layout/hit_test_location.h"
 #include "third_party/blink/renderer/core/layout/layout_box_model_object.h"
 #include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
+#include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
 #include "third_party/blink/renderer/core/page/scrolling/snap_coordinator.h"
 #include "third_party/blink/renderer/core/paint/paint_controller_paint_test.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
@@ -23,6 +25,7 @@
 #include "third_party/blink/renderer/core/scroll/scrollbar_theme.h"
 #include "third_party/blink/renderer/core/testing/color_scheme_helper.h"
 #include "third_party/blink/renderer/platform/graphics/compositing/paint_artifact_compositor.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 
 using testing::_;
 
@@ -1505,6 +1508,37 @@ TEST_P(PaintLayerScrollableAreaTest, CompositeWithTrivial3D) {
   EXPECT_TRUE(UsesCompositedScrolling(GetLayoutBoxByElementId("scroller")));
 }
 
+TEST_P(PaintLayerScrollableAreaTest, OverscrollContainerRtlScrollProperties) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #target {
+        direction: rtl;
+        width: 100px;
+        height: 100px;
+      }
+      #child {
+        width: 300px;
+        height: 100px;
+      }
+    </style>
+    <div id="target" overscrollcontainer>
+      <div id="child"></div>
+    </div>
+  )HTML");
+
+  auto* target_box = GetLayoutBoxByElementId("target");
+  ASSERT_TRUE(target_box);
+  EXPECT_FALSE(target_box->IsScrollContainer());
+  EXPECT_TRUE(target_box->IsOverscrollContainer());
+
+  auto* scrollable_area = target_box->GetScrollableArea();
+  ASSERT_TRUE(scrollable_area);
+
+  EXPECT_EQ(200, scrollable_area->ScrollOrigin().x());
+  EXPECT_EQ(0, scrollable_area->MinimumScrollOffsetInt().x());
+  EXPECT_EQ(0, scrollable_area->MaximumScrollOffsetInt().x());
+}
+
 class PaintLayerScrollableAreaTestLowEndPlatform
     : public TestingPlatformSupport {
  public:
@@ -2297,4 +2331,117 @@ TEST_F(PaintLayerScrollableAreaWithWebFrameTest,
   EXPECT_TRUE(box->FirstFragment().PaintProperties()->Scroll());
 }
 
+TEST_P(PaintLayerScrollableAreaTest, SingleAxisOverflowClipScrollbar) {
+  USE_NON_OVERLAY_SCROLLBARS_OR_QUIT();
+  ScopedSingleAxisScrollContainersForTest scoped_feature(true);
+
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #scroller-y { overflow-y: scroll; overflow-x: clip; width: 100px; height: 100px; }
+      #scroller-x { overflow-x: scroll; overflow-y: clip; width: 100px; height: 100px; }
+      .content { height: 200px; width: 200px; }
+    </style>
+    <div id="scroller-y"><div class="content"></div></div>
+    <div id="scroller-x"><div class="content"></div></div>
+  )HTML");
+
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* scroller_y =
+      To<LayoutBoxModelObject>(GetLayoutObjectByElementId("scroller-y"))
+          ->GetScrollableArea();
+  EXPECT_FALSE(scroller_y->HasHorizontalScrollbar());
+  EXPECT_TRUE(scroller_y->HasVerticalScrollbar());
+
+  auto* scroller_x =
+      To<LayoutBoxModelObject>(GetLayoutObjectByElementId("scroller-x"))
+          ->GetScrollableArea();
+  EXPECT_TRUE(scroller_x->HasHorizontalScrollbar());
+  EXPECT_FALSE(scroller_x->HasVerticalScrollbar());
+}
+
+TEST_P(PaintLayerScrollableAreaTest, SingleAxisScrollableAxes) {
+  ScopedSingleAxisScrollContainersForTest scoped_feature(true);
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #scroll-both { overflow: scroll; width: 10px; height: 10px; }
+      #hidden-both { overflow: hidden; width: 10px; height: 10px; }
+      #clip-both { overflow: clip; width: 10px; height: 10px; }
+      #mixed { overflow-x: scroll; overflow-y: clip; width: 10px; height: 10px; }
+      #sticky { position: sticky; top: 0; }
+    </style>
+    <div id="scroll-both"></div>
+    <div id="hidden-both"></div>
+    <div id="clip-both"></div>
+    <div id="mixed"></div>
+    <div id="sticky"></div>
+  )HTML");
+
+  // --- Screen Layout ---
+
+  auto* scroll_both =
+      GetLayoutBoxByElementId("scroll-both")->GetScrollableArea();
+  ASSERT_TRUE(scroll_both);
+  EXPECT_EQ(kPhysicalAxesBoth, scroll_both->ScrollableAxes());
+
+  // 'hidden' is scrollable programmatically.
+  auto* hidden_both =
+      GetLayoutBoxByElementId("hidden-both")->GetScrollableArea();
+  ASSERT_TRUE(hidden_both);
+  EXPECT_EQ(kPhysicalAxesBoth, hidden_both->ScrollableAxes());
+
+  auto* clip_both = GetLayoutBoxByElementId("clip-both");
+  // 'clip' is strictly not scrollable and does not generate a
+  // PaintLayerScrollableArea.
+  EXPECT_FALSE(clip_both->GetScrollableArea());
+
+  auto* mixed = GetLayoutBoxByElementId("mixed")->GetScrollableArea();
+  ASSERT_TRUE(mixed);
+  EXPECT_EQ(kPhysicalAxesHorizontal, mixed->ScrollableAxes());
+
+  // The viewport should scroll both axes and capture the sticky descendant.
+  auto* layout_view = GetDocument().GetLayoutView();
+  ASSERT_TRUE(layout_view->IsScrollContainer());
+
+  auto* view_scrollable = layout_view->GetScrollableArea();
+  ASSERT_TRUE(view_scrollable);
+  EXPECT_EQ(kPhysicalAxesBoth, view_scrollable->ScrollableAxes());
+
+  const auto* view_fragment = layout_view->GetPhysicalFragment(0);
+  EXPECT_EQ(1u, view_fragment->StickyDescendants().size());
+
+  // --- Print (Paginated) Layout ---
+
+  // Start printing with a defined physical page size. This forces layout
+  // to paginate and create `kPageBorderBox` fragments.
+  GetDocument().GetFrame()->StartPrinting(WebPrintParams(gfx::SizeF(800, 600)));
+  UpdateAllLifecyclePhasesForTest();
+
+  // Re-fetch pointers as the layout tree may have been rebuilt during the print
+  // transition.
+  layout_view = GetDocument().GetLayoutView();
+
+  // Ensure printing does not strip scrollable axes from the viewport.
+  EXPECT_TRUE(layout_view->IsScrollContainer());
+  auto* printed_view_scrollable = layout_view->GetScrollableArea();
+  ASSERT_TRUE(printed_view_scrollable);
+  EXPECT_EQ(kPhysicalAxesBoth, printed_view_scrollable->ScrollableAxes());
+
+  // Nested subscrollers retain their axes during printing (crucial for
+  // preserving offsets).
+  auto* printed_mixed = GetLayoutBoxByElementId("mixed")->GetScrollableArea();
+  ASSERT_TRUE(printed_mixed);
+  EXPECT_EQ(kPhysicalAxesHorizontal, printed_mixed->ScrollableAxes());
+
+  // The sticky descendant is trapped inside the
+  // PhysicalFragment::kPageBorderBox boundary during paginated layout, so it
+  // does not propagate up to the root.
+  const auto* printed_view_fragment = layout_view->GetPhysicalFragment(0);
+  EXPECT_EQ(0u, printed_view_fragment->StickyDescendants().size());
+
+  // --- Teardown ---
+
+  GetDocument().GetFrame()->EndPrinting();
+  UpdateAllLifecyclePhasesForTest();
+}
 }  // namespace blink

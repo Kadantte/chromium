@@ -24,7 +24,6 @@ inline constexpr int kMinimumFaviconSize = 48;
 
 #if BUILDFLAG(IS_ANDROID)
 BASE_DECLARE_FEATURE(kWebApkInstallFailureNotification);
-BASE_DECLARE_FEATURE(kAndroidTWAOriginDisplay);
 BASE_DECLARE_FEATURE(kAndroidAutoMintedTWA);
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -35,8 +34,6 @@ extern const base::FeatureParam<double> kWebAppsMLModelUserDeclineReportProb;
 extern const base::FeatureParam<int> kMaxDaysForMLPromotionGuardrailStorage;
 
 BASE_DECLARE_FEATURE(kCheckWebAppExistenceAsync);
-
-BASE_DECLARE_FEATURE(kLaunchQueueStopSendingOnReload);
 
 }  // namespace features
 }  // namespace webapps

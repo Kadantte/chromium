@@ -185,22 +185,44 @@ void NativeWidgetMac::OnWindowKeyStatusChanged(
 
   if (is_key) {
     widget->OnNativeFocus();
-    widget->GetFocusManager()->RestoreFocusedView();
+    // GetFocusManager() can be null for detached child widgets during
+    // reparenting.
+    if (FocusManager* focus_manager = widget->GetFocusManager()) {
+      focus_manager->RestoreFocusedView();
+    }
   } else {
     widget->OnNativeBlur();
-    widget->GetFocusManager()->StoreFocusedView(false);
+    if (FocusManager* focus_manager = widget->GetFocusManager()) {
+      focus_manager->StoreFocusedView(false);
+    }
     parent_key_lock_.reset();
+  }
+}
+
+void NativeWidgetMac::OnWindowWillMove() {
+  if (delegate_) {
+    delegate_->OnNativeWidgetBeginUserBoundsChange();
+    delegate_->OnNativeWidgetUserDragStarted();
+  }
+}
+
+void NativeWidgetMac::OnWindowDidEndMove() {
+  if (delegate_) {
+    delegate_->OnNativeWidgetEndUserBoundsChange();
+    delegate_->OnNativeWidgetUserDragEnded();
   }
 }
 
 void NativeWidgetMac::OnWindowWillStartLiveResize() {
   if (delegate_) {
+    delegate_->OnNativeWidgetBeginUserBoundsChange();
     delegate_->OnNativeWidgetUserResizeStarted();
   }
 }
 
 void NativeWidgetMac::OnWindowDidEndLiveResize() {
   if (delegate_) {
+    delegate_->OnNativeWidgetEndUserBoundsChange();
     delegate_->OnNativeWidgetUserResizeEnded();
   }
 }
@@ -391,8 +413,7 @@ void NativeWidgetMac::ReparentNativeViewImpl(gfx::NativeView new_parent) {
 }
 
 std::unique_ptr<FrameView> NativeWidgetMac::CreateFrameView() {
-  return GetWidget() ? std::make_unique<NativeFrameViewMac>(GetWidget(),
-                                                            /*client=*/nullptr)
+  return GetWidget() ? std::make_unique<NativeFrameViewMac>(GetWidget())
                      : nullptr;
 }
 
@@ -830,6 +851,13 @@ bool NativeWidgetMac::IsVisibleOnAllWorkspaces() const {
   return ns_window_host_ ? ns_window_host_->IsVisibleOnAllWorkspaces() : false;
 }
 
+void NativeWidgetMac::MoveToActiveFullscreenSpace() {
+  if (!GetNSWindowMojo()) {
+    return;
+  }
+  GetNSWindowMojo()->MoveToActiveFullscreenSpace();
+}
+
 void NativeWidgetMac::Maximize() {
   if (!GetNSWindowMojo()) {
     return;
@@ -907,10 +935,10 @@ void NativeWidgetMac::FlashFrame(bool flash_frame) {
   NOTIMPLEMENTED();
 }
 
-void NativeWidgetMac::RunShellDrag(std::unique_ptr<ui::OSExchangeData> data,
-                                   const gfx::Point& location,
-                                   int operation,
-                                   ui::mojom::DragEventSource source) {
+void NativeWidgetMac::RunDragDropLoop(std::unique_ptr<ui::OSExchangeData> data,
+                                      const gfx::Point& location,
+                                      int operation,
+                                      ui::mojom::DragEventSource source) {
   if (!ns_window_host_) {
     return;
   }
@@ -918,7 +946,7 @@ void NativeWidgetMac::RunShellDrag(std::unique_ptr<ui::OSExchangeData> data,
                                                         operation, source);
 }
 
-void NativeWidgetMac::CancelShellDrag(View* view) {
+void NativeWidgetMac::CancelDragDropLoop(View* view) {
   if (!ns_window_host_) {
     return;
   }

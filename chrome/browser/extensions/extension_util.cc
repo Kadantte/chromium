@@ -12,13 +12,14 @@
 #include "base/command_line.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
-#include "chrome/browser/extensions/shared_module_service.h"
 #include "chrome/browser/extensions/sync/extension_sync_service.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/extensions/extension_icon_source.h"
 #include "chrome/common/extensions/api/url_handlers/url_handlers_parser.h"
+#include "chrome/common/extensions/extension_constants.h"
 #include "chrome/common/extensions/sync_helper.h"
 #include "chrome/common/pref_names.h"
+#include "chrome/common/webui_url_constants.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
 #include "components/variations/variations_associated_data.h"
@@ -29,9 +30,11 @@
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/extension_util.h"
+#include "extensions/browser/management_policy.h"
 #include "extensions/browser/permissions/permissions_updater.h"
 #include "extensions/browser/pref_names.h"
 #include "extensions/browser/renderer_startup_helper.h"
+#include "extensions/browser/shared_module_service.h"
 #include "extensions/browser/user_script_manager.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
@@ -161,6 +164,23 @@ bool HasIsolatedStorage(const Extension& extension,
 #endif
 
   return extension.is_platform_app();
+}
+
+bool IsExtensionForceInstalled(const std::string& extension_id,
+                               content::BrowserContext* context,
+                               std::u16string* reason) {
+  auto* registry = ExtensionRegistry::Get(context);
+  if (!registry) {
+    return false;
+  }
+  auto* extension_system = ExtensionSystem::Get(context);
+  if (!extension_system) {
+    return false;
+  }
+  const Extension* extension = registry->GetInstalledExtension(extension_id);
+  return extension &&
+         extension_system->management_policy()->MustRemainInstalled(extension,
+                                                                    reason);
 }
 
 void SetIsIncognitoEnabled(const std::string& extension_id,
@@ -336,6 +356,29 @@ bool AreExtensionsDisabled(const base::CommandLine& command_line,
   Profile* profile = Profile::FromBrowserContext(context);
   return ExtensionsDisabledViaCommandLine(command_line) ||
          profile->GetPrefs()->GetBoolean(prefs::kDisableExtensions);
+}
+
+GURL GetExtensionsPageUrl(const ExtensionId& extension_id) {
+  GURL url(chrome::kChromeUIExtensionsURL);
+  if (!extension_id.empty()) {
+    GURL::Replacements replacements;
+    std::string query("id=");
+    query += extension_id;
+    replacements.SetQueryStr(query);
+    url = url.ReplaceComponents(replacements);
+  }
+  return url;
+}
+
+bool IsMojoJsEnabledForExtension(const ExtensionId& extension_id,
+                                 content::BrowserContext* context) {
+  if (extension_id != extension_misc::kAimEligibilityExtensionId) {
+    return false;
+  }
+  const Extension* extension =
+      ExtensionRegistry::Get(context)->enabled_extensions().GetByID(
+          extension_id);
+  return extension && Manifest::IsComponentLocation(extension->location());
 }
 
 } // namespace extensions::util

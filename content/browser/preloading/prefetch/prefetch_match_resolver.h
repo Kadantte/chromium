@@ -10,6 +10,7 @@
 #include "base/memory/weak_ptr.h"
 #include "content/browser/preloading/prefetch/no_vary_search_helper.h"
 #include "content/browser/preloading/prefetch/prefetch_container.h"
+#include "content/browser/preloading/prefetch/prefetch_container_observer.h"
 #include "content/browser/preloading/prefetch/prefetch_params.h"
 #include "content/browser/preloading/prefetch/prefetch_servable_state.h"
 #include "content/browser/preloading/prefetch/prefetch_serving_handle.h"
@@ -31,7 +32,7 @@ class PrefetchService;
 // purpose.
 //
 // This is a value per (prefetch matching, `PrefetchContainer`) representing the
-// result of `PrefetchScheduler::CollectMatchCandidate()`. This is typically
+// result of `PrefetchService::CollectMatchCandidate()`. This is typically
 // used as follows:
 //
 // - To record trace events for `CollectPotentialMatchPrefetchContainers()`
@@ -118,12 +119,12 @@ enum class PrefetchPotentialCandidateServingResult {
   kNotServedBlockUntilHeadTimeout = 8,
 
   // The candidate is not served because
-  // `PrefetchContainer::Observer::OnDeterminedHead()` is called with
+  // `PrefetchContainerObserver::OnDeterminedHead()` is called with
   // `PrefetchServableState::kShouldBlockUntilHeadReceived`. Basically, we don't
   // expect to enter this path, but there is a buggy corner case.
   kNotServedOnDeterminedHeadWithShouldBlockUntilHeadReceived = 9,
   // The candidate is not served because
-  // `PrefetchContainer::Observer::OnDeterminedHead()` is called but the
+  // `PrefetchContainerObserver::OnDeterminedHead()` is called but the
   // prefetch has been expired.
   kNotServedOnDeterminedHeadWithServableExpired = 10,
   // The candidate is not served due to ineligible redirect.
@@ -133,7 +134,7 @@ enum class PrefetchPotentialCandidateServingResult {
   // Deprecated
   //
   // The candidate is not served because
-  // `PrefetchContainer::Observer::OnDeterminedHead()` is called with
+  // `PrefetchContainerObserver::OnDeterminedHead()` is called with
   // `PrefetchServableState::kNotServable` except for expired nor failure. We
   // don't expect to enter this path.
   // kNotServedOnDeterminedHeadWithNotServableUnknown = 13,
@@ -160,7 +161,7 @@ CONTENT_EXPORT std::ostream& operator<<(
 // Lifetime of this class is from the call of `FindPrefetch()` to calling
 // `callback_`. This is owned by itself. See the comment on `self_`.
 class CONTENT_EXPORT PrefetchMatchResolver final
-    : public PrefetchContainer::Observer {
+    : public PrefetchContainerObserver {
  public:
   using Callback =
       base::OnceCallback<void(PrefetchServingHandle serving_handle)>;
@@ -173,15 +174,13 @@ class CONTENT_EXPORT PrefetchMatchResolver final
   PrefetchMatchResolver(const PrefetchMatchResolver&) = delete;
   PrefetchMatchResolver& operator=(const PrefetchMatchResolver&) = delete;
 
-  // PrefetchContainer::Observer implementation
+  // PrefetchContainerObserver implementation
   void OnWillBeDestroyed(const PrefetchContainer& prefetch_container) override;
-  void OnGotInitialEligibility(const PrefetchContainer& prefetch_container,
-                               PreloadingEligibility eligibility) override;
+  void OnGotInitialEligibility(
+      const PrefetchContainer& prefetch_container) override;
   void OnDeterminedHead(const PrefetchContainer& prefetch_container) override;
   void OnPrefetchCompletedOrFailed(
-      const PrefetchContainer& prefetch_container,
-      const network::URLLoaderCompletionStatus& completion_status,
-      const std::optional<int>& response_code) override;
+      const PrefetchContainer& prefetch_container) override;
 
   // Finds prefetch that matches to a navigation and is servable.
   //
@@ -229,6 +228,8 @@ class CONTENT_EXPORT PrefetchMatchResolver final
       PrefetchServiceWorkerState expected_service_worker_state,
       bool is_nav_prerender,
       base::WeakPtr<PrerenderHost> prerender_host,
+      PrerenderHostId prerender_host_id,
+      scoped_refptr<PreloadPipelineInfoImpl> preload_pipeline_info,
       base::WeakPtr<PrefetchServingPageMetricsContainer>
           serving_page_metrics_container,
       Callback callback,
@@ -241,6 +242,8 @@ class CONTENT_EXPORT PrefetchMatchResolver final
       PrefetchServiceWorkerState expected_service_worker_state,
       bool is_nav_prerender,
       base::WeakPtr<PrerenderHost> prerender_host,
+      PrerenderHostId prerender_host_id,
+      scoped_refptr<PreloadPipelineInfoImpl> preload_pipeline_info,
       Callback callback,
       perfetto::Flow flow);
 
@@ -330,6 +333,13 @@ class CONTENT_EXPORT PrefetchMatchResolver final
   // initial navigation. Otherwise, `nullptr`. Also this is nullptr if
   // `PreloadServingMetricsCapsule::IsFeatureEnabled()` is false.
   base::WeakPtr<PrerenderHost> prerender_host_for_metrics_;
+
+  // Attributes of prerender if the navigation is prerender.
+  //
+  // Non-null iff the navigation is prerender.
+  const PrerenderHostId prerender_host_id_;
+  const scoped_refptr<PreloadPipelineInfoImpl> preload_pipeline_info_;
+
   std::unique_ptr<PrefetchMatchMetrics> prefetch_match_metrics_;
 
   // Potentially matching candidates.
@@ -365,7 +375,7 @@ concept MatchCandidate =
       t.key();
       t.request();
       t.GetURL();
-      t.GetServableState();
+      t.GetMatchResolverAction();
       t.GetNoVarySearchHint();
       t.IsNoVarySearchHeaderMatch(url);
       t.ShouldWaitForNoVarySearchHeader(url);
@@ -528,7 +538,8 @@ CollectMatchCandidatesGeneric(
     PrefetchPotentialCandidateCollectResult collect_result =
         PrefetchPotentialCandidateCollectResult::kUninitialized;
 
-    PrefetchServableState servable_state = candidate->GetServableState();
+    PrefetchServableState servable_state =
+        candidate->GetMatchResolverAction().ToServableState();
     const bool is_available = IsCandidateAvailable(
         *candidate, servable_state, is_nav_prerender, &collect_result);
     DVLOG(1) << "Serving " << *candidate

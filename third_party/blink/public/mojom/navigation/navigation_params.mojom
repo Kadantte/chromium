@@ -10,6 +10,7 @@ import "mojo/public/mojom/base/unguessable_token.mojom";
 import "mojo/public/mojom/base/values.mojom";
 import "services/network/public/mojom/content_security_policy.mojom";
 import "services/network/public/mojom/fetch_api.mojom";
+import "services/network/public/mojom/link_header.mojom";
 import "services/network/public/mojom/source_location.mojom";
 import "services/network/public/mojom/storage_access_api.mojom";
 import "services/network/public/mojom/trust_tokens.mojom";
@@ -31,6 +32,7 @@ import "third_party/blink/public/mojom/loader/mixed_content.mojom";
 import "third_party/blink/public/mojom/loader/referrer.mojom";
 import "third_party/blink/public/mojom/messaging/task_attribution_id.mojom";
 import "third_party/blink/public/mojom/navigation/navigation_api_history_entry_arrays.mojom";
+import "third_party/blink/public/mojom/navigation/navigation_type_for_navigation_api.mojom";
 import "third_party/blink/public/mojom/navigation/navigation_policy.mojom";
 import "third_party/blink/public/mojom/navigation/prefetched_signed_exchange_info.mojom";
 import "third_party/blink/public/mojom/navigation/renderer_content_settings.mojom";
@@ -44,6 +46,7 @@ import "third_party/blink/public/mojom/storage_key/storage_key.mojom";
 import "third_party/blink/public/mojom/tokens/tokens.mojom";
 import "url/mojom/origin.mojom";
 import "url/mojom/url.mojom";
+import "mojo/public/mojom/base/unguessable_token.mojom";
 
 enum NavigationType {
   // Reload the page, validating only cache entry for the main resource.
@@ -82,15 +85,6 @@ enum NavigationType {
 
   // Navigation to another document.
   DIFFERENT_DOCUMENT,
-};
-
-// Maps to
-// https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-navigateevent-navigationtype-dev.
-enum NavigationTypeForNavigationApi {
-  kPush,
-  kTraverse,
-  kReplace,
-  kReload,
 };
 
 // Used by the renderer to indicate a case where a standard navigation that
@@ -205,16 +199,15 @@ struct BeginNavigationParams {
   // TODO(https://github.com/whatwg/html/issues/8846): clarify this further.
   bool is_container_initiated = false;
 
-  // The renderer's Storage Access API status (e.g. whether it has opted into
-  // accessing cross-site cookies). Note that this is not trusted; cookies will
-  // not actually be attached unless there is also a matching permission grant
-  // created by the browser process. (Also note that the Storage Access API is
-  // only relevant when third-party cookies are blocked.)
-  network.mojom.StorageAccessApiStatus storage_access_api_status = kNone;
-
   // True if the initiator explicitly asked for opener relationships to be
   // preserved, via rel="opener".
   bool has_rel_opener = false;
+
+  // If the navigation was triggered by an actor script tool, this contains the
+  // ID of the tool invocation. This helps the browser to associate the
+  // navigation with the tool that caused it.
+  // This is null for navigations that were not triggered by a script tool.
+  mojo_base.mojom.UnguessableToken? script_tool_invocation_id;
 };
 
 // Provided by the browser or the renderer -------------------------------------
@@ -425,7 +418,8 @@ struct CommitNavigationParams {
   // The content type from the request headers for POST requests.
   string post_content_type;
 
-  // The original URL & method for this navigation.
+  // The original URL and method for this navigation.
+  // TODO(crbug.com/495463654): Replace original_url with original_origin.
   url.mojom.Url original_url;
   string original_method;
 
@@ -576,7 +570,19 @@ struct CommitNavigationParams {
   // window.navigation API.
   NavigationApiHistoryEntryArrays navigation_api_history_entry_arrays;
 
-  array<url.mojom.Url> early_hints_preloaded_resources;
+  // Resources preloaded by Early Hints responses, represented as LinkHeader
+  // structs containing the parsed href, as, and crossorigin attributes.
+  array<network.mojom.LinkHeader> early_hints_preloaded_resources;
+
+  // Origins preconnected to by Early Hints responses, represented as LinkHeader
+  // structs containing the parsed href and crossorigin attribute. Deduped by
+  // (origin, crossorigin). Used by the SpeculationMeasurement API.
+  array<network.mojom.LinkHeader> early_hints_preconnects;
+
+  // Origins preconnected to by `Link: rel=preconnect` headers on the final
+  // navigation response (as opposed to a 103 Early Hints response). Used by the
+  // SpeculationMeasurement API.
+  array<network.mojom.LinkHeader> navigation_preconnects;
 
   // The time the commit was sent from the browser.
   mojo_base.mojom.TimeTicks commit_sent;
@@ -730,6 +736,22 @@ struct CommitNavigationParams {
   // The permissions policy to use for the document. This is used for Isolated
   // Web Apps to pass the policy from the manifest to the renderer.
   array<IsolatedAppPermissionPolicyEntry>? isolated_app_policy;
+
+  // A text fragment selector (that uses the syntax defined in
+  // https://wicg.github.io/scroll-to-text-fragment/#syntax) to scroll the
+  // matched text into the viewport without applying the standard highlight
+  // styling. This is used for cross-device scroll restoration.
+  // The string should contain only the selector value (the part after
+  // "text=" in a URL directive), not the "text=" prefix itself.
+  string? internal_scroll_to_text_fragment;
+
+  // Browser-authoritative per-frame secure-context-root bit (see
+  // `ContentBrowserClient::IsSecureContextRoot()`). Stored on the
+  // LocalDOMWindow's SecurityContext at document install so descendants'
+  // ancestor walks can consult it. The browser is authoritative because
+  // the renderer cannot independently determine if a frame is a MIME
+  // handler (which requires browser-side state).
+  bool is_secure_context_root = false;
 };
 
 // Parameters used to dispatch the `pageswap` event on the old Document for

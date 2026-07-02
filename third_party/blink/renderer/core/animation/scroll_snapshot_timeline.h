@@ -13,6 +13,7 @@
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/frame/post_layout_snapshot_client.h"
+#include "third_party/blink/renderer/core/layout/geometry/axis.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
 
@@ -111,7 +112,7 @@ class CORE_EXPORT ScrollSnapshotTimeline : public AnimationTimeline,
   // For access to TimelineState.
   friend class TimelineTrigger;
 
-  PhaseAndTime CurrentPhaseAndTime() override;
+  std::optional<base::TimeDelta> CurrentTimeInternal() override;
 
   AnimationTimeDelta CalculateIntrinsicIterationDuration(
       const TimelineRange&,
@@ -125,9 +126,6 @@ class CORE_EXPORT ScrollSnapshotTimeline : public AnimationTimeline,
     DISALLOW_NEW();
 
    public:
-    // TODO(crbug.com/1338167): Remove phase as it can be inferred from
-    // current_time.
-    TimelinePhase phase = TimelinePhase::kInactive;
     std::optional<base::TimeDelta> current_time;
     // Offsets corresponding to the entire scroll range of the scroll
     // container backing the timeline in the axis of the timeline.
@@ -159,7 +157,7 @@ class CORE_EXPORT ScrollSnapshotTimeline : public AnimationTimeline,
     }
 
     bool operator==(const TimelineState& other) const {
-      return phase == other.phase && current_time == other.current_time &&
+      return current_time == other.current_time &&
              scroll_offsets == other.scroll_offsets && zoom == other.zoom &&
              view_offsets == other.view_offsets &&
              resolved_source == other.resolved_source;
@@ -178,12 +176,19 @@ class CORE_EXPORT ScrollSnapshotTimeline : public AnimationTimeline,
   bool ShouldScheduleNextService() override;
   void UpdateSnapshotForServiceAnimations() override;
 
+  void SetHasPendingCompositorUpdate(bool has_pending) {
+    has_pending_compositor_update_ = true;
+  }
+  bool HasPendingCompositorUpdate() const override {
+    return has_pending_compositor_update_;
+  }
+
  public:
   // Public for DeferredTimeline::ComputeTimelineState.
   virtual TimelineState ComputeTimelineState() const = 0;
 
   void CalculateScrollLimits(PaintLayerScrollableArea* scrollable_area,
-                             ScrollOrientation physical_orientation,
+                             PhysicalAxis physical_orientation,
                              TimelineState* state) const;
 
  private:
@@ -191,6 +196,8 @@ class CORE_EXPORT ScrollSnapshotTimeline : public AnimationTimeline,
 
   // Snapshotted value produced by the last SnapshotState call.
   TimelineState timeline_state_snapshotted_;
+
+  bool has_pending_compositor_update_;
 };
 
 template <>

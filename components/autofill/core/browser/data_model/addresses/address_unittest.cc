@@ -439,7 +439,7 @@ TEST_F(AddressTest, SetStreetAddressRejectsAddressesWithTrailingBlankLines) {
 // Verifies that the merging-related methods for structured addresses are
 // implemented correctly. This is not a test of the merging logic itself.
 TEST_F(AddressTest, TestMergeStructuredAddresses) {
-  autofill::AutofillProfileComparator profile_comparator("en-US");
+  AutofillProfileComparator profile_comparator("en-US");
 
   // The two zip codes have a is-substring relation and are mergeable.
   AutofillProfile profile1("1", AutofillProfile::RecordType::kAccount,
@@ -777,6 +777,12 @@ TEST_F(AddressTest, TestSynthesizedNodesGeneration) {
             u"Opp to Ayyappa Swamy temple");
 }
 
+// Growth invariant is a property of a structured address model. It states that
+// in the address hierarchy, compound tokens need to contain
+// all information contained in their children (with the exception of stop
+// words that are not privacy/data governance sensitive).
+// This is to ensure that users can always access and modify all their data
+// from the settings view, even if not all the nodes are exposed in the UI.
 class AddressGrowthInvariantTest
     : public AddressTest,
       public testing::WithParamInterface<AddressCountryCode> {

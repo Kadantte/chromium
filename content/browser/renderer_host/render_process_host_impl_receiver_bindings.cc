@@ -78,7 +78,7 @@
 #include "content/public/common/font_cache_win.mojom.h"
 #endif
 
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #include "components/services/font_data/font_data_service_impl.h"
 #endif
 
@@ -219,18 +219,18 @@ void RenderProcessHostImpl::RegisterMojoInterfaces() {
       hyphenation::HyphenationImpl::GetTaskRunner());
 #endif
 #if BUILDFLAG(IS_ANDROID)
-  if (base::FeatureList::IsEnabled(features::kFontSrcLocalMatching)) {
-    registry->AddInterface(
-        base::BindRepeating(&FontUniqueNameLookupService::Create),
-        FontUniqueNameLookupService::GetTaskRunner());
-  }
-#endif
-
-#if BUILDFLAG(IS_WIN)
   registry->AddInterface(
-      base::BindRepeating(&DWriteFontProxyImpl::Create),
-      base::ThreadPool::CreateSequencedTaskRunner(
-          {base::TaskPriority::USER_BLOCKING, base::MayBlock()}));
+      base::BindRepeating(&FontUniqueNameLookupService::Create),
+      FontUniqueNameLookupService::GetTaskRunner());
+#endif
+#if BUILDFLAG(IS_WIN)
+  if (!features::IsFontDataServiceEnabled()) {
+    // DWriteFontProxy is superseded by FontDataService.
+    registry->AddInterface(
+        base::BindRepeating(&DWriteFontProxyImpl::Create),
+        base::ThreadPool::CreateSequencedTaskRunner(
+            {base::TaskPriority::USER_BLOCKING, base::MayBlock()}));
+  }
 #endif
 
   file_system_manager_impl_.reset(new FileSystemManagerImpl(
@@ -345,7 +345,7 @@ void RenderProcessHostImpl::IOThreadHostImpl::BindHostReceiver(
     }
   }
 
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
   if (features::IsFontDataServiceEnabled()) {
     if (auto font_data_receiver =
             receiver.As<font_data_service::mojom::FontDataService>()) {

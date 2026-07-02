@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/check.h"
+#include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/rand_util.h"
@@ -85,8 +86,8 @@ class VIZ_COMMON_EXPORT BeginFrameObserver {
 // Users of this class should;
 //  - Implement the OnBeginFrameDerivedImpl function.
 //  - Recommended (but not required) to call
-//    BeginFrameObserverBase::OnValueInto in their overridden OnValueInto
-//    function.
+//    BeginFrameObserverBase::AsProtozeroInto in their overridden
+//    AsProtozeroInto function.
 class VIZ_COMMON_EXPORT BeginFrameObserverBase : public BeginFrameObserver {
  public:
   BeginFrameObserverBase();
@@ -217,6 +218,9 @@ class VIZ_COMMON_EXPORT BeginFrameSource {
   void SetSchedulerClient(SchedulerClient* scheduler_client);
   void SetInputClient(InputClient* input_client);
 
+  static base::flat_set<base::TimeDelta> GetDefaultSupportedFrameIntervals(
+      base::TimeDelta interval);
+
   // BeginFrameObservers use DidFinishFrame to provide back pressure to a frame
   // source about frame processing (rather than toggling SetNeedsBeginFrames
   // every frame). For example, the BackToBackFrameSource uses them to make sure
@@ -237,10 +241,14 @@ class VIZ_COMMON_EXPORT BeginFrameSource {
   virtual void SetVSyncDisplayID(int64_t display_id, bool force_update) {}
 
 #if BUILDFLAG(IS_MAC)
-  // Connect to a new DisplayLinkMac, the VSync source, if needed.
-  // The browser initiates this call whenever a display is either added or
-  // removed.
-  virtual void UpdateVSyncDisplay() {}
+  // Notifies the source that it may need to reconnect to a VSync source (e.g.,
+  // DisplayLinkMac) for the specified display. This is typically triggered by
+  // display configuration changes in the browser process.
+  // |is_browser_vsync_supported| indicates whether the browser-side
+  // CADisplayLink is valid.
+  virtual void UpdateVSyncDisplay(int64_t display_id,
+                                  bool is_browser_vsync_supported) {}
+
 #endif
 
   virtual void SetUpdateVSyncParametersCallback(
@@ -476,6 +484,15 @@ class VIZ_COMMON_EXPORT ExternalBeginFrameSource : public BeginFrameSource {
   // This gives the maximium refresh rate that can be requested.
   virtual base::TimeDelta GetMinimumFrameInterval();
 
+  // Sets the refresh rates supported by the display.
+  //
+  // `supported_rates` is a map from supported VSync intervals to the equivalent
+  // supported refresh rates. For example, if the display supports 60 Hz and 120
+  // Hz, `supported_rates` will contain two entries: `base::Milliseconds(8.333)`
+  // → `120.0f` and `base::Milliseconds(16.666)` → `60.0f`.
+  virtual void SetSupportedRefreshRates(
+      const base::flat_map<base::TimeDelta, float>& supported_rates) {}
+
   virtual base::flat_set<base::TimeDelta> GetSupportedFrameIntervals(
       base::TimeDelta interval);
 
@@ -492,7 +509,6 @@ class VIZ_COMMON_EXPORT ExternalBeginFrameSource : public BeginFrameSource {
 
  private:
   BeginFrameArgs pending_begin_frame_args_;
-  base::MetricsSubSampler metrics_sub_sampler_;
 };
 
 }  // namespace viz

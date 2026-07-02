@@ -21,6 +21,7 @@
 #include "base/allocator/partition_alloc_support.h"
 #include "base/at_exit.h"
 #include "base/base_switches.h"
+#include "base/byte_size.h"
 #include "base/command_line.h"
 #include "base/debug/debugger.h"
 #include "base/debug/leak_annotations.h"
@@ -159,6 +160,7 @@
 #endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+#include "base/environment.h"
 #include "base/files/file_path_watcher_inotify.h"
 #include "base/native_library.h"
 #include "base/rand_util.h"
@@ -261,22 +263,6 @@ std::string GetSnapshotDataDescriptor(const base::CommandLine& command_line) {
 
 #endif
 
-#if defined(ADDRESS_SANITIZER)
-NO_SANITIZE("address")
-void AsanProcessInfoCB(const char* reason,
-                       bool* should_exit_cleanly,
-                       bool* should_abort) {
-  auto* cmd_line = base::CommandLine::ForCurrentProcess();
-#if BUILDFLAG(IS_WIN)
-  std::string cmd_string = base::WideToUTF8(cmd_line->GetCommandLineString());
-#else
-  std::string cmd_string = cmd_line->GetCommandLineString();
-#endif
-  base::debug::AsanService::GetInstance()->Log("\nCommand line: `%s`\n",
-                                               cmd_string.c_str());
-}
-#endif  // defined(ADDRESS_SANITIZER)
-
 void LoadV8SnapshotFile(const base::CommandLine& command_line) {
   const gin::V8SnapshotFileType snapshot_type = GetSnapshotType(command_line);
 #if BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_MAC)
@@ -297,6 +283,22 @@ void LoadV8SnapshotFile(const base::CommandLine& command_line) {
 }
 
 #endif  // V8_USE_EXTERNAL_STARTUP_DATA
+
+#if defined(ADDRESS_SANITIZER)
+NO_SANITIZE("address")
+void AsanProcessInfoCB(const char* reason,
+                       bool* should_exit_cleanly,
+                       bool* should_abort) {
+  auto* cmd_line = base::CommandLine::ForCurrentProcess();
+#if BUILDFLAG(IS_WIN)
+  std::string cmd_string = base::WideToUTF8(cmd_line->GetCommandLineString());
+#else
+  std::string cmd_string = cmd_line->GetCommandLineString();
+#endif
+  base::debug::AsanService::GetInstance()->Log("\nCommand line: `%s`\n",
+                                               cmd_string.c_str());
+}
+#endif  // defined(ADDRESS_SANITIZER)
 
 #if BUILDFLAG(USE_ZYGOTE)
 pid_t LaunchZygoteHelper(base::CommandLine* cmd_line,
@@ -389,7 +391,7 @@ void PreSandboxInit() {
 
   // May use sysinfo(), sched_getaffinity(), and open various /sys/ and /proc/
   // files.
-  base::SysInfo::AmountOfPhysicalMemory();
+  base::SysInfo::AmountOfTotalPhysicalMemory();
   base::SysInfo::NumberOfProcessors();
   base::SysInfo::NumberOfEfficientProcessors();
 
@@ -848,6 +850,9 @@ int ContentMainRunnerImpl::Initialize(ContentMainParams params) {
   g_fds->Set(kTraceOutputSharedMemoryDescriptor,
              kTraceOutputSharedMemoryDescriptor +
                  base::GlobalDescriptors::kBaseDescriptor);
+  g_fds->Set(kPseudonymizationSaltDescriptor,
+             kPseudonymizationSaltDescriptor +
+                 base::GlobalDescriptors::kBaseDescriptor);
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_OPENBSD)
@@ -892,8 +897,10 @@ int ContentMainRunnerImpl::Initialize(ContentMainParams params) {
   if (basic_startup_exit_code.has_value())
     return basic_startup_exit_code.value();
 
-  base::allocator::PartitionAllocSupport::Get()->ReconfigureEarlyish(
-      process_type);
+  if (!delegate_->IsInitFeatureListEarly()) {
+    base::allocator::PartitionAllocSupport::Get()->ReconfigureEarlyish(
+        process_type);
+  }
 
 #if BUILDFLAG(IS_WIN)
   if (command_line.HasSwitch(switches::kDeviceScaleFactor)) {
@@ -985,6 +992,17 @@ int ContentMainRunnerImpl::Initialize(ContentMainParams params) {
 #endif  // !defined(OFFICIAL_BUILD) || BUILDFLAG(CHROME_FOR_TESTING)
 
   delegate_->PreSandboxStartup();
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  // Set environment variables for fontconfig fontations indexing and before
+  // creating threads.
+  if (process_type.empty()) {
+    std::unique_ptr<base::Environment> environment =
+        base::Environment::Create();
+    // Use Fontations, instead of FreeType, indexing in FontConfig.
+    environment->SetVar("FC_FONTATIONS", "1");
+  }
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
 #if PA_BUILDFLAG(ENABLE_THREAD_ISOLATION)
   // instantiate the ThreadIsolatedAllocator before we spawn threads
@@ -1150,8 +1168,7 @@ NO_STACK_PROTECTOR int ContentMainRunnerImpl::Run() {
 
 int ContentMainRunnerImpl::RunBrowser(MainFunctionParams main_params,
                                       bool start_minimal_browser) {
-  TRACE_EVENT_INSTANT0("startup", "ContentMainRunnerImpl::RunBrowser(begin)",
-                       TRACE_EVENT_SCOPE_THREAD);
+  TRACE_EVENT_INSTANT("startup", "ContentMainRunnerImpl::RunBrowser(begin)");
   if (is_browser_main_loop_started_)
     return -1;
 
@@ -1291,11 +1308,14 @@ int ContentMainRunnerImpl::RunBrowser(MainFunctionParams main_params,
 #endif
   }
 
-  // No specified process type means this is the Browser process.
-  base::allocator::PartitionAllocSupport::Get()
-      ->ReconfigureAfterFeatureListInit("");
-  base::allocator::PartitionAllocSupport::Get()->ReconfigureAfterTaskRunnerInit(
-      "");
+  if (!delegate_->IsInitFeatureListEarly()) {
+    // No specified process type means this is the Browser process.
+    base::allocator::PartitionAllocSupport::Get()
+        ->ReconfigureAfterFeatureListInit("");
+    base::allocator::PartitionAllocSupport::Get()
+        ->ReconfigureAfterTaskRunnerInit("");
+  }
+
   BrowserTaskExecutor::GetIOThreadTaskRunner({base::TaskPriority::BEST_EFFORT})
       ->PostTask(FROM_HERE, base::BindOnce([] {
                    base::allocator::ReconfigureSchedulerLoopQuarantineBranch(

@@ -184,6 +184,12 @@ test("midi_unittests") {
     frameworks = [ "CoreMIDI.framework" ]
   }
 
+  if (is_ios && use_blink) {
+    bundle_deps = [
+      "//testing/buildbot/filters:midi_unittests_use_blink_filters_bundle_data",
+    ]
+  }
+
   if (use_alsa && use_udev) {
     sources += [ "midi_manager_alsa_unittest.cc" ]
   }
@@ -198,5 +204,8 @@ fuzzer_test("midi_webmidi_data_validator_fuzzer") {
 fuzzer_test("midi_message_queue_fuzzer") {
   sources = [ "midi_message_queue_fuzzer.cc" ]
   seed_corpus = "fuzz/corpus"
-  deps = [ ":midi" ]
+  deps = [
+    ":midi",
+    "//testing/libfuzzer:libfuzzer_base_wrappers",
+  ]
 }

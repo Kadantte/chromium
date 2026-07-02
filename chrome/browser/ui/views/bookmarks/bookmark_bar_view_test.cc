@@ -12,7 +12,6 @@
 #include <vector>
 
 #include "base/auto_reset.h"
-#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/location.h"
@@ -50,7 +49,6 @@
 #include "chrome/browser/ui/views/bookmarks/bookmark_context_menu.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_menu_controller_views.h"
 #include "chrome/browser/ui/views/chrome_constrained_window_views_client.h"
-#include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/test/view_event_test_base.h"
 #include "chrome/common/chrome_content_client.h"
 #include "chrome/test/base/interactive_test_utils.h"
@@ -70,8 +68,6 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/ozone_buildflags.h"
 #include "ui/base/test/ui_controls.h"
-#include "ui/base/ui_base_features.h"
-#include "ui/display/display_switches.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/views/background.h"
 #include "ui/views/controls/button/menu_button.h"
@@ -81,7 +77,6 @@
 #include "ui/views/controls/menu/submenu_view.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/layout/flex_layout_types.h"
-#include "ui/views/layout/layout_provider.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
 #include "ui/views/widget/drop_helper.h"
@@ -367,7 +362,7 @@ class BookmarkBarViewEventTestBase : public ViewEventTestBase {
     ViewEventTestBase::SetUp();
     ASSERT_TRUE(bb_view_);
 
-    static_cast<TestBrowserWindow*>(browser_->window())
+    static_cast<TestBrowserWindow*>(BrowserWindow::FromBrowser(browser_.get()))
         ->SetNativeWindow(window()->GetNativeWindow());
 
     bookmarks::BookmarkNavigationWrapper::SetInstanceForTesting(&wrapper_);
@@ -544,7 +539,7 @@ class BookmarkBarViewDragTestBase : public BookmarkBarViewEventTestBase,
   ~BookmarkBarViewDragTestBase() override = default;
 
   // views::WidgetObserver:
-  void OnWidgetDragWillStart(views::Widget* widget) override {
+  void OnWidgetDragDropWillStart(views::Widget* widget) override {
     const gfx::Point target = GetDragTargetInScreen();
     GetDragTaskRunner()->PostTask(
         FROM_HERE,
@@ -552,7 +547,7 @@ class BookmarkBarViewDragTestBase : public BookmarkBarViewEventTestBase,
                        target.x(), target.y(), gfx::NativeWindow()));
   }
 
-  void OnWidgetDragComplete(views::Widget* widget) override {
+  void OnWidgetDragDropCompleted(views::Widget* widget) override {
     absl::Cleanup done = [&] { Done(); };
 
     // All drag tests drag node f1a, so at the end of the test, if the node was
@@ -604,7 +599,8 @@ class BookmarkBarViewDragTestBase : public BookmarkBarViewEventTestBase,
   }
 
   virtual void OnDragEntered() {
-    // Drop the element, which should result in calling OnWidgetDragComplete().
+    // Drop the element, which should result in calling
+    // OnWidgetDragDropCompleted().
     GetDragTaskRunner()->PostTask(
         FROM_HERE,
         base::BindOnce(base::IgnoreResult(&ui_controls::SendMouseEvents),
@@ -645,7 +641,7 @@ class BookmarkBarViewDragTestBase : public BookmarkBarViewEventTestBase,
 
 #if !BUILDFLAG(IS_MAC)
 // The following tests were not enabled on Mac before. Consider enabling those
-// that are able to run on Mac (https://crbug.com/845342).
+// that are able to run on Mac (https://crbug.com/41390354).
 
 // Clicks on first menu, makes sure button is depressed. Moves mouse to first
 // child, clicks it and makes sure a navigation occurs.
@@ -889,8 +885,8 @@ VIEW_TEST(BookmarkBarViewTest4, MAYBE_ContextMenus)
 // Tests drag and drop within the same menu.
 class BookmarkBarViewTest5 : public BookmarkBarViewDragTestBase {
  public:
-  void OnWidgetDragComplete(views::Widget* widget) override {
-    BookmarkBarViewDragTestBase::OnWidgetDragComplete(widget);
+  void OnWidgetDragDropCompleted(views::Widget* widget) override {
+    BookmarkBarViewDragTestBase::OnWidgetDragDropCompleted(widget);
     // TODO(crbug.com/393126961): Check that the menu is still showing.
   }
 
@@ -958,13 +954,13 @@ class BookmarkBarViewTest6 : public BookmarkBarViewEventTestBase {
 };
 
 #if BUILDFLAG(SUPPORTS_OZONE_WAYLAND) || BUILDFLAG(IS_WIN)
-// TODO (crbug/1523247): This test is failing under wayland and Windows. This
-// skips it until it can be fixed.
+// TODO (crbug.com/41496199): This test is failing under wayland and Windows.
+// This skips it until it can be fixed.
 #define MAYBE_OpenMenuOnClickAndHold DISABLED_OpenMenuOnClickAndHold
 #else
 #define MAYBE_OpenMenuOnClickAndHold OpenMenuOnClickAndHold
 #endif  // BUILDFLAG(SUPPORTS_OZONE_WAYLAND) || BUILDFLAG(IS_WIN)
-// If this flakes, disable and log details in http://crbug.com/523255.
+// If this flakes, disable and log details in http://crbug.com/40432443.
 VIEW_TEST(BookmarkBarViewTest6, MAYBE_OpenMenuOnClickAndHold)
 
 // Tests drag and drop to different menu.
@@ -994,12 +990,12 @@ class BookmarkBarViewTest7 : public BookmarkBarViewDragTestBase {
                        target.x(), target.y(), gfx::NativeWindow()));
   }
 
-  void OnWidgetDragComplete(views::Widget* widget) override {
+  void OnWidgetDragDropCompleted(views::Widget* widget) override {
     // The button should be in normal state now.
     EXPECT_EQ(views::Button::STATE_NORMAL,
               bb_view_->all_bookmarks_button()->GetState());
 
-    BookmarkBarViewDragTestBase::OnWidgetDragComplete(widget);
+    BookmarkBarViewDragTestBase::OnWidgetDragDropCompleted(widget);
     EXPECT_FALSE(MenuIsShowing(bb_view_->GetMenu()));
   }
 
@@ -1056,8 +1052,8 @@ class BookmarkBarViewTest8 : public BookmarkBarViewDragTestBase {
                        target.x(), target.y(), gfx::NativeWindow()));
   }
 
-  void OnWidgetDragComplete(views::Widget* widget) override {
-    BookmarkBarViewDragTestBase::OnWidgetDragComplete(widget);
+  void OnWidgetDragDropCompleted(views::Widget* widget) override {
+    BookmarkBarViewDragTestBase::OnWidgetDragDropCompleted(widget);
     EXPECT_FALSE(MenuIsShowing(bb_view_->GetMenu()));
   }
 
@@ -1915,8 +1911,8 @@ BEGIN_METADATA(BookmarkBarViewTest20, TestViewForMenuExit)
 END_METADATA
 
 // TODO(crbug.com/40947483): Flaky on Windows.
-// TODO (crbug/1523247): This test is failing under wayland and Windows. This
-// skips it until it can be fixed.
+// TODO (crbug.com/41496199): This test is failing under wayland and Windows.
+// This skips it until it can be fixed.
 #if BUILDFLAG(SUPPORTS_OZONE_WAYLAND) || BUILDFLAG(IS_WIN)
 #define MAYBE_ContextMenuExitTest DISABLED_ContextMenuExitTest
 #else
@@ -1984,7 +1980,7 @@ class BookmarkBarViewTest21 : public BookmarkBarViewEventTestBase {
   BookmarkContextMenuNotificationObserver observer_;
 };
 
-// If this flakes, disable and log details in http://crbug.com/523255.
+// If this flakes, disable and log details in http://crbug.com/40432443.
 // TODO(crbug.com/40947483): Flaky on Windows.
 #if BUILDFLAG(IS_WIN)
 #define MAYBE_ContextMenusForEmptyFolder DISABLED_ContextMenusForEmptyFolder
@@ -1998,7 +1994,7 @@ VIEW_TEST(BookmarkBarViewTest21, MAYBE_ContextMenusForEmptyFolder)
 class BookmarkBarViewTest22 : public BookmarkBarViewDragTestBase {
  public:
   // BookmarkBarViewDragTestBase:
-  void OnWidgetDragComplete(views::Widget* widget) override {}
+  void OnWidgetDragDropCompleted(views::Widget* widget) override {}
 
   void OnWidgetDestroyed(views::Widget* widget) override {
     BookmarkBarViewDragTestBase::OnWidgetDestroyed(widget);
@@ -2164,8 +2160,8 @@ class BookmarkBarViewTest24 : public BookmarkBarViewEventTestBase {
   BookmarkContextMenuNotificationObserver observer_;
 };
 
-// Fails on latest versions of Windows. (https://crbug.com/1108551).
-// Flaky on Linux (https://crbug.com/1193137).
+// Fails on latest versions of Windows. (https://crbug.com/40141353).
+// Flaky on Linux (https://crbug.com/40757658).
 VIEW_TEST(BookmarkBarViewTest24, DISABLED_ContextMenusKeyboardEscape)
 
 #if BUILDFLAG(IS_WIN)

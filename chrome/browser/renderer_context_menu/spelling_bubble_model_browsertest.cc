@@ -8,14 +8,12 @@
 
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/confirm_bubble.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/prefs/pref_service.h"
 #include "components/spellcheck/browser/pref_names.h"
 #include "content/public/test/browser_test.h"
-#include "content/public/test/test_navigation_observer.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
@@ -73,7 +71,7 @@ IN_PROC_BROWSER_TEST_F(SpellingBubbleModelTest, OpenHelpPage) {
 
 // Tests that closing the tab with WebContents that was used to construct the
 // SpellingBubbleModel does not cause any problems when opening the Help page.
-// This is a regression test for crbug.com/1212498.
+// This is a regression test for crbug.com/40055974.
 // Note that we do not need to test what happens when the whole browser
 // closes, because when the last tab in a window closes it will close the
 // bubble widget too.

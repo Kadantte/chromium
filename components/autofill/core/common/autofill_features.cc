@@ -59,17 +59,6 @@ BASE_FEATURE(kAutofillActorRewriteCreditCardTriggerField,
 // saving to Autocomplete.
 BASE_FEATURE(kAutofillActorSuppressImport, base::FEATURE_DISABLED_BY_DEFAULT);
 
-// Controls whether to improve the building number regex.
-// TODO(crbug.com/376084078): Cleanup when launched.
-BASE_FEATURE(kAutofillAddressImproveBuildingNumberRegex,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Kill switch: If enabled, NameFieldParser will parse 'Last name, First name'
-// sequence.
-// TODO(crbug.com/329016404): Remove after M146 branch point (2026-02-09).
-BASE_FEATURE(kAutofillAddressParseSurnameNameSequence,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 // Feature flag to control displaying of Autofill suggestions on
 // unclassified fields based on prefix matching. These suggestions are displayed
 // after the user typed a certain number of characters that match some data
@@ -117,6 +106,14 @@ BASE_FEATURE_PARAM(std::string,
                    "field_types",
                    "");
 
+// This parameter controls whether Autofill on typing suggestions should be
+// displayed only on unclassified fields.
+BASE_FEATURE_PARAM(bool,
+                   kAutofillOnTypingAllowOnlyOnUnclassifiedFields,
+                   &kAutofillAddressSuggestionsOnTyping,
+                   "allow_only_on_unclassified_fields",
+                   false);
+
 // Feature flag to controls whether Autofill on typing suggestions will have a
 // strike database.
 BASE_FEATURE(kAutofillAddressSuggestionsOnTypingHasStrikeDatabase,
@@ -155,21 +152,27 @@ BASE_FEATURE(kAutofillAiAlwaysTriggerServerModel,
 // If enabled Autofill AI becomes available by default and the previous enable
 // toggle controls whether online model runs and MQLS logging are allowed.
 // TODO(crbug.com/440488776): Remove once clean up happens.
-BASE_FEATURE(kAutofillAiAvailableByDefault, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAutofillAiAvailableByDefault,
+             IS_AUTOFILL_AI_PLATFORM ? base::FEATURE_ENABLED_BY_DEFAULT
+                                     : base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Kill switch. If enabled, the EntityDataManager is created irrespective of
 // whether other features are enabled. This is necessary so that cleaning up the
 // browsing data also removes data if the user left the study.
 BASE_FEATURE(kAutofillAiCreateEntityDataManager,
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-             base::FEATURE_DISABLED_BY_DEFAULT
-#else
-             base::FEATURE_ENABLED_BY_DEFAULT
-#endif
-);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // If enabled, AutofillAi entities will be deduped on every major milestone.
-BASE_FEATURE(kAutofillAiDedupeEntities, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAutofillAiDedupeEntities,
+             IS_AUTOFILL_AI_PLATFORM ? base::FEATURE_ENABLED_BY_DEFAULT
+                                     : base::FEATURE_DISABLED_BY_DEFAULT);
+
+#if BUILDFLAG(IS_ANDROID)
+// When enabled, the entity save/update prompt displays an edit button that
+// opens the entity editor on click.
+BASE_FEATURE(kAutofillAiEditEntitiesFromSaveUpdatePrompt,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_ANDROID)
 
 // When enabled, a HaTS survey is shown after a walletable suggestion is
 // displayed and the form submitted. The survey does not require the suggestion
@@ -203,26 +206,31 @@ BASE_FEATURE_PARAM(std::string,
                    "autofill_ai_geo_ip_blocklist",
                    "");
 
-// If enabled, Autofill AI ignores the GeoIp restrictions for uploading private
-// passes to Wallet. Even with the feature enabled, we continue to check whether
-// Wallet is supported in the country at all.
-BASE_FEATURE(kAutofillAiIgnorePrivatePassGeoIpRestrictions,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// If enabled, Autofill AI does not depend on Autofill for addresses being
-// enabled.
-BASE_FEATURE(kAutofillAiIgnoresWhetherAddressPrefIsEnabled,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 // If enabled, Autofill AI will use a new update prompt on Desktop that shows
 // both the previous and the new value of an updated entity attribute.
 BASE_FEATURE(kAutofillAiNewUpdatePrompt, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, Autofill AI filling suggestion do not have an icon.
+BASE_FEATURE(kAutofillAiNoFillingIconsExperiment,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, AutofillAi supports order entities.
+BASE_FEATURE(kAutofillAiOrder, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When inference through the non-PI AutofillAi online model is run (implying
+// that AutofillAiUsePrivateAi is disabled) and this flag is enabled, an
+// additional inference request through the PI stack is run to compute shadow
+// metrics between the two results.
+BASE_FEATURE(kAutofillAiPrivateAiShadowMetric,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // If enabled, AutofillAi requires re-auth when filling/viewing sensitive
 // fields. As part of this feature sensitive fields are also obfuscated during
 // suggestion generation time.
 // TODO(crbug.com/468236932): Remove once feature is launched.
-BASE_FEATURE(kAutofillAiReauthRequired, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAutofillAiReauthRequired,
+             IS_AUTOFILL_AI_PLATFORM ? base::FEATURE_ENABLED_BY_DEFAULT
+                                     : base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, a HaTS survey is shown after the save prompt for a walletable
 // entity was interacted with.
@@ -291,32 +299,67 @@ BASE_FEATURE_PARAM(bool,
                    kAutofillAiServerModelUseCacheResults,
                    &kAutofillAiServerModel,
                    "autofill_ai_model_use_cache_results",
-                   false);
+                   true);
 
-// If enabled the current account keyed Autofill AI opt-in pref
-// (`prefs::kAutofillAiOptInStatus`) is migrated to to the syncable
-// `kAutofillAiOptInStatus` pref.
-BASE_FEATURE(kAutofillAiSetSyncablePrefFromAccountPref,
+// If enabled, AutofillAi supports shipment entities.
+BASE_FEATURE(kAutofillAiShipment, base::FEATURE_ENABLED_BY_DEFAULT);
+
+#if BUILDFLAG(IS_ANDROID)
+// If enabled, the user is notified about a failure to upstream data to Wallet
+// via a dialog instead of a snackbar.
+BASE_FEATURE(kAutofillAiShowDialogInSettingsWhenUpstreamingFails,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_ANDROID)
+
+// Controls whether a banner is shown in settings when wallet data sharing is
+// disabled.
+BASE_FEATURE(kAutofillAiShowWalletDisabledBanner,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, the client may trigger the server model for AutofillAI type
+// predictions using Private AI Compute.
+BASE_FEATURE(kAutofillAiUsePrivateAi, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // If enabled, votes for the format of flight number fields are uploaded. For
 // example, if there is a flight number "LH89" on file, a submitted value of
 // "89" on a field with type `FLIGHT_RESERVATION_FLIGHT_NUMBER` uploads "N".
 BASE_FEATURE(kAutofillAiVoteForFormatStringsForFlightNumbers,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             IS_AUTOFILL_AI_PLATFORM ? base::FEATURE_ENABLED_BY_DEFAULT
+                                     : base::FEATURE_DISABLED_BY_DEFAULT);
 
 // If enabled, AutofillAi supports flight reservation entities from Google
 // Wallet.
 BASE_FEATURE(kAutofillAiWalletFlightReservation,
+             IS_AUTOFILL_AI_PLATFORM ? base::FEATURE_ENABLED_BY_DEFAULT
+                                     : base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Enables the 2026 Autofill AI Wallet Pass Branding Updates.
+BASE_FEATURE(kAutofillAiWalletPassBranding2026,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // If enabled, AutofillAi supports private passes entities from Google Wallet.
 BASE_FEATURE(kAutofillAiWalletPrivatePasses, base::FEATURE_DISABLED_BY_DEFAULT);
 
+// When enabled, account-related eligibility criteria (minor status, location)
+// are determined based on a capability, rather than approximated through
+// signals that were readily available in Chrome prior to the Autofill-specific
+// capability (e.g., using geo-location).
+BASE_FEATURE(kAutofillAiWalletPrivatePassesCapability,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, Wallet private pass entries in settings link to their pass
+// details page rather than the generic pass overview page.
+BASE_FEATURE(kAutofillAiWalletPrivatePassesDeepLink,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, Autofill AI Shopping entities are surfaced from Google Wallet.
+BASE_FEATURE(kAutofillAiWalletShopping, base::FEATURE_DISABLED_BY_DEFAULT);
+
 // If enabled, AutofillAi supports vehicle registration entities from Google
 // Wallet.
 BASE_FEATURE(kAutofillAiWalletVehicleRegistration,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             IS_AUTOFILL_AI_PLATFORM ? base::FEATURE_ENABLED_BY_DEFAULT
+                                     : base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables the second iteration AutofillAI.
 BASE_FEATURE(kAutofillAiWithDataSchema,
@@ -326,13 +369,15 @@ BASE_FEATURE(kAutofillAiWithDataSchema,
 // When enabled, autofill will fill not skip filling fields that had an initial
 // value which was modified.
 BASE_FEATURE(kAutofillAllowFillingModifiedInitialValues,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// TODO(crbug.com/460645840): Remove this feature flag once it is no longer
-// needed. Guards the refactoring to allow showing Autofill and Password
-// suggestions in the same surface instead of being mutually exclusive.
-BASE_FEATURE(kAutofillAndPasswordsInSameSurface,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, the ambient autofill experience is enabled in Chrome.
+BASE_FEATURE(kAutofillAmbientAutofill, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE_PARAM(std::string,
+                   kAutofillAmbientAutofillEligibleTiers,
+                   &kAutofillAmbientAutofill,
+                   "ambient_autofill_eligible_tiers",
+                   "");
 
 // If enabled, on Android desktop, the Autofill keyboard accessory will have a
 // new behavior and design.
@@ -357,6 +402,13 @@ BASE_FEATURE(kAutofillAndroidDesktopSuppressAccessoryOnEmpty,
 BASE_FEATURE(kAutofillAndroidDisableSuggestionsOnJSFocus,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// If enabled, on Android, form fields are retrieved
+// by comparing FormFieldIds instead of the set of attributes. This flag affects
+// some of the logic in AndroidAutofillProvider.
+// TODO(crbug.com/456526604): Remove when launched.
+BASE_FEATURE(kAutofillAndroidFormDataCompareFieldGlobalId,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // If enabled, on Android, the Autofill keyboard accessory will not be
 // displayed attached to the keyboard but will be placed below or above the
 // focused field. It works only for large form factor devices like tablets or
@@ -365,9 +417,22 @@ BASE_FEATURE(kAutofillAndroidDisableSuggestionsOnJSFocus,
 BASE_FEATURE(kAutofillAndroidKeyboardAccessoryDynamicPositioning,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// If @memory is enabled, typing "@@" in an input field triggers search popup,
-// allowing to recall and insert the info anywhere using plain language.
+// Feature flag for kAutofillAtMemory.
 BASE_FEATURE(kAutofillAtMemory, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// The subscription tiers for which AtMemory is eligible. Comma-separated list
+// of subscription tier integers. If empty/not defined, no tier restrictions
+// are applied.
+BASE_FEATURE_PARAM(std::string,
+                   kAutofillAtMemoryEligibleTiers,
+                   &kAutofillAtMemory,
+                   "at_memory_eligible_tiers",
+                   "");
+
+// Controls whether the Autosuggest nudging logic is used. If enabled, user are
+// encouraged to use the AtMemory feature.
+BASE_FEATURE(kAutofillAtMemoryInactivityNudge,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, the placeholder is not considered a label fallback on the
 // renderer side anymore. Instead, local heuristic will match regexes against
@@ -376,11 +441,6 @@ BASE_FEATURE(kAutofillAtMemory, base::FEATURE_DISABLED_BY_DEFAULT);
 // This feature can be thought of as "lightweight" multi-label support.
 // TODO(crbug.com/320965828): Remove when launched.
 BASE_FEATURE(kAutofillBetterLocalHeuristicPlaceholderSupport,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// If enabled, our `FormEventLogger` will start emitting events for fields
-// annotated with an unrecognized HTML "autocomplete" attribute.
-BASE_FEATURE(kAutofillConsiderAutocompleteUnrecognizedFieldsInMetrics,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Same as `kAutofillAddressUserPerceptionSurvey` but for credit card forms.
@@ -393,7 +453,7 @@ BASE_FEATURE(kAutofillDeepLinkAutofillOptions,
              base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_ANDROID)
 
-// If enabled, `GlicFormParsingTracker` will wait up to 1 second
+// If enabled, `FormPredictionsTracker` will wait up to 1 second
 // for Autofill to finish parsing forms pesent on a given tab before capturing
 // APC. For more context see: go/autofill-actor-mode-implementation
 // TODO(crbug.com/479794574): Convert to killswitch if no regressions are
@@ -416,11 +476,10 @@ BASE_FEATURE(kAutofillDisallowMoreHyphenLikeLabels,
              base::FEATURE_DISABLED_BY_DEFAULT);
 // LINT.ThenChange(//components/autofill/ios/form_util/resources/autofill_form_features.ts:autofill_disallow_more_hyphen_like_labels)
 
-// If enabled, new heuristics are applied for disambiguating multiple possible
-// types in a form field. Otherwise, only the already established heuristic for
-// disambiguating address and credit card names is used.
-BASE_FEATURE(kAutofillDisambiguateContradictingFieldTypes,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+// If enabled, autofill availability event will not be updated in
+// BrowserAutofillManager::OnFocusOnFormField().
+BASE_FEATURE(kAutofillDoNotUpdateAutofillAvailabilityOnFocusEvents,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Controls an ablation study in which autofill for addresses and payment data
 // can be suppressed.
@@ -495,6 +554,11 @@ BASE_FEATURE_PARAM(bool,
 BASE_FEATURE(kAutofillEnableAddressFieldParserNG,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// When enabled, Autofill will support per domain and per data type enterprise
+// policy.
+BASE_FEATURE(kAutofillEnableAutofillSettingsEnterprisePolicy,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // When enabled, FormFieldParser::MatchesRegexWithCache tries to avoid
 // re-computing whether a regex matches an input string by caching the result.
 // The result size is controlled by
@@ -507,11 +571,11 @@ BASE_FEATURE_PARAM(int,
                    "cache_size",
                    1000);
 
-// When enabled, Autofill will display joined email and loyalty card Autofill
-// suggestions.
-// TODO(crbug.com/416664590): Remove once launched.
-BASE_FEATURE(kAutofillEnableEmailOrLoyaltyCardsFilling,
-             base::FEATURE_ENABLED_BY_DEFAULT);
+// Controls whether the deduplication process for Autofill profiles is run on a
+// background thread to avoid blocking the UI thread.
+// TODO(crbug.com/496889243): Remove when launched.
+BASE_FEATURE(kAutofillEnableDeduplicationOnBackgroundThread,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables a couple of improvements to credit card expiration date handling:
 // - The autocomplete attribute values are rationalized with format strings
@@ -519,14 +583,6 @@ BASE_FEATURE(kAutofillEnableEmailOrLoyaltyCardsFilling,
 // - more fill follow.
 // TODO(crbug.com/40266396): Remove once launched.
 BASE_FEATURE(kAutofillEnableExpirationDateImprovements,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Improves the selection of phone country codes by also considering address
-// country codes / names.
-// See GetStreetAddressForInput() in field_filling_address_util.cc for a details
-// description.
-// TODO(crbug.com/40249216). Clean up when launched.
-BASE_FEATURE(kAutofillEnableFillingPhoneCountryCodesByAddressCountryCodes,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Control if Autofill supports German transliteration.
@@ -546,41 +602,14 @@ BASE_FEATURE(kAutofillEnableImportOfUnchangedValuesForCountryAndState,
 BASE_FEATURE(kAutofillEnableImportWhenMultiplePhoneNumbers,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-#if BUILDFLAG(IS_ANDROID)
-// Controls if Chrome Keyboard Accessory on Android displays 2 line chips.
-// TODO: crbug.com/385172647 - Clean up after the feature is launched.
-BASE_FEATURE(kAutofillEnableKeyboardAccessoryChipRedesign,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-#endif  // BUILDFLAG(IS_ANDROID)
-
-#if BUILDFLAG(IS_ANDROID)
-// Controls if Chrome Keyboard Accessory limits the width of the first chip or
-// the first 2 chips to display a part of the next one on the screen.
-// TODO: crbug.com/385172647 - Clean up after the feature is launched.
-BASE_FEATURE(kAutofillEnableKeyboardAccessoryChipWidthAdjustment,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-#endif  // BUILDFLAG(IS_ANDROID)
-
-// When enabled, the precedence is given to the field label over the name when
-// they match different types. Applied only for parsing of address forms in
-// Turkish.
-// TODO(crbug.com/40735892): Remove once launched.
-BASE_FEATURE(kAutofillEnableLabelPrecedenceForTurkishAddresses,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// When enabled, Autofill will help users fill in loyalty card details.
-// TODO(crbug.com/395831853): Remove once launched.
-BASE_FEATURE(kAutofillEnableLoyaltyCardsFilling,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 // When enabled, Autofill will help users fill in non-affiliated loyalty cards
 // on loyalty card only fields.
 BASE_FEATURE(kAutofillEnableNonAffiliatedLoyaltyCardsFilling,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// Kill switch for saving entities to wallet from settings.
-BASE_FEATURE(kAutofillEnableSaveToWalletFromSettings,
-             base::FEATURE_ENABLED_BY_DEFAULT);
+// When enabled, Autofill will use heuristics to identify OTP fields.
+BASE_FEATURE(kAutofillEnableOneTimeCodeHeuristics,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_ANDROID)
 // Controls if Chrome Autofill UI surfaces ignore touch events if something is
@@ -601,42 +630,6 @@ BASE_FEATURE(kAutofillEnableSkippingUnrecognizedAttribute,
 BASE_FEATURE(kAutofillEnableStreetAddressMergeModes,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// When enabled, chrome will support home and work addresses from account.
-// TODO: crbug.com/354706653 - Clean up when launched.
-BASE_FEATURE(kAutofillEnableSupportForHomeAndWork,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// When enabled, chrome will support name and email address profile.
-// TODO(crbug.com/356845298): Clean up when launched.
-BASE_FEATURE(kAutofillEnableSupportForNameAndEmail,
-#if BUILDFLAG(IS_IOS)
-             base::FEATURE_DISABLED_BY_DEFAULT
-#else  // Desktop and Android
-             base::FEATURE_ENABLED_BY_DEFAULT
-#endif
-);
-
-// The number of times after which, a never accepted `kAccountNameEmail`
-// suggestion will result in the `kAccountNameEmail` profile being deleted.
-BASE_FEATURE_PARAM(int,
-                   kAutofillNameAndEmailProfileNotSelectedThreshold,
-                   &kAutofillEnableSupportForNameAndEmail,
-                   "rejection_threshold",
-                   10);
-
-// The pattern used to remove nicknames from the account full name before
-// creating the kAccountNameEmail profile.
-BASE_FEATURE_PARAM(std::string,
-                   kAutofillNameAndEmailProfileNicknameRegex,
-                   &kAutofillEnableSupportForNameAndEmail,
-                   "nickname_regex",
-                   R"(\s+\([^)]*\)|\s+\"[^\"]*\")");
-
-// Controls if the heuristic field parsing utilizes shared labels.
-// TODO(crbug.com/40741721): Remove once shared labels are launched.
-BASE_FEATURE(kAutofillEnableSupportForParsingWithSharedLabels,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 // Enables extended zip code validation.
 // TODO(crbug.com/434140055): Clean up when launched.
 BASE_FEATURE(kAutofillExtendZipCodeValidation,
@@ -651,9 +644,11 @@ BASE_FEATURE(kAutofillExtendZipCodeValidation,
 BASE_FEATURE(kAutofillExtractOnlyNonAdFrames,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// When enabled, adds stricter conditions to trigger refills in order to avoid
-// trivial refill operations, which are refills that do not modify any field.
-BASE_FEATURE(kAutofillFewerTrivialRefills, base::FEATURE_DISABLED_BY_DEFAULT);
+// If enabled, removes address field values that contain words "select",
+// "choose", or "optional" during profile import.
+// TODO(crbug.com/485170688): Remove when launched.
+BASE_FEATURE(kAutofillFilterPlaceholderValuesOnImport,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, improves heuristic regexes for state classification to avoid
 // misclassification as civil state.
@@ -664,17 +659,7 @@ BASE_FEATURE(kAutofillFixCivilStateMisclassificationForESPT,
 // Kill switch: Changes the behavior of Form[Field]Data::DeepEqual().
 // TODO(crbug.com/40183094): Turn this into a kill switch after a few
 // weeks on canary.
-BASE_FEATURE(kAutofillFixFormEquality, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Removes logic that resets form submission tracking data upon receiving a
-// FORM_SUBMISSION or PROBABLE_FORM_SUBMISSION signal. Also, fixes submission
-// deduplication so that it ignores submissions that PWM doesn't act upon.
-// TODO(crbug.com/40281981): Remove when launched.
-BASE_FEATURE(kAutofillFixFormTracking, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Enables the new implementation of `FormFieldData::is_autofilled`.
-// TODO(crbug.com/393114125): Remove when launched.
-BASE_FEATURE(kAutofillFixIsAutofilled, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAutofillFixFormEquality, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // When enabled, the rewriter uses updated rewrite rules.
 // TODO(crbug.com/445863287): Cleanup when launched.
@@ -698,24 +683,10 @@ BASE_FEATURE(kAutofillIgnoreCheckableElements,
              base::FEATURE_ENABLED_BY_DEFAULT);
 // LINT.ThenChange(//components/autofill/ios/form_util/resources/autofill_form_features.ts:autofill_ignore_checkable_elements)
 
-// When enabled, address field swapping suggestions will not include a
-// suggestion matching the field's current value. This decreases noises in the
-// suggestion UI.
-// TODO(crbug.com/381531027): Remove when launched.
-BASE_FEATURE(kAutofillImproveAddressFieldSwapping,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// When enabled, a new grammar for phone numbers is considered and we get
-// slightly better at detecting cases where the generic regex for
-// PHONE_COUNTRY_CODE matches a field that should not actually be classified as
-// such.
-BASE_FEATURE(kAutofillImprovePhoneFieldParser,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// When enabled, `(PHONE_HOME_COUNTRY_CODE, PHONE_HOME_WHOLE_NUMBER)` are
-// rationalized to `(PHONE_HOME_COUNTRY_CODE,
-// PHONE_HOME_CITY_AND_NUMBER_WITHOUT_TRUNK_PREFIX)`.
-BASE_FEATURE(kAutofillImprovePhoneNumberRationalization,
+// If enabled, global rules are applied to rewrite empty string values like
+// "null" to an empty string. These rules are applied for all types during
+// address normalization.
+BASE_FEATURE(kAutofillIntroduceGlobalEmptyValueRewriterRules,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // TODO(crbug.com/346507576): Remove once the experiment is over.
@@ -745,6 +716,12 @@ BASE_FEATURE_PARAM(int,
                    "sampling_rate",
                    10);
 
+// Kill switch: If enabled, ParseFormAsync() calls the parsing callback even if
+// the cache is full before the parsing even starts.
+// TODO(crbug.com/484285907): Clean up after April 10, 2026 (M148 branch point).
+BASE_FEATURE(kAutofillManagerFiresOnAfterFooIfCacheIsFull,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // When enabled, all behaviours related to the on-device machine learning
 // model for field type predictions will be guarded.
 // TODO(crbug.com/40276177): Remove when launched.
@@ -770,29 +747,9 @@ BASE_FEATURE_PARAM(bool,
                    "small_form_rules",
                    false);
 
-// Controls autofill popup style, if enabled it becomes more prominent,
-// i.e. its shadow becomes more emphasized, position is also updated.
-// TODO(crbug.com/40235454): Remove once the experiment is over.
-BASE_FEATURE(kAutofillMoreProminentPopup, base::FEATURE_DISABLED_BY_DEFAULT);
-BASE_FEATURE_PARAM(int,
-                   kAutofillMoreProminentPopupMaxOffsetToCenterParam,
-                   &kAutofillMoreProminentPopup,
-                   "max_offset_to_center_px",
-                   92);
-
 // When Enabled Autofill server will stop applying small form rule and Chrome
 // will take care of this logic.
 BASE_FEATURE(kAutofillMoveSmallFormLogicToClient,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Improves the regex for matching augmented country code select options by
-// supporting cases like +1 (234).
-BASE_FEATURE(kAutofillNewAugmentedPhoneCountryCodeRegex,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// If enabled, more patterns are added to the PHONE_COUNTRY_CODE regex.
-// TODO(crbug.com/479503511): Remove once launched.
-BASE_FEATURE(kAutofillNewRegexForPhoneCountryCode,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // If enabled, the new suggestion generation logic is used.
@@ -800,10 +757,11 @@ BASE_FEATURE(kAutofillNewRegexForPhoneCountryCode,
 BASE_FEATURE(kAutofillNewSuggestionGeneration,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// When enabled, cache form updates will happen in place instead of creating a
-// new form and moving it back to the cache, which reduces the number of members
-// that are copied.
-BASE_FEATURE(kAutofillOptimizeCacheUpdates, base::FEATURE_DISABLED_BY_DEFAULT);
+// When enabled, `IsNormalizedNameVariantOf()` uses a linear-time greedy
+// algorithm instead of an exponential one that generates all name variants.
+// TODO(crbug.com/479905438) Remove once launched.
+BASE_FEATURE(kAutofillOptimizeIsNormalizedNameVariantOf,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // If enabled, prefilled country calling codes like "+49" do not prevent
 // autofilling.
@@ -839,6 +797,13 @@ BASE_FEATURE(kAutofillPolicyControlledFeatureAutofill,
 BASE_FEATURE(kAutofillPolicyControlledFeatureManualText,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// If the feature is enabled, Autofill popups perform additional check to
+// detect if they are obscured by top-level HTML form popups (e.g color picker).
+// If so, Autofill Popup won't be shown.
+// TODO(crbug.com/417052041): Remove when launched.
+BASE_FEATURE(kAutofillPopupCheckHtmlFormPopupOverlap,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // If the feature is enabled, before triggering suggestion acceptance, the row
 // view checks that a substantial portion of its content was visible for some
 // minimum required period.
@@ -857,16 +822,6 @@ BASE_FEATURE(kAutofillPopupDontAcceptNonVisibleEnoughSuggestion,
 BASE_FEATURE(kAutofillPopupZOrderSecuritySurface,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-// When enabled, we prefer a `PHONE_HOME_COUNTRY_CODE` heuristic type over a
-// `HtmlFieldType::kCountryCode`.
-BASE_FEATURE(kAutofillPreferPhoneCountryCodeTypeOverCountryHtmlType,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Replaces cached web elements in AutofillAgent and FormTracker by their
-// renderer ids.
-BASE_FEATURE(kAutofillReplaceCachedWebElementsByRendererIds,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 // Replaces blink::WebFormElementObserver usage in FormTracker by updated logic
 // for tracking the disappearance of forms as well as other submission
 // triggering events.
@@ -874,10 +829,15 @@ BASE_FEATURE(kAutofillReplaceCachedWebElementsByRendererIds,
 BASE_FEATURE(kAutofillReplaceFormElementObserver,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// Restricts OTP fields detection and fetching to forms that are in a frame
+// with the same TLD+1 as the main frame.
+BASE_FEATURE(kAutofillRestrictOtpToSameTldPlusOne,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // TODO(crbug.com/435646513) - Clean-up after feature lands at 100% Stable.
 // Enables the new experimental server-side signatures for evaluation purposes.
 BASE_FEATURE(kAutofillServerExperimentalSignatures,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // TODO(crbug.com/470949499) - Clean-up after feature lands at 100% Stable.
 // Enables querying the server for predictions before the form has been parsed
@@ -893,7 +853,7 @@ BASE_FEATURE(kAutofillServerUploadMoreData, base::FEATURE_ENABLED_BY_DEFAULT);
 // the priorities of the bubbles.
 // TODO(crbug.com/432429605): Remove when launched.
 BASE_FEATURE(kAutofillShowBubblesBasedOnPriorities,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // If enabled, a pre-filled field will not be filled.
 BASE_FEATURE(kAutofillSkipPreFilledFields, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -901,6 +861,11 @@ BASE_FEATURE(kAutofillSkipPreFilledFields, base::FEATURE_ENABLED_BY_DEFAULT);
 // If enabled, upload votes for sms otp.
 // TODO(crbug.com/453999673): Clean up when launched.
 BASE_FEATURE(kAutofillSmsOtpCrowdsourcing, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// If enabled, fetch sms otp from gmscore and upload votes for sms otp.
+// TODO(crbug.com/453999673): Clean up when launched.
+BASE_FEATURE(kAutofillSmsOtpCrowdsourcingFetchFromGmscore,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // If this feature is enabled, the AddressFieldParser does NOT try to parse
 // address lines once it has found a street name and house number or other
@@ -919,17 +884,15 @@ BASE_FEATURE(kAutofillStructuredFieldsDisableAddressLines,
 BASE_FEATURE(kAutofillSupportCombinedZipAndCityFR,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// Enables using custom name model with last name prefixes support.
-BASE_FEATURE(kAutofillSupportLastNamePrefix, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Enables using a custom address model for Japan, overriding the legacy one.
-BASE_FEATURE(kAutofillSupportPhoneticNameForJP,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 // Enables splitting two-part zip codes into two fields while filling and
 // importing split zip codes from two adjacent fields.
 // TODO(crbug.com/369503318): Clean up when launched.
 BASE_FEATURE(kAutofillSupportSplitZipCode, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// When enabled, standalone zip code fields are classified by local heuristics
+// globally, instead of just a handful of countries.
+BASE_FEATURE(kAutofillSupportStandaloneZipCodeGlobally,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_ANDROID)
 // If enabled, Autofill Services can query whether Chrome provides forms as
@@ -942,6 +905,26 @@ BASE_FEATURE(kAutofillThirdPartyModeContentProvider,
 BASE_FEATURE(kAutofillThirdPartyModeRestoredOnStart,
              base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_ANDROID)
+
+// Mitigates side-channel brute-force probing of autofill data by rate-limiting
+// AskForValuesToFill() invocations per RenderFrame via a token bucket.
+BASE_FEATURE(kAutofillThrottleBruteForceProbing,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// The burst budget of AskForValuesToFill() calls permitted per RenderFrame.
+BASE_FEATURE_PARAM(int,
+                   kAutofillThrottleBruteForceProbingMaxTokens,
+                   &kAutofillThrottleBruteForceProbing,
+                   15);
+
+// The rate at which AskForValuesToFill() token budget replenishes.
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kAutofillThrottleBruteForceProbingReplenishRate,
+                   &kAutofillThrottleBruteForceProbing,
+                   base::Milliseconds(750));
+
+// Enables tracking of user edits to <select> fields that were not autofilled.
+BASE_FEATURE(kAutofillTrackSelectFieldEdits, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kAutofillUKMExperimentalFields, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE_PARAM(std::string,
@@ -999,7 +982,12 @@ BASE_FEATURE(kAutofillWebDataBackendImplRaceConditionFix,
 // TODO(crbug.com/371933424). Clean up when launched, if not used for Autofill
 // experiments.
 BASE_FEATURE(kFieldClassificationModelCaching,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+#if BUILDFLAG(IS_ANDROID)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
 
 // When enabled, a HaTS survey is shown after the user visited "Contact info"
 // settings page.
@@ -1030,47 +1018,14 @@ BASE_FEATURE(kManageTravelPerceptionSurvey, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kManageYourSavedInfoPerceptionSurvey,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// When enabled, a HaTS survey is shown after the successful first time creation
-// flow.
-// TODO: crbug.com/348139343 - Move back to components/plus_addresses.
-BASE_FEATURE(kPlusAddressAcceptedFirstTimeCreateSurvey,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+// If enabled, the AuthenticatorSelectionDialogBridge will reset the native
+// pointer when the dialog is dismissed.
+BASE_FEATURE(kResetNativePointerInCreditCardAuthDialog,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
-// When enabled, a HaTS survey is shown after the declined the first plus
-// address creation flow.
-// TODO: crbug.com/348139343 - Move back to components/plus_addresses.
-BASE_FEATURE(kPlusAddressDeclinedFirstTimeCreateSurvey,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// When enabled, a HaTS survey is shown after the user fills a plus address
-// after triggering autofill manually.
-// TODO: crbug.com/348139343 - Move back to components/plus_addresses.
-BASE_FEATURE(kPlusAddressFilledPlusAddressViaManualFallbackSurvey,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// When enabled, a HaTS survey is shown after the user creates a 3rd+ plus
-// address.
-// TODO: crbug.com/348139343 - Move back to components/plus_addresses.
-BASE_FEATURE(kPlusAddressUserCreatedMultiplePlusAddressesSurvey,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// When enabled, a HaTS survey is shown after the user creates a plus address
-// triggering the popup via the Chrome context menu on Desktop or via the
-// Keyboard Accessory on Android.
-// TODO: crbug.com/348139343 - Move back to components/plus_addresses.
-BASE_FEATURE(kPlusAddressUserCreatedPlusAddressViaManualFallbackSurvey,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// When enabled, a HaTS survey is shown after the user chooses to fill an email
-// when a plus address suggestion is also offered in the Autofill popup.
-// TODO: crbug.com/348139343 - Move back to components/plus_addresses.
-BASE_FEATURE(kPlusAddressUserDidChooseEmailOverPlusAddressSurvey,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// When enabled, a HaTS survey is shown after the user chooses to fill a plus
-// address when an email suggestion is also offered in the Autofill popup.
-// TODO: crbug.com/348139343 - Move back to components/plus_addresses.
-BASE_FEATURE(kPlusAddressUserDidChoosePlusAddressOverEmailSurvey,
+// If enabled, an entry point to AtMemory will be shown at the bottom of the
+// Autocomplete dialogs.
+BASE_FEATURE(kShowAutocompleteAtMemoryButton,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Kill switch: if enabled, suggestions are shown for fields with unrecognized
@@ -1097,6 +1052,11 @@ BASE_FEATURE(kYourSavedInfoBrandingInSettings,
 
 // Defines if the "Your Saved Info" page is eligible to be shown in Chrome
 // settings.
-BASE_FEATURE(kYourSavedInfoSettingsPage, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kYourSavedInfoSettingsPage, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Defines if the shipping and order data is included in the "Your Saved Info"
+// settings page.
+BASE_FEATURE(kYourSavedInfoSettingsPageShoppingIntegration,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace autofill::features

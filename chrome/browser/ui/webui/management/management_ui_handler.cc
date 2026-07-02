@@ -23,17 +23,17 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
-#include "chrome/browser/apps/app_service/app_icon_source.h"
 #include "chrome/browser/browser_features.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
-#include "chrome/browser/device_api/managed_configuration_api.h"
-#include "chrome/browser/device_api/managed_configuration_api_factory.h"
+#include "chrome/browser/enterprise/browser_management/management_identity.h"
 #include "chrome/browser/enterprise/browser_management/management_service_factory.h"
 #include "chrome/browser/enterprise/identifiers/profile_id_service_factory.h"
 #include "chrome/browser/enterprise/reporting/prefs.h"
+#if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/media/webrtc/multi_capture/multi_capture_data_service.h"
 #include "chrome/browser/media/webrtc/multi_capture/multi_capture_data_service_factory.h"
+#endif
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
 #include "chrome/browser/policy/policy_ui_utils.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
@@ -42,10 +42,6 @@
 #include "chrome/browser/ui/managed_ui.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/webui/management/management_ui_constants.h"
-#include "chrome/browser/web_applications/web_app_constants.h"
-#include "chrome/browser/web_applications/web_app_provider.h"
-#include "chrome/browser/web_applications/web_app_registrar.h"
-#include "chrome/browser/web_applications/web_app_utils.h"
 #include "chrome/common/pref_names.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
 #include "components/enterprise/browser/identifiers/profile_id_service.h"
@@ -62,7 +58,18 @@
 #include "components/supervised_user/core/common/pref_names.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/buildflags/buildflags.h"
-#include "management_ui_handler.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/apps/app_service/app_icon_source.h"
+#include "chrome/browser/device_api/managed_configuration_api.h"
+#include "chrome/browser/device_api/managed_configuration_api_factory.h"
+#include "chrome/browser/web_applications/web_app_constants.h"
+#include "chrome/browser/web_applications/web_app_provider.h"
+#include "chrome/browser/web_applications/web_app_registrar.h"
+#include "chrome/browser/web_applications/web_app_utils.h"
+#endif
+
+#include "build/android_buildflags.h"
 #include "net/base/load_flags.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/url_request/referrer_policy.h"
@@ -191,6 +198,20 @@ void AddThreatProtectionPermission(const char* title,
 }
 #endif  // BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
 
+bool IsSaasReportingEnabled(content::WebUI* web_ui) {
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  return !Profile::FromWebUI(web_ui)
+              ->GetPrefs()
+              ->GetList(enterprise_reporting::kSaasUsageDomainUrlsForProfile)
+              .empty() ||
+         !g_browser_process->local_state()
+              ->GetList(enterprise_reporting::kSaasUsageDomainUrlsForBrowser)
+              .empty();
+#else
+  return false;
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+}
+
 }  // namespace
 
 ManagementUIHandler::ManagementUIHandler(Profile* profile) {
@@ -264,8 +285,8 @@ void ManagementUIHandler::OnJavascriptDisallowed() {
   RemoveObservers();
 }
 
-void ManagementUIHandler::AddReportingInfo(base::ListValue* report_sources,
-                                           bool is_browser) {
+void ManagementUIHandler::AddBrowserReportingInfo(
+    base::ListValue* report_sources) {
   const policy::PolicyService* policy_service = GetPolicyService();
 
   const policy::PolicyNamespace
@@ -296,9 +317,6 @@ void ManagementUIHandler::AddReportingInfo(base::ListValue* report_sources,
            ->GetPrefs()
            ->GetList(enterprise_reporting::kCloudLegacyTechReportAllowlist)
            .empty();
-  const bool cloud_profile_reporting_policy_enabled =
-      Profile::FromWebUI(web_ui())->GetPrefs()->GetBoolean(
-          enterprise_reporting::kCloudProfileReportingEnabled);
 
 #if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
   const bool real_time_url_check_connector_enabled =
@@ -339,80 +357,90 @@ void ManagementUIHandler::AddReportingInfo(base::ListValue* report_sources,
        kManagementExtensionReportUserBrowsingData, ReportingType::kUserActivity,
        false},
       {kPolicyKeyReportVisitedUrlData, kManagementExtensionReportVisitedUrl,
-       ReportingType::kUrl, real_time_url_check_connector_enabled},
+       ReportingType::kUrl,
+       real_time_url_check_connector_enabled ||
+           IsSaasReportingEnabled(web_ui())},
       {kPolicyKeyReportUserBrowsingData, kManagementLegacyTechReport,
        ReportingType::kLegacyTech, cloud_legacy_tech_report_enabled}};
 
-  if (is_browser) {
-    std::unordered_set<const char*> enabled_messages;
-    for (auto& report_definition : report_definitions) {
-      if (report_definition.cloud_reporting_enabled) {
-        enabled_messages.insert(report_definition.message);
-      } else if (report_definition.reporting_extension_policy_key) {
-        for (const policy::PolicyMap* policy_map : policy_maps) {
-          const base::Value* policy_value = policy_map->GetValue(
-              report_definition.reporting_extension_policy_key,
-              base::Value::Type::BOOLEAN);
-          if (policy_value && policy_value->GetBool()) {
-            enabled_messages.insert(report_definition.message);
-            break;
-          }
+  std::unordered_set<const char*> enabled_messages;
+  for (auto& report_definition : report_definitions) {
+    if (report_definition.cloud_reporting_enabled) {
+      enabled_messages.insert(report_definition.message);
+    } else if (report_definition.reporting_extension_policy_key) {
+      for (const policy::PolicyMap* policy_map : policy_maps) {
+        const base::Value* policy_value = policy_map->GetValue(
+            report_definition.reporting_extension_policy_key,
+            base::Value::Type::BOOLEAN);
+        if (policy_value && policy_value->GetBool()) {
+          enabled_messages.insert(report_definition.message);
+          break;
         }
       }
     }
-
-    // The message with more data collected for kPolicyKeyReportMachineIdData
-    // trumps the one with less data.
-    if (enabled_messages.find(kManagementExtensionReportMachineNameAddress) !=
-        enabled_messages.end()) {
-      enabled_messages.erase(kManagementExtensionReportMachineName);
-    }
-
-    for (auto& report_definition : report_definitions) {
-      if (enabled_messages.find(report_definition.message) ==
-          enabled_messages.end()) {
-        continue;
-      }
-
-      base::DictValue data;
-      data.Set("messageId", report_definition.message);
-      data.Set("reportingType",
-               GetReportingTypeValue(report_definition.reporting_type));
-      report_sources->Append(std::move(data));
-    }
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-    auto device_signal_data = GetDeviceSignalGrantedMessage();
-    if (!device_signal_data.empty()) {
-      report_sources->Append(std::move(device_signal_data));
-    }
-#endif
-  } else {
-    if (cloud_reporting_policy_enabled ||
-        !cloud_profile_reporting_policy_enabled) {
-      return;
-    }
-
-    const std::string messages[] = {
-        kProfileReportingOverview, kProfileReportingUsername,
-        kProfileReportingBrowser, kProfileReportingExtension,
-        kProfileReportingPolicy};
-    for (const auto& message : messages) {
-      base::DictValue data;
-      data.Set("messageId", message);
-      report_sources->Append(std::move(data));
-    }
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-    auto device_signal_data = GetDeviceSignalGrantedMessage();
-    if (!device_signal_data.empty()) {
-      report_sources->Append(std::move(device_signal_data));
-    }
-#endif
-    base::DictValue learn_more_data;
-    learn_more_data.Set("messageId", kProfileReportingLearnMore);
-    report_sources->Append(std::move(learn_more_data));
   }
+
+  // The message with more data collected for kPolicyKeyReportMachineIdData
+  // trumps the one with less data.
+  if (enabled_messages.find(kManagementExtensionReportMachineNameAddress) !=
+      enabled_messages.end()) {
+    enabled_messages.erase(kManagementExtensionReportMachineName);
+  }
+
+  for (auto& report_definition : report_definitions) {
+    if (enabled_messages.find(report_definition.message) ==
+        enabled_messages.end()) {
+      continue;
+    }
+
+    base::DictValue data;
+    data.Set("messageId", report_definition.message);
+    data.Set("reportingType",
+             GetReportingTypeValue(report_definition.reporting_type));
+    report_sources->Append(std::move(data));
+  }
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  auto device_signal_data = GetDeviceSignalGrantedMessage();
+  if (!device_signal_data.empty()) {
+    report_sources->Append(std::move(device_signal_data));
+  }
+#endif
+}
+
+void ManagementUIHandler::AddProfileReportingInfo(
+    base::ListValue* report_sources) {
+  const bool cloud_reporting_policy_enabled =
+      g_browser_process->local_state()->GetBoolean(
+          enterprise_reporting::kCloudReportingEnabled);
+  const bool cloud_profile_reporting_policy_enabled =
+      Profile::FromWebUI(web_ui())->GetPrefs()->GetBoolean(
+          enterprise_reporting::kCloudProfileReportingEnabled);
+
+  if (cloud_reporting_policy_enabled ||
+      !cloud_profile_reporting_policy_enabled) {
+    return;
+  }
+
+  const std::string messages[] = {
+      kProfileReportingOverview, kProfileReportingUsername,
+      kProfileReportingBrowser, kProfileReportingExtension,
+      kProfileReportingPolicy};
+  for (const auto& message : messages) {
+    base::DictValue data;
+    data.Set("messageId", message);
+    report_sources->Append(std::move(data));
+  }
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  auto device_signal_data = GetDeviceSignalGrantedMessage();
+  if (!device_signal_data.empty()) {
+    report_sources->Append(std::move(device_signal_data));
+  }
+#endif
+  base::DictValue learn_more_data;
+  learn_more_data.Set("messageId", kProfileReportingLearnMore);
+  report_sources->Append(std::move(learn_more_data));
 }
 
 base::DictValue ManagementUIHandler::GetContextualManagedData(
@@ -431,7 +459,8 @@ base::DictValue ManagementUIHandler::GetContextualManagedData(
                    message_id, chrome::kManagedUiLearnMoreUrl,
                    base::EscapeForHTML(l10n_util::GetStringUTF16(
                        IDS_MANAGEMENT_LEARN_MORE_ACCCESSIBILITY_TEXT))));
-  response.Set("pageSubtitle", GetManagementPageSubtitle(profile));
+
+  response.Set("pageSubtitle", ::GetManagementPageSubtitle(profile));
 
   response.Set("extensionReportingSubtitle",
                l10n_util::GetStringUTF16(IDS_MANAGEMENT_EXTENSIONS_INSTALLED));
@@ -534,6 +563,7 @@ base::DictValue ManagementUIHandler::GetThreatProtectionInfo(Profile* profile) {
 base::ListValue ManagementUIHandler::GetManagedWebsitesInfo(
     Profile* profile) const {
   base::ListValue managed_websites;
+#if !BUILDFLAG(IS_ANDROID)
   auto* managed_configuration =
       ManagedConfigurationAPIFactory::GetForProfile(profile);
 
@@ -544,14 +574,14 @@ base::ListValue ManagementUIHandler::GetManagedWebsitesInfo(
   for (const auto& entry : managed_configuration->GetManagedOrigins()) {
     managed_websites.Append(entry.Serialize());
   }
-
+#endif
   return managed_websites;
 }
 
 base::ListValue ManagementUIHandler::GetApplicationsInfo(
     Profile* profile) const {
   base::ListValue applications;
-
+#if !BUILDFLAG(IS_ANDROID)
   auto* provider = web_app::WebAppProvider::GetForWebApps(profile);
   // Only display web apps for the profile that contains them.
   if (provider == nullptr || !provider->is_registry_ready()) {
@@ -582,7 +612,7 @@ base::ListValue ManagementUIHandler::GetApplicationsInfo(
       applications.Append(std::move(app_info));
     }
   }
-
+#endif
   return applications;
 }
 
@@ -727,7 +757,7 @@ void ManagementUIHandler::HandleInitBrowserReportingInfo(
     const base::ListValue& args) {
   base::ListValue report_sources;
   AllowJavascript();
-  AddReportingInfo(&report_sources, /*is_browser=*/true);
+  AddBrowserReportingInfo(&report_sources);
   ResolveJavascriptCallback(args[0] /* callback_id */, report_sources);
 }
 
@@ -735,7 +765,7 @@ void ManagementUIHandler::HandleInitProfileReportingInfo(
     const base::ListValue& args) {
   base::ListValue report_sources;
   AllowJavascript();
-  AddReportingInfo(&report_sources, /*is_browser=*/false);
+  AddProfileReportingInfo(&report_sources);
   ResolveJavascriptCallback(args[0] /* callback_id */, report_sources);
 }
 
@@ -803,13 +833,13 @@ void ManagementUIHandler::OnPromotionEligibilityFetched(
 
 void ManagementUIHandler::NotifyBrowserReportingInfoUpdated() {
   base::ListValue report_sources;
-  AddReportingInfo(&report_sources, /*is_browser=*/true);
+  AddBrowserReportingInfo(&report_sources);
   FireWebUIListener("browser-reporting-info-updated", report_sources);
 }
 
 void ManagementUIHandler::NotifyProfileReportingInfoUpdated() {
   base::ListValue report_sources;
-  AddReportingInfo(&report_sources, /*is_browser=*/false);
+  AddProfileReportingInfo(&report_sources);
   FireWebUIListener("profile-reporting-info-updated", report_sources);
 }
 
@@ -876,9 +906,7 @@ void ManagementUIHandler::RemoveObservers() {
   extensions::ExtensionRegistry::Get(Profile::FromWebUI(web_ui()))
       ->RemoveObserver(this);
 
-  policy::PolicyService* policy_service = Profile::FromWebUI(web_ui())
-                                              ->GetProfilePolicyConnector()
-                                              ->policy_service();
+  auto* policy_service = GetPolicyService();
   policy_service->RemoveObserver(policy::POLICY_DOMAIN_EXTENSIONS, this);
 
   pref_registrar_.RemoveAll();

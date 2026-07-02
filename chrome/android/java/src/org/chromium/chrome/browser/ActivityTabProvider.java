@@ -85,7 +85,7 @@ public class ActivityTabProvider implements Destroyable, Supplier<@Nullable Tab>
                 new LayoutStateObserver() {
                     @Override
                     public void onStartedShowing(@LayoutType int layout) {
-                        // The {@link SimpleAnimationLayout} is a special case, the intent is not to
+                        // The {@link NewTabAnimationLayout} is a special case, the intent is not to
                         // switch tabs, but to merely run an animation. In this case, do nothing.
                         // If the animation layout does result in a new tab {@link
                         // TabModelObserver#didSelectTab} will trigger the event instead. If the
@@ -102,7 +102,7 @@ public class ActivityTabProvider implements Destroyable, Supplier<@Nullable Tab>
                     public void onStartedHiding(@LayoutType int layout) {
                         if (mTabModelSelector == null) return;
 
-                        if (LayoutType.TAB_SWITCHER == layout) {
+                        if (LayoutType.HUB == layout) {
                             mObservableSupplier.set(mTabModelSelector.getCurrentTab());
                         }
                     }
@@ -146,6 +146,15 @@ public class ActivityTabProvider implements Destroyable, Supplier<@Nullable Tab>
                         // If this is the last tab to close, make sure a signal is sent to the
                         // observers.
                         if (selector.getCurrentModel().getCount() <= 1) {
+                            triggerActivityTabChangeEvent(null);
+                        }
+                    }
+
+                    @Override
+                    public void tabRemoved(Tab tab) {
+                        // If the last tab was removed (e.g. reparented), make sure a signal is sent
+                        // to the observers.
+                        if (selector.getCurrentModel().getCount() == 0) {
                             triggerActivityTabChangeEvent(null);
                         }
                     }

@@ -136,7 +136,7 @@ suite('StartupUrlDialog', function() {
     const url = await browserProxy.whenCalled('validateStartupPage');
     assertEquals(expectedUrl, url);
     assertTrue(actionButton.disabled);
-    assertTrue(!!inputElement.invalid);
+    assertTrue(inputElement.invalid);
 
     browserProxy.setUrlValidity(true);
     browserProxy.resetResolver('validateStartupPage');
@@ -144,7 +144,7 @@ suite('StartupUrlDialog', function() {
 
     await browserProxy.whenCalled('validateStartupPage');
     assertFalse(actionButton.disabled);
-    assertFalse(!!inputElement.invalid);
+    assertFalse(inputElement.invalid);
   });
 
   /**
@@ -362,11 +362,21 @@ suite('StartupUrlEntry', function() {
   });
 
   test('Editable', function() {
-    assertFalse(!!element.editable);
+    assertFalse(element.editable);
     assertFalse(!!element.shadowRoot!.querySelector('#dots'));
 
     element.editable = true;
     flush();
     assertTrue(!!element.shadowRoot!.querySelector('#dots'));
+  });
+
+  test('MoreActionsButtonTitle', function() {
+    element.editable = true;
+    flush();
+    const dots = element.shadowRoot!.querySelector<HTMLElement>('#dots');
+    assertTrue(!!dots);
+    const title = dots.getAttribute('title');
+    assertTrue(!!title);
+    assertTrue(title.includes(element.model.title));
   });
 });

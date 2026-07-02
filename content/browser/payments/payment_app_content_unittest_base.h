@@ -11,7 +11,7 @@
 #include "content/browser/payments/payment_manager.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/mojom/payments/payment_app.mojom.h"
+#include "third_party/blink/public/mojom/payments/payment_app_events.mojom.h"
 #include "url/gurl.h"
 
 namespace blink {
@@ -48,7 +48,8 @@ class PaymentAppContentUnitTestBase : public testing::Test {
   const GURL& last_sw_scope_url() const;
 
   void SetNoPaymentRequestResponseImmediately();
-  void RespondPendingPaymentRequest();
+  void RespondPendingPaymentRequest(
+      payments::mojom::PaymentHandlerResponsePtr response);
 
  private:
   class PaymentAppForWorkerTestHelper;

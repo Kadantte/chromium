@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.ntp_customization.theme.upload_image;
 import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.doesDefaultSearchEngineHaveLogo;
 import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.getSearchBoxTwoSideMargin;
+import static org.chromium.chrome.browser.ntp_customization.theme.NtpThemeProperty.BUTTON_BOTTOM_MARGIN;
 import static org.chromium.chrome.browser.ntp_customization.theme.NtpThemeProperty.LOGO_BITMAP;
 import static org.chromium.chrome.browser.ntp_customization.theme.NtpThemeProperty.LOGO_PARAMS;
 import static org.chromium.chrome.browser.ntp_customization.theme.NtpThemeProperty.LOGO_VISIBILITY;
@@ -40,6 +41,8 @@ import org.chromium.chrome.browser.ntp_customization.NtpCustomizationMetricsUtil
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
 import org.chromium.chrome.browser.ntp_customization.R;
 import org.chromium.chrome.browser.ntp_customization.theme.NtpThemeProperty;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataBase.PlatformType;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataUploadImage;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils;
@@ -48,6 +51,7 @@ import org.chromium.components.browser_ui.widget.displaystyle.UiConfig;
 import org.chromium.ui.insets.InsetObserver;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
+import org.chromium.ui.util.CommonOnLayoutChangeListeners;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -62,6 +66,7 @@ public class UploadImagePreviewCoordinator implements InsetObserver.WindowInsets
     private final boolean mShouldShowLogoAndSearchBox;
     private final Activity mActivity;
     private final UiConfig mUiConfig;
+    private final int mButtonBottomMargin;
     private View.@Nullable OnLayoutChangeListener mLayoutChangeListener;
     private @Nullable UploadImagePreviewLayout mPreviewLayout;
     private @Nullable CropImageView mCropImageView;
@@ -91,12 +96,17 @@ public class UploadImagePreviewCoordinator implements InsetObserver.WindowInsets
 
     /**
      * @param activity The activity context.
+     * @param profile The current user profile.
      * @param bitmap The bitmap to be previewed.
+     * @param fileIdHash The ID hash of the image file.
+     * @param onBottomSheetClickedCallback The callback to be notified when a bottom sheet button is
+     *     clicked.
      */
     public UploadImagePreviewCoordinator(
             Activity activity,
             Profile profile,
             Bitmap bitmap,
+            @Nullable String fileIdHash,
             Callback<Boolean> onBottomSheetClickedCallback) {
         mPreviewPropertyModel = new PropertyModel(PREVIEW_KEYS);
         mActivity = activity;
@@ -109,25 +119,22 @@ public class UploadImagePreviewCoordinator implements InsetObserver.WindowInsets
         mCropImageView = mPreviewLayout.findViewById(R.id.preview_image);
         mToolBarHeight =
                 mActivity.getResources().getDimensionPixelSize(R.dimen.toolbar_height_no_shadow);
+        mButtonBottomMargin =
+                mActivity
+                        .getResources()
+                        .getDimensionPixelSize(R.dimen.ntp_customization_back_button_margin_start);
 
         mUiConfig = new UiConfig(mPreviewLayout);
         mShouldShowLogoAndSearchBox =
                 ChromeFeatureList.sNewTabPageCustomizationV2ShowLogoAndSearchBox.getValue();
         mLayoutChangeListener =
-                (view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
-                    // Checks if the bounding box has actually changed to avoid redundant calls.
-                    if (left == oldLeft
-                            && top == oldTop
-                            && right == oldRight
-                            && bottom == oldBottom) {
-                        return;
-                    }
-
-                    mUiConfig.updateDisplayStyle();
-                    if (mShouldShowLogoAndSearchBox) {
-                        updateSearchBoxWidthPreview();
-                    }
-                };
+                CommonOnLayoutChangeListeners.createBoundsChangedListener(
+                        () -> {
+                            mUiConfig.updateDisplayStyle();
+                            if (mShouldShowLogoAndSearchBox) {
+                                updateSearchBoxWidthPreview();
+                            }
+                        });
         mPreviewLayout.addOnLayoutChangeListener(mLayoutChangeListener);
 
         mDialog =
@@ -146,7 +153,7 @@ public class UploadImagePreviewCoordinator implements InsetObserver.WindowInsets
         mPreviewPropertyModel.set(
                 NtpThemeProperty.PREVIEW_SAVE_CLICK_LISTENER,
                 v -> {
-                    onSaveButtonClicked(bitmap, onBottomSheetClickedCallback, mDialog);
+                    onSaveButtonClicked(bitmap, fileIdHash, onBottomSheetClickedCallback, mDialog);
                 });
 
         mPreviewPropertyModel.set(
@@ -191,6 +198,13 @@ public class UploadImagePreviewCoordinator implements InsetObserver.WindowInsets
                 new Rect(combinedInsets.left, 0, combinedInsets.right, bottomInsetForPadding);
         mPreviewPropertyModel.set(NtpThemeProperty.SIDE_AND_BOTTOM_INSETS, sideAndBottomInsets);
 
+        if (!hasTappableNavBar) {
+            // Since bottom padding is 0, the layout extends to the very bottom edge of the screen.
+            // Elevates the buttons by adding the navigation bar height to their base margin,
+            // preventing the gesture handle from overlapping the buttons.
+            mPreviewPropertyModel.set(
+                    BUTTON_BOTTOM_MARGIN, mButtonBottomMargin + combinedInsets.bottom);
+        }
         // Consumes the insets since the root view already adjusted their paddings.
         return new WindowInsetsCompat.Builder(windowInsetsCompat)
                 .setInsets(WindowInsetsCompat.Type.statusBars(), Insets.NONE)
@@ -216,10 +230,9 @@ public class UploadImagePreviewCoordinator implements InsetObserver.WindowInsets
         int effectiveFeedPaddingTotal = (totalFeedPaddingPerSide + compensation) * 2;
 
         // 2. Computes the margin added to the ntp.
-        // isTablet is hardcoded to false as this coordinator is guarded against creation on
-        // tablets.
-        int ntpMarginsTotal =
-                getSearchBoxTwoSideMargin(resources, mUiConfig, /* isTablet= */ false);
+        // isLff is hardcoded to false as this coordinator is guarded against creation on
+        // LFF devices.
+        int ntpMarginsTotal = getSearchBoxTwoSideMargin(resources, mUiConfig, /* isLff= */ false);
 
         int finalWidth = mCropImageView.getWidth() - effectiveFeedPaddingTotal - ntpMarginsTotal;
 
@@ -279,12 +292,12 @@ public class UploadImagePreviewCoordinator implements InsetObserver.WindowInsets
      */
     private void setUpLogo(Activity activity, Profile profile, PropertyModel model) {
         boolean shouldShowLogo = doesDefaultSearchEngineHaveLogo(profile);
-        boolean isGoogleDSE =
+        boolean isGoogleDse =
                 TemplateUrlServiceFactory.getForProfile(profile).isDefaultSearchEngineGoogle();
         Bitmap logoBitmap =
                 NtpCustomizationConfigManager.getInstance().getDefaultSearchEngineLogoBitmap();
 
-        if (!shouldShowLogo || (!isGoogleDSE && logoBitmap == null)) {
+        if (!shouldShowLogo || (!isGoogleDse && logoBitmap == null)) {
             model.set(LOGO_VISIBILITY, View.GONE);
             return;
         }
@@ -301,19 +314,14 @@ public class UploadImagePreviewCoordinator implements InsetObserver.WindowInsets
 
     private void setUpSearchBox(PropertyModel propertyModel, Profile profile) {
         Resources resources = mActivity.getResources();
-        boolean showSearchBoxTall =
-                ComposeplateUtils.isComposeplateEnabled(/* isTablet= */ false, profile)
-                        && ChromeFeatureList.sAndroidComposeplateV2Enabled.getValue();
+        boolean showSearchBoxTall = ComposeplateUtils.canShowComposeplateButtonOnNtp(profile);
 
         propertyModel.set(
                 SEARCH_BOX_HEIGHT,
-                NtpCustomizationUtils.getSearchBoxHeightWithShadows(
-                        resources, showSearchBoxTall, /* hasShadowApplied= */ true));
+                NtpCustomizationUtils.getSearchBoxHeight(resources, showSearchBoxTall));
 
         propertyModel.set(
-                SEARCH_BOX_TOP_MARGIN,
-                NtpCustomizationUtils.getLogoViewBottomMarginPx(
-                        resources, /* applyShadow= */ true));
+                SEARCH_BOX_TOP_MARGIN, NtpCustomizationUtils.getLogoViewBottomMarginPx(resources));
     }
 
     PropertyModel getPropertyModelForTesting() {
@@ -339,13 +347,17 @@ public class UploadImagePreviewCoordinator implements InsetObserver.WindowInsets
      * Called when the save button is clicked.
      *
      * @param bitmap The selected bitmap.
+     * @param fileIdHash The ID hash of the image file.
      * @param onBottomSheetClickedCallback The callback to be notified when a bottom sheet button is
      *     clicked.
      * @param dialog The current preview dialog.
      */
     @VisibleForTesting
     void onSaveButtonClicked(
-            Bitmap bitmap, Callback<Boolean> onBottomSheetClickedCallback, ChromeDialog dialog) {
+            Bitmap bitmap,
+            @Nullable String fileIdHash,
+            Callback<Boolean> onBottomSheetClickedCallback,
+            ChromeDialog dialog) {
         assumeNonNull(mCropImageView);
         // 1. Gets the matrices (source of truth or calculated estimate)
         Matrix portraitMatrix = mCropImageView.getPortraitMatrix();
@@ -360,7 +372,16 @@ public class UploadImagePreviewCoordinator implements InsetObserver.WindowInsets
                 new BackgroundImageInfo(
                         portraitMatrix, landscapeMatrix, portraitSize, landscapeSize);
 
-        NtpCustomizationConfigManager.getInstance().onUploadedImageSelected(bitmap, info);
+        NtpBackgroundDataUploadImage uploadImageData =
+                new NtpBackgroundDataUploadImage(
+                        PlatformType.ANDROID_LOCAL,
+                        info,
+                        bitmap,
+                        /* primaryColor= */ null,
+                        fileIdHash);
+
+        NtpCustomizationConfigManager.getInstance()
+                .onBackgroundDataChanged(mActivity, uploadImageData);
 
         // Records metrics before the callback closes the bottom sheet.
         NtpCustomizationMetricsUtils.recordThemeUploadImagePreviewInteractions(

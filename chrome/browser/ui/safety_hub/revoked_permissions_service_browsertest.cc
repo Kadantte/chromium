@@ -55,9 +55,11 @@ namespace {
 using testing::Eq;
 using testing::Field;
 using testing::Ge;
+using testing::Key;
 using testing::Not;
 using testing::Optional;
 using testing::Pointee;
+using testing::UnorderedElementsAre;
 
 const char histogram_name[] =
     "Settings.SafetyHub.UnusedSitePermissionsModule.AutoRevoked2";
@@ -667,7 +669,10 @@ IN_PROC_BROWSER_TEST_F(DisruptiveNotificationPermissionsRevocationBrowserTest,
                      DisruptiveNotificationRevocationState::kProposed)));
 
   // Wait for the disruptive metrics cooldown to expire.
-  clock.Advance(base::Days(8));
+  clock.Advance(
+      features::kSafetyHubDisruptiveNotificationRevocationWaitingTimeAsProposed
+          .Get() +
+      base::Days(1));
 
   safety_hub_test_util::UpdateRevokedPermissionsServiceAsync(service);
   revocation_entry =
@@ -742,7 +747,10 @@ IN_PROC_BROWSER_TEST_F(
                      DisruptiveNotificationRevocationState::kProposed)));
 
   // Wait for the disruptive metrics cooldown to expire.
-  clock.Advance(base::Days(8));
+  clock.Advance(
+      features::kSafetyHubDisruptiveNotificationRevocationWaitingTimeAsProposed
+          .Get() +
+      base::Days(1));
 
   safety_hub_test_util::UpdateRevokedPermissionsServiceAsync(service);
   // Both disruptive notifications and unused permissions were revoked for the
@@ -762,12 +770,18 @@ IN_PROC_BROWSER_TEST_F(
                      DisruptiveNotificationRevocationState::kRevoked)));
 
   EXPECT_EQ(result->GetRevokedPermissions().size(), 1u);
-  EXPECT_EQ(result->GetRevokedPermissions().front().permission_types.size(),
-            2u);
-  EXPECT_TRUE(result->GetRevokedPermissions().front().permission_types.contains(
-      ContentSettingsType::GEOLOCATION));
-  EXPECT_TRUE(result->GetRevokedPermissions().front().permission_types.contains(
-      ContentSettingsType::NOTIFICATIONS));
+  EXPECT_EQ(result->GetRevokedPermissions().front().permissions.size(), 2u);
+  EXPECT_THAT(result->GetRevokedPermissions().front().permissions,
+              UnorderedElementsAre(Key(ContentSettingsType::GEOLOCATION),
+                                   Key(ContentSettingsType::NOTIFICATIONS)));
+  for (auto&& [type, value] :
+       result->GetRevokedPermissions().front().permissions) {
+    if (type == ContentSettingsType::GEOLOCATION) {
+      EXPECT_EQ(value, base::Value(CONTENT_SETTING_ALLOW));
+    } else if (type == ContentSettingsType::NOTIFICATIONS) {
+      EXPECT_EQ(value, base::Value());
+    }
+  }
 
   EXPECT_EQ(
       CONTENT_SETTING_ASK,

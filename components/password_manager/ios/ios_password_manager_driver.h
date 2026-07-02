@@ -41,7 +41,7 @@ class IOSPasswordManagerDriver final
   IOSPasswordManagerDriver& operator=(const IOSPasswordManagerDriver&) = delete;
 
   // password_manager::PasswordManagerDriver implementation.
-  int GetId() const override;
+  password_manager::DriverId GetId() const override;
   void PropagateFillDataOnParsingCompletion(
       const autofill::PasswordFormFillData& form_data) override;
   void InformNoSavedCredentials(
@@ -75,6 +75,7 @@ class IOSPasswordManagerDriver final
   password_manager::PasswordManagerInterface* GetPasswordManager() override;
   password_manager::PasswordAutofillManager* GetPasswordAutofillManager()
       override;
+  autofill::PasswordManagerDelegate* GetPasswordManagerDelegate() override;
   int GetFrameId() const override;
   bool IsInPrimaryMainFrame() const override;
   bool IsDirectChildOfPrimaryMainFrame() const override;
@@ -82,10 +83,13 @@ class IOSPasswordManagerDriver final
   bool CanShowAutofillUi() const override;
   const GURL& GetLastCommittedURL() const override;
   const url::Origin& GetLastCommittedOrigin() const override;
+  bool HasCrossOriginAncestor() const override;
   gfx::RectF TransformToRootCoordinates(
       const gfx::RectF& bounds_in_frame_coordinates) override;
   void CheckViewAreaVisible(autofill::FieldRendererId field_id,
                             base::OnceCallback<void(bool)>) override;
+  bool HasValidURL(bool may_kill_renderer) override;
+  bool IsRenderFrameHostSupported() override;
   autofill::AutofillDriver* GetAutofillDriver() const override;
   base::WeakPtr<PasswordManagerDriver> AsWeakPtr() override;
   const std::string& web_frame_id() const { return frame_id_; }
@@ -111,7 +115,7 @@ class IOSPasswordManagerDriver final
       id<PasswordManagerDriverBridge> bridge,
       password_manager::PasswordManagerInterface* password_manager,
       web::WebFrame* web_frame,
-      int driver_id);
+      password_manager::DriverId driver_id);
 
   ~IOSPasswordManagerDriver() override;
 
@@ -121,7 +125,7 @@ class IOSPasswordManagerDriver final
       password_manager_;
   std::unique_ptr<password_manager::PasswordGenerationFrameHelper>
       password_generation_helper_;
-  int id_;
+  password_manager::DriverId id_;
 
   // The hash of the cached frame ID of `web_frame_`. This is cached because
   // `web_frame` might be set to null when the frame is deleted.

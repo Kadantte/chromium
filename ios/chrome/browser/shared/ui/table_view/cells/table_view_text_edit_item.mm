@@ -8,7 +8,6 @@
 #import "ios/chrome/browser/shared/ui/elements/extended_touch_target_button.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_edit_item_delegate.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
 #import "ios/chrome/browser/shared/ui/util/rtl_geometry.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
@@ -51,9 +50,8 @@ const CGFloat kSymbolSize = 15;
 
 #pragma mark TableViewItem
 
-- (void)configureCell:(TableViewTextEditCell*)cell
-           withStyler:(ChromeTableViewStyler*)styler {
-  [super configureCell:cell withStyler:styler];
+- (void)configureCell:(TableViewTextEditCell*)cell {
+  [super configureCell:cell];
 
   NSString* textLabelFormat = self.required ? @"%@*" : @"%@";
   cell.textLabel.text =
@@ -76,15 +74,18 @@ const CGFloat kSymbolSize = 15;
         [NSString stringWithFormat:@"%@_textField", self.fieldNameLabelText];
   }
 
+  if (self.fieldNameLabelText.length) {
+    cell.textField.accessibilityLabel = self.fieldNameLabelText;
+  }
+
   if (self.textFieldBackgroundColor) {
     cell.textLabel.backgroundColor = self.textFieldBackgroundColor;
     cell.textField.backgroundColor = self.textFieldBackgroundColor;
-  } else if (styler.cellBackgroundColor) {
-    cell.textLabel.backgroundColor = styler.cellBackgroundColor;
-    cell.textField.backgroundColor = styler.cellBackgroundColor;
   } else {
-    cell.textLabel.backgroundColor = styler.tableViewBackgroundColor;
-    cell.textField.backgroundColor = styler.tableViewBackgroundColor;
+    cell.textLabel.backgroundColor =
+        [UIColor colorNamed:kGroupedSecondaryBackgroundColor];
+    cell.textField.backgroundColor =
+        [UIColor colorNamed:kGroupedSecondaryBackgroundColor];
   }
 
   cell.textField.enabled = self.textFieldEnabled;
@@ -248,6 +249,7 @@ const CGFloat kSymbolSize = 15;
 
     // Edit icon.
     _iconView = [[UIImageView alloc] initWithImage:[self editImage]];
+    _iconView.contentMode = UIViewContentModeScaleAspectFit;
     _iconView.tintColor = [UIColor colorNamed:kGrey400Color];
     _iconView.translatesAutoresizingMaskIntoConstraints = NO;
     [contentView addSubview:_iconView];
@@ -315,14 +317,13 @@ const CGFloat kSymbolSize = 15;
               UIContentSizeCategoryIsAccessibilityCategory(
                   self.traitCollection.preferredContentSizeCategory)];
 
-    NSArray<UITrait>* traits = TraitCollectionSetForTraits(
-        @[ UITraitPreferredContentSizeCategory.class ]);
     __weak __typeof(self) weakSelf = self;
     UITraitChangeHandler handler = ^(id<UITraitEnvironment> traitEnvironment,
                                      UITraitCollection* previousCollection) {
       [weakSelf updateUIOnTraitChange:previousCollection];
     };
-    [self registerForTraitChanges:traits withHandler:handler];
+    [self registerForTraitChanges:@[ UITraitPreferredContentSizeCategory.class ]
+                      withHandler:handler];
   }
   return self;
 }
@@ -397,6 +398,7 @@ const CGFloat kSymbolSize = 15;
   self.textField.clearButtonMode = UITextFieldViewModeWhileEditing;
   self.isAccessibilityElement = YES;
   self.textField.accessibilityIdentifier = nil;
+  self.textField.accessibilityLabel = nil;
   self.textField.enabled = NO;
   self.textField.delegate = nil;
   self.textField.secureTextEntry = NO;

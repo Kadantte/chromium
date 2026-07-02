@@ -248,9 +248,8 @@ class CONTENT_EXPORT RenderProcessHostImpl
   int VisibleClientCount() override;
   unsigned int GetFrameDepth() override;
   bool GetIntersectsViewport() override;
-#if !BUILDFLAG(IS_ANDROID)
-  bool IsForInitialWebUI() const override;
-#endif  // !BUILDFLAG(IS_ANDROID)
+  bool IsForTopChromeWebUI() const override;
+  bool ShouldSendGpuChannelEarly() const override;
   bool IsForGuestsOnly() override;
   bool IsJitDisabled() override;
   bool AreV8OptimizationsDisabled() override;
@@ -259,11 +258,13 @@ class CONTENT_EXPORT RenderProcessHostImpl
   StoragePartitionImpl* GetStoragePartition() override;
   bool Shutdown(int exit_code) override;
   bool ShutdownRequested() override;
-  bool FastShutdownIfPossible(size_t page_count = 0,
-                              bool skip_unload_handlers = false,
-                              bool ignore_workers = false,
-                              bool ignore_keep_alive = false,
-                              bool ignore_pending_reuse = false) override;
+  bool FastShutdownIfPossible(
+      size_t page_count = 0,
+      bool skip_unload_handlers = false,
+      bool ignore_workers = false,
+      bool ignore_keep_alive = false,
+      bool ignore_pending_reuse = false,
+      bool use_outermost_main_frame_check = false) override;
   const base::Process& GetProcess() override;
   bool IsReady() override;
   BrowserContext* GetBrowserContext() override;
@@ -286,11 +287,9 @@ class CONTENT_EXPORT RenderProcessHostImpl
       RenderProcessHostPriorityClient* priority_client) override;
   void RemovePriorityClient(
       RenderProcessHostPriorityClient* priority_client) override;
-#if !BUILDFLAG(IS_ANDROID)
   void SetPriorityOverride(base::Process::Priority priority) override;
   bool HasPriorityOverride() override;
   void ClearPriorityOverride() override;
-#endif
 #if BUILDFLAG(IS_ANDROID)
   void GraduateSpareToNormalRendererPriority() override;
   bool ShouldThrottleNavigationForSpareRendererGraduation() override;
@@ -315,6 +314,7 @@ class CONTENT_EXPORT RenderProcessHostImpl
       override;
   const base::TimeTicks& GetLastInitTime() override;
   base::Process::Priority GetPriority() const override;
+  base::TimeTicks GetProcessLaunchedTime() const override;
   std::string GetKeepAliveDurations() const override;
   size_t GetShutdownDelayRefCount() const override;
   int GetRenderFrameHostCount() const override;
@@ -415,6 +415,7 @@ class CONTENT_EXPORT RenderProcessHostImpl
   void BindChildHistogramFetcherFactory(
       mojo::PendingReceiver<metrics::mojom::ChildHistogramFetcherFactory>
           factory) override;
+  bool IsWebiumRenderer() const override;
 
   // Call this function when it is evident that the child process is actively
   // performing some operation, for example if we just received an IPC message.
@@ -426,10 +427,12 @@ class CONTENT_EXPORT RenderProcessHostImpl
   // The routing ID and frame tokens were stored on the IO thread via the
   // RenderMessageFilter::GenerateSingleFrameRoutingInfo mojo call. Returns
   // false if `frame_token` was not found in the token table.
-  bool TakeStoredDataForFrameToken(const blink::LocalFrameToken& frame_token,
-                                   int32_t& new_routing_id,
-                                   base::UnguessableToken& devtools_frame_token,
-                                   blink::DocumentToken& document_token);
+  bool TakeStoredDataForFrameToken(
+      const blink::LocalFrameToken& frame_token,
+      int32_t& new_routing_id,
+      base::UnguessableToken& devtools_frame_token,
+      blink::DocumentToken& document_token,
+      std::unique_ptr<base::UnguessableToken>& sandbox_origin_token);
 
   void AddInternalObserver(RenderProcessHostInternalObserver* observer);
   void RemoveInternalObserver(RenderProcessHostInternalObserver* observer);
@@ -524,6 +527,14 @@ class CONTENT_EXPORT RenderProcessHostImpl
   // provided by |site_instance|.
   static bool MayReuseAndIsSuitable(RenderProcessHost* host,
                                     SiteInstanceImpl* site_instance);
+
+  // Returns true if there is at least one "warm" (pending, committed, or
+  // delayed shutdown) process that is locked to `site_info` and suitable
+  // for reuse in `isolation_context`.
+  static bool HasWarmLockedProcess(BrowserContext* browser_context,
+                                   const IsolationContext& isolation_context,
+                                   const SiteInfo& site_info,
+                                   ProcessReusePolicy process_reuse_policy);
 
   // Returns true if RenderProcessHost shutdown should be delayed by a few
   // seconds to allow the subframe's process to be potentially reused. This aims
@@ -692,6 +703,7 @@ class CONTENT_EXPORT RenderProcessHostImpl
 
   void OnImmersiveXrSessionStarted() override;
   void OnImmersiveXrSessionStopped() override;
+  bool HasImmersiveXrSessionForTesting() const override;
 
   // Sets the global factory used to create new RenderProcessHosts in unit
   // tests.  It may be nullptr, in which case the default RenderProcessHost will
@@ -976,13 +988,9 @@ class CONTENT_EXPORT RenderProcessHostImpl
     // renderer process.
     kDisallowV8FeatureFlagOverrides = 1 << 4,
 
-#if !BUILDFLAG(IS_ANDROID)
-    // Indicates that this RenderProcessHost is hosting the initial WebUI.
-    // Initial WebUI (WaaP) and WebUI (e.g. Tab Search) are hosted in the same
-    // process. This flag is only set when the initial WebUI exists.
+    // Indicates that this RenderProcessHost is hosting a Top Chrome WebUI.
     // Only used on desktop.
-    kForInitialWebUI = 1 << 5,
-#endif  // !BUILDFLAG(IS_ANDROID)
+    kForTopChromeWebUI = 1 << 5,
   };
 
 #if BUILDFLAG(IS_ANDROID)
@@ -1379,8 +1387,6 @@ class CONTENT_EXPORT RenderProcessHostImpl
 #if BUILDFLAG(IS_ANDROID)
   // Highest importance of all clients that contribute priority.
   ChildProcessImportance effective_importance_ = ChildProcessImportance::NORMAL;
-  // This is true if at least one of the priority clients is active.
-  bool has_active_clients_ = true;
 #endif
 
   // Clients that contribute priority to this process.
@@ -1389,13 +1395,12 @@ class CONTENT_EXPORT RenderProcessHostImpl
 
   RenderProcessPriority priority_;
 
-#if !BUILDFLAG(IS_ANDROID)
-  // If this is set then the built-in process priority calculation system is
-  // ignored, and an externally computed process priority is used.
+  // On Desktop platforms, if this is set then the built-in process priority
+  // calculation system is ignored, and an externally computed process priority
+  // is used. On Android, this boosts the effective importance of the process.
   // TODO(pmonette): After experimentation, either remove this or rip out the
   // existing logic entirely.
   std::optional<base::Process::Priority> priority_override_;
-#endif
 
   // Used to allow a RenderWidgetHost to intercept various messages on the
   // IO thread.
@@ -1424,10 +1429,8 @@ class CONTENT_EXPORT RenderProcessHostImpl
   // The globally-unique identifier for this RenderProcessHost.
   const ChildProcessId id_;
 
-  // This field is not a raw_ptr<> because problems related to passing to a
-  // templated && parameter, which is later forwarded to something that doesn't
-  // vibe with raw_ptr<T>.
-  RAW_PTR_EXCLUSION BrowserContext* browser_context_ = nullptr;
+  // The BrowserContext this RenderProcessHost exists within.
+  raw_ptr<BrowserContext> browser_context_ = nullptr;
 
   // Owned by `browser_context_`.
   raw_ptr<StoragePartitionImpl> storage_partition_impl_;
@@ -1464,6 +1467,9 @@ class CONTENT_EXPORT RenderProcessHostImpl
 
   // Records the last time we regarded the child process active.
   base::TimeTicks child_process_activity_time_;
+
+  // The time that this process was launched.
+  base::TimeTicks process_launched_time_;
 
   // The time that a shutdown of the renderer process was requested.
   base::TimeTicks shutdown_start_time_;
@@ -1675,6 +1681,8 @@ class CONTENT_EXPORT RenderProcessHostImpl
 
   std::optional<base::MemoryPressureListenerRegistration>
       memory_pressure_listener_registration_;
+
+  mojo::ScopedMessagePipeHandle initial_gpu_channel_;
 
   // A WeakPtrFactory which is reset every time ResetIPC() or Cleanup() is run.
   // Used to vend WeakPtrs which are invalidated any time the RenderProcessHost

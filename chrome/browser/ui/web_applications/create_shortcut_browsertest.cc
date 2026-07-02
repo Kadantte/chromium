@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 #include <initializer_list>
-#include <map>
 #include <optional>
 #include <string>
 #include <utility>
@@ -29,6 +28,7 @@
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/ui/web_applications/web_app_browsertest_base.h"
 #include "chrome/browser/ui/web_applications/web_app_dialogs.h"
+#include "chrome/browser/web_applications/model/web_app_icon_types.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom-shared.h"
 #include "chrome/browser/web_applications/test/web_app_test_observers.h"
 #include "chrome/browser/web_applications/test/web_app_test_utils.h"
@@ -37,10 +37,10 @@
 #include "chrome/browser/web_applications/web_app_filter.h"
 #include "chrome/browser/web_applications/web_app_icon_generator.h"
 #include "chrome/browser/web_applications/web_app_icon_manager.h"
-#include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/browser/web_applications/web_app_sync_bridge.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
 #include "components/webapps/browser/features.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
@@ -76,24 +76,37 @@ namespace web_app {
 // On ChromeOS, the Create Shortcut dialog creates DIY apps.
 class CreateShortcutBrowserTest : public WebAppBrowserTestBase {
  public:
-  CreateShortcutBrowserTest() = default;
+  CreateShortcutBrowserTest() {
+    scoped_feature_list_.InitAndDisableFeature(
+        ::features::kWebAppInstallDialog);
+  }
   webapps::AppId InstallDiyAppForCurrentUrl(bool open_as_window = false) {
-    SetAutoAcceptWebAppDialogForTesting(true, open_as_window);
     WebAppTestInstallObserver observer(profile());
     observer.BeginListening();
-    CHECK(chrome::ExecuteCommand(browser(), IDC_CREATE_SHORTCUT));
-    webapps::AppId app_id = observer.Wait();
-    SetAutoAcceptWebAppDialogForTesting(false, false);
-    return app_id;
+    {
+      std::optional<base::AutoReset<CreateShortcutDialogCheckState>> auto_check;
+      if (open_as_window) {
+        auto_check.emplace(
+            SetCreateShortcutDialogCheckStateForTesting(  // IN-TEST
+                CreateShortcutDialogCheckState::kChecked));
+      }
+      base::AutoReset<InstallDialogTestResponse> auto_accept =
+          SetPwaInstallationAutoRespondForTesting(  // IN-TEST
+              InstallDialogTestResponse::kAcceptAndLaunch);
+      CHECK(chrome::ExecuteCommand(browser(), IDC_CREATE_SHORTCUT));
+      webapps::AppId app_id = observer.Wait();
+      return app_id;
+    }
   }
 
   // Start URL points to `PageWithDifferentStartUrlManifestStartUrl`.
   GURL PageWithDifferentStartUrl() {
-    return https_server()->GetURL("/web_apps/different_start_url.html");
+    return embedded_https_test_server().GetURL(
+        "/web_apps/different_start_url.html");
   }
 
   GURL PageWithDifferentStartUrlManifestStartUrl() {
-    return https_server()->GetURL("/web_apps/basic.html");
+    return embedded_https_test_server().GetURL("/web_apps/basic.html");
   }
 
   WebAppRegistrar& registrar() {
@@ -108,9 +121,8 @@ class CreateShortcutBrowserTest : public WebAppBrowserTestBase {
     return provider->sync_bridge_unsafe();
   }
 
-#if !BUILDFLAG(IS_CHROMEOS)
+ private:
   base::test::ScopedFeatureList scoped_feature_list_;
-#endif  // !BUILDFLAG(IS_CHROMEOS)
 };
 
 IN_PROC_BROWSER_TEST_F(CreateShortcutBrowserTest,
@@ -190,7 +202,7 @@ IN_PROC_BROWSER_TEST_F(CreateShortcutBrowserTest,
 // Check that toolbar is not shown for shortcut apps within extensions pages.
 // This simulates a case where the user has manually navigated to a page hosted
 // within an extension, then added it as a shortcut app.
-// Regression test for https://crbug.com/828233.
+// Regression test for https://crbug.com/40569785.
 //
 // TODO(crbug.com/40793595): Remove chrome-extension scheme for web apps.
 IN_PROC_BROWSER_TEST_F(CreateShortcutBrowserTest,
@@ -232,7 +244,7 @@ IN_PROC_BROWSER_TEST_F(CreateShortcutBrowserTest,
 }
 
 // Tests that Create Shortcut doesn't timeout on a page that has a delayed
-// iframe load. Context: crbug.com/1046883
+// iframe load. Context: crbug.com/40671065
 IN_PROC_BROWSER_TEST_F(CreateShortcutBrowserTest, WorksAfterDelayedIFrameLoad) {
   ASSERT_TRUE(embedded_test_server()->Start());
   NavigateViaLinkClickToURLAndWait(
@@ -324,7 +336,8 @@ IN_PROC_BROWSER_TEST_F(CreateShortcutBrowserTest,
 // scheme.
 IN_PROC_BROWSER_TEST_F(CreateShortcutBrowserTest, UseHostWhenTitleIsUrl) {
   NavigateViaLinkClickToURLAndWait(
-      browser(), https_server()->GetURL("example.com", "/empty.html"));
+      browser(),
+      embedded_https_test_server().GetURL("example.com", "/empty.html"));
   webapps::AppId app_id = InstallDiyAppForCurrentUrl();
 
   base::test::TestFuture<IconMetadataFromDisk> future;
@@ -334,7 +347,7 @@ IN_PROC_BROWSER_TEST_F(CreateShortcutBrowserTest, UseHostWhenTitleIsUrl) {
           app_id, {icon_size::k128}, IconPurpose::ANY, future.GetCallback());
 
   IconMetadataFromDisk icon_metadata = future.Take();
-  SizeToBitmap icon_bitmaps = std::move(icon_metadata.icons_map);
+  OrderedSizeToBitmap icon_bitmaps = std::move(icon_metadata.icons_map);
   auto icon_it = icon_bitmaps.find(icon_size::k128);
   ASSERT_TRUE(icon_it != icon_bitmaps.end());
   SkBitmap bitmap = icon_it->second;

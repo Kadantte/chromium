@@ -11,7 +11,9 @@
 #import "base/metrics/user_metrics_action.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/metrics/metrics_pref_names.h"
+#import "components/metrics/metrics_reporting_choice_service.h"
 #import "components/prefs/pref_service.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "components/sync/service/sync_service.h"
 #import "components/web_resource/web_resource_pref_names.h"
@@ -45,8 +47,10 @@ enum class SigninScreenState {
   kFirstRunAsFirstScreen,
   // The screen is in the FRE sequence, but is not the first screen.
   kFirstRunAsOtherScreen,
-  // The screen is not in the FRE.
-  kNotFirstRun,
+  // The screen is part of deeplink flow.
+  kDeeplink,
+  // The screen is not part of any of the previous flow.
+  kOther,
 };
 }  // namespace
 
@@ -102,8 +106,11 @@ enum class SigninScreenState {
                      localPrefService:(PrefService*)localPrefService
                           prefService:(PrefService*)prefService
                           syncService:(syncer::SyncService*)syncService
+                     selectedIdentity:(id<SystemIdentity>)selectedIdentity
                           accessPoint:(signin_metrics::AccessPoint)accessPoint
                           promoAction:(signin_metrics::PromoAction)promoAction
+                profileMetricsService:
+                    (metrics::ProfileMetricsService*)profileMetricsService
     changeProfileContinuationProvider:(const ChangeProfileContinuationProvider&)
                                           changeProfileContinuationProvider {
   self = [super init];
@@ -130,6 +137,7 @@ enum class SigninScreenState {
     _localPrefService = localPrefService;
     _prefService = prefService;
     _syncService = syncService;
+    _selectedIdentity = selectedIdentity;
 
     _hadIdentitiesAtStartup = !_identityManager->GetAccountsOnDevice().empty();
 
@@ -139,20 +147,26 @@ enum class SigninScreenState {
       } else {
         _screenState = SigninScreenState::kFirstRunAsOtherScreen;
       }
+    } else if (accessPoint == signin_metrics::AccessPoint::kDeepLinkDefault) {
+      _screenState = SigninScreenState::kDeeplink;
     } else {
-      _screenState = SigninScreenState::kNotFirstRun;
+      _screenState = SigninScreenState::kOther;
     }
 
     switch (_screenState) {
-      case SigninScreenState::kNotFirstRun:
-        _logger = [[UserSigninLogger alloc] initWithAccessPoint:accessPoint
-                                                    promoAction:promoAction];
+      case SigninScreenState::kDeeplink:
+      case SigninScreenState::kOther:
+        _logger = [[UserSigninLogger alloc]
+              initWithAccessPoint:accessPoint
+                      promoAction:promoAction
+            profileMetricsService:profileMetricsService];
         break;
       case SigninScreenState::kFirstRunAsFirstScreen:
       case SigninScreenState::kFirstRunAsOtherScreen:
-        _logger =
-            [[FirstRunSigninLogger alloc] initWithAccessPoint:accessPoint
-                                                  promoAction:promoAction];
+        _logger = [[FirstRunSigninLogger alloc]
+              initWithAccessPoint:accessPoint
+                      promoAction:promoAction
+            profileMetricsService:profileMetricsService];
         break;
     }
 
@@ -195,9 +209,9 @@ enum class SigninScreenState {
   RecordMetricsReportingDefaultState();
 
   // The sign-in screen should not be displayed if the user is already
-  // signed-in.
-  CHECK(!_authenticationService->HasPrimaryIdentity(
-            signin::ConsentLevel::kSignin),
+  // signed-in for non-deeplink flows.
+  CHECK(_screenState == SigninScreenState::kDeeplink ||
+            !_authenticationService->HasPrimaryIdentity(),
         base::NotFatalUntil::M145);
   [self.consumer setUIEnabled:NO];
   authenticationFlow.delegate = self;
@@ -206,9 +220,9 @@ enum class SigninScreenState {
 
 - (void)cancelSignInScreenWithCompletion:(ProceduralBlock)completion {
   // The sign-in screen should not be displayed if the user is already
-  // signed-in.
-  CHECK(!_authenticationService->HasPrimaryIdentity(
-            signin::ConsentLevel::kSignin),
+  // signed-in for non-deeplink flows.
+  CHECK(_screenState == SigninScreenState::kDeeplink ||
+            !_authenticationService->HasPrimaryIdentity(),
         base::NotFatalUntil::M140);
   if (completion) {
     completion();
@@ -229,7 +243,9 @@ enum class SigninScreenState {
   if (self.UMALinkWasTapped) {
     base::RecordAction(base::UserMetricsAction("MobileFreUMALinkTapped"));
   }
-  if (_screenState != SigninScreenState::kNotFirstRun) {
+  BOOL isFirstRun = _screenState == SigninScreenState::kFirstRunAsFirstScreen ||
+                    _screenState == SigninScreenState::kFirstRunAsOtherScreen;
+  if (isFirstRun) {
     first_run::FirstRunStage firstRunStage =
         signIn ? first_run::kWelcomeAndSigninScreenCompletionWithSignIn
                : first_run::kWelcomeAndSigninScreenCompletionWithoutSignIn;
@@ -286,16 +302,14 @@ enum class SigninScreenState {
   self.consumer.hasPlatformPolicies = HasPlatformPolicies();
 
   switch (_screenState) {
-    case SigninScreenState::kNotFirstRun:
+    case SigninScreenState::kDeeplink:
+    case SigninScreenState::kOther:
     case SigninScreenState::kFirstRunAsOtherScreen:
       self.consumer.screenIntent = SigninScreenConsumerScreenIntentSigninOnly;
       break;
     case SigninScreenState::kFirstRunAsFirstScreen:
-      BOOL metricReportingDisabled =
-          self.localPrefService->IsManagedPreference(
-              metrics::prefs::kMetricsReportingEnabled) &&
-          !self.localPrefService->GetBoolean(
-              metrics::prefs::kMetricsReportingEnabled);
+      BOOL metricReportingDisabled = metrics::MetricsReportingChoiceService::
+          IsMetricsReportingDisabledByPolicy(self.localPrefService);
       self.consumer.screenIntent =
           metricReportingDisabled
               ? SigninScreenConsumerScreenIntentWelcomeWithoutUMAAndSignin
@@ -303,7 +317,14 @@ enum class SigninScreenState {
       break;
   }
 
-  if (signinForcedOrAvailable) {
+  if (_screenState == SigninScreenState::kDeeplink) {
+    DCHECK(_selectedIdentity);
+    _consumer.targetIdentityEmail = _selectedIdentity.userEmail;
+    id<SystemIdentity> signedInIdentity =
+        _authenticationService->GetPrimaryIdentity();
+    _consumer.currentPrimaryIdentityEmail = signedInIdentity.userEmail;
+    [self updateConsumerIdentity];
+  } else if (signinForcedOrAvailable) {
     self.selectedIdentity = signin::GetDefaultIdentityOnDevice(
         _identityManager, _accountManagerService);
   }
@@ -322,20 +343,33 @@ enum class SigninScreenState {
 
 #pragma mark - AuthenticationFlowDelegate
 
-- (void)
-    authenticationFlowDidSignInInSameProfileWithCancelationReason:
-        (signin_ui::CancelationReason)cancelationReason
-                                                         identity:
-                                                             (id<SystemIdentity>)
-                                                                 identity {
+- (void)authenticationFlowDidSignInInSameProfileWithIdentity:
+            (id<SystemIdentity>)identity
+                                           cancelationReason:
+                                               (signin_ui::CancelationReason)
+                                                   cancelationReason
+
+                                                  completion:(ProceduralBlock)
+                                                                 completion {
+  CHECK(completion);
   self.signinInProgress = NO;
   [self.consumer setUIEnabled:YES];
-  if (cancelationReason != signin_ui::CancelationReason::kNotCanceled) {
-    return;
+  switch (cancelationReason) {
+    case signin_ui::CancelationReason::kAgeMismatchCanceledStaySignedOut:
+      [self.delegate fullscreenSigninScreenMediatorWantsToBeDismissed:self];
+      break;
+    case signin_ui::CancelationReason::kNotCanceled:
+      [self.logger logSigninCompletedWithResult:SigninCoordinatorResultSuccess
+                                   addedAccount:self.addedAccount];
+      [self.delegate fullscreenSigninScreenMediatorDidFinishSignin:self];
+      break;
+    case signin_ui::CancelationReason::kUserCanceled:
+    case signin_ui::CancelationReason::kFailed:
+    case signin_ui::CancelationReason::kAgeMismatchCanceled:
+    case signin_ui::CancelationReason::kSignInNotAllowed:
+      break;
   }
-  [self.logger logSigninCompletedWithResult:SigninCoordinatorResultSuccess
-                               addedAccount:self.addedAccount];
-  [self.delegate fullscreenSigninScreenMediatorDidFinishSignin:self];
+  completion();
 }
 
 - (void)authenticationFlowWillSwitchProfileWithReadyCompletion:

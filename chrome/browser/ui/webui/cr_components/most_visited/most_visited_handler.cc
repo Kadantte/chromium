@@ -8,10 +8,13 @@
 #include <vector>
 
 #include "base/feature_list.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/scoped_observation.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/browser_features.h"
 #include "chrome/browser/new_tab_page/new_tab_page_util.h"
+#include "chrome/browser/new_tab_page/ntp_pref_names.h"
 #include "chrome/browser/ntp_tiles/chrome_most_visited_sites_factory.h"
 #include "chrome/browser/predictors/loading_predictor.h"
 #include "chrome/browser/predictors/loading_predictor_config.h"
@@ -20,14 +23,17 @@
 #include "chrome/browser/preloading/new_tab_page_preload/new_tab_page_preload_pipeline_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
+// Android uses a different implementation of tab features.
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/android/tab_features.h"
+#else
 #include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/webui/new_tab_page/ntp_pref_names.h"
+#endif
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
-#include "chrome/browser/web_applications/preinstalled_web_app_manager.h"
-#include "chrome/browser/web_applications/web_app_provider.h"
 #include "components/history/core/browser/features.h"
 #include "components/ntp_tiles/constants.h"
 #include "components/ntp_tiles/most_visited_sites.h"
+#include "components/ntp_tiles/ntp_tile_impression.h"
 #include "components/ntp_tiles/tile_type.h"
 #include "components/page_load_metrics/browser/navigation_handle_user_data.h"
 #include "components/prefs/pref_service.h"
@@ -35,7 +41,13 @@
 #include "components/search_engines/template_url_service.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
+#include "services/network/public/cpp/constants.h"
 #include "ui/base/window_open_disposition_utils.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/web_applications/preinstalled_web_app_manager.h"
+#include "chrome/browser/web_applications/web_app_provider.h"
+#endif
 
 namespace {
 
@@ -48,7 +60,7 @@ ntp_tiles::NTPTileImpression MakeNTPTileImpression(
       /*title_source=*/
       static_cast<ntp_tiles::TileTitleSource>(tile.title_source),
       /*visual_type=*/
-      ntp_tiles::TileVisualType::ICON_REAL /* unused on desktop */,
+      ntp_tiles::ICON_REAL /* unused on desktop */,
       /*icon_type=*/favicon_base::IconType::kInvalid /* unused on desktop */,
       /*url_for_rappor=*/GURL() /* unused */);
 }
@@ -78,12 +90,15 @@ MostVisitedHandler::MostVisitedHandler(
   most_visited_sites_->AddMostVisitedURLsObserver(
       this, ntp_tiles::kMaxNumMostVisited);
 
+// TODO(b/502297163): Implement for Android.
+#if !BUILDFLAG(IS_ANDROID)
   web_app::WebAppProvider* web_app_provider_ =
       web_app::WebAppProvider::GetForWebApps(profile);
   if (web_app_provider_) {
     preinstalled_web_app_observer_.Observe(
         &web_app_provider_->preinstalled_web_app_manager());
   }
+#endif
 }
 
 MostVisitedHandler::~MostVisitedHandler() = default;
@@ -228,13 +243,15 @@ void MostVisitedHandler::OnMostVisitedTilesRendered(
   }
   // This call flushes all most visited impression logs to UMA histograms.
   // Therefore, it must come last.
+  bool is_expanded =
+      profile_->GetPrefs()->GetBoolean(ntp_prefs::kNtpShowAllMostVisitedTiles);
   logger_.LogMostVisitedLoaded(
       base::Time::FromMillisecondsSinceUnixEpoch(time) -
           ntp_navigation_start_time_,
       most_visited_sites_->IsTopSitesEnabled(),
       most_visited_sites_->IsCustomLinksEnabled(),
       most_visited_sites_->IsEnterpriseShortcutsEnabled(),
-      most_visited_sites_->IsShortcutsVisible());
+      most_visited_sites_->IsShortcutsVisible(), is_expanded);
 }
 
 void MostVisitedHandler::OnMostVisitedTileNavigation(
@@ -251,6 +268,17 @@ void MostVisitedHandler::OnMostVisitedTileNavigation(
   WindowOpenDisposition disposition = ui::DispositionFromClick(
       /*middle_button=*/mouse_button == 1, alt_key, ctrl_key, meta_key,
       shift_key);
+
+  if (tile->url.is_valid() &&
+      disposition != WindowOpenDisposition::SAVE_TO_DISK &&
+      disposition != WindowOpenDisposition::IGNORE_ACTION) {
+    if (PrefService* prefs = profile_->GetPrefs()) {
+      prefs->SetInt64(
+          ntp_prefs::kNtpMostVisitedTileNavigationCount,
+          prefs->GetInt64(ntp_prefs::kNtpMostVisitedTileNavigationCount) + 1);
+    }
+  }
+
   // Clicks on the MV tiles should be treated as if the user clicked on a
   // bookmark. This is consistent with Android's native implementation and
   // ensures the visit count for the MV entry is updated.
@@ -282,6 +310,10 @@ void MostVisitedHandler::SetMostVisitedExpandedState(bool is_expanded) {
   DisableShortcutsAutoRemoval(profile_);
   profile_->GetPrefs()->SetBoolean(ntp_prefs::kNtpShowAllMostVisitedTiles,
                                    is_expanded);
+  base::UmaHistogramEnumeration(
+      "NewTabPage.MostVisited.ShowActionsToggleClicked",
+      is_expanded ? MostVisitedShowActions::kShowMore
+                  : MostVisitedShowActions::kShowLess);
 }
 
 void MostVisitedHandler::PrerenderMostVisitedTile(
@@ -331,13 +363,20 @@ void MostVisitedHandler::PreconnectMostVisitedTile(
     return;
   }
 
+  if (PrefService* prefs = profile_->GetPrefs()) {
+    prefs->SetInt64(
+        ntp_prefs::kNtpMostVisitedTileHoverCount,
+        prefs->GetInt64(ntp_prefs::kNtpMostVisitedTileHoverCount) + 1);
+  }
+
   auto* loading_predictor =
       predictors::LoadingPredictorFactory::GetForProfile(profile_);
   if (loading_predictor) {
-    loading_predictor->PrepareForPageLoad(/*initiator_origin=*/std::nullopt,
-                                          tile->url,
-                                          predictors::HintOrigin::NEW_TAB_PAGE,
-                                          /*preconnectable=*/true);
+    loading_predictor->PrepareForPageLoad(
+        /*initiator_origin=*/std::nullopt, tile->url,
+        predictors::HintOrigin::NEW_TAB_PAGE,
+        network::GetNoOpNetworkRestrictionsId(),
+        /*preconnectable=*/true);
   }
 }
 
@@ -362,7 +401,12 @@ void MostVisitedHandler::OnURLsAvailable(
     const std::map<ntp_tiles::SectionType, ntp_tiles::NTPTilesVector>&
         sections) {
   // Filter out stale shortcuts and notify the UI to show the toast.
-  MaybeRemoveStaleShortcuts();
+  // If a removal was scheduled, return early to avoid sending stale tiles
+  // to the UI and causing a flicker. The scheduled task will trigger a
+  // fresh OnURLsAvailable call.
+  if (MaybeRemoveStaleShortcuts()) {
+    return;
+  }
   auto* template_url_service =
       TemplateURLServiceFactory::GetForProfile(profile_);
   auto result = most_visited::mojom::MostVisitedInfo::New();
@@ -393,7 +437,12 @@ void MostVisitedHandler::OnURLsAvailable(
   result->custom_links_enabled = most_visited_sites_->IsCustomLinksEnabled();
   result->enterprise_shortcuts_enabled =
       most_visited_sites_->IsEnterpriseShortcutsEnabled();
+#if BUILDFLAG(IS_ANDROID)
+  // TODO(b/502297163): Implement for Android.
+  result->visible = true;
+#else
   result->visible = most_visited_sites_->IsShortcutsVisible();
+#endif
   page_->SetMostVisitedInfo(std::move(result));
 }
 
@@ -406,41 +455,54 @@ MostVisitedHandler::GetNewTabPagePreloadPipelineManager() {
              : nullptr;
 }
 
-void MostVisitedHandler::MaybeRemoveStaleShortcuts() {
+bool MostVisitedHandler::MaybeRemoveStaleShortcuts() {
   // Don't remove stale shortcuts if the feature is disabled.
   if (!base::FeatureList::IsEnabled(
           ntp_features::kNtpFeatureOptimizationShortcutsRemoval)) {
-    return;
+    return false;
   }
 
   // Don't remove stale shortcuts if the user has enterprise shortcuts.
   if (most_visited_sites_->IsEnterpriseShortcutsEnabled()) {
-    return;
+    return false;
   }
 
   // Remove shortcuts if they are enabled, visible, and the staleness count is
   // above the threshold.
   if (!profile_->GetPrefs()->GetBoolean(ntp_prefs::kNtpShortcutsVisible)) {
-    return;
+    return false;
   }
 
   if (profile_->GetPrefs()->GetBoolean(
           ntp_prefs::kNtpShortcutsAutoRemovalDisabled)) {
-    return;
+    return false;
   }
 
   if (profile_->GetPrefs()->GetInteger(ntp_prefs::kNtpShortcutsStalenessCount) <
       ntp_features::kStaleShortcutsCountThreshold.Get()) {
-    return;
+    return false;
   }
 
-  profile_->GetPrefs()->SetBoolean(ntp_prefs::kNtpShortcutsVisible, false);
-  profile_->GetPrefs()->SetBoolean(ntp_prefs::kNtpShortcutsAutoRemovalDisabled,
-                                   true);
-  page_->OnMostVisitedTilesAutoRemoval();
-  logger_.LogEvent(NTP_SHORTCUTS_AUTO_REMOVE, base::TimeDelta() /* unused */);
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](base::WeakPtr<MostVisitedHandler> handler, PrefService* prefs) {
+            if (!handler) {
+              return;
+            }
+            prefs->SetBoolean(ntp_prefs::kNtpShortcutsVisible, false);
+            prefs->SetBoolean(ntp_prefs::kNtpShortcutsAutoRemovalDisabled,
+                              true);
+            handler->page_->OnMostVisitedTilesAutoRemoval();
+            handler->logger_.LogEvent(NTP_SHORTCUTS_AUTO_REMOVE,
+                                      base::TimeDelta());
+          },
+          weak_ptr_factory_.GetWeakPtr(), profile_->GetPrefs()));
+  return true;
 }
 
+// TODO(b/502297163): Implement for Android.
+#if !BUILDFLAG(IS_ANDROID)
 void MostVisitedHandler::OnMigrationRun() {
   most_visited_sites_->RefreshTiles();
 }
@@ -450,3 +512,4 @@ void MostVisitedHandler::OnDestroyed() {
     preinstalled_web_app_observer_.Reset();
   }
 }
+#endif

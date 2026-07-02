@@ -49,9 +49,7 @@ import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.DisabledTest;
-import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.native_page.ContextMenuManager;
 import org.chromium.chrome.browser.offlinepages.OfflinePageBridge;
 import org.chromium.chrome.browser.suggestions.ImageFetcher;
@@ -59,7 +57,6 @@ import org.chromium.chrome.browser.suggestions.SiteSuggestion;
 import org.chromium.chrome.browser.suggestions.SuggestionsConfig.TileStyle;
 import org.chromium.chrome.browser.suggestions.SuggestionsUiDelegate;
 import org.chromium.chrome.browser.suggestions.mostvisited.MostVisitedSites;
-import org.chromium.chrome.test.R;
 import org.chromium.chrome.test.util.browser.suggestions.mostvisited.FakeMostVisitedSites;
 import org.chromium.components.favicon.IconType;
 import org.chromium.components.favicon.LargeIconBridge.LargeIconCallback;
@@ -116,7 +113,7 @@ public class TileGroupUnitTest {
     @Test
     @UiThreadTest
     @SmallTest
-    @DisabledTest(message = "https://crbug.com/1292469")
+    @DisabledTest(message = "https://crbug.com/40819365")
     public void testInitialiseWithTileList() {
         mMostVisitedSites.setTileSuggestionsPassive(URLS);
 
@@ -169,7 +166,7 @@ public class TileGroupUnitTest {
     @Test
     @UiThreadTest
     @SmallTest
-    // If this flakes again, refer to https://crbug.com/1336867.
+    // If this flakes again, refer to https://crbug.com/40848015.
     public void testReceiveNewTilesWithoutChanges() {
         TileGroup tileGroup = initialiseTileGroup(URLS);
 
@@ -184,7 +181,7 @@ public class TileGroupUnitTest {
     @Test
     @UiThreadTest
     @SmallTest
-    @DisabledTest(message = "https://crbug.com/1336867")
+    @DisabledTest(message = "https://crbug.com/40848015")
     public void testReceiveNewTilesWithoutChanges_TrackLoad() {
         TileGroup tileGroup = initialiseTileGroup(/* deferLoad= */ true, URLS);
 
@@ -218,7 +215,7 @@ public class TileGroupUnitTest {
     @Test
     @UiThreadTest
     @SmallTest
-    // If this flakes again, refer to https://crbug.com/1330627, https://crbug.com/1293208.
+    // If this flakes again, refer to https://crbug.com/40227230, https://crbug.com/40819839.
     public void testReceiveNewTilesWithDataChanges_TrackLoad() {
         TileGroup tileGroup = initialiseTileGroup(/* deferLoad= */ true, URLS);
 
@@ -326,22 +323,8 @@ public class TileGroupUnitTest {
     @Test
     @UiThreadTest
     @SmallTest
-    @DisableFeatures({ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION})
-    // If this flakes again, refer to https://crbug.com/1330627, https://crbug.com/1293208.
-    public void testRenderTileView_DisableMvtCustomization() {
-        doRenderTileViewTest();
-    }
-
-    @Test
-    @UiThreadTest
-    @SmallTest
-    @EnableFeatures({ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION})
-    // If this flakes again, refer to https://crbug.com/1330627, https://crbug.com/1293208.
-    public void testRenderTileView_EnableMvtCustomization() {
-        doRenderTileViewTest();
-    }
-
-    private void doRenderTileViewTest() {
+    // If this flakes again, refer to https://crbug.com/40227230, https://crbug.com/40819839.
+    public void testRenderTileView() {
         SuggestionsUiDelegate uiDelegate = mSuggestionsUiDelegate;
         when(uiDelegate.getImageFetcher()).thenReturn(mImageFetcher);
         TileGroup tileGroup =
@@ -362,25 +345,16 @@ public class TileGroupUnitTest {
 
         // Render them to the layout.
         refreshData(tileGroup, layout);
-        if (ChromeFeatureList.isEnabled(ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION)) {
-            assertThat(layout.getChildCount(), is(3));
-            assertThat(
-                    ((SuggestionsTileView) layout.getChildAt(0)).getUrl().getSpec(), is(URLS[0]));
-            assertThat(
-                    ((SuggestionsTileView) layout.getChildAt(1)).getUrl().getSpec(), is(URLS[1]));
-            assertTrue(isAddNewButton(layout.getChildAt(2)));
-        } else {
-            assertThat(layout.getChildCount(), is(2));
-            assertThat(
-                    ((SuggestionsTileView) layout.getChildAt(0)).getUrl().getSpec(), is(URLS[0]));
-            assertThat(
-                    ((SuggestionsTileView) layout.getChildAt(1)).getUrl().getSpec(), is(URLS[1]));
-        }
+        assertThat(layout.getChildCount(), is(3));
+        assertThat(((SuggestionsTileView) layout.getChildAt(0)).getUrl().getSpec(), is(URLS[0]));
+        assertThat(((SuggestionsTileView) layout.getChildAt(1)).getUrl().getSpec(), is(URLS[1]));
+        assertTrue(isAddNewButton(layout.getChildAt(2)));
+
         // Rerun to test SuggestionsTileView caching.
         refreshData(tileGroup, layout);
     }
 
-    /** Check for https://crbug.com/703628: don't crash on duplicated URLs. */
+    /** Check for https://crbug.com/40511776: don't crash on duplicated URLs. */
     @Test
     @UiThreadTest
     @SmallTest
@@ -411,22 +385,8 @@ public class TileGroupUnitTest {
     @Test
     @UiThreadTest
     @SmallTest
-    @DisableFeatures({ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION})
-    // If this flakes again, refer to https://crbug.com/1286755.
-    public void testRenderTileViewReplacing_DisableMvtCustomization() {
-        doRenderTileViewReplacingTest();
-    }
-
-    @Test
-    @UiThreadTest
-    @SmallTest
-    @EnableFeatures({ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION})
-    // If this flakes again, refer to https://crbug.com/1286755.
-    public void testRenderTileViewReplacing_EnableMvtCustomization() {
-        doRenderTileViewReplacingTest();
-    }
-
-    private void doRenderTileViewReplacingTest() {
+    // If this flakes again, refer to https://crbug.com/40815816.
+    public void testRenderTileViewReplacing() {
         SuggestionsUiDelegate uiDelegate = mSuggestionsUiDelegate;
         when(uiDelegate.getImageFetcher()).thenReturn(mMockImageFetcher);
         TileGroup tileGroup =
@@ -451,16 +411,11 @@ public class TileGroupUnitTest {
 
         // The tiles should be updated, the old ones removed.
         refreshData(tileGroup, layout);
-        if (ChromeFeatureList.isEnabled(ChromeFeatureList.MOST_VISITED_TILES_CUSTOMIZATION)) {
-            assertThat(layout.getChildCount(), is(3));
-            assertThat(layout.indexOfChild(view1), is(-1));
-            assertThat(layout.indexOfChild(view2), is(-1));
-            assertTrue(isAddNewButton(layout.getChildAt(2)));
-        } else {
-            assertThat(layout.getChildCount(), is(2));
-            assertThat(layout.indexOfChild(view1), is(-1));
-            assertThat(layout.indexOfChild(view2), is(-1));
-        }
+        assertThat(layout.getChildCount(), is(3));
+        assertThat(layout.indexOfChild(view1), is(-1));
+        assertThat(layout.indexOfChild(view2), is(-1));
+        assertTrue(isAddNewButton(layout.getChildAt(2)));
+
         // Rerun to test SuggestionsTileView caching.
         refreshData(tileGroup, layout);
     }
@@ -504,7 +459,7 @@ public class TileGroupUnitTest {
     @Test
     @UiThreadTest
     @SmallTest
-    @DisabledTest(message = "https://crbug.com/1330627, https://crbug.com/1293208")
+    @DisabledTest(message = "https://crbug.com/40227230, https://crbug.com/40819839")
     public void testIconLoadingForInit() {
         TileGroup tileGroup = initialiseTileGroup(URLS);
         Tile tile = tileGroup.getTileSections().get(TileSectionType.PERSONALIZED).get(0);
@@ -523,7 +478,7 @@ public class TileGroupUnitTest {
     @Test
     @UiThreadTest
     @SmallTest
-    @DisabledTest(message = "Test is flaky, see crbug.com/1288425")
+    @DisabledTest(message = "Test is flaky, see crbug.com/40816947")
     public void testIconLoadingWhenTileNotRegistered() {
         TileGroup tileGroup = initialiseTileGroup();
         Tile tile = new Tile(createSiteSuggestion("title", URLS[0]), 0);
@@ -541,7 +496,7 @@ public class TileGroupUnitTest {
     @Test
     @UiThreadTest
     @SmallTest
-    @DisabledTest(message = "https://crbug.com/1330627, https://crbug.com/1293208")
+    @DisabledTest(message = "https://crbug.com/40227230, https://crbug.com/40819839")
     public void testIconLoading_Sync() {
         TileGroup tileGroup = initialiseTileGroup();
         mImageFetcher.fulfillLargeIconRequests();
@@ -561,7 +516,7 @@ public class TileGroupUnitTest {
     @Test
     @UiThreadTest
     @SmallTest
-    @DisabledTest(message = "https://crbug.com/1330627, https://crbug.com/1293208")
+    @DisabledTest(message = "https://crbug.com/40227230, https://crbug.com/40819839")
     public void testIconLoading_AsyncNoTrack() {
         TileGroup tileGroup = initialiseTileGroup(/* deferLoad= */ true);
         mImageFetcher.fulfillLargeIconRequests();
@@ -582,7 +537,7 @@ public class TileGroupUnitTest {
     @Test
     @UiThreadTest
     @SmallTest
-    @DisabledTest(message = "https://crbug.com/1330627, https://crbug.com/1293208")
+    @DisabledTest(message = "https://crbug.com/40227230, https://crbug.com/40819839")
     public void testIconLoading_AsyncTrack() {
         TileGroup tileGroup = initialiseTileGroup(/* deferLoad= */ true);
         mImageFetcher.fulfillLargeIconRequests();

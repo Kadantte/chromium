@@ -14,6 +14,7 @@
 
 #include "base/feature_list.h"
 #include "base/format_macros.h"
+#include "base/numerics/angle_conversions.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/path_service.h"
 #include "base/rand_util.h"
@@ -23,6 +24,7 @@
 #include "base/values.h"
 #include "build/build_config.h"
 #include "cc/paint/paint_flags.h"
+#include "cc/paint/paint_shader.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/avatar_menu.h"
@@ -33,15 +35,18 @@
 #include "chrome/browser/ui/views/dotted_icon.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
+#include "chrome/grit/browser_resources.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/theme_resources.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "components/vector_icons/vector_icons.h"
 #include "skia/ext/image_operations.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkPaint.h"
 #include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkPathBuilder.h"
 #include "third_party/skia/include/core/SkScalar.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
@@ -68,7 +73,7 @@
 #if BUILDFLAG(IS_WIN)
 #include "base/win/windows_version.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
-#include "chrome/grit/chrome_unscaled_resources.h"  // nogncheck crbug.com/1125897
+#include "chrome/grit/chrome_unscaled_resources.h"  // nogncheck crbug.com/40147906
 #include "ui/gfx/win/icon_util.h"  // For Iconutil::kLargeIconSize.
 #endif
 
@@ -292,6 +297,32 @@ class ImageWithBackgroundSource : public gfx::CanvasImageSource {
 };
 
 #if !BUILDFLAG(IS_ANDROID)
+struct AiSubscriptionRingGeometry {
+  AiSubscriptionRingGeometry(int avatar_size, int gap_width, int ring_thickness)
+      : total_size(avatar_size + 2 * (gap_width + ring_thickness)),
+        avatar_size(avatar_size),
+        gap_width(gap_width),
+        ring_thickness(ring_thickness),
+        inner_radius(avatar_size / 2 + gap_width),
+        outer_radius(inner_radius + ring_thickness) {}
+
+  const int total_size;
+  const int avatar_size;
+  const int gap_width;
+  const int ring_thickness;
+  const int inner_radius;
+  const int outer_radius;
+};
+
+SkPath GetAiSubscriptionRingPath(const AiSubscriptionRingGeometry& geom,
+                                 const gfx::PointF& center) {
+  SkPathBuilder path_builder;
+  path_builder.setFillType(SkPathFillType::kEvenOdd);
+  path_builder.addCircle(center.x(), center.y(), geom.outer_radius);
+  path_builder.addCircle(center.x(), center.y(), geom.inner_radius);
+  return path_builder.detach();
+}
+
 class ImageWithDottedCircleSource : public gfx::CanvasImageSource {
  public:
   ImageWithDottedCircleSource(const gfx::ImageSkia& image,
@@ -326,6 +357,89 @@ class ImageWithDottedCircleSource : public gfx::CanvasImageSource {
   const int ring_size_;
   const float ring_stroke_width_;
   const SkColor ring_color_;
+};
+
+// TODO(crbug.com/516797074): Consider exposing this method if other platforms
+// can also consume this gradient.
+sk_sp<cc::PaintShader> CreateAiSubscriptionRingShader(
+    int size,
+    SkColor start_color,
+    SkColor end_color,
+    base::span<const float, 4> positions) {
+  const float size_f = static_cast<float>(size);
+
+  // Scaled points from the SVG spec (defined on a 110x110 canvas).
+  // P1 (25.5333, 97.7556) and P2 (86.7778, 12.8222) define the start and end
+  // points of the linear gradient vector.
+  // This vector points from bottom-left to top-right at an angle of ~36 degrees
+  // (CSS angle), placing the highlight at the top-right of the avatar ring.
+  SkPoint points[2] = {
+      SkPoint::Make(size_f * (25.5333f / 110.0f), size_f * (97.7556f / 110.0f)),
+      SkPoint::Make(size_f * (86.7778f / 110.0f), size_f * (12.8222f / 110.0f))};
+
+  SkColor4f colors[4] = {
+      SkColor4f::FromColor(start_color), SkColor4f::FromColor(start_color),
+      SkColor4f::FromColor(end_color), SkColor4f::FromColor(end_color)};
+
+  return cc::PaintShader::MakeLinearGradient(points, colors, positions.data(),
+                                             /*count=*/4, SkTileMode::kClamp);
+}
+
+class AvatarWithProjectedRingSource : public gfx::CanvasImageSource {
+ public:
+  AvatarWithProjectedRingSource(const gfx::ImageSkia& avatar,
+                                const AiSubscriptionRingGeometry& geom,
+                                sk_sp<cc::PaintShader> shader)
+      : gfx::CanvasImageSource(gfx::Size(geom.total_size, geom.total_size)),
+        avatar_(avatar),
+        geom_(geom),
+        shader_(std::move(shader)) {}
+
+  AvatarWithProjectedRingSource(const AvatarWithProjectedRingSource&) = delete;
+  AvatarWithProjectedRingSource& operator=(
+      const AvatarWithProjectedRingSource&) = delete;
+  ~AvatarWithProjectedRingSource() override = default;
+
+  void Draw(gfx::Canvas* canvas) override {
+    const float center_x = size().width() / 2.0f;
+    const float center_y = size().height() / 2.0f;
+    gfx::PointF center(center_x, center_y);
+
+    // Save the current canvas state (matrix and clip) to restore it later.
+    canvas->Save();
+
+    // 1. Clip to the ring shape.
+    // Subsequent drawing is restricted to the area inside this path.
+    SkPath ring_path = GetAiSubscriptionRingPath(geom_, center);
+    canvas->ClipPath(ring_path, true);
+
+    // 2. Draw the gradient.
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setStyle(cc::PaintFlags::kFill_Style);
+    flags.setShader(shader_);
+
+    canvas->DrawRect(gfx::RectF(size().width(), size().height()), flags);
+    // Restore the saved canvas state, removing the clip path so we can draw the
+    // avatar and gap on the rest of the canvas.
+    canvas->Restore();
+
+    // 3. Explicitly clear the gap area to ensure it's transparent.
+    cc::PaintFlags clear_flags;
+    clear_flags.setAntiAlias(true);
+    clear_flags.setBlendMode(SkBlendMode::kClear);
+    canvas->DrawCircle(/*center_point=*/center,
+                       /*radius=*/geom_.inner_radius, clear_flags);
+
+    // 4. Draw the user avatar.
+    int offset = geom_.gap_width + geom_.ring_thickness;
+    canvas->DrawImageInt(avatar_, /*x=*/offset, /*y=*/offset);
+  }
+
+ private:
+  const gfx::ImageSkia avatar_;
+  const AiSubscriptionRingGeometry geom_;
+  const sk_sp<cc::PaintShader> shader_;
 };
 #endif  // !BUILDFLAG(IS_ANDROID)
 
@@ -472,8 +586,9 @@ constexpr size_t kPlaceholderAvatarIndex = 0;
 ui::ImageModel GetGuestAvatar(int size) {
   // Guest profiles generally use the default theme, no need to go through the
   // `ThemeService`.
-  return ui::ImageModel::FromVectorIcon(kAccountBoxIcon, ui::kColorSysPrimary,
-                                        size);
+  return ui::ImageModel::FromVectorIcon(
+      features::IsRoundedIconsEnabled() ? kAccountBoxIcon : kAccountBoxOldIcon,
+      ui::kColorSysPrimary, size);
 }
 
 gfx::Image GetSizedAvatarIcon(const gfx::Image& image,
@@ -510,6 +625,9 @@ gfx::Image GetSizedAvatarIcon(const gfx::Image& image, int width, int height) {
 
 ui::ImageModel GetSizedAvatarImageModel(const ui::ImageModel& image, int size) {
   DCHECK(!image.IsImageGenerator());  // Not prepared to handle these.
+  if (image.Size() == gfx::Size(size, size)) {
+    return image;
+  }
   if (image.IsImage()) {
     gfx::ImageSkia image_skia = image.GetImage().AsImageSkia();
     return ui::ImageModel::FromImageSkia(
@@ -788,7 +906,10 @@ gfx::Image GetPlaceholderAvatarIconVisibleAgainstBackground(
     int size,
     AvatarVisibilityAgainstBackground visibility) {
   const gfx::VectorIcon& person_icon =
-      vector_icons::kAccountCircleChromeRefreshIcon;
+      features::IsRoundedIconsEnabled() ? kAccountCircleIcon
+      : features::IsRoundedIconsEnabled()
+          ? vector_icons::kAccountCircleIcon
+          : vector_icons::kAccountCircleChromeRefreshOldIcon;
 
   // The palette is generated using the user color, which is independent of the
   // profile's light or dark theme.
@@ -816,7 +937,10 @@ gfx::Image GetPlaceholderAvatarIconWithColors(
   CHECK(!icon_params.visibility_against_background.has_value());
 
   const gfx::VectorIcon& person_icon =
-      vector_icons::kAccountCircleChromeRefreshIcon;
+      features::IsRoundedIconsEnabled() ? kAccountCircleIcon
+      : features::IsRoundedIconsEnabled()
+          ? vector_icons::kAccountCircleIcon
+          : vector_icons::kAccountCircleChromeRefreshOldIcon;
 
   const gfx::ImageSkia avatar_icon_without_background =
       icon_params.has_padding
@@ -867,6 +991,14 @@ int GetDefaultAvatarLabelResourceIDAtIndex(size_t index) {
 
 bool IsDefaultAvatarIconIndex(size_t index) {
   return index < kDefaultAvatarIconsCount;
+}
+
+size_t GetSanitizedAvatarIndex(int icon_index) {
+  if (icon_index < 0 ||
+      !IsDefaultAvatarIconIndex(static_cast<size_t>(icon_index))) {
+    return GetPlaceholderAvatarIndex();
+  }
+  return static_cast<size_t>(icon_index);
 }
 
 bool IsDefaultAvatarIconUrl(std::string_view url, size_t* icon_index) {
@@ -929,7 +1061,7 @@ base::ListValue GetCustomProfileAvatarIconsAndLabels(
 }
 
 size_t GetRandomAvatarIconIndex(
-    const std::unordered_set<size_t>& used_icon_indices) {
+    const absl::flat_hash_set<size_t>& used_icon_indices) {
   size_t interval_begin = GetModernAvatarIconStartIndex();
   size_t interval_end = GetDefaultAvatarIconCount();
   size_t interval_length = interval_end - interval_begin;
@@ -938,8 +1070,9 @@ size_t GetRandomAvatarIconIndex(
   // Find the next unused index.
   for (size_t i = 0; i < interval_length; ++i) {
     size_t icon_index = interval_begin + (random_offset + i) % interval_length;
-    if (used_icon_indices.count(icon_index) == 0u)
+    if (!used_icon_indices.contains(icon_index)) {
       return icon_index;
+    }
   }
   // All indices are used, so return a random one.
   return interval_begin + random_offset;
@@ -1100,5 +1233,34 @@ ui::ImageModel EmbedAvatarOntoImage(int resource_id,
           ui::ResourceBundle::GetSharedInstance().GetImageNamed(resource_id),
           avatar, avatar_position, avatar_size));
 }
+
+#if !BUILDFLAG(IS_ANDROID)
+gfx::ImageSkia AddAiRingToAvatar(const ui::ImageModel& avatar_image,
+                                 const ui::ColorProvider& color_provider,
+                                 SkColor start_color,
+                                 SkColor end_color,
+                                 base::span<const float, 4> positions,
+                                 int avatar_size,
+                                 int gap_width,
+                                 int ring_thickness) {
+  DCHECK(!avatar_image.IsEmpty());
+
+  AiSubscriptionRingGeometry geom(avatar_size, gap_width, ring_thickness);
+
+  // Resize the avatar to the target avatar_size.
+  gfx::ImageSkia sized_avatar_image =
+      GetSizedAvatarImageModel(avatar_image, geom.avatar_size)
+          .Rasterize(&color_provider);
+  sized_avatar_image = CircleImageSource::CropCircle(sized_avatar_image);
+
+  auto shader = CreateAiSubscriptionRingShader(geom.total_size, start_color,
+                                               end_color, positions);
+
+  // Create the composite image with the AI ring.
+  return gfx::ImageSkia(std::make_unique<AvatarWithProjectedRingSource>(
+                            sized_avatar_image, geom, std::move(shader)),
+                        gfx::Size(geom.total_size, geom.total_size));
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 }  // namespace profiles

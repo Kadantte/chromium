@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.bookmarks;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
 
+import android.app.Activity;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -13,6 +14,7 @@ import android.net.Uri;
 import android.provider.Browser;
 import android.text.format.DateUtils;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
@@ -21,6 +23,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ActivityUtils;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
+import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.components.bookmarks.BookmarkId;
 import org.chromium.components.bookmarks.BookmarkItem;
@@ -41,7 +44,7 @@ public class BookmarkOpenerImpl implements BookmarkOpener {
     /**
      * @param bookmarkModelSupplier Supplies the bookmark model, used to query for bookmark urls and
      *     type.
-     * @param context The android context, used to build the intent to open bookmarks.
+     * @param context The android activity context, used to build the intent to open bookmarks.
      * @param componentName The name of the parent component, can be null on tablets.
      */
     public BookmarkOpenerImpl(
@@ -62,7 +65,7 @@ public class BookmarkOpenerImpl implements BookmarkOpener {
         recordMetricsForOpenBookmarkInCurrentTab(item);
 
         Intent intent = createBasicOpenIntent(item, incognito);
-        IntentHandler.startActivityForTrustedIntent(intent);
+        IntentHandler.startActivityForTrustedIntent(mContext, intent);
 
         return true;
     }
@@ -103,9 +106,68 @@ public class BookmarkOpenerImpl implements BookmarkOpener {
         if (tabLaunchType != null) {
             IntentHandler.setTabLaunchType(intent, tabLaunchType);
         }
-        IntentHandler.startActivityForTrustedIntent(intent);
+        IntentHandler.startActivityForTrustedIntent(mContext, intent);
 
         return true;
+    }
+
+    @Override
+    public boolean openBookmarksInNewWindow(List<BookmarkId> bookmarkIds, boolean incognito) {
+        if (bookmarkIds.isEmpty()) return false;
+
+        BookmarkModel bookmarkModel = assumeNonNull(mBookmarkModelSupplier.get());
+        BookmarkItem firstItem = null;
+        ArrayList<String> additionalUrls = new ArrayList<>();
+        List<BookmarkItem> items = new ArrayList<>();
+        for (BookmarkId id : bookmarkIds) {
+            BookmarkItem item = bookmarkModel.getBookmarkById(id);
+            if (item == null) continue;
+            maybeMarkReadingListItemAsRead(item);
+
+            if (firstItem == null) {
+                firstItem = item;
+            } else {
+                additionalUrls.add(item.getUrl().getSpec());
+            }
+
+            items.add(item);
+        }
+        if (firstItem == null) return false;
+        recordMetricsForOpenBookmarksInNewTabs(items);
+
+        Intent intent = createBasicOpenIntent(firstItem, incognito);
+        intent.putExtra(Browser.EXTRA_CREATE_NEW_TAB, true);
+        intent.putExtra(IntentHandler.EXTRA_OPEN_NEW_INCOGNITO_WINDOW, incognito);
+        intent.putExtra(IntentHandler.EXTRA_ADDITIONAL_URLS, additionalUrls);
+
+        Activity activity = ContextUtils.activityFromContext(mContext);
+        if (activity != null) {
+            Class<? extends Activity> targetActivity =
+                    MultiWindowUtils.getInstance().getOpenInOtherWindowActivity(activity);
+            if (targetActivity != null) {
+                MultiWindowUtils.setOpenInOtherWindowIntentExtras(intent, activity, targetActivity);
+            }
+
+            if (MultiWindowUtils.isMultiInstanceApi31Enabled()) {
+                intent.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+                intent.putExtra(IntentHandler.EXTRA_PREFER_NEW, true);
+            }
+        }
+
+        IntentHandler.startActivityForTrustedIntent(mContext, intent);
+
+        return true;
+    }
+
+    @Override
+    public boolean isOpenInNewWindowSupported() {
+        Activity activity = ContextUtils.activityFromContext(mContext);
+        boolean supportedPreApi31 =
+                activity != null
+                        && !MultiWindowUtils.isMultiInstanceApi31Enabled()
+                        && MultiWindowUtils.getInstance()
+                                .isLinkNavigationToOtherWindowSupported(activity);
+        return MultiWindowUtils.isLinkNavigationToNewWindowSupported() || supportedPreApi31;
     }
 
     private Intent createBasicOpenIntent(BookmarkItem item, boolean incognito) {
@@ -121,7 +183,7 @@ public class BookmarkOpenerImpl implements BookmarkOpener {
         } else {
             // If the bookmark manager is shown in a tab on a phone (rather than in a separate
             // activity) the component name may be null. Send the intent through
-            // ChromeLauncherActivity instead to avoid crashing. See crbug.com/615012.
+            // ChromeLauncherActivity instead to avoid crashing. See crbug.com/40470797.
             intent.setClass(mContext.getApplicationContext(), ChromeLauncherActivity.class);
         }
 

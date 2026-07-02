@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.settings;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+
 import android.content.Intent;
 import android.os.Bundle;
 import android.text.TextUtils;
@@ -14,8 +16,8 @@ import android.view.ViewGroup.LayoutParams;
 
 import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.IntDef;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import androidx.fragment.app.DialogFragment;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentManager;
@@ -25,10 +27,16 @@ import androidx.preference.PreferenceHeaderFragmentCompat;
 import androidx.slidingpanelayout.widget.SlidingPaneLayout;
 
 import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.build.annotations.EnsuresNonNull;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.settings.search.EmptyFragment;
+import org.chromium.chrome.browser.settings.search.SettingsSearchCoordinator;
 import org.chromium.components.browser_ui.settings.EmbeddableSettingsPage;
+import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
+import org.chromium.ui.KeyboardVisibilityDelegate;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -39,7 +47,8 @@ import java.util.Map;
 
 /** Preference container implementation for SettingsActivity in multi-column mode. */
 @NullMarked
-public class MultiColumnSettings extends PreferenceHeaderFragmentCompat {
+public class MultiColumnSettings extends PreferenceHeaderFragmentCompat
+        implements ProfileDependentSetting {
 
     public interface Observer {
         /** Called when detailed pane title is updated. */
@@ -51,15 +60,15 @@ public class MultiColumnSettings extends PreferenceHeaderFragmentCompat {
          */
         default void onHeaderLayoutUpdated() {}
 
+        /**
+         * Called when the detail pane layout is updated i.e. its width is updated as the window is
+         * resized. This is only effective in two pane mode.
+         */
+        default void onDetailLayoutUpdated() {}
+
         /** Called when the sliding state is updated. */
         default void onSlideStateUpdated(@SlideState int newState) {}
     }
-
-    /**
-     * Thresdhold window DP between narrow header and wide header. If the window width is as same or
-     * wider than this, the wider header should be used.
-     */
-    private static final int WIDE_HEADER_SCREEN_WIDTH_DP = 1200;
 
     /** Represents the current state of sliding pane. */
     @IntDef({SlideState.CLOSING, SlideState.CLOSED, SlideState.OPENING, SlideState.OPENED})
@@ -71,14 +80,10 @@ public class MultiColumnSettings extends PreferenceHeaderFragmentCompat {
         int OPENED = 3;
     }
 
-    /** Caches the view of the header panel. */
-    private View mHeaderView;
+    /** Caches the view of the detail panel. */
+    private View mDetailView;
 
-    /**
-     * Caches whether currently it is running in single pane mode or two pane mode to detect the
-     * mode changes
-     */
-    private boolean mSlideable;
+    private @Nullable MainSettings mMainSettings;
 
     private boolean mCanBeBackToMain;
 
@@ -86,7 +91,7 @@ public class MultiColumnSettings extends PreferenceHeaderFragmentCompat {
 
     private InnerOnBackPressedCallback mOnBackPressedCallback;
 
-    private Runnable mOnCreateViewRunnable;
+    private @Nullable Runnable mOnCreateViewRunnable;
 
     private @Nullable Intent mPendingFragmentIntent;
 
@@ -94,11 +99,19 @@ public class MultiColumnSettings extends PreferenceHeaderFragmentCompat {
 
     private final FragmentTracker mFragmentTracker = new FragmentTracker(mObservers);
 
+    private @Nullable Profile mProfile;
+
     @Override
     public PreferenceFragmentCompat onCreatePreferenceHeader() {
         // Main menu, which is the first page in one column mode (i.e. window is
         // small enough), or shown at left side pane in two column mode.
-        return new MainSettings();
+        mMainSettings = new MainSettings();
+        return mMainSettings;
+    }
+
+    public MainSettings getMainSettings() {
+        assertNonNull(mMainSettings);
+        return mMainSettings;
     }
 
     // Fragment data passed as extras of Intent via SettingsNavigation.
@@ -136,8 +149,16 @@ public class MultiColumnSettings extends PreferenceHeaderFragmentCompat {
         mOnCreateViewRunnable = runnable;
     }
 
-    View getHeaderView() {
-        return mHeaderView;
+    View getDetailView() {
+        return mDetailView;
+    }
+
+    /**
+     * Open the (detail) pane. In single-column mode, this has the detail pane outside the screen
+     * slide in and come into view.
+     */
+    public void slideInDetailPane() {
+        getSlidingPaneLayout().openPane();
     }
 
     /** Whether the detail panel is open. */
@@ -175,6 +196,51 @@ public class MultiColumnSettings extends PreferenceHeaderFragmentCompat {
             }
             transaction.commit();
             getSlidingPaneLayout().open();
+
+            // When navigating in Single Activity mode, the new fragment's view might not be
+            // laid out yet when it requests focus. If it requests focus while it has zero
+            // size, the keyboard might not show up. Wait for the layout pass and then
+            // ensure focus and keyboard are shown.
+            final Fragment fragment = processed.fragment;
+            getSlidingPaneLayout()
+                    .post(
+                            () -> {
+                                View detailView = fragment.getView();
+                                if (detailView == null) return;
+
+                                // Only proceed if the fragment contains an EditText that might
+                                // need the keyboard.
+                                if (findEditText(detailView) == null) return;
+
+                                // Check if it's already laid out. If so, act immediately.
+                                if (detailView.getWidth() > 0 && detailView.getHeight() > 0) {
+                                    ensureFocusAndKeyboard(detailView);
+                                    return;
+                                }
+
+                                // Otherwise, wait for the first layout pass.
+                                detailView.addOnLayoutChangeListener(
+                                        new View.OnLayoutChangeListener() {
+                                            @Override
+                                            public void onLayoutChange(
+                                                    View v,
+                                                    int l,
+                                                    int t,
+                                                    int r,
+                                                    int b,
+                                                    int ol,
+                                                    int ot,
+                                                    int or,
+                                                    int ob) {
+                                                int width = r - l;
+                                                int height = b - t;
+                                                if (width > 0 && height > 0) {
+                                                    detailView.removeOnLayoutChangeListener(this);
+                                                    ensureFocusAndKeyboard(detailView);
+                                                }
+                                            }
+                                        });
+                            });
         }
 
         super.onResume();
@@ -183,6 +249,37 @@ public class MultiColumnSettings extends PreferenceHeaderFragmentCompat {
                 instanceof MainSettings mainSettings) {
             mainSettings.addObserver(mOnBackPressedCallback);
         }
+    }
+
+    private void ensureFocusAndKeyboard(View detailView) {
+        View focusable = detailView.findFocus();
+        if (focusable == null) {
+            focusable = findEditText(detailView);
+        }
+        if (focusable != null) {
+            focusable.requestFocus();
+            if (getActivity() != null && getActivity().getWindow() != null) {
+                WindowInsetsControllerCompat controller =
+                        new WindowInsetsControllerCompat(getActivity().getWindow(), detailView);
+                controller.show(WindowInsetsCompat.Type.ime());
+            } else {
+                KeyboardVisibilityDelegate.getInstance().showKeyboard(focusable);
+            }
+        }
+    }
+
+    private @Nullable View findEditText(View view) {
+        if (view instanceof android.widget.EditText) {
+            return view;
+        }
+        if (view instanceof ViewGroup group) {
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View child = group.getChildAt(i);
+                View result = findEditText(child);
+                if (result != null) return result;
+            }
+        }
+        return null;
     }
 
     @Override
@@ -225,46 +322,69 @@ public class MultiColumnSettings extends PreferenceHeaderFragmentCompat {
     }
 
     @Override
-    public @NonNull View onCreateView(
-            @NonNull LayoutInflater inflater,
+    public View onCreateView(
+            LayoutInflater inflater,
             @Nullable ViewGroup container,
             @Nullable Bundle savedInstanceState) {
         View view = super.onCreateView(inflater, container, savedInstanceState);
-        boolean searchEnabled = ChromeFeatureList.sSearchInSettings.isEnabled();
-        if (searchEnabled) {
-            addTitleContainer(inflater, (SlidingPaneLayout) view);
-        }
-        mHeaderView = view.findViewById(R.id.preferences_header);
+        addTitleContainer(inflater, (SlidingPaneLayout) view);
 
-        // Set up the initial width of child views.
-        {
-            var resources = view.getResources();
-            View detailView =
-                    view.findViewById(
-                            searchEnabled ? R.id.preferences_detail_pane : R.id.preferences_detail);
-            LayoutParams params = detailView.getLayoutParams();
-            // Set the minimum required width of detailed view here, so that the
-            // SlidingPaneLayout handles single/multi column switch.
-            params.width =
-                    resources.getDimensionPixelSize(R.dimen.settings_min_multi_column_screen_width)
-                            - resources.getDimensionPixelSize(R.dimen.settings_narrow_header_width);
-            detailView.setLayoutParams(params);
-        }
-        // Register the callback to update header size if needed.
-        view.addOnLayoutChangeListener(
-                (View v,
-                        int left,
-                        int top,
-                        int right,
-                        int bottom,
-                        int oldLeft,
-                        int oldTop,
-                        int oldRight,
-                        int oldBottom) -> {
-                    updateHeaderLayout(v.findViewById(R.id.preferences_header));
+        var resources = view.getResources();
+        View headerView = view.findViewById(R.id.preferences_header);
+        LayoutParams headerParams = headerView.getLayoutParams();
+        headerParams.width = resources.getDimensionPixelSize(R.dimen.settings_narrow_header_width);
+        headerView.setLayoutParams(headerParams);
+
+        View detailView = view.findViewById(R.id.preferences_detail_pane);
+        LayoutParams params = detailView.getLayoutParams();
+        // Set the minimum required width of detailed view here, so that the SlidingPaneLayout
+        // handles single/multi column switch.
+        params.width =
+                resources.getDimensionPixelSize(R.dimen.settings_min_multi_column_screen_width)
+                        - resources.getDimensionPixelSize(R.dimen.settings_narrow_header_width);
+        detailView.setLayoutParams(params);
+        detailView.addOnLayoutChangeListener(
+                (v, l, t, r, b, ol, ot, or, ob) -> {
+                    if (r - l != or - ol) {
+                        for (Observer o : mObservers) o.onDetailLayoutUpdated();
+                    }
                 });
-        if (mOnCreateViewRunnable != null) view.post(mOnCreateViewRunnable);
+        view.post(
+                () -> {
+                    for (Observer o : mObservers) o.onHeaderLayoutUpdated();
+                    if (mOnCreateViewRunnable != null) mOnCreateViewRunnable.run();
+                });
+        mDetailView = detailView;
         return view;
+    }
+
+    /** Sets the Profile required for generating the search index. Called by the host Activity. */
+    @EnsuresNonNull("mProfile")
+    @Override
+    public void setProfile(Profile profile) {
+        mProfile = profile;
+    }
+
+    /**
+     * Returns the breadcrumb path for the currently displayed detail fragment. This uses the
+     * Settings search index to find the shortest path from the root. If the index hasn't been built
+     * yet (e.g. user just opened the app via deep link), it will force-build the index
+     * synchronously.
+     */
+    public @Nullable List<SettingsIndexData.Entry> getBreadcrumbEntriesForCurrentFragment() {
+        assert mProfile != null;
+
+        assertNonNull(mProfile);
+
+        Fragment fragment = getChildFragmentManager().findFragmentById(R.id.preferences_detail);
+
+        assertNonNull(fragment);
+
+        SettingsIndexData indexData =
+                SettingsSearchCoordinator.ensureIndexBuilt(getActivity(), mProfile);
+
+        return indexData.getBreadcrumbEntries(
+                fragment.getClass().getName(), fragment.getArguments());
     }
 
     // Replaces the detailed pane added in super.onCreateView with a new one that displays
@@ -280,38 +400,6 @@ public class MultiColumnSettings extends PreferenceHeaderFragmentCompat {
         detailLayoutParams.weight =
                 getResources().getInteger(R.integer.preferences_detail_pane_weight);
         slidingPaneLayout.addView(newDetailedView, detailLayoutParams);
-    }
-
-    /**
-     * Updates the header layout depending on the current screen size.
-     *
-     * @param view The header view instance.
-     */
-    private void updateHeaderLayout(View view) {
-        var resources = view.getResources();
-        int screenWidthDp = resources.getConfiguration().screenWidthDp;
-        int headerWidth =
-                resources.getDimensionPixelSize(
-                        screenWidthDp >= WIDE_HEADER_SCREEN_WIDTH_DP
-                                ? org.chromium.chrome.R.dimen.settings_wide_header_width
-                                : org.chromium.chrome.R.dimen.settings_narrow_header_width);
-
-        boolean menuLayoutUpdated = mSlideable != getSlidingPaneLayout().isSlideable();
-        mSlideable = getSlidingPaneLayout().isSlideable();
-
-        // Update only when changed to avoid requesting re-layout to the system.
-        LayoutParams params = view.getLayoutParams();
-        if (headerWidth != params.width) {
-            params.width = headerWidth;
-            view.setLayoutParams(params);
-            menuLayoutUpdated = true;
-        }
-
-        if (menuLayoutUpdated) {
-            for (Observer o : mObservers) {
-                o.onHeaderLayoutUpdated();
-            }
-        }
     }
 
     /** Returns whether the current layout is in two-column mode. */
@@ -344,6 +432,11 @@ public class MultiColumnSettings extends PreferenceHeaderFragmentCompat {
                 int oldBottom) {
             boolean prevSlideable = mSlideable;
             mSlideable = getSlidingPaneLayout().isSlideable();
+            if (prevSlideable != mSlideable) {
+                for (Observer o : mObservers) {
+                    o.onHeaderLayoutUpdated();
+                }
+            }
             if (prevSlideable == mSlideable) {
                 return;
             }
@@ -510,6 +603,11 @@ public class MultiColumnSettings extends PreferenceHeaderFragmentCompat {
 
     static class FragmentTracker extends FragmentManager.FragmentLifecycleCallbacks {
         final List<Title> mTitles = new ArrayList<>();
+
+        // Used to force-trigger the observers after activity re-creation, when the title updater
+        // need to display the breadcrumb from the restored titles.
+        private boolean mTitleInitialized;
+
         private final List<Observer> mObservers;
 
         FragmentTracker(List<Observer> observers) {
@@ -538,8 +636,14 @@ public class MultiColumnSettings extends PreferenceHeaderFragmentCompat {
         // Key used for saving back stack positions.
         private static final String KEY_BACK_STACK_COUNTS = "BackStackCounts";
 
+        @SuppressWarnings("ReferenceEquality")
+        private boolean isTopFragment(FragmentManager fm, Fragment f) {
+            List<Fragment> fragments = fm.getFragments();
+            return f == fragments.get(fragments.size() - 1);
+        }
+
         @Override
-        public void onFragmentResumed(@NonNull FragmentManager fm, @NonNull Fragment f) {
+        public void onFragmentResumed(FragmentManager fm, Fragment f) {
             if (f instanceof MainSettings) {
                 // Skip main settings which is visible in the header pane.
                 return;
@@ -547,6 +651,18 @@ public class MultiColumnSettings extends PreferenceHeaderFragmentCompat {
 
             if (f instanceof DialogFragment dialogFragment && dialogFragment.getShowsDialog()) {
                 // Skip on showing a dialog UI.
+                return;
+            }
+            // onFragmentResumed signifies that the Fragment is in the RESUMED state of its
+            // lifecycle, not necessarily that it is the "top-most" or "currently focused"
+            // fragment in a specific container. If the detail pane has a back stack, the
+            // fragment being popped and the fragment being revealed can occasionally overlap
+            // in their lifecycle states during the transition. Android system may briefly
+            // initialize or resume the underlying fragment before the top-most one fully
+            // takes over. EmptyFragment is often immediately followed by real the top-most
+            // ragment. This causes an issue that inadvertently mangles the breadcrumb.
+            // It should be filtered to prevent it.
+            if (f.getClass() == EmptyFragment.class && !isTopFragment(fm, f)) {
                 return;
             }
 
@@ -601,10 +717,9 @@ public class MultiColumnSettings extends PreferenceHeaderFragmentCompat {
                 }
             }
 
-            if (updated) {
-                for (Observer o : mObservers) {
-                    o.onTitleUpdated();
-                }
+            if (updated || !mTitleInitialized) {
+                for (Observer o : mObservers) o.onTitleUpdated();
+                mTitleInitialized = true;
             }
         }
 
@@ -649,11 +764,11 @@ public class MultiColumnSettings extends PreferenceHeaderFragmentCompat {
         return mFragmentTracker.mTitles;
     }
 
-    public void addObserver(@NonNull Observer o) {
+    public void addObserver(Observer o) {
         mObservers.add(o);
     }
 
-    public void removeObserver(@NonNull Observer o) {
+    public void removeObserver(Observer o) {
         mObservers.remove(o);
     }
 
@@ -712,24 +827,22 @@ public class MultiColumnSettings extends PreferenceHeaderFragmentCompat {
         getChildFragmentManager()
                 .addOnBackStackChangedListener(
                         () -> {
-                            mOnBackPressedCallback.updateEnabledState();
-
                             // On some specific devices, FragmentManager's BackStackChangedListener
                             // seems to be called *before* the back stack is updated, specifically
                             // if this is triggered from the system back button and the fragment
                             // manager's back stack will become empty by the event.
                             // Thus, updateEnabledState() above may NOT update the state to the
-                            // expected
-                            // one. As a workaround, post another updateEnabledState, which should
-                            // be
-                            // invoked *after* the back stack is updated, so the "back button"
-                            // in the following pages can work as expected.
+                            // expected one.
+                            // As a workaround, post updateEnabledState with some delay, which
+                            // should invoke the method *after* the back stack is updated so the
+                            // "back button" in the following pages can work as expected.
                             // Unfortunately, this is not perfect solution, as there still is some
                             // short timing that enabled is not properly set, but still provides
                             // better UX. See crbug.com/465040723 for more context.
                             if (getChildFragmentManager().getBackStackEntryCount() == 1) {
                                 getSlidingPaneLayout()
-                                        .post(mOnBackPressedCallback::updateEnabledState);
+                                        .postDelayed(
+                                                mOnBackPressedCallback::updateEnabledState, 100);
                             }
                         });
 

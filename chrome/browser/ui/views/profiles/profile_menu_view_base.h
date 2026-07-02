@@ -13,7 +13,6 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ptr_exclusion.h"
-#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/profiles/profile_metrics.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/views/close_bubble_on_tab_activation_helper.h"
@@ -25,6 +24,7 @@
 #include "ui/base/models/image_model.h"
 #include "ui/color/color_id.h"
 #include "ui/gfx/vector_icon_types.h"
+#include "ui/views/bubble/bubble_anchor.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/flex_layout_view.h"
@@ -39,7 +39,6 @@ class Button;
 
 namespace ui {
 class ColorProvider;
-class TrackedElement;
 }  // namespace ui
 
 // This class provides the UI for different menus that are created by user
@@ -88,8 +87,9 @@ class ProfileMenuViewBase : public content::WebContentsDelegate,
     kBatchUploadAsPrimaryButton = 29,
     kBatchUploadWindows10DepreciationAsPrimaryButton = 30,
     kPasskeyUnlockButton = 31,
+    kSigninOnPhoneButton = 32,
 
-    kMaxValue = kPasskeyUnlockButton,
+    kMaxValue = kSigninOnPhoneButton,
   };
   // LINT.ThenChange(//tools/metrics/histograms/metadata/profile/enums.xml:ProfileMenuActionableItem)
 
@@ -117,6 +117,7 @@ class ProfileMenuViewBase : public content::WebContentsDelegate,
     // This padding does not make the avatar larger in the menu.
     // `profile_image` is drawn smaller to leave space around for the padding.
     int profile_image_padding = 0;
+    int ai_subscription_tier = 0;
 
     // Must not be empty.
     std::u16string title;
@@ -153,7 +154,7 @@ class ProfileMenuViewBase : public content::WebContentsDelegate,
   static constexpr int kOtherProfileImageSize = 16;
 
   // `browser` must not be nullptr.
-  ProfileMenuViewBase(ui::TrackedElement* anchor_element, Browser* browser);
+  ProfileMenuViewBase(views::BubbleAnchor anchor_element, Browser* browser);
   ~ProfileMenuViewBase() override;
 
   ProfileMenuViewBase(const ProfileMenuViewBase&) = delete;
@@ -200,6 +201,10 @@ class ProfileMenuViewBase : public content::WebContentsDelegate,
   }
   bool actionable_item_clicked() const { return actionable_item_clicked_; }
 
+  views::MdTextButton* GetIdentityButtonForTesting() {
+    return identity_button_;
+  }
+
  private:
   class AXMenuWidgetObserver;
 
@@ -245,7 +250,7 @@ class ProfileMenuViewBase : public content::WebContentsDelegate,
   raw_ptr<views::View> profile_mgmt_features_container_ = nullptr;
 
   // Child components of `identity_info_container_`.
-  raw_ptr<views::FlexLayoutView> profile_background_container_ = nullptr;
+  raw_ptr<views::MdTextButton> identity_button_ = nullptr;
 
   // The first profile button that should be focused when the menu is opened
   // using a key accelerator.
@@ -268,6 +273,8 @@ class ProfileMenuViewBase : public content::WebContentsDelegate,
   std::u16string profile_mgmt_heading_;
 
   std::unique_ptr<AXMenuWidgetObserver> ax_widget_observer_;
+
+  base::WeakPtrFactory<ProfileMenuViewBase> weak_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_PROFILES_PROFILE_MENU_VIEW_BASE_H_

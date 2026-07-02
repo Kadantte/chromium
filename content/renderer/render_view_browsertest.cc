@@ -1046,7 +1046,7 @@ TEST_F(RenderViewImplTest, OriginReplicationForUnload) {
   blink::WebSecurityOrigin origin =
       web_frame->FirstChild()->GetSecurityOrigin();
   EXPECT_EQ(origin.ToString(),
-            WebString::FromUTF8(replication_state->origin.Serialize()));
+            WebString::FromUtf8(replication_state->origin.Serialize()));
 
   // Now, unload the second frame using a unique origin and verify that it is
   // replicated correctly.
@@ -1513,6 +1513,46 @@ TEST_F(RenderViewImplTextInputStateChanged,
             actual_active_element_control_bounds);
   EXPECT_EQ(edit_context_selection_bounds_expected,
             actual_active_element_selection_bounds);
+}
+
+// Ensure `EditContext::DeleteSurroundingText` clamps `before`/`after` such that
+// the synced selection stays within the text bounds even if a deletion range
+// is provided that would otherwise exceed the bounds of the text.
+TEST_F(RenderViewImplTextInputStateChanged,
+       DeleteSurroundingTextUnderflowDoesNotCorruptSyncedSelection) {
+  LoadHTML(
+      "<html>"
+      "<head>"
+      "</head>"
+      "<body>"
+      "</body>"
+      "</html>");
+  GetWidgetInputHandler()->SetFocus(blink::mojom::FocusState::kFocused);
+
+  // Attach an EditContext and collapse the selection near the very start,
+  // leaving only a single character before the caret.
+  ExecuteJavaScriptForTests(
+      "const editContext = new EditContext({text: 'hello world'});"
+      "document.body.editContext = editContext;"
+      "document.body.focus();"
+      "editContext.updateSelection(1, 1);");
+  // Wait for the EditContext setup to sync its initial state, then drop it so
+  // the post-deletion assertions observe only the deletion's sync.
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return !updated_states().empty(); }));
+  ClearState();
+
+  // Request the deletion of far more characters before the caret than
+  // actually exist. This must not crash when syncing the selection to the
+  // browser, and the synced selection must stay within the text bounds.
+  GetFrameWidgetInputHandler()->DeleteSurroundingText(50, 0);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return !updated_states().empty(); }));
+
+  const ui::mojom::TextInputState* state = updated_states().back().get();
+  ASSERT_TRUE(state->value.has_value());
+  EXPECT_LE(state->selection.start(), state->value->length());
+  EXPECT_LE(state->selection.end(), state->value->length());
 }
 
 TEST_F(RenderViewImplTextInputStateChanged, ActiveElementGetLayoutBounds) {
@@ -2436,7 +2476,7 @@ TEST_F(RenderViewImplTest, MAYBE_OnDeleteSurroundingTextInCodePoints) {
       frame()->GetWebFrame()->GetInputMethodController();
   blink::WebTextInputInfo info = controller->TextInputInfo();
   // "a" + "def" + trophy + space + "gh".
-  EXPECT_EQ(WebString::FromUTF8("adef\xF0\x9F\x8F\x86 gh"), info.value);
+  EXPECT_EQ(WebString::FromUtf8("adef\xF0\x9F\x8F\x86 gh"), info.value);
   EXPECT_EQ(1, info.selection_start);
   EXPECT_EQ(1, info.selection_end);
 
@@ -3015,7 +3055,7 @@ TEST_F(RenderViewImplModalDialogTest, ModalDialogs) {
   EXPECT_CALL(*alert_mock_frame_host(),
               RunModalAlertDialog(alert_message, false, testing::_))
       .WillOnce(base::test::RunOnceCallback<2>());
-  frame()->GetWebFrame()->Alert(WebString::FromUTF16(alert_message));
+  frame()->GetWebFrame()->Alert(WebString::FromUtf16(alert_message));
 }
 
 TEST_F(RenderViewImplBlinkSettingsTest, Default) {

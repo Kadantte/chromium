@@ -3,9 +3,8 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/web_app_browsertest_base.h"
@@ -51,8 +50,7 @@ IN_PROC_BROWSER_TEST_F(WebAppServiceWorkerOpenWindowBrowserTest,
   EXPECT_NE(browser(), params.browser);
   EXPECT_FALSE(params.browser->GetBrowserForMigrationOnly()->is_type_normal());
   EXPECT_TRUE(params.browser->GetBrowserForMigrationOnly()->is_type_app());
-  EXPECT_TRUE(
-      params.browser->GetBrowserForMigrationOnly()->is_trusted_source());
+  EXPECT_TRUE(WindowFeatureController::From(params.browser)->IsTrustedSource());
 }
 
 IN_PROC_BROWSER_TEST_F(WebAppServiceWorkerOpenWindowBrowserTest,

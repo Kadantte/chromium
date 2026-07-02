@@ -18,6 +18,7 @@ import '../settings_page/settings_section.js';
 import '../settings_shared.css.js';
 
 import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
+import {CrSettingsPrefs} from '/shared/settings/prefs/prefs_types.js';
 import {WebUiListenerMixin} from 'chrome://resources/cr_elements/web_ui_listener_mixin.js';
 import {OpenWindowProxyImpl} from 'chrome://resources/js/open_window_proxy.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
@@ -105,6 +106,15 @@ export class SettingsSystemPageElement extends SettingsSystemPageElementBase
         },
       },
       // </if>
+      // <if expr="is_win">
+      showProcessIsolationSetting_: {
+        readOnly: true,
+        type: Boolean,
+        value() {
+          return loadTimeData.getBoolean('showProcessIsolationSetting');
+        },
+      },
+      // </if>
     };
   }
 
@@ -127,6 +137,10 @@ export class SettingsSystemPageElement extends SettingsSystemPageElementBase
   // <if expr="_google_chrome and is_win">
   declare private showFeatureNotificationsSetting_: boolean;
   // </if>
+  // <if expr="is_win">
+  declare private showProcessIsolationSetting_: boolean;
+  private processIsolationEnabledAtStartup_: boolean|undefined;
+  // </if>
 
   // <if expr="_google_chrome">
   override ready() {
@@ -135,6 +149,16 @@ export class SettingsSystemPageElement extends SettingsSystemPageElementBase
         this.setOnDeviceAiPref_(onDeviceAiEnabled);
     this.addWebUiListener('on-device-ai-enabled-changed', setOnDeviceAiPref);
     this.onDeviceAiBrowserProxy_.getOnDeviceAiEnabled().then(setOnDeviceAiPref);
+  }
+  // </if>
+
+  // <if expr="is_win">
+  override connectedCallback() {
+    super.connectedCallback();
+    CrSettingsPrefs.initialized.then(() => {
+      this.processIsolationEnabledAtStartup_ =
+          this.getPref<boolean>('isolation_state.enabled').value;
+    });
   }
   // </if>
 
@@ -182,7 +206,7 @@ export class SettingsSystemPageElement extends SettingsSystemPageElementBase
         (pref.extensionId !== rulesPref.extensionId);
   }
 
-  private onExtensionDisable_() {
+  private onDisableExtensionClick_() {
     // TODO(dbeam): this is a pretty huge bummer. It means there are things
     // (inputs) that our prefs system is not observing. And that changes from
     // other sources (i.e. disabling/enabling an extension from
@@ -209,6 +233,11 @@ export class SettingsSystemPageElement extends SettingsSystemPageElementBase
   private onOnDeviceAiLearnMoreClicked_() {
     OpenWindowProxyImpl.getInstance().openUrl(
         loadTimeData.getString('onDeviceAiLearnMoreUrl'));
+  }
+
+  private onOnDeviceAiSendFeedback_(e: Event) {
+    e.stopPropagation();
+    this.onDeviceAiBrowserProxy_.openFeedbackDialog();
   }
 
   private onOnDeviceAiToggleChange_(e: Event) {
@@ -240,6 +269,16 @@ export class SettingsSystemPageElement extends SettingsSystemPageElementBase
     const proxy = SystemPageBrowserProxyImpl.getInstance();
     return enabled !== proxy.wasHardwareAccelerationEnabledAtStartup();
   }
+
+  // <if expr="is_win">
+  private shouldShowIsolationRestart_(): boolean {
+    if (this.processIsolationEnabledAtStartup_ === undefined) {
+      return false;
+    }
+    return this.getPref('isolation_state.enabled').value !==
+        this.processIsolationEnabledAtStartup_;
+  }
+  // </if>
 
   // <if expr="_google_chrome and is_win">
   private onFeatureNotificationsChange_(e: Event) {

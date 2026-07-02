@@ -10,9 +10,11 @@
 #include <array>
 
 #include "base/check_op.h"
+#include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/notreached.h"
 #include "media/base/limits.h"
+#include "media/base/media_switches.h"
 
 namespace media {
 
@@ -26,121 +28,135 @@ namespace {
 // kChannelOrderings[CHANNEL_LAYOUT_5_1][SIDE_LEFT] = 4;
 constexpr std::array<std::array<int, CHANNELS_MAX + 1>, CHANNEL_LAYOUT_MAX + 1>
     kChannelOrderings = {{
-        // FL | FR | FC | LFE | BL | BR | FLofC | FRofC | BC | SL | SR
+        // FL | FR | FC | LFE | BL | BR | FLofC | FRofC | BC | SL | SR | TC |
+        // TFL | TFC | TFR | TBL | TBC | TBR
 
         // CHANNEL_LAYOUT_NONE
-        {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
+        {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+         -1},
 
         // CHANNEL_LAYOUT_UNSUPPORTED
-        {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
+        {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+         -1},
 
         // CHANNEL_LAYOUT_MONO
-        {-1, -1, 0, -1, -1, -1, -1, -1, -1, -1, -1},
+        {-1, -1, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_STEREO
-        {0, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
+        {0, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_2_1
-        {0, 1, -1, -1, -1, -1, -1, -1, 2, -1, -1},
+        {0, 1, -1, -1, -1, -1, -1, -1, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_SURROUND
-        {0, 1, 2, -1, -1, -1, -1, -1, -1, -1, -1},
+        {0, 1, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_4_0
-        {0, 1, 2, -1, -1, -1, -1, -1, 3, -1, -1},
+        {0, 1, 2, -1, -1, -1, -1, -1, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_2_2
-        {0, 1, -1, -1, -1, -1, -1, -1, -1, 2, 3},
+        {0, 1, -1, -1, -1, -1, -1, -1, -1, 2, 3, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_QUAD
-        {0, 1, -1, -1, 2, 3, -1, -1, -1, -1, -1},
+        {0, 1, -1, -1, 2, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_5_0
-        {0, 1, 2, -1, -1, -1, -1, -1, -1, 3, 4},
+        {0, 1, 2, -1, -1, -1, -1, -1, -1, 3, 4, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_5_1
-        {0, 1, 2, 3, -1, -1, -1, -1, -1, 4, 5},
+        {0, 1, 2, 3, -1, -1, -1, -1, -1, 4, 5, -1, -1, -1, -1, -1, -1, -1},
 
-        // FL | FR | FC | LFE | BL | BR | FLofC | FRofC | BC | SL | SR
+        // FL | FR | FC | LFE | BL | BR | FLofC | FRofC | BC | SL | SR | TC |
+        // TFL | TFC | TFR | TBL | TBC | TBR
 
         // CHANNEL_LAYOUT_5_0_BACK
-        {0, 1, 2, -1, 3, 4, -1, -1, -1, -1, -1},
+        {0, 1, 2, -1, 3, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_5_1_BACK
-        {0, 1, 2, 3, 4, 5, -1, -1, -1, -1, -1},
+        {0, 1, 2, 3, 4, 5, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_7_0
-        {0, 1, 2, -1, 3, 4, -1, -1, -1, 5, 6},
+        {0, 1, 2, -1, 3, 4, -1, -1, -1, 5, 6, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_7_1
-        {0, 1, 2, 3, 4, 5, -1, -1, -1, 6, 7},
+        {0, 1, 2, 3, 4, 5, -1, -1, -1, 6, 7, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_7_1_WIDE
-        {0, 1, 2, 3, -1, -1, 4, 5, -1, 6, 7},
+        {0, 1, 2, 3, -1, -1, 4, 5, -1, 6, 7, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_STEREO_DOWNMIX
-        {0, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
+        {0, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_2POINT1
-        {0, 1, -1, 2, -1, -1, -1, -1, -1, -1, -1},
+        {0, 1, -1, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_3_1
-        {0, 1, 2, 3, -1, -1, -1, -1, -1, -1, -1},
+        {0, 1, 2, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_4_1
-        {0, 1, 2, 3, -1, -1, -1, -1, 4, -1, -1},
+        {0, 1, 2, 3, -1, -1, -1, -1, 4, -1, -1, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_6_0
-        {0, 1, 2, -1, -1, -1, -1, -1, 3, 4, 5},
+        {0, 1, 2, -1, -1, -1, -1, -1, 3, 4, 5, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_6_0_FRONT
-        {0, 1, -1, -1, -1, -1, 2, 3, -1, 4, 5},
+        {0, 1, -1, -1, -1, -1, 2, 3, -1, 4, 5, -1, -1, -1, -1, -1, -1, -1},
 
-        // FL | FR | FC | LFE | BL | BR | FLofC | FRofC | BC | SL | SR
+        // FL | FR | FC | LFE | BL | BR | FLofC | FRofC | BC | SL | SR | TC |
+        // TFL | TFC | TFR | TBL | TBC | TBR
 
         // CHANNEL_LAYOUT_HEXAGONAL
-        {0, 1, 2, -1, 3, 4, -1, -1, 5, -1, -1},
+        {0, 1, 2, -1, 3, 4, -1, -1, 5, -1, -1, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_6_1
-        {0, 1, 2, 3, -1, -1, -1, -1, 4, 5, 6},
+        {0, 1, 2, 3, -1, -1, -1, -1, 4, 5, 6, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_6_1_BACK
-        {0, 1, 2, 3, 4, 5, -1, -1, 6, -1, -1},
+        {0, 1, 2, 3, 4, 5, -1, -1, 6, -1, -1, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_6_1_FRONT
-        {0, 1, -1, 2, -1, -1, 3, 4, -1, 5, 6},
+        {0, 1, -1, 2, -1, -1, 3, 4, -1, 5, 6, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_7_0_FRONT
-        {0, 1, 2, -1, -1, -1, 3, 4, -1, 5, 6},
+        {0, 1, 2, -1, -1, -1, 3, 4, -1, 5, 6, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_7_1_WIDE_BACK
-        {0, 1, 2, 3, 4, 5, 6, 7, -1, -1, -1},
+        {0, 1, 2, 3, 4, 5, 6, 7, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_OCTAGONAL
-        {0, 1, 2, -1, 3, 4, -1, -1, 5, 6, 7},
+        {0, 1, 2, -1, 3, 4, -1, -1, 5, 6, 7, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_DISCRETE
-        {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
+        {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+         -1},
 
         // CHANNEL_LAYOUT_STEREO_AND_KEYBOARD_MIC, deprecated
-        {0, 1, 2, -1, -1, -1, -1, -1, -1, -1, -1},
+        {0, 1, 2, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_4_1_QUAD_SIDE
-        {0, 1, -1, 2, -1, -1, -1, -1, -1, 3, 4},
+        {0, 1, -1, 2, -1, -1, -1, -1, -1, 3, 4, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_BITSTREAM
-        {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
+        {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+         -1},
 
-        // FL | FR | FC | LFE | BL | BR | FLofC | FRofC | BC | SL | SR
+        // FL | FR | FC | LFE | BL | BR | FLofC | FRofC | BC | SL | SR | TC |
+        // TFL | TFC | TFR | TBL | TBC | TBR
 
         // CHANNEL_LAYOUT_5_1_4, downmixed to six channels (5.1)
-        {0, 1, 2, 3, -1, -1, -1, -1, -1, 4, 5},
+        {0, 1, 2, 3, -1, -1, -1, -1, -1, 4, 5, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_1_1
-        {-1, -1, 0, 1, -1, -1, -1, -1, -1, -1, -1},
+        {-1, -1, 0, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1},
 
         // CHANNEL_LAYOUT_3_1_BACK
-        {0, 1, -1, 2, -1, -1, -1, -1, 3, -1, -1},
+        {0, 1, -1, 2, -1, -1, -1, -1, 3, -1, -1, -1, -1, -1, -1, -1, -1, -1},
+
+        // CHANNEL_LAYOUT_5_1_4
+        {0, 1, 2, 3, -1, -1, -1, -1, -1, 4, 5, -1, 6, -1, 7, 8, -1, 9},
+
+        // CHANNEL_LAYOUT_7_1_4
+        {0, 1, 2, 3, 4, 5, -1, -1, -1, 6, 7, -1, 8, -1, 9, 10, -1, 11},
     }};
 
 constexpr auto kLayoutToChannels = []() {
@@ -181,9 +197,16 @@ int ComputeChannelCount(ChannelLayout channel_layout, int channels) {
 
     return channels;
   } else if (channel_layout == CHANNEL_LAYOUT_5_1_4_DOWNMIX && channels != 0) {
-    // For CHANNEL_LAYOUT_5_1_4_DOWNMIX we can set a custom number of channels,
-    // but we are not forced to.
-    return channels;
+    // `channels` should really only be 6 here, but we might end up with the
+    // original 5.1.4 channel count. For now, handle this gracefully, and force
+    // the value down to 6. Eventually, we should remove this special case
+    // altogether.
+    CHECK(channels == 6 || channels == 10);
+
+    // TODO(crbug.com/486962136): Track whether this condition arises in the
+    // wild, and remove this branch entirely.
+    CHECK_NE(channels, 10, base::NotFatalUntil::M153);
+    return 6;
   }
   const int calculated_channel_count =
       ChannelLayoutToChannelCount(channel_layout);
@@ -194,9 +217,16 @@ int ComputeChannelCount(ChannelLayout channel_layout, int channels) {
 
 }  // namespace
 
+int GetConcurrentMaxChannels() {
+  if (base::FeatureList::IsEnabled(kEnableHighChannelLayouts)) {
+    return 12;
+  }
+  return 8;
+}
+
 int ChannelLayoutToChannelCount(ChannelLayout layout) {
   DCHECK_LT(static_cast<size_t>(layout), std::size(kLayoutToChannels));
-  DCHECK_LE(kLayoutToChannels[layout], kMaxConcurrentChannels);
+  DCHECK_LE(kLayoutToChannels[layout], GetConcurrentMaxChannels());
   return kLayoutToChannels[layout];
 }
 
@@ -204,9 +234,11 @@ int ChannelLayoutToChannelCount(ChannelLayout layout) {
 ChannelLayout GuessChannelLayout(int channels) {
   // Use discrete layout for higher channel counts to facilitate
   // audio passthrough, thus avoiding channel mixing.
-  if (channels > kMaxConcurrentChannels && channels <= limits::kMaxChannels) {
+  if (channels > GetConcurrentMaxChannels() &&
+      channels <= limits::kMaxChannels) {
     return CHANNEL_LAYOUT_DISCRETE;
   }
+
   switch (channels) {
     case 1:
       return CHANNEL_LAYOUT_MONO;
@@ -224,6 +256,14 @@ ChannelLayout GuessChannelLayout(int channels) {
       return CHANNEL_LAYOUT_6_1;
     case 8:
       return CHANNEL_LAYOUT_7_1;
+    case 9:
+      return CHANNEL_LAYOUT_DISCRETE;
+    case 10:
+      return CHANNEL_LAYOUT_5_1_4;
+    case 11:
+      return CHANNEL_LAYOUT_DISCRETE;
+    case 12:
+      return CHANNEL_LAYOUT_7_1_4;
     default:
       DVLOG(1) << "Unsupported channel count: " << channels;
   }
@@ -239,6 +279,16 @@ ChannelLayout ChannelMaskToLayout(ChannelMask channel_mask) {
   // If we don't find a standard ChannelLayout associated with the mask, return
   // a DISCRETE layout so that we can still handle the raw channel data.
   return CHANNEL_LAYOUT_DISCRETE;
+}
+
+ChannelMask ChannelLayoutToMask(ChannelLayout channel_layout) {
+  for (const auto& entry : kChannelMaskToLayoutMap) {
+    if (entry.second == channel_layout) {
+      return entry.first;
+    }
+  }
+  // We should have a mask for every single channel layout.
+  NOTREACHED();
 }
 
 int ChannelOrder(ChannelLayout layout, Channels channel) {
@@ -321,6 +371,10 @@ const char* ChannelLayoutToString(ChannelLayout layout) {
       return "1.1";
     case CHANNEL_LAYOUT_3_1_BACK:
       return "3.1_BACK";
+    case CHANNEL_LAYOUT_5_1_4:
+      return "5.1.4";
+    case CHANNEL_LAYOUT_7_1_4:
+      return "7.1.4";
   }
   NOTREACHED() << "Invalid channel layout provided: " << layout;
 }

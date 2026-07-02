@@ -10,6 +10,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/autocomplete/chrome_autocomplete_scheme_classifier.h"
+#include "chrome/browser/extensions/api/omnibox/omnibox_api.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/omnibox/autocomplete_controller_emitter_factory.h"
 #include "chrome/browser/profiles/profile.h"
@@ -21,11 +22,14 @@
 #include "chrome/test/base/search_test_utils.h"
 #include "components/omnibox/browser/autocomplete_controller.h"
 #include "components/omnibox/browser/autocomplete_controller_emitter.h"
+#include "components/omnibox/browser/autocomplete_enums.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_result.h"
 #include "components/omnibox/common/omnibox_feature_configs.h"
+#include "components/omnibox/common/omnibox_features.h"
 #include "components/search_engines/template_url_service.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/browser/permissions/permissions_test_util.h"
@@ -70,7 +74,7 @@ void InputKeys(Browser* browser, const std::vector<ui::KeyboardCode>& keys) {
 }
 
 LocationBar* GetLocationBar(Browser* browser) {
-  return browser->window()->GetLocationBar();
+  return BrowserWindow::FromBrowser(browser)->GetLocationBar();
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
@@ -98,8 +102,9 @@ using ExpectedMatchComponents = std::vector<ExpectedMatchComponent>;
 void VerifyMatchComponents(const ExpectedMatchComponents& expected,
                            const AutocompleteMatch& match) {
   std::u16string expected_string;
-  for (const auto& component : expected)
+  for (const auto& component : expected) {
     expected_string += component.text;
+  }
 
   EXPECT_EQ(expected_string, match.contents);
 
@@ -122,13 +127,12 @@ void VerifyMatchComponents(const ExpectedMatchComponents& expected,
   }
 }
 
-using ContextType = browser_test_util::ContextType;
-
-class OmniboxApiTestBase : public ExtensionApiTest {
+class OmniboxApiTest : public ExtensionApiTest {
  public:
-  explicit OmniboxApiTestBase(ContextType context_type = ContextType::kNone)
-      : ExtensionApiTest(context_type) {}
-  ~OmniboxApiTestBase() override = default;
+  OmniboxApiTest() {
+    feature_list_.InitAndEnableFeature(omnibox::kOmniboxSiteSearch);
+  }
+  ~OmniboxApiTest() override = default;
 
   void SetUpOnMainThread() override {
     ExtensionApiTest::SetUpOnMainThread();
@@ -137,6 +141,15 @@ class OmniboxApiTestBase : public ExtensionApiTest {
     // consistent.
     search_test_utils::WaitForTemplateURLServiceToLoad(
         TemplateURLServiceFactory::GetForProfile(profile()));
+  }
+
+  void TearDownOnMainThread() override {
+#if BUILDFLAG(IS_ANDROID)
+    // On Android, AutocompleteController is a KeyedService and persists across
+    // tests. Stop it to prevent polluted state in subsequent tests.
+    GetAutocompleteController()->Stop(AutocompleteStopReason::kClobbered);
+#endif
+    ExtensionApiTest::TearDownOnMainThread();
   }
 
 #if BUILDFLAG(IS_ANDROID)
@@ -169,31 +182,10 @@ class OmniboxApiTestBase : public ExtensionApiTest {
     ui_test_utils::WaitForAutocompleteDone(browser());
   }
 #endif  // BUILDFLAG(IS_ANDROID)
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
 };
-
-class OmniboxApiTest : public OmniboxApiTestBase,
-                       public testing::WithParamInterface<ContextType> {
- public:
-  OmniboxApiTest() : OmniboxApiTestBase(GetParam()) {}
-  ~OmniboxApiTest() override = default;
-};
-
-INSTANTIATE_TEST_SUITE_P(ServiceWorker,
-                         OmniboxApiTest,
-                         testing::Values(ContextType::kServiceWorker));
-
-// Desktop Android only supports service worker.
-#if !BUILDFLAG(IS_ANDROID)
-INSTANTIATE_TEST_SUITE_P(PersistentBackground,
-                         OmniboxApiTest,
-                         testing::Values(ContextType::kPersistentBackground));
-
-using OmniboxApiBackgroundPageTest = OmniboxApiTest;
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         OmniboxApiBackgroundPageTest,
-                         testing::Values(ContextType::kNone));
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 }  // namespace
 
@@ -203,14 +195,14 @@ INSTANTIATE_TEST_SUITE_P(All,
 #else
 #define MAYBE_SendSuggestions SendSuggestions
 #endif
-IN_PROC_BROWSER_TEST_P(OmniboxApiTest, MAYBE_SendSuggestions) {
+IN_PROC_BROWSER_TEST_F(OmniboxApiTest, MAYBE_SendSuggestions) {
   constexpr char kManifest[] =
       R"({
            "name": "Basic Send Suggestions",
-           "manifest_version": 2,
+           "manifest_version": 3,
            "version": "0.1",
            "omnibox": { "keyword": "alpha" },
-           "background": { "scripts": [ "background.js" ], "persistent": true }
+           "background": { "service_worker": "background.js" }
          })";
   constexpr char kBackground[] =
       R"(chrome.omnibox.onInputChanged.addListener((text, suggest) => {
@@ -325,17 +317,14 @@ IN_PROC_BROWSER_TEST_P(OmniboxApiTest, MAYBE_SendSuggestions) {
   }
 }
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-// TODO(crbug.com/405219624): Port these tests to desktop Android. Most require
-// access to the Views location bar, which is not available on Android.
-IN_PROC_BROWSER_TEST_P(OmniboxApiTest, OnInputEntered) {
+IN_PROC_BROWSER_TEST_F(OmniboxApiTest, OnInputEntered) {
   constexpr char kManifest[] =
       R"({
            "name": "Basic Send Suggestions",
-           "manifest_version": 2,
+           "manifest_version": 3,
            "version": "0.1",
            "omnibox": { "keyword": "alpha" },
-           "background": { "scripts": [ "background.js" ], "persistent": true }
+           "background": { "service_worker": "background.js" }
          })";
   // This extension will collect input entered into the omnibox and pass it
   // to the browser when instructed.
@@ -355,19 +344,35 @@ IN_PROC_BROWSER_TEST_P(OmniboxApiTest, OnInputEntered) {
   const Extension* extension = LoadExtension(test_dir.UnpackedPath());
   ASSERT_TRUE(extension);
 
-  LocationBar* location_bar = GetLocationBar(browser());
   ResultCatcher catcher;
   AutocompleteController* autocomplete_controller = GetAutocompleteController();
 
-  auto send_input = [this, autocomplete_controller, location_bar](
+  auto send_input = [this, autocomplete_controller, extension](
                         std::u16string input_string,
                         WindowOpenDisposition disposition) {
+    (void)extension;  // used only on Android
+
     AutocompleteInput input(input_string, metrics::OmniboxEventProto::NTP,
                             ChromeAutocompleteSchemeClassifier(profile()));
     autocomplete_controller->Start(input);
-    location_bar->GetOmniboxController()->edit_model()->OpenSelectionForTesting(
-        base::TimeTicks(), disposition);
     WaitForAutocompleteDone();
+    ASSERT_TRUE(autocomplete_controller->done());
+
+#if BUILDFLAG(IS_ANDROID)
+    std::u16string remaining_input = input_string;
+    constexpr std::u16string_view kPrefix = u"alpha ";
+    if (base::StartsWith(input_string, kPrefix, base::CompareCase::SENSITIVE)) {
+      remaining_input = input_string.substr(kPrefix.length());
+    }
+    ExtensionOmniboxEventRouter::OnInputEntered(
+        GetActiveWebContents(), extension->id(),
+        base::UTF16ToUTF8(remaining_input), disposition);
+#else   // BUILDFLAG(IS_ANDROID)
+    GetLocationBar(browser())
+        ->GetOmniboxController()
+        ->edit_model()
+        ->OpenCurrentSelection(base::TimeTicks(), disposition);
+#endif  // BUILDFLAG(IS_ANDROID)
   };
 
   send_input(u"alpha current tab", WindowOpenDisposition::CURRENT_TAB);
@@ -384,18 +389,20 @@ IN_PROC_BROWSER_TEST_P(OmniboxApiTest, OnInputEntered) {
   EXPECT_TRUE(listener.had_user_gesture());
 }
 
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+
 // Tests receiving suggestions from and sending input to the incognito context
 // of an incognito split mode extension.
 // Regression test for https://crbug.com/40100987.
-IN_PROC_BROWSER_TEST_P(OmniboxApiTest, IncognitoSplitMode) {
+IN_PROC_BROWSER_TEST_F(OmniboxApiTest, IncognitoSplitMode) {
   static constexpr char kManifest[] =
       R"({
            "name": "SetDefaultSuggestion",
-           "manifest_version": 2,
+           "manifest_version": 3,
            "version": "0.1",
            "omnibox": { "keyword": "alpha" },
            "incognito": "split",
-           "background": { "scripts": [ "background.js" ], "persistent": true }
+           "background": { "service_worker": "background.js" }
          })";
   static constexpr char kBackground[] =
       R"(let suggestionSuffix =
@@ -476,7 +483,7 @@ IN_PROC_BROWSER_TEST_P(OmniboxApiTest, IncognitoSplitMode) {
     GetLocationBar(browser())
         ->GetOmniboxController()
         ->edit_model()
-        ->OpenSelectionForTesting();
+        ->OpenCurrentSelection();
   }
   {
     AutocompleteInput input(
@@ -486,7 +493,7 @@ IN_PROC_BROWSER_TEST_P(OmniboxApiTest, IncognitoSplitMode) {
     GetLocationBar(incognito_browser)
         ->GetOmniboxController()
         ->edit_model()
-        ->OpenSelectionForTesting();
+        ->OpenCurrentSelection();
   }
 
   EXPECT_TRUE(on_the_record_listener.WaitUntilSatisfied());
@@ -496,7 +503,7 @@ IN_PROC_BROWSER_TEST_P(OmniboxApiTest, IncognitoSplitMode) {
   EXPECT_EQ("word incognito", incognito_listener.message());
 }
 
-// The test is flaky on Win10. crbug.com/1045731.
+// The test is flaky on Win10. crbug.com/40670412.
 #if BUILDFLAG(IS_WIN)
 #define MAYBE_PopupStaysClosed DISABLED_PopupStaysClosed
 #else
@@ -504,8 +511,8 @@ IN_PROC_BROWSER_TEST_P(OmniboxApiTest, IncognitoSplitMode) {
 #endif
 // Tests that the autocomplete popup doesn't reopen after accepting input for
 // a given query.
-// http://crbug.com/88552
-IN_PROC_BROWSER_TEST_P(OmniboxApiBackgroundPageTest, MAYBE_PopupStaysClosed) {
+// http://crbug.com/40594300
+IN_PROC_BROWSER_TEST_F(OmniboxApiTest, MAYBE_PopupStaysClosed) {
   ASSERT_TRUE(RunExtensionTest("omnibox")) << message_;
 
   LocationBar* location_bar = GetLocationBar(browser());
@@ -532,7 +539,7 @@ IN_PROC_BROWSER_TEST_P(OmniboxApiBackgroundPageTest, MAYBE_PopupStaysClosed) {
                           ChromeAutocompleteSchemeClassifier(profile()));
   autocomplete_controller->Start(input);
 
-  location_bar->GetOmniboxController()->edit_model()->OpenSelectionForTesting();
+  location_bar->GetOmniboxController()->edit_model()->OpenCurrentSelection();
   WaitForAutocompleteDone();
   EXPECT_TRUE(autocomplete_controller->done());
   // This checks that the keyword provider (via javascript)
@@ -542,21 +549,21 @@ IN_PROC_BROWSER_TEST_P(OmniboxApiBackgroundPageTest, MAYBE_PopupStaysClosed) {
 }
 
 // Tests deleting a deletable omnibox extension suggestion result.
-// Flaky on Windows and Linux TSan. https://crbug.com/1287949
+// Flaky on Windows and Linux TSan. https://crbug.com/40816589
 #if BUILDFLAG(IS_WIN) || (BUILDFLAG(IS_LINUX) && defined(THREAD_SANITIZER))
 #define MAYBE_DeleteOmniboxSuggestionResult \
   DISABLED_DeleteOmniboxSuggestionResult
 #else
 #define MAYBE_DeleteOmniboxSuggestionResult DeleteOmniboxSuggestionResult
 #endif
-IN_PROC_BROWSER_TEST_P(OmniboxApiTest, MAYBE_DeleteOmniboxSuggestionResult) {
+IN_PROC_BROWSER_TEST_F(OmniboxApiTest, MAYBE_DeleteOmniboxSuggestionResult) {
   static constexpr char kManifest[] =
       R"({
            "name": "Basic Send Suggestions",
-           "manifest_version": 2,
+           "manifest_version": 3,
            "version": "0.1",
            "omnibox": { "keyword": "alpha" },
-           "background": { "scripts": [ "background.js" ], "persistent": true }
+           "background": { "service_worker": "background.js" }
          })";
   static constexpr char kBackground[] =
       R"(chrome.omnibox.onInputChanged.addListener((text, suggest) => {
@@ -658,15 +665,15 @@ IN_PROC_BROWSER_TEST_P(OmniboxApiTest, MAYBE_DeleteOmniboxSuggestionResult) {
 // Tests that if the user hits "backspace" (leaving the extension keyword mode),
 // the extension suggestions are not sent.
 // TODO(crbug.com/40839815): Flaky.
-IN_PROC_BROWSER_TEST_P(OmniboxApiTest,
+IN_PROC_BROWSER_TEST_F(OmniboxApiTest,
                        DISABLED_ExtensionSuggestionsOnlyInKeywordMode) {
   static constexpr char kManifest[] =
       R"({
            "name": "Basic Send Suggestions",
-           "manifest_version": 2,
+           "manifest_version": 3,
            "version": "0.1",
            "omnibox": { "keyword": "kw" },
-           "background": { "scripts": [ "background.js" ], "persistent": true }
+           "background": { "service_worker": "background.js" }
          })";
   static constexpr char kBackground[] =
       R"(chrome.omnibox.onInputChanged.addListener((text, suggest) => {
@@ -750,14 +757,14 @@ IN_PROC_BROWSER_TEST_P(OmniboxApiTest,
 }
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
-IN_PROC_BROWSER_TEST_P(OmniboxApiTest, SetDefaultSuggestionFailures) {
+IN_PROC_BROWSER_TEST_F(OmniboxApiTest, SetDefaultSuggestionFailures) {
   constexpr char kManifest[] =
       R"({
            "name": "SetDefaultSuggestion",
-           "manifest_version": 2,
+           "manifest_version": 3,
            "version": "0.1",
            "omnibox": { "keyword": "word" },
-           "background": { "scripts": [ "background.js" ], "persistent": true }
+           "background": { "service_worker": "background.js" }
          })";
   constexpr char kBackground[] =
       R"(chrome.test.runTests([
@@ -772,9 +779,11 @@ IN_PROC_BROWSER_TEST_P(OmniboxApiTest, SetDefaultSuggestionFailures) {
                  content: 'content',
              };
              const expectedError = /Unexpected property: 'content'./;
+             // Verify `chrome.omnibox.setDefaultSuggestion` throws on invalid
+             // suggestion property.
              chrome.test.assertThrows(
-                 chrome.omnibox.setDefaultSuggestion,
-                 [invalidSuggestion],
+                 chrome.omnibox.setDefaultSuggestion.bind(
+                     null, invalidSuggestion),
                  expectedError);
              chrome.test.succeed();
            },
@@ -810,23 +819,20 @@ IN_PROC_BROWSER_TEST_P(OmniboxApiTest, SetDefaultSuggestionFailures) {
   ASSERT_TRUE(RunExtensionTest(test_dir.UnpackedPath(), {}, {})) << message_;
 }
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-// TODO(crbug.com/405219624): Port these tests to desktop Android. Most require
-// access to the Views location bar, which is not available on Android.
-// Flaky on Linux TSan. https://crbug.com/1304694
+// Flaky on Linux TSan. https://crbug.com/40826642
 #if (BUILDFLAG(IS_LINUX) && defined(THREAD_SANITIZER))
 #define MAYBE_SetDefaultSuggestion DISABLED_SetDefaultSuggestion
 #else
 #define MAYBE_SetDefaultSuggestion SetDefaultSuggestion
 #endif
-IN_PROC_BROWSER_TEST_P(OmniboxApiTest, MAYBE_SetDefaultSuggestion) {
+IN_PROC_BROWSER_TEST_F(OmniboxApiTest, MAYBE_SetDefaultSuggestion) {
   constexpr char kManifest[] =
       R"({
            "name": "SetDefaultSuggestion",
-           "manifest_version": 2,
+           "manifest_version": 3,
            "version": "0.1",
            "omnibox": { "keyword": "word" },
-           "background": { "scripts": [ "background.js" ], "persistent": true }
+           "background": { "service_worker": "background.js" }
          })";
   constexpr char kBackground[] =
       R"(chrome.test.runTests([
@@ -845,6 +851,11 @@ IN_PROC_BROWSER_TEST_P(OmniboxApiTest, MAYBE_SetDefaultSuggestion) {
 
   AutocompleteController* autocomplete_controller = GetAutocompleteController();
 
+#if BUILDFLAG(IS_ANDROID)
+  AutocompleteInput input(u"word d", metrics::OmniboxEventProto::NTP,
+                          ChromeAutocompleteSchemeClassifier(profile()));
+  autocomplete_controller->Start(input);
+#else
   chrome::FocusLocationBar(browser());
   ASSERT_TRUE(ui_test_utils::IsViewFocused(browser(), VIEW_ID_OMNIBOX));
 
@@ -853,6 +864,7 @@ IN_PROC_BROWSER_TEST_P(OmniboxApiTest, MAYBE_SetDefaultSuggestion) {
   // trigger the extension.
   InputKeys(browser(), {ui::VKEY_W, ui::VKEY_O, ui::VKEY_R, ui::VKEY_D,
                         ui::VKEY_SPACE, ui::VKEY_D});
+#endif
   WaitForAutocompleteDone();
   EXPECT_TRUE(autocomplete_controller->done());
 
@@ -879,22 +891,26 @@ IN_PROC_BROWSER_TEST_P(OmniboxApiTest, MAYBE_SetDefaultSuggestion) {
   }
 }
 
+// TODO(crbug.com/405219624): Port these tests to desktop Android. Most require
+// access to the Views location bar, which is not available on Android.
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+
 // Tests an extension passing empty suggestions. Regression test for
-// https://crbug.com/1330137.
+// https://crbug.com/40227079.
 // TODO(crbug.com/326903502): Flaky on TSan.
 #if defined(THREAD_SANITIZER)
 #define MAYBE_PassEmptySuggestions DISABLED_PassEmptySuggestions
 #else
 #define MAYBE_PassEmptySuggestions PassEmptySuggestions
 #endif
-IN_PROC_BROWSER_TEST_P(OmniboxApiTest, MAYBE_PassEmptySuggestions) {
+IN_PROC_BROWSER_TEST_F(OmniboxApiTest, MAYBE_PassEmptySuggestions) {
   static constexpr char kManifest[] =
       R"({
            "name": "Basic Send Suggestions",
-           "manifest_version": 2,
+           "manifest_version": 3,
            "version": "0.1",
            "omnibox": { "keyword": "alpha" },
-           "background": { "scripts": [ "background.js" ], "persistent": true }
+           "background": { "service_worker": "background.js" }
          })";
   // Register a listener that passes back empty suggestions if there is no
   // text content.
@@ -964,14 +980,11 @@ IN_PROC_BROWSER_TEST_P(OmniboxApiTest, MAYBE_PassEmptySuggestions) {
 }
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
-class UnscopedOmniboxApiTest : public OmniboxApiTestBase {
+class UnscopedOmniboxApiTest : public OmniboxApiTest {
  public:
   UnscopedOmniboxApiTest() {
-    // TODO(crbug.com/441102004): Update UnscopedExtensionZeroSuggest to support
-    //   kAiModeOmniboxEntryPoint.
-    scoped_feature_list_.InitWithFeatures(
-        {extensions_features::kExperimentalOmniboxLabs},
-        {omnibox::kAiModeOmniboxEntryPoint});
+    scoped_feature_list_.InitAndEnableFeature(
+        extensions_features::kExperimentalOmniboxLabs);
   }
 
   // Helper function to set the stop timer duration for the autocomplete
@@ -982,7 +995,7 @@ class UnscopedOmniboxApiTest : public OmniboxApiTestBase {
 
  private:
   void SetUpOnMainThread() override {
-    OmniboxApiTestBase::SetUpOnMainThread();
+    OmniboxApiTest::SetUpOnMainThread();
     // Prevent the stop timer from killing the hints fetch early, which might
     // cause test flakiness due to timeout.
     SetStopTimerDuration(base::Seconds(30));
@@ -1261,6 +1274,8 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, UnscopedDeleteSuggestions) {
 #endif
 }
 
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+
 IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, OnInputEntered) {
   constexpr char kManifest[] =
       R"({
@@ -1293,7 +1308,6 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, OnInputEntered) {
 
   ExtensionTestMessageListener listener("sending input");
   AutocompleteController* autocomplete_controller = GetAutocompleteController();
-  chrome::FocusLocationBar(browser());
 
   // Send an input to the extension and wait for the sggestion to arrive before
   // we can select it.
@@ -1302,6 +1316,13 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, OnInputEntered) {
   autocomplete_controller->Start(input);
   WaitForAutocompleteDone();
   ASSERT_TRUE(autocomplete_controller->done());
+
+#if BUILDFLAG(IS_ANDROID)
+  ExtensionOmniboxEventRouter::OnInputEntered(
+      GetActiveWebContents(), extension->id(), "sending input",
+      WindowOpenDisposition::CURRENT_TAB);
+#else   // BUILDFLAG(IS_ANDROID)
+  chrome::FocusLocationBar(browser());
 
   LocationBar* location_bar = GetLocationBar(browser());
 
@@ -1313,13 +1334,16 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, OnInputEntered) {
 
   // Select the suggestion created by the extension, which will trigger the
   // `onInputEntered` event.
-  location_bar->GetOmniboxController()->edit_model()->OpenSelectionForTesting(
+  location_bar->GetOmniboxController()->edit_model()->OpenCurrentSelection(
       base::TimeTicks(), WindowOpenDisposition::CURRENT_TAB);
+#endif  // BUILDFLAG(IS_ANDROID)
 
   ASSERT_TRUE(listener.WaitUntilSatisfied());
   EXPECT_EQ("sending input", listener.message());
   EXPECT_TRUE(listener.had_user_gesture());
 }
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 
 IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, UnscopedSuggestionGrouping) {
   constexpr char kManifest[] =

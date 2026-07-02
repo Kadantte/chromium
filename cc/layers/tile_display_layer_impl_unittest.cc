@@ -36,8 +36,11 @@ TEST_F(TileDisplayLayerImplTest, NoQuadAppendedByDefault) {
 
   auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
+  bool has_missing_tiles = raw_layer->HasMissingTiles();
   raw_layer->AppendQuads(AppendQuadsContext{DRAW_MODE_SOFTWARE, {}, false},
                          render_pass.get(), &data);
+
+  EXPECT_EQ(has_missing_tiles, data.num_missing_tiles > 0);
 
   EXPECT_EQ(render_pass->quad_list.size(), 0u);
 }
@@ -83,8 +86,11 @@ TEST_F(TileDisplayLayerImplTest,
 
   auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
+  bool has_missing_tiles = raw_layer->HasMissingTiles();
   raw_layer->AppendQuads(AppendQuadsContext{DRAW_MODE_SOFTWARE, {}, false},
                          render_pass.get(), &data);
+
+  EXPECT_EQ(has_missing_tiles, data.num_missing_tiles > 0);
 
   EXPECT_EQ(render_pass->quad_list.size(), 0u);
 }
@@ -126,8 +132,11 @@ TEST_F(TileDisplayLayerImplTest,
   // Append quads.
   auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
+  bool has_missing_tiles = raw_layer->HasMissingTiles();
   raw_layer->AppendQuads(AppendQuadsContext{DRAW_MODE_SOFTWARE, {}, false},
                          render_pass.get(), &data);
+
+  EXPECT_EQ(has_missing_tiles, data.num_missing_tiles > 0);
 
   // Verify that one quad is appended and it's clipped.
   ASSERT_EQ(1u, render_pass->quad_list.size());
@@ -176,8 +185,11 @@ TEST_F(TileDisplayLayerImplTest,
 
   auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
+  bool has_missing_tiles = raw_layer->HasMissingTiles();
   raw_layer->AppendQuads(AppendQuadsContext{DRAW_MODE_SOFTWARE, {}, false},
                          render_pass.get(), &data);
+
+  EXPECT_EQ(has_missing_tiles, data.num_missing_tiles > 0);
 
   EXPECT_EQ(render_pass->quad_list.size(), 1u);
   EXPECT_EQ(render_pass->quad_list.front()->rect, kLayerRect);
@@ -221,8 +233,11 @@ TEST_F(TileDisplayLayerImplTest,
 
   auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
+  bool has_missing_tiles = raw_layer->HasMissingTiles();
   raw_layer->AppendQuads(AppendQuadsContext{DRAW_MODE_SOFTWARE, {}, false},
                          render_pass.get(), &data);
+
+  EXPECT_EQ(has_missing_tiles, data.num_missing_tiles > 0);
 
   EXPECT_EQ(render_pass->quad_list.size(), 1u);
   EXPECT_EQ(render_pass->quad_list.front()->rect, kLayerRect);
@@ -347,6 +362,54 @@ TEST_F(TileDisplayLayerImplTest,
   EXPECT_EQ(mask_uv_size, gfx::SizeF(0.5f, 0.5f));
 }
 
+// Verifies that GetContentsResourceId() returns the correct mask UV size when
+// the tiling rect and max tile size differ.
+TEST_F(
+    TileDisplayLayerImplTest,
+    GetContentsResourceIdComputesUVMaskSizeCorrectlyWhenTilingRectIsSmallerThanMaxTileSize) {
+  constexpr gfx::Size kLayerBounds(100, 200);
+  constexpr gfx::Size kTileSize(200, 400);
+  constexpr gfx::Size kResourceSize(200, 400);
+  constexpr gfx::Rect kLayerRect(kLayerBounds);
+
+  auto layer = std::make_unique<TileDisplayLayerImpl>(
+      CHECK_DEREF(host_impl()->active_tree()), /*id=*/42);
+  auto* raw_layer = layer.get();
+  host_impl()->active_tree()->AddLayer(std::move(layer));
+
+  raw_layer->SetBounds(kLayerBounds);
+  raw_layer->SetIsBackdropFilterMask(true);
+
+  auto& tiling = raw_layer->GetOrCreateTilingFromScaleKey(1.0);
+  tiling.SetTileSize(kTileSize);
+  tiling.SetTilingRect(kLayerRect);
+
+  auto resource_id = host_impl()->resource_provider()->ImportResource(
+      viz::TransferableResource::Make(
+          gpu::ClientSharedImage::CreateForTesting(),
+          viz::TransferableResource::ResourceSource::kTest, gpu::SyncToken()),
+      base::DoNothing());
+  TileDisplayLayerImpl::TileContents contents =
+      TileDisplayLayerTileResource(resource_id, kResourceSize);
+  tiling.SetTileContents(TileIndex{0, 0}, contents, /*update_damage=*/true);
+
+  SetupRootProperties(host_impl()->active_tree()->root_layer());
+
+  viz::ResourceId mask_resource_id;
+  gfx::Size mask_texture_size;
+  gfx::SizeF mask_uv_size;
+  raw_layer->GetContentsResourceId(&mask_resource_id, &mask_texture_size,
+                                   &mask_uv_size);
+
+  EXPECT_EQ(mask_resource_id, resource_id);
+  EXPECT_EQ(mask_texture_size, kResourceSize);
+
+  // `mask_uv_size` is the ratio between the tiling's width/height (i.e., the
+  // content size) and that of the resource. Here, the tiling rect is half the
+  // size of the resource in each dimension.
+  EXPECT_EQ(mask_uv_size, gfx::SizeF(0.5f, 0.5f));
+}
+
 // Tests that GetContentsResourceId() returns viz::kInvalidResourceId if the
 // layer has more than one tiling, as masks are only supported if they fit on a
 // single tile.
@@ -415,8 +478,11 @@ TEST_F(TileDisplayLayerImplWithEdgeAADisabledTest,
 
   auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
+  bool has_missing_tiles = raw_layer->HasMissingTiles();
   raw_layer->AppendQuads(AppendQuadsContext{DRAW_MODE_SOFTWARE, {}, false},
                          render_pass.get(), &data);
+
+  EXPECT_EQ(has_missing_tiles, data.num_missing_tiles > 0);
 
   EXPECT_EQ(render_pass->quad_list.size(), 1u);
   EXPECT_EQ(viz::TileDrawQuad::MaterialCast(render_pass->quad_list.front())
@@ -451,8 +517,11 @@ TEST_F(TileDisplayLayerImplWithEdgeAADisabledTest,
 
   auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
+  bool has_missing_tiles = raw_layer->HasMissingTiles();
   raw_layer->AppendQuads(AppendQuadsContext{DRAW_MODE_SOFTWARE, {}, false},
                          render_pass.get(), &data);
+
+  EXPECT_EQ(has_missing_tiles, data.num_missing_tiles > 0);
 
   EXPECT_EQ(render_pass->quad_list.size(), 1u);
   EXPECT_EQ(
@@ -487,8 +556,11 @@ TEST_F(TileDisplayLayerImplTest, MissingTileResultsInCheckerBoardQuad) {
 
   auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
+  bool has_missing_tiles = raw_layer->HasMissingTiles();
   raw_layer->AppendQuads(AppendQuadsContext{DRAW_MODE_SOFTWARE, {}, false},
                          render_pass.get(), &data);
+
+  EXPECT_EQ(has_missing_tiles, data.num_missing_tiles > 0);
 
   // Verify that the layer appended a checkerboard quad for the missing tile.
   // Checkerboard quads are solid-color quads whose color is the safe background
@@ -536,8 +608,11 @@ TEST_F(TileDisplayLayerImplTest, OomTileResultsInSolidColorQuad) {
 
   auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
+  bool has_missing_tiles = raw_layer->HasMissingTiles();
   raw_layer->AppendQuads(AppendQuadsContext{DRAW_MODE_SOFTWARE, {}, false},
                          render_pass.get(), &data);
+
+  EXPECT_EQ(has_missing_tiles, data.num_missing_tiles > 0);
 
   // Verify that the layer appended a solid color quad for the OOM tile.
   EXPECT_EQ(render_pass->quad_list.size(), 1u);
@@ -593,8 +668,11 @@ TEST_F(TileDisplayLayerImplTest, AppendsQuadsFromHighestResolutionTilingByDefaul
 
   auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
+  bool has_missing_tiles = raw_layer->HasMissingTiles();
   raw_layer->AppendQuads(AppendQuadsContext{DRAW_MODE_SOFTWARE, {}, false},
                          render_pass.get(), &data);
+
+  EXPECT_EQ(has_missing_tiles, data.num_missing_tiles > 0);
 
   // Verify that the quad is from the high-res tiling.
   EXPECT_EQ(render_pass->quad_list.size(), 1u);
@@ -643,8 +721,11 @@ TEST_F(TileDisplayLayerImplTest, AppendsQuadsFromIdealResolutionTiling) {
 
   auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
+  bool has_missing_tiles = raw_layer->HasMissingTiles();
   raw_layer->AppendQuads(AppendQuadsContext{DRAW_MODE_SOFTWARE, {}, false},
                          render_pass.get(), &data);
+
+  EXPECT_EQ(has_missing_tiles, data.num_missing_tiles > 0);
 
   // Verify that the quad is from the low-res tiling.
   EXPECT_EQ(render_pass->quad_list.size(), 1u);
@@ -892,8 +973,11 @@ TEST_F(TileDisplayLayerImplTest, LastAppendQuadsScalesUpdated) {
 
   auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
+  bool has_missing_tiles = raw_layer->HasMissingTiles();
   raw_layer->AppendQuads(AppendQuadsContext{DRAW_MODE_SOFTWARE, {}, false},
                          render_pass.get(), &data);
+
+  EXPECT_EQ(has_missing_tiles, data.num_missing_tiles > 0);
 
   // AppendQuads should use the ideal resolution tiling (1.0), so
   // last_append_quads_scales_ should contain 1.0.
@@ -981,8 +1065,11 @@ TEST_F(TileDisplayLayerImplTest, GetSafeToDeleteTilingsIntegration) {
 
   auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
+  bool has_missing_tiles = raw_layer->HasMissingTiles();
   raw_layer->AppendQuads(AppendQuadsContext{DRAW_MODE_SOFTWARE, {}, false},
                          render_pass.get(), &data);
+
+  EXPECT_EQ(has_missing_tiles, data.num_missing_tiles > 0);
 
   // By default, the ideal resolution tiling (1.0) is used.
   raw_layer->SetProposedTilingScalesForDeletion({1.0, 2.0});
@@ -1035,8 +1122,11 @@ TEST_F(TileDisplayLayerImplTest,
   // Append quads.
   auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
+  bool has_missing_tiles = raw_layer->HasMissingTiles();
   raw_layer->AppendQuads(AppendQuadsContext{DRAW_MODE_SOFTWARE, {}, false},
                          render_pass.get(), &data);
+
+  EXPECT_EQ(has_missing_tiles, data.num_missing_tiles > 0);
 
   // Verify that a layer debug border, a tile debug border, and a content quad
   // were appended.
@@ -1095,8 +1185,11 @@ TEST_F(TileDisplayLayerImplTest,
   // Append quads.
   auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
+  bool has_missing_tiles = raw_layer->HasMissingTiles();
   raw_layer->AppendQuads(AppendQuadsContext{DRAW_MODE_SOFTWARE, {}, false},
                          render_pass.get(), &data);
+
+  EXPECT_EQ(has_missing_tiles, data.num_missing_tiles > 0);
 
   // Verify that a layer debug border, a tile debug border, and a content quad
   // were appended.
@@ -1156,8 +1249,11 @@ TEST_F(TileDisplayLayerImplTest,
   // Append quads.
   auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
+  bool has_missing_tiles = raw_layer->HasMissingTiles();
   raw_layer->AppendQuads(AppendQuadsContext{DRAW_MODE_SOFTWARE, {}, false},
                          render_pass.get(), &data);
+
+  EXPECT_EQ(has_missing_tiles, data.num_missing_tiles > 0);
 
   // Verify that a layer debug border, a tile debug border, and a content quad
   // were appended.
@@ -1210,8 +1306,11 @@ TEST_F(TileDisplayLayerImplTest, AppendQuadsAppendsDebugBordersForOomTile) {
   // Append quads.
   auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
+  bool has_missing_tiles = raw_layer->HasMissingTiles();
   raw_layer->AppendQuads(AppendQuadsContext{DRAW_MODE_SOFTWARE, {}, false},
                          render_pass.get(), &data);
+
+  EXPECT_EQ(has_missing_tiles, data.num_missing_tiles > 0);
 
   // Verify that a layer debug border, an OOM tile debug border, and a solid
   // color quad were appended.
@@ -1228,7 +1327,7 @@ TEST_F(TileDisplayLayerImplTest, AppendQuadsAppendsDebugBordersForOomTile) {
   ++it;
   EXPECT_EQ((*it)->material, viz::DrawQuad::Material::kSolidColor);
   EXPECT_EQ(viz::SolidColorDrawQuad::MaterialCast(*it)->color,
-            raw_layer->safe_opaque_background_color());
+            DebugColors::DefaultCheckerboardColor());
 }
 
 // Verifies that AppendQuads() appends debug borders for a not-ready tile when
@@ -1266,8 +1365,11 @@ TEST_F(TileDisplayLayerImplTest,
   // Append quads.
   auto render_pass = viz::CompositorRenderPass::Create();
   AppendQuadsData data;
+  bool has_missing_tiles = raw_layer->HasMissingTiles();
   raw_layer->AppendQuads(AppendQuadsContext{DRAW_MODE_SOFTWARE, {}, false},
                          render_pass.get(), &data);
+
+  EXPECT_EQ(has_missing_tiles, data.num_missing_tiles > 0);
 
   // Verify that a layer debug border, a missing tile debug border, and a
   // checkerboarded quad for the missing content were appended.
@@ -1284,7 +1386,7 @@ TEST_F(TileDisplayLayerImplTest,
   ++it;
   EXPECT_EQ((*it)->material, viz::DrawQuad::Material::kSolidColor);
   EXPECT_EQ(viz::SolidColorDrawQuad::MaterialCast(*it)->color,
-            raw_layer->safe_opaque_background_color());
+            DebugColors::DefaultCheckerboardColor());
 }
 
 TEST_F(TileDisplayLayerImplTest, TileResourceIsOOM) {
@@ -1297,7 +1399,7 @@ TEST_F(TileDisplayLayerImplTest, TileResourceIsOOM) {
   TileDisplayLayerImpl::TileContents oom_contents{
       TileDisplayLayerNoContents(mojom::MissingTileReason::kOutOfMemory)};
   TileDisplayLayerTile oom_tile(*raw_layer, oom_contents);
-  EXPECT_TRUE(oom_tile.is_oom());
+  EXPECT_TRUE(oom_tile.IsOOM());
 
   // OOM tiles should be regarded as ready to draw.
   EXPECT_TRUE(oom_tile.IsReadyToDraw());
@@ -1306,7 +1408,7 @@ TEST_F(TileDisplayLayerImplTest, TileResourceIsOOM) {
   TileDisplayLayerImpl::TileContents resource_not_ready_contents{
       TileDisplayLayerNoContents(mojom::MissingTileReason::kResourceNotReady)};
   TileDisplayLayerTile not_oom_tile(*raw_layer, resource_not_ready_contents);
-  EXPECT_FALSE(not_oom_tile.is_oom());
+  EXPECT_FALSE(not_oom_tile.IsOOM());
 
   // Non-OOM missing tiles should not be regarded as ready to draw.
   EXPECT_FALSE(not_oom_tile.IsReadyToDraw());
@@ -1314,7 +1416,7 @@ TEST_F(TileDisplayLayerImplTest, TileResourceIsOOM) {
   // Solid color tile.
   TileDisplayLayerImpl::TileContents color_contents(SkColors::kRed);
   TileDisplayLayerTile color_tile(*raw_layer, color_contents);
-  EXPECT_FALSE(color_tile.is_oom());
+  EXPECT_FALSE(color_tile.IsOOM());
   EXPECT_TRUE(color_tile.IsReadyToDraw());
 
   // Resource tile.
@@ -1326,7 +1428,7 @@ TEST_F(TileDisplayLayerImplTest, TileResourceIsOOM) {
   TileDisplayLayerImpl::TileContents resource_contents =
       TileDisplayLayerTileResource(resource_id, gfx::Size(1, 1));
   TileDisplayLayerTile resource_tile(*raw_layer, resource_contents);
-  EXPECT_FALSE(resource_tile.is_oom());
+  EXPECT_FALSE(resource_tile.IsOOM());
   EXPECT_TRUE(resource_tile.IsReadyToDraw());
 }
 

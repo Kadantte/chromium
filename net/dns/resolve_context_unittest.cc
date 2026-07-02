@@ -23,10 +23,12 @@
 #include "net/base/features.h"
 #include "net/base/ip_address.h"
 #include "net/base/ip_endpoint.h"
+#include "net/base/load_timing_internal_info.h"
 #include "net/base/mock_network_change_notifier.h"
 #include "net/base/network_anonymization_key.h"
 #include "net/base/network_change_notifier.h"
 #include "net/base/network_isolation_key.h"
+#include "net/dns/dns_attempt.h"
 #include "net/dns/dns_config.h"
 #include "net/dns/dns_server_iterator.h"
 #include "net/dns/dns_session.h"
@@ -40,6 +42,7 @@
 #include "net/dns/public/dns_query_type.h"
 #include "net/dns/public/host_resolver_source.h"
 #include "net/dns/public/secure_dns_mode.h"
+#include "net/http/http_response_info.h"
 #include "net/socket/socket_test_util.h"
 #include "net/test/test_with_task_environment.h"
 #include "net/url_request/url_request_context.h"
@@ -412,7 +415,8 @@ TEST_F(ResolveContextTest, InvalidateCachesAndPerSessionData) {
   NetworkAnonymizationKey anonymization_key;
 
   HostCache::Key key("example.com", DnsQueryType::UNSPECIFIED, 0,
-                     HostResolverSource::ANY, anonymization_key);
+                     HostResolverSource::ANY, anonymization_key,
+                     handles::kInvalidNetworkHandle);
   context.host_cache()->Set(
       key,
       HostCache::Entry(OK, /*ip_endpoints=*/{}, /*aliases=*/{},
@@ -426,9 +430,10 @@ TEST_F(ResolveContextTest, InvalidateCachesAndPerSessionData) {
           tick_clock.NowTicks() + base::Seconds(10),
           clock.Now() + base::Seconds(10),
           HostResolverInternalResult::Source::kDns, ERR_NAME_NOT_RESOLVED),
-      anonymization_key, HostResolverSource::DNS, /*secure=*/false);
-  ASSERT_TRUE(
-      context.host_resolver_cache()->Lookup("domain.test", anonymization_key));
+      anonymization_key, handles::kInvalidNetworkHandle,
+      HostResolverSource::DNS, /*secure=*/false);
+  ASSERT_TRUE(context.host_resolver_cache()->Lookup(
+      "domain.test", anonymization_key, handles::kInvalidNetworkHandle));
 
   DnsConfig config = CreateDnsConfig(/*num_servers=*/2, /*num_doh_servers=*/2);
   scoped_refptr<DnsSession> session = CreateDnsSession(config);
@@ -436,8 +441,8 @@ TEST_F(ResolveContextTest, InvalidateCachesAndPerSessionData) {
                                             /*network_change=*/false);
 
   EXPECT_FALSE(context.host_cache()->Lookup(key, tick_clock.NowTicks()));
-  EXPECT_FALSE(
-      context.host_resolver_cache()->Lookup("domain.test", anonymization_key));
+  EXPECT_FALSE(context.host_resolver_cache()->Lookup(
+      "domain.test", anonymization_key, handles::kInvalidNetworkHandle));
 
   // Re-add to the caches and now add some DoH server status.
   context.host_cache()->Set(
@@ -451,12 +456,13 @@ TEST_F(ResolveContextTest, InvalidateCachesAndPerSessionData) {
           tick_clock.NowTicks() + base::Seconds(10),
           clock.Now() + base::Seconds(10),
           HostResolverInternalResult::Source::kDns, ERR_NAME_NOT_RESOLVED),
-      anonymization_key, HostResolverSource::DNS, /*secure=*/false);
+      anonymization_key, handles::kInvalidNetworkHandle,
+      HostResolverSource::DNS, /*secure=*/false);
   context.RecordServerSuccess(/*server_index=*/0u, /*is_doh_server=*/true,
                               session.get());
   ASSERT_TRUE(context.host_cache()->Lookup(key, tick_clock.NowTicks()));
-  ASSERT_TRUE(
-      context.host_resolver_cache()->Lookup("domain2.test", anonymization_key));
+  ASSERT_TRUE(context.host_resolver_cache()->Lookup(
+      "domain2.test", anonymization_key, handles::kInvalidNetworkHandle));
   ASSERT_TRUE(context.GetDohServerAvailability(0u, session.get()));
 
   // Invalidate again.
@@ -466,8 +472,8 @@ TEST_F(ResolveContextTest, InvalidateCachesAndPerSessionData) {
                                             /*network_change=*/true);
 
   EXPECT_FALSE(context.host_cache()->Lookup(key, tick_clock.NowTicks()));
-  EXPECT_FALSE(
-      context.host_resolver_cache()->Lookup("domain2.test", anonymization_key));
+  EXPECT_FALSE(context.host_resolver_cache()->Lookup(
+      "domain2.test", anonymization_key, handles::kInvalidNetworkHandle));
   EXPECT_FALSE(context.GetDohServerAvailability(0u, session.get()));
   EXPECT_FALSE(context.GetDohServerAvailability(0u, session2.get()));
 }
@@ -487,7 +493,8 @@ TEST_F(ResolveContextTest, InvalidateCachesAndPerSessionDataSameSession) {
   // Add to the caches and add some DoH server status.
   NetworkAnonymizationKey anonymization_key;
   HostCache::Key key("example.com", DnsQueryType::UNSPECIFIED, 0,
-                     HostResolverSource::ANY, anonymization_key);
+                     HostResolverSource::ANY, anonymization_key,
+                     handles::kInvalidNetworkHandle);
   context.host_cache()->Set(
       key,
       HostCache::Entry(OK, /*ip_endpoints=*/{}, /*aliases=*/{"example.com"},
@@ -499,12 +506,13 @@ TEST_F(ResolveContextTest, InvalidateCachesAndPerSessionDataSameSession) {
           tick_clock.NowTicks() + base::Seconds(10),
           clock.Now() + base::Seconds(10),
           HostResolverInternalResult::Source::kDns, ERR_NAME_NOT_RESOLVED),
-      anonymization_key, HostResolverSource::DNS, /*secure=*/false);
+      anonymization_key, handles::kInvalidNetworkHandle,
+      HostResolverSource::DNS, /*secure=*/false);
   context.RecordServerSuccess(/*server_index=*/0u, /*is_doh_server=*/true,
                               session.get());
   ASSERT_TRUE(context.host_cache()->Lookup(key, tick_clock.NowTicks()));
-  ASSERT_TRUE(
-      context.host_resolver_cache()->Lookup("domain.test", anonymization_key));
+  ASSERT_TRUE(context.host_resolver_cache()->Lookup(
+      "domain.test", anonymization_key, handles::kInvalidNetworkHandle));
   ASSERT_TRUE(context.GetDohServerAvailability(0u, session.get()));
 
   // Invalidate again with the same session.
@@ -513,8 +521,8 @@ TEST_F(ResolveContextTest, InvalidateCachesAndPerSessionDataSameSession) {
 
   // Expect host cache to be invalidated but not the per-session data.
   EXPECT_FALSE(context.host_cache()->Lookup(key, tick_clock.NowTicks()));
-  EXPECT_FALSE(
-      context.host_resolver_cache()->Lookup("domain.test", anonymization_key));
+  EXPECT_FALSE(context.host_resolver_cache()->Lookup(
+      "domain.test", anonymization_key, handles::kInvalidNetworkHandle));
   EXPECT_TRUE(context.GetDohServerAvailability(0u, session.get()));
 }
 
@@ -1601,6 +1609,61 @@ TEST_F(ResolveContextTest, ClassicDnsServerIndexRotation) {
   std::unique_ptr<DnsServerIterator> classic_itr2 =
       context.GetClassicDnsIterator(session2->config(), session2.get());
   EXPECT_LT(classic_itr2->GetNextAttemptIndex(), 2u);
+}
+
+TEST_F(ResolveContextTest, RecordDohSessionStatus) {
+  DnsConfig config = CreateDnsConfig(/*num_servers=*/0, /*num_doh_servers=*/1);
+  config.secure_dns_mode = SecureDnsMode::kAutomatic;
+  scoped_refptr<DnsSession> session = CreateDnsSession(config);
+
+  auto request_context = CreateTestURLRequestContextBuilder()->Build();
+  ResolveContext context(request_context.get(), /*enable_caching=*/true);
+  context.InvalidateCachesAndPerSessionData(session.get(),
+                                            /*network_change=*/false);
+
+  base::HistogramTester histogram_tester;
+
+  HttpResponseInfo response_info;
+  response_info.connection_info = HttpConnectionInfo::kHTTP2;
+  response_info.network_accessed = true;
+  response_info.ssl_info.early_data_accepted = true;
+
+  LoadTimingInternalInfo load_timing;
+  load_timing.session_source = SessionSource::kNew;
+  load_timing.max_stream_limit_pending_delay = base::Milliseconds(10);
+
+  context.RecordDohSessionStatus(/*server_index=*/0u, response_info,
+                                 load_timing, base::Milliseconds(100), OK,
+                                 session.get());
+
+  histogram_tester.ExpectBucketCount(
+      "Net.DNS.DnsTransaction.Other.Http2.SessionSource", SessionSource::kNew,
+      1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.DnsTransaction.Other.Http2.New.SuccessTime",
+      base::Milliseconds(100), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.DnsTransaction.Other.Http2.New.MaxStreamLimitPendingDelay",
+      base::Milliseconds(10), 1);
+  histogram_tester.ExpectBucketCount(
+      "Net.DNS.DnsTransaction.Other.Http2.New.EarlyDataAccepted", true, 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.DnsTransaction.Other.Http2.New.0RTT.Time",
+      base::Milliseconds(100), 1);
+
+  response_info.connection_info = HttpConnectionInfo::kQUIC_RFC_V1;
+  load_timing.session_source = SessionSource::kExisting;
+  context.RecordDohSessionStatus(/*server_index=*/0u, response_info,
+                                 load_timing, base::Milliseconds(50),
+                                 ERR_FAILED, session.get());
+
+  histogram_tester.ExpectBucketCount(
+      "Net.DNS.DnsTransaction.Other.Http3.SessionSource",
+      SessionSource::kExisting, 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.DnsTransaction.Other.Http3.Existing."
+      "FailureTime",
+      base::Milliseconds(50), 1);
 }
 
 }  // namespace

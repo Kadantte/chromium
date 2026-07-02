@@ -14,12 +14,16 @@
 #import "components/autofill/core/browser/payments/autofill_error_dialog_context.h"
 #import "components/autofill/core/browser/payments/virtual_card_enrollment_manager.h"
 #import "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#import "components/autofill/core/browser/ui/payments/bubble_show_options.h"
 #import "components/autofill/core/browser/ui/payments/virtual_card_enroll_ui_model.h"
 #import "components/autofill/core/common/autofill_payments_features.h"
 #import "components/autofill/ios/browser/autofill_agent.h"
 #import "components/autofill/ios/browser/test_autofill_client_ios.h"
 #import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/autofill/autofill_ai/error_dialog/model/autofill_ai_error_dialog_context.h"
+#import "ios/chrome/browser/autofill/autofill_ai/public/save_entity_params.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_tab_helper.h"
+#import "ios/chrome/browser/autofill/model/manual_fill_virtual_card_cache.h"
 #import "ios/chrome/browser/autofill/ui_bundled/chrome_autofill_client_ios.h"
 #import "ios/chrome/browser/infobars/model/infobar_ios.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
@@ -84,8 +88,6 @@
 - (void)showScanCardSaveAndFillBottomSheet:
     (const autofill::FormActivityParams&)params {
 }
-- (void)showPlusAddressesBottomSheet {
-}
 
 - (void)showSaveCardBottomSheetOnOriginWebState:(web::WebState*)originWebState {
   _showSaveCardBottomSheet = YES;
@@ -106,6 +108,9 @@
 - (void)dismissEditAddressBottomSheet {
 }
 
+- (void)resetAutofillSuggestionsLoadingStates {
+}
+
 - (void)showAutofillErrorDialog:
     (autofill::AutofillErrorDialogContext)errorContext {
   _errorContext = std::move(errorContext);
@@ -113,9 +118,26 @@
 
 - (void)dismissAutofillErrorDialog {
 }
+
+- (void)showAutofillAiErrorDialog:
+    (autofill::AutofillAiErrorDialogContext)errorContext {
+}
+
+- (void)dismissAutofillAiErrorDialog {
+}
+
 - (void)showAutofillProgressDialog {
 }
 - (void)dismissAutofillProgressDialog {
+}
+
+- (void)showSaveEntityDialog:(autofill::SaveEntityParams)params {
+  std::move(params.callback)
+      .Run(autofill::AutofillClient::AutofillAiBubbleResult::kUnknown,
+           std::nullopt, {});
+}
+
+- (void)dismissSaveEntityDialog {
 }
 
 @end
@@ -187,7 +209,7 @@ class IOSChromePaymentsAutofillClientTest : public PlatformTest {
 
   std::unique_ptr<VirtualCardEnrollUiModel> ShowVirtualCardEnrollDialog() {
     payments_client()->ShowVirtualCardEnrollDialog(
-        autofill::VirtualCardEnrollmentFields(),
+        VirtualCardEnrollmentFields(),
         /*accept_virtual_card_callback=*/base::DoNothing(),
         /*decline_virtual_card_callback=*/base::DoNothing());
     std::unique_ptr<VirtualCardEnrollUiModel> ui_model =
@@ -331,16 +353,13 @@ TEST_F(
 TEST_F(IOSChromePaymentsAutofillClientTest,
        UsesSaveCvcInfobarTypeForUploadSaveCvc) {
   // Set up the save options for a CVC-only save.
-  base::test::ScopedFeatureList features(
-      features::kAutofillEnableCvcStorageAndFilling);
   payments::PaymentsAutofillClient::SaveCreditCardOptions options;
   options.card_save_type =
       payments::PaymentsAutofillClient::CardSaveType::kCvcSaveOnly;
   options.show_prompt = true;
 
-  payments_client()->ShowSaveCreditCardToCloud(autofill::test::GetCreditCard(),
-                                               LegalMessageLines(), options,
-                                               base::DoNothing());
+  payments_client()->ShowSaveCreditCardToCloud(
+      test::GetCreditCard(), LegalMessageLines(), options, base::DoNothing());
 
   InfoBarManagerImpl* infobar_manager =
       InfoBarManagerImpl::FromWebState(web_state_.get());
@@ -356,16 +375,14 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
 // save.
 TEST_F(IOSChromePaymentsAutofillClientTest,
        UsesSaveCvcInfobarTypeForLocalSaveCvc) {
-  base::test::ScopedFeatureList features(
-      features::kAutofillEnableCvcStorageAndFilling);
   // Set up the save options for a CVC-only save.
   payments::PaymentsAutofillClient::SaveCreditCardOptions options;
   options.card_save_type =
       payments::PaymentsAutofillClient::CardSaveType::kCvcSaveOnly;
   options.show_prompt = true;
 
-  payments_client()->ShowSaveCreditCardLocally(autofill::test::GetCreditCard(),
-                                               options, base::DoNothing());
+  payments_client()->ShowSaveCreditCardLocally(test::GetCreditCard(), options,
+                                               base::DoNothing());
 
   InfoBarManagerImpl* infobar_manager =
       InfoBarManagerImpl::FromWebState(web_state_.get());
@@ -386,7 +403,7 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
       payments::PaymentsAutofillClient::PaymentsRpcResult::kSuccess);
 
   EXPECT_EQ(ui_model->enrollment_progress(),
-            autofill::VirtualCardEnrollUiModel::EnrollmentProgress::kEnrolled);
+            VirtualCardEnrollUiModel::EnrollmentProgress::kEnrolled);
 }
 
 TEST_F(IOSChromePaymentsAutofillClientTest,
@@ -398,7 +415,7 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
       payments::PaymentsAutofillClient::PaymentsRpcResult::kPermanentFailure);
 
   EXPECT_EQ(ui_model->enrollment_progress(),
-            autofill::VirtualCardEnrollUiModel::EnrollmentProgress::kFailed);
+            VirtualCardEnrollUiModel::EnrollmentProgress::kFailed);
 }
 
 // Tests metrics for save card confirmation view shown for card not uploaded.
@@ -423,9 +440,9 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
   payments_client()->VirtualCardEnrollCompleted(
       payments::PaymentsAutofillClient::PaymentsRpcResult::kPermanentFailure);
 
-  autofill::AutofillErrorDialogContext expected_context;
+  AutofillErrorDialogContext expected_context;
   expected_context.type =
-      autofill::AutofillErrorDialogType::kVirtualCardEnrollmentTemporaryError;
+      AutofillErrorDialogType::kVirtualCardEnrollmentTemporaryError;
   EXPECT_EQ([autofill_commands_ autofillErrorDialogContext],
             std::make_optional(expected_context));
 }
@@ -477,7 +494,7 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptResult.IOS.Server.BottomSheet.NumStrikes.1."
       "NoFixFlow.SavingWithoutCvc",
-      autofill::autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
+      autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
       /*expected_count=*/1);
 }
 
@@ -497,7 +514,7 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptResult.IOS.Server.BottomSheet.NumStrikes.0."
       "RequestingCardHolderName.SavingWithoutCvc",
-      autofill::autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
+      autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
       /*expected_count=*/1);
 }
 
@@ -517,7 +534,7 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptResult.IOS.Server.BottomSheet.NumStrikes.0."
       "RequestingExpiryDate.SavingWithoutCvc",
-      autofill::autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
+      autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
       /*expected_count=*/1);
 }
 
@@ -540,7 +557,7 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptResult.IOS.Server.BottomSheet.NumStrikes.0."
       "RequestingCardHolderNameAndExpiryDate.SavingWithoutCvc",
-      autofill::autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
+      autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
       /*expected_count=*/1);
 }
 
@@ -559,7 +576,7 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
       /*on_confirmation_closed_callback=*/std::nullopt);
   EXPECT_EQ((bottomsheet_tab_helper_->GetSaveCardBottomSheetModel())
                 ->save_card_state(),
-            autofill::SaveCardBottomSheetModel::SaveCardState::kSaved);
+            SaveCardBottomSheetModel::SaveCardState::kSaved);
 }
 
 // Test that on save card failure, the save card bottomsheet model's state is
@@ -578,7 +595,7 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
       /*on_confirmation_closed_callback=*/std::nullopt);
   EXPECT_EQ((bottomsheet_tab_helper_->GetSaveCardBottomSheetModel())
                 ->save_card_state(),
-            autofill::SaveCardBottomSheetModel::SaveCardState::kFailed);
+            SaveCardBottomSheetModel::SaveCardState::kFailed);
   const std::optional<AutofillErrorDialogContext>& error_context =
       [autofill_commands() autofillErrorDialogContext];
   EXPECT_TRUE(error_context.has_value());
@@ -602,7 +619,7 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
       /*on_confirmation_closed_callback=*/std::nullopt);
   EXPECT_EQ((bottomsheet_tab_helper_->GetSaveCardBottomSheetModel())
                 ->save_card_state(),
-            autofill::SaveCardBottomSheetModel::SaveCardState::kFailed);
+            SaveCardBottomSheetModel::SaveCardState::kFailed);
   const std::optional<AutofillErrorDialogContext>& error_context =
       [autofill_commands() autofillErrorDialogContext];
   EXPECT_FALSE(error_context.has_value());
@@ -611,8 +628,6 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
 TEST_F(IOSChromePaymentsAutofillClientTest,
        DoesNotLogNotShownForCvcOnlySave_WhenBottomSheetNotShown) {
   base::HistogramTester histogram_tester;
-  base::test::ScopedFeatureList features(
-      autofill::features::kAutofillEnableCvcStorageAndFilling);
 
   payments::PaymentsAutofillClient::SaveCreditCardOptions options;
   options.card_save_type =
@@ -621,7 +636,7 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
   options.num_strikes = 1;
 
   payments_client()->ShowSaveCreditCardToCloud(
-      autofill::test::GetCreditCard(), LegalMessageLines(), std::move(options),
+      test::GetCreditCard(), LegalMessageLines(), std::move(options),
       base::DoNothing());
 
   // Verify the bottom sheet was not shown.
@@ -631,15 +646,13 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptResult.IOS.Server.BottomSheet.NumStrikes.1."
       "NoFixFlow.SavingWithCvc",
-      autofill::autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
+      autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
       /*expected_count=*/0);
 }
 
 TEST_F(IOSChromePaymentsAutofillClientTest,
        LogsNotShownForCardSaveWithCvc_WhenBottomSheetNotShown) {
   base::HistogramTester histogram_tester;
-  base::test::ScopedFeatureList features(
-      autofill::features::kAutofillEnableCvcStorageAndFilling);
 
   payments::PaymentsAutofillClient::SaveCreditCardOptions options;
   options.card_save_type =
@@ -648,7 +661,7 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
   options.num_strikes = 1;
 
   payments_client()->ShowSaveCreditCardToCloud(
-      autofill::test::GetCreditCard(), LegalMessageLines(), std::move(options),
+      test::GetCreditCard(), LegalMessageLines(), std::move(options),
       base::DoNothing());
 
   // Verify the bottom sheet was not shown.
@@ -658,7 +671,7 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptResult.IOS.Server.BottomSheet.NumStrikes.1."
       "NoFixFlow.SavingWithCvc",
-      autofill::autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
+      autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
       /*expected_count=*/1);
 }
 
@@ -688,7 +701,7 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptResult.IOS.Local.BottomSheet.NumStrikes.1."
       "NoFixFlow.SavingWithoutCvc",
-      autofill::autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
+      autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
       /*expected_count=*/1);
 }
 
@@ -708,7 +721,7 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptResult.IOS.Local.BottomSheet.NumStrikes.0."
       "RequestingCardHolderName.SavingWithoutCvc",
-      autofill::autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
+      autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
       /*expected_count=*/0);
 }
 
@@ -728,7 +741,7 @@ TEST_F(IOSChromePaymentsAutofillClientTest,
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptResult.IOS.Local.BottomSheet.NumStrikes.0."
       "RequestingExpiryDate.SavingWithoutCvc",
-      autofill::autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
+      autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
       /*expected_count=*/0);
 }
 
@@ -752,8 +765,71 @@ TEST_F(
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptResult.IOS.Local.BottomSheet.NumStrikes.0."
       "RequestingCardHolderNameAndExpiryDate.SavingWithoutCvc",
-      autofill::autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
+      autofill_metrics::SaveCreditCardPromptResultIOS::kNotShown,
       /*expected_count=*/0);
+}
+
+// Tests that ShowCreditCardLocalSaveAndFillDialog shows the save card bottom
+// sheet with the kScanCardSaveAndFill source feature.
+TEST_F(IOSChromePaymentsAutofillClientTest,
+       ShowCreditCardLocalSaveAndFillDialog_ShowsBottomSheet) {
+  payments_client()->ShowCreditCardLocalSaveAndFillDialog(base::DoNothing());
+
+  // Verify that the bottom sheet command was invoked.
+  EXPECT_TRUE([autofill_commands() showSaveCardBottomSheetCalled]);
+
+  // Retrieve the model from the tab helper to verify options.
+  std::unique_ptr<SaveCardBottomSheetModel> model =
+      bottomsheet_tab_helper_->GetSaveCardBottomSheetModel();
+  ASSERT_TRUE(model);
+
+  // Verify that the SourceFeature is set to kScanCardSaveAndFill.
+  EXPECT_EQ(
+      model->save_card_delegate()->GetSaveCreditCardOptions().source_feature,
+      payments::PaymentsAutofillClient::SourceFeature::kScanCardSaveAndFill);
+}
+
+// Tests that HideCreditCardSaveAndFillDialog marks local save bottom sheet as
+// completed.
+TEST_F(IOSChromePaymentsAutofillClientTest,
+       HideCreditCardSaveAndFillDialog_LocalSaveBottomSheetCompletes) {
+  payments_client()->ShowCreditCardLocalSaveAndFillDialog(base::DoNothing());
+  EXPECT_TRUE([autofill_commands() showSaveCardBottomSheetCalled]);
+
+  payments_client()->HideCreditCardSaveAndFillDialog();
+
+  std::unique_ptr<SaveCardBottomSheetModel> model =
+      bottomsheet_tab_helper_->GetSaveCardBottomSheetModel();
+  ASSERT_TRUE(model);
+  EXPECT_EQ(model->save_card_state(),
+            SaveCardBottomSheetModel::SaveCardState::kFailed);
+}
+
+// Tests that OnCardDataAvailable populates the ManualFillVirtualCardCache.
+TEST_F(IOSChromePaymentsAutofillClientTest,
+       OnCardDataAvailable_CachesVirtualCard) {
+  // Create a virtual card
+  CreditCard card = test::GetVirtualCard();
+  card.set_server_id("test_server_id");
+  card.set_record_type(CreditCard::RecordType::kVirtualCard);
+
+  FilledCardInformationBubbleOptions options;
+  options.filled_card = card;
+  options.cvc = u"123";
+
+  url::Origin test_origin = url::Origin::Create(GURL("https://example.com"));
+  ManualFillVirtualCardCache::CreateForWebState(web_state_.get());
+
+  payments_client()->OnCardDataAvailable(options, test_origin);
+
+  ManualFillVirtualCardCache* cache =
+      ManualFillVirtualCardCache::FromWebState(web_state_.get());
+  ASSERT_TRUE(cache);
+
+  const CreditCard* cached_card =
+      cache->GetUnmaskedCard(card.server_id(), test_origin);
+  ASSERT_TRUE(cached_card);
+  EXPECT_EQ(cached_card->cvc(), u"123");
 }
 
 }  // namespace

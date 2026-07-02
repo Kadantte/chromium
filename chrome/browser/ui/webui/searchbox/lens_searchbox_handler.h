@@ -18,6 +18,7 @@ class LensSearchboxHandler : public SearchboxHandler {
  public:
   LensSearchboxHandler(
       mojo::PendingReceiver<searchbox::mojom::PageHandler> pending_page_handler,
+      mojo::PendingRemote<searchbox::mojom::Page> pending_page,
       Profile* profile,
       content::WebContents* web_contents,
       LensSearchboxClient* lens_searchbox_client);
@@ -29,11 +30,15 @@ class LensSearchboxHandler : public SearchboxHandler {
       const gfx::VectorIcon& icon) const override;
 
   // searchbox::mojom::PageHandler:
-  void SetPage(
-      mojo::PendingRemote<searchbox::mojom::Page> pending_page) override;
   void OnFocusChanged(bool focused) override;
   void QueryAutocomplete(const std::u16string& input,
-                         bool prevent_inline_autocomplete) override;
+                         bool prevent_inline_autocomplete,
+                         uint32_t cursor_position) override;
+  void QueryAutocompleteWithSuggestInventory(
+      const std::u16string& input,
+      bool prevent_inline_autocomplete,
+      uint32_t cursor_position,
+      omnibox::SuggestInventory suggest_inventory) override;
   void DeleteAutocompleteMatch(uint8_t line, const GURL& url) override {}
   void ExecuteAction(uint8_t line,
                      uint8_t action_index,

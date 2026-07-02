@@ -218,7 +218,9 @@ class IdentityGetAuthTokenFunction : public ExtensionFunction,
 #endif
 
   // Methods for invoking UI. Overridable for testing.
+#if !BUILDFLAG(IS_CHROMEOS)
   virtual void ShowExtensionLoginPrompt();
+#endif
   virtual void ShowRemoteConsentDialog(
       const RemoteConsentResolutionData& resolution_data);
 
@@ -264,7 +266,7 @@ class IdentityGetAuthTokenFunction : public ExtensionFunction,
   std::unique_ptr<RefreshTokensLoadedWaiter> refresh_tokens_loaded_waiter_;
   std::unique_ptr<GaiaRemoteConsentFlow> gaia_remote_consent_flow_;
   std::string consent_result_;
-  // Added for debugging https://crbug.com/1091423.
+  // Added for debugging https://crbug.com/40134189.
   bool remote_consent_approved_ = false;
 
   // Invoked when IdentityAPI is shut down.

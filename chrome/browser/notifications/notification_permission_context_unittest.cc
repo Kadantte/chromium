@@ -37,8 +37,7 @@
 #include "third_party/blink/public/mojom/permissions/permission_status.mojom.h"
 #include "url/gurl.h"
 
-
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/extensions/test_extension_system.h"
 #include "chrome/browser/notifications/notifier_state_tracker.h"
 #include "chrome/browser/notifications/notifier_state_tracker_factory.h"
@@ -48,7 +47,7 @@
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
 #include "ui/message_center/public/cpp/notifier_id.h"
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 namespace {
 
@@ -85,12 +84,14 @@ class TestNotificationPermissionContext : public NotificationPermissionContext {
       const permissions::PermissionRequestData& request_data,
       permissions::BrowserPermissionCallback callback,
       bool persist,
+      const content::PermissionResult* permission_result,
       const permissions::PermissionPromptDecision& decision) override {
     permission_set_count_++;
     last_permission_set_persisted_ = persist;
     last_set_decision_ = decision.overall_decision;
     NotificationPermissionContext::NotifyPermissionSet(
-        request_data, std::move(callback), persist, decision);
+        request_data, std::move(callback), persist, permission_result,
+        decision);
   }
 
   int permission_set_count_ = 0;
@@ -120,15 +121,14 @@ class NotificationPermissionContextTest
                             const GURL& requesting_origin,
                             const GURL& embedding_origin,
                             ContentSetting setting) {
-    context->UpdateContentSetting(
+    context->UpdateSetting(
         permissions::PermissionRequestData(
-            std::make_unique<permissions::ContentSettingPermissionResolver>(
-                ContentSettingsType::NOTIFICATIONS),
+            permissions::RequestType::kNotifications,
             /*user_gesture=*/true, requesting_origin, embedding_origin),
         setting, /*is_one_time=*/false);
   }
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   // Registers the given |extension| with the extension registrar and returns
   // the extension if it could be registered appropriately.
   scoped_refptr<const extensions::Extension> RegisterExtension(
@@ -317,8 +317,9 @@ TEST_F(NotificationPermissionContextTest, WebNotificationsTopLevelOriginOnly) {
   auto permission_status = PermissionStatus::ASK;
   context.DecidePermission(
       std::make_unique<permissions::PermissionRequestData>(
-          std::make_unique<permissions::ContentSettingPermissionResolver>(
-              ContentSettingsType::NOTIFICATIONS),
+          content::PermissionDescriptorUtil::
+              CreatePermissionDescriptorForPermissionType(
+                  blink::PermissionType::NOTIFICATIONS),
           request_id,
           /*user_gesture=*/true, requesting_origin, embedding_origin),
       base::BindOnce(&StorePermissionStatus, &permission_status));
@@ -390,7 +391,7 @@ TEST_F(NotificationPermissionContextTest, SecureOriginRequirement) {
 }
 
 #if BUILDFLAG(IS_MAC) && defined(ARCH_CPU_ARM64)
-// Bulk-disabled for arm64 bot stabilization: https://crbug.com/1154345
+// Bulk-disabled for arm64 bot stabilization: https://crbug.com/40734863
 #define MAYBE_TestDenyInIncognitoAfterDelay \
   DISABLED_TestDenyInIncognitoAfterDelay
 #else
@@ -416,8 +417,9 @@ TEST_F(NotificationPermissionContextTest, MAYBE_TestDenyInIncognitoAfterDelay) {
 
   permission_context.RequestPermission(
       std::make_unique<permissions::PermissionRequestData>(
-          std::make_unique<permissions::ContentSettingPermissionResolver>(
-              ContentSettingsType::NOTIFICATIONS),
+          content::PermissionDescriptorUtil::
+              CreatePermissionDescriptorForPermissionType(
+                  blink::PermissionType::NOTIFICATIONS),
           id, /*user_gesture=*/true, url),
       base::DoNothing());
 
@@ -436,10 +438,10 @@ TEST_F(NotificationPermissionContextTest, MAYBE_TestDenyInIncognitoAfterDelay) {
   // Time elapsed whilst hidden is not counted.
   // n.b. This line also clears out any old scheduled timer tasks. This is
   // important, because otherwise Timer::Reset (triggered by
-  // VisibilityTimerTabHelper::WasShown) may choose to re-use an existing
-  // scheduled task, and when it fires Timer::RunScheduledTask will call
-  // TimeTicks::Now() (which unlike task_runner->NowTicks(), we can't fake),
-  // and miscalculate the remaining delay at which to fire the timer.
+  // visibility_timer::VisibilityTimerTabHelper::WasShown) may choose to re-use
+  // an existing scheduled task, and when it fires Timer::RunScheduledTask will
+  // call TimeTicks::Now() (which unlike task_runner->NowTicks(), we can't
+  // fake), and miscalculate the remaining delay at which to fire the timer.
   task_runner->FastForwardBy(base::Days(1));
 
   EXPECT_EQ(0, permission_context.permission_set_count());
@@ -489,15 +491,17 @@ TEST_F(NotificationPermissionContextTest, TestParallelDenyInIncognito) {
 
   permission_context.RequestPermission(
       std::make_unique<permissions::PermissionRequestData>(
-          std::make_unique<permissions::ContentSettingPermissionResolver>(
-              ContentSettingsType::NOTIFICATIONS),
+          content::PermissionDescriptorUtil::
+              CreatePermissionDescriptorForPermissionType(
+                  blink::PermissionType::NOTIFICATIONS),
           id1,
           /*user_gesture=*/true, url),
       base::DoNothing());
   permission_context.RequestPermission(
       std::make_unique<permissions::PermissionRequestData>(
-          std::make_unique<permissions::ContentSettingPermissionResolver>(
-              ContentSettingsType::NOTIFICATIONS),
+          content::PermissionDescriptorUtil::
+              CreatePermissionDescriptorForPermissionType(
+                  blink::PermissionType::NOTIFICATIONS),
           id2,
           /*user_gesture=*/true, url),
       base::DoNothing());
@@ -582,7 +586,7 @@ TEST_F(NotificationPermissionContextTest, GetNotificationsSettings) {
   EXPECT_EQ(CONTENT_SETTING_ASK, settings[4].GetContentSetting());
 }
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 TEST_F(NotificationPermissionContextTest, ExtensionPermissionAskByDefault) {
   // Verifies that notification permission is not granted to extensions by
   // default. They need to explicitly declare this in their manifest.

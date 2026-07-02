@@ -74,6 +74,7 @@ import org.chromium.components.segmentation_platform.SegmentationPlatformService
 import org.chromium.components.segmentation_platform.prediction_status.PredictionStatus;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
+import org.chromium.ui.test.util.MockitoHelper;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -129,8 +130,7 @@ public class HomeModulesCoordinatorUnitTest {
         when(mView.findViewById(R.id.home_modules_recycler_view)).thenReturn(mRecyclerView);
         when(mRecyclerView.getContext()).thenReturn(mActivity);
         Set<Integer> enabledModules = Set.of(ModuleType.PRICE_CHANGE, ModuleType.SINGLE_TAB);
-        when(mHomeModulesConfigManager.getEnabledModuleSet())
-                .thenReturn(new HashSet<>(enabledModules));
+        when(mModuleRegistry.getEnabledModuleSet()).thenReturn(new HashSet<>(enabledModules));
 
         // Register mock builders for enabled modules to prevent NPE in mediator.
         for (int type : enabledModules) {
@@ -220,10 +220,12 @@ public class HomeModulesCoordinatorUnitTest {
         mCoordinator = createCoordinator(/* skipInitProfile= */ false);
         // Verifies that an observer is registered to the mUiConfig on tablets.
         verify(mUiConfig).addObserver(mDisplayStyleObserver.capture());
+        assertTrue(mCoordinator.getIsSnapHelperAttachedForTesting());
 
         mCoordinator.destroy();
         verify(mUiConfig).removeObserver(mDisplayStyleObserver.capture());
         assertNull(mCoordinator.getHomeModulesContextMenuManagerForTesting());
+        assertFalse(mCoordinator.getIsSnapHelperAttachedForTesting());
     }
 
     @Test
@@ -271,14 +273,15 @@ public class HomeModulesCoordinatorUnitTest {
                         ModuleType.TAB_GROUP_SYNC_PROMO,
                         ModuleType.QUICK_DELETE_PROMO,
                         ModuleType.HISTORY_SYNC_PROMO,
-                        ModuleType.TIPS_NOTIFICATIONS_PROMO,
                         ModuleType.ENHANCED_SAFE_BROWSING_PROMO,
                         ModuleType.ADDRESS_BAR_PLACEMENT_PROMO,
                         ModuleType.SETUP_LIST_TWO_CELL_CONTAINER,
                         ModuleType.SIGN_IN_PROMO,
                         ModuleType.SAVE_PASSWORDS_PROMO,
-                        ModuleType.PASSWORD_CHECKUP_PROMO);
-        when(mHomeModulesConfigManager.getEnabledModuleSet())
+                        ModuleType.PASSWORD_CHECKUP_PROMO,
+                        ModuleType.SETUP_LIST_CELEBRATORY_PROMO,
+                        ModuleType.NTP_THEME_PROMO);
+        when(mModuleRegistry.getEnabledModuleSet())
                 .thenReturn(new HashSet<>(expectedModuleListBeforeHidingModule));
 
         // Register mock builders for all modules in this test.
@@ -299,10 +302,7 @@ public class HomeModulesCoordinatorUnitTest {
                 .getValue()
                 .onModuleConfigChanged(ModuleType.DEFAULT_BROWSER_PROMO, false);
         Set<Integer> expectedModuleListAfterHidingModule =
-                Set.of(
-                        ModuleType.PRICE_CHANGE,
-                        ModuleType.SINGLE_TAB,
-                        ModuleType.SETUP_LIST_TWO_CELL_CONTAINER);
+                Set.of(ModuleType.PRICE_CHANGE, ModuleType.SINGLE_TAB);
         assertEquals(
                 expectedModuleListAfterHidingModule,
                 mCoordinator.getFilteredEnabledModuleSetForTesting());
@@ -345,11 +345,8 @@ public class HomeModulesCoordinatorUnitTest {
         mHomeModulesStateListener
                 .getValue()
                 .onModuleConfigChanged(ModuleType.SETUP_LIST_TWO_CELL_CONTAINER, false);
-        Set<Integer> expectedModuleListAfterHidingContainer =
-                new HashSet<>(expectedModuleListBeforeHidingModule);
-        expectedModuleListAfterHidingContainer.remove(ModuleType.SETUP_LIST_TWO_CELL_CONTAINER);
         assertEquals(
-                expectedModuleListAfterHidingContainer,
+                expectedModuleListAfterHidingModule,
                 mCoordinator.getFilteredEnabledModuleSetForTesting());
 
         mHomeModulesStateListener
@@ -378,7 +375,7 @@ public class HomeModulesCoordinatorUnitTest {
     @SmallTest
     public void testProfileNotReady() {
         mCoordinator = createCoordinator(/* skipInitProfile= */ true);
-        Callback<Boolean> callback = Mockito.mock(Callback.class);
+        Callback<Boolean> callback = MockitoHelper.mockCallback();
         mCoordinator.show(callback);
 
         assertTrue(mProfileSupplier.hasObservers());
@@ -421,7 +418,7 @@ public class HomeModulesCoordinatorUnitTest {
     public void testOnModuleChangedCallback() {
         when(mModuleDelegateHost.isHomeSurface()).thenReturn(true);
         mCoordinator = createCoordinator(/* skipInitProfile= */ true);
-        Callback<Boolean> onHomeModulesShownCallback = Mockito.mock(Callback.class);
+        Callback<Boolean> onHomeModulesShownCallback = MockitoHelper.mockCallback();
         mCoordinator.setMediatorForTesting(mMediator);
         mCoordinator.setModelForTesting(mModel);
 
@@ -453,6 +450,7 @@ public class HomeModulesCoordinatorUnitTest {
         mCoordinator.onViewCreated(ModuleType.SINGLE_TAB, mView);
         verify(mModuleProvider).onViewCreated();
         verify(mMediator).onModuleViewCreated(eq(ModuleType.SINGLE_TAB));
+        verify(mView).setFocusable(eq(true));
     }
 
     @Test
@@ -469,25 +467,25 @@ public class HomeModulesCoordinatorUnitTest {
     @Test
     @SmallTest
     public void testOnLongClick() {
-        HomeModulesContextMenuManager mHomeModulesContextMenuManager = mock();
+        HomeModulesContextMenuManager homeModulesContextMenuManager = mock();
         mCoordinator = createCoordinator(/* skipInitProfile= */ true);
         mCoordinator.setMediatorForTesting(mMediator);
-        mCoordinator.setHomeModulesContextMenuManagerForTesting(mHomeModulesContextMenuManager);
+        mCoordinator.setHomeModulesContextMenuManagerForTesting(homeModulesContextMenuManager);
         when(mMediator.getModuleProvider(ModuleType.SINGLE_TAB)).thenReturn(mModuleProvider);
         when(mView.getLayoutParams()).thenReturn(mLayoutParams);
 
         mCoordinator.onViewCreated(ModuleType.SINGLE_TAB, mView);
         verify(mView).setOnLongClickListener(mLongClickListenerCaptor.capture());
         mLongClickListenerCaptor.getValue().onLongClick(mView);
-        verify(mHomeModulesContextMenuManager).displayMenu(eq(mView), eq(mModuleProvider));
+        verify(homeModulesContextMenuManager).displayMenu(eq(mView), eq(mModuleProvider));
 
-        reset(mHomeModulesContextMenuManager);
+        reset(homeModulesContextMenuManager);
         verify(mView).setOnCreateContextMenuListener(mOnCreateContextMenuListenerCaptor.capture());
         mOnCreateContextMenuListenerCaptor
                 .getValue()
                 .onCreateContextMenu(
                         mock(ContextMenu.class), mView, mock(ContextMenu.ContextMenuInfo.class));
-        verify(mHomeModulesContextMenuManager).displayMenu(eq(mView), eq(mModuleProvider));
+        verify(homeModulesContextMenuManager).displayMenu(eq(mView), eq(mModuleProvider));
     }
 
     @Test

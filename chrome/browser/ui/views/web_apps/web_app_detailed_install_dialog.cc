@@ -23,10 +23,10 @@
 #include "chrome/browser/ui/views/web_apps/web_app_install_dialog_delegate.h"
 #include "chrome/browser/ui/web_applications/web_app_dialogs.h"
 #include "chrome/browser/ui/web_applications/web_app_info_image_source.h"
+#include "chrome/browser/web_applications/model/dialog_image_info.h"
 #include "chrome/browser/web_applications/web_app_constants.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/browser/web_applications/web_app_screenshot_fetcher.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/prefs/pref_service.h"
@@ -46,6 +46,7 @@
 #include "ui/base/models/image_model.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/geometry/insets.h"
@@ -136,8 +137,13 @@ class ScrollButton : public views::ImageButton {
     SetImageModel(
         views::Button::ButtonState::STATE_NORMAL,
         button_type == ButtonType::kLeading
-            ? ui::ImageModel::FromVectorIcon(kLeadingScrollIcon, ui::kColorIcon)
-            : ui::ImageModel::FromVectorIcon(kTrailingScrollIcon,
+            ? ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
+                                                 ? kKeyboardArrowLeftIcon
+                                                 : kLeadingScrollOldIcon,
+                                             ui::kColorIcon)
+            : ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
+                                                 ? kKeyboardArrowRightIcon
+                                                 : kTrailingScrollOldIcon,
                                              ui::kColorIcon));
 
     views::InkDrop::Get(this)->SetBaseColor(
@@ -405,6 +411,10 @@ namespace web_app {
 
 DEFINE_ELEMENT_IDENTIFIER_VALUE(kDetailedInstallDialogImageContainer);
 
+// TODO(crbug.com/507106728): Delete this implementation once
+// kWebAppInstallDialog is enabled by default and WebAppInstallIntroView
+// takes over.
+
 void ShowWebAppDetailedInstallDialog(
     content::WebContents* web_contents,
     std::unique_ptr<web_app::WebAppInstallInfo> install_info,
@@ -485,7 +495,8 @@ void ShowWebAppDetailedInstallDialog(
   views::Widget* detailed_dialog_widget =
       constrained_window::ShowWebModalDialogViews(dialog.release(),
                                                   web_contents);
-  if (IsWidgetCurrentSizeSmallerThanPreferredSize(detailed_dialog_widget)) {
+  if (IsWidgetCurrentSizeSmallerThanPreferredSize(detailed_dialog_widget,
+                                                  kDetailedMaxShrinkage)) {
     delegate_weak_ptr->CloseDialogAsIgnored();
     return;
   }

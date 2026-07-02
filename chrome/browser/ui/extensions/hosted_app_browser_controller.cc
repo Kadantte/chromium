@@ -15,6 +15,7 @@
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/web_app_launch_utils.h"
+#include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/common/extensions/api/url_handlers/url_handlers_parser.h"
 #include "chrome/common/extensions/manifest_handlers/app_launch_info.h"
@@ -54,10 +55,10 @@ bool IsSameHostAndPort(const GURL& app_url, const GURL& page_url) {
 
 }  // namespace
 
-HostedAppBrowserController::HostedAppBrowserController(Browser* browser)
-    : AppBrowserController(
-          browser,
-          web_app::GetAppIdFromApplicationName(browser->app_name())) {}
+HostedAppBrowserController::HostedAppBrowserController(
+    BrowserWindowInterface* browser,
+    webapps::AppId app_id)
+    : AppBrowserController(browser, std::move(app_id)) {}
 
 HostedAppBrowserController::~HostedAppBrowserController() = default;
 
@@ -112,7 +113,8 @@ ui::ImageModel HostedAppBrowserController::GetWindowIcon() const {
     return GetWindowAppIcon();
   }
 
-  return ui::ImageModel::FromImage(browser()->GetCurrentPageIcon());
+  return ui::ImageModel::FromImage(
+      WindowMetadataController::From(browser())->GetCurrentPageIcon());
 }
 
 std::u16string HostedAppBrowserController::GetTitle() const {
@@ -187,8 +189,8 @@ void HostedAppBrowserController::Uninstall(
   DCHECK(!uninstall_dialog_);
   uninstall_dialog_ = ExtensionUninstallDialog::Create(
       browser()->profile(),
-      browser()->window() ? browser()->window()->GetNativeWindow()
-                          : gfx::NativeWindow(),
+      browser()->GetWindow() ? browser()->GetWindow()->GetNativeWindow()
+                             : gfx::NativeWindow(),
       this);
 
   // The dialog can be closed by UI system whenever it likes, but

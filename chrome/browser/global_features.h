@@ -14,6 +14,12 @@
 #include "net/net_buildflags.h"
 #include "ui/base/unowned_user_data/user_data_factory.h"
 
+#if !BUILDFLAG(IS_ANDROID)
+namespace infobars {
+class BrowserInfoBarManager;
+}  // namespace infobars
+#endif
+
 class GlobalBrowserCollection;
 
 namespace system_permission_settings {
@@ -29,14 +35,12 @@ class DefaultBrowserManager;
 }  // namespace default_browser
 #endif
 
-#if BUILDFLAG(ENABLE_GLIC)
 namespace glic {
 class GlicBackgroundModeManager;
 class GlicGlobalEnabling;
 class GlicProfileManager;
 class GlicSyntheticTrialManager;
 }  // namespace glic
-#endif
 
 class ApplicationLocaleStorage;
 class AudioProcessMlModelForwarder;
@@ -56,8 +60,15 @@ class ApplicationAdvancedProtectionStatusDetector;
 
 #if !BUILDFLAG(IS_ANDROID)
 class ProfileLaunchObserver;
-class StartupLaunchManager;
 #endif  // !BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_MAC)
+class GlassFrameService;
+#endif
+
+#if BUILDFLAG(IS_WIN)
+class StartupLaunchManager;
+#endif
 
 #if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
 namespace unexportable_keys {
@@ -71,6 +82,15 @@ class IPAddressSpaceOverridesPrefsObserver;
 
 namespace on_device_translation {
 class OnDeviceTranslationInstaller;
+}
+
+namespace smart_restart {
+class SmartRestartManager;
+class SmartRestartMetricsObserver;
+}  // namespace smart_restart
+
+namespace tabs_api {
+class TabDragSessionManager;
 }
 
 // This class owns the core controllers for features that are globally
@@ -89,25 +109,24 @@ class GlobalFeatures {
       base::RepeatingCallback<std::unique_ptr<GlobalFeatures>()>;
   static void ReplaceGlobalFeaturesForTesting(GlobalFeaturesFactory factory);
 
-  // Each of these is called exactly once to initialize features.
-  // `PreBrowserProcessInit()` happens very early in
-  // `BrowserProcessImpl::Init()` - in particular, it must happen before a
-  // `ProfileManager` is created. `PostBrowserProcessInit()` happens further
-  // down near the very end of `BrowserProcessImpl::Init()` after a
-  // `ProfileManager` is allowed to exist. As with anything in
-  // `BrowserProcessImpl::Init()`, both of these functions are called before
+  // `PostBrowserProcessInit()` happens near the very end of
+  // `BrowserProcessImpl::Init()` after a `ProfileManager` is allowed to exist.
+  // As with anything in `BrowserProcessImpl::Init()`, this is called before
   // threads are created.
-  void PreBrowserProcessInit();
   void PostBrowserProcessInit();
 
   // Only initializes core features. Used in unittests to create partial
   // features for TestingBrowserProcess.
   //
   // TODO(crbug.com/463444220) Merge implementation back into
-  // PreBrowserProcessInit() and PostBrowserProcessInit() once unit tests stop
-  // creating TestingBrowserProcess.
-  void PreBrowserProcessInitCore();
+  // PostBrowserProcessInit() once unit tests stop creating
+  // TestingBrowserProcess.
   void PostBrowserProcessInitCore();
+
+  // Initializes features that must come before core features. This is
+  // called immediately after construction, before any other
+  // initialization.
+  void Init();
 
   // Each of these is called exactly once when the browser starts to shutdown,
   // in the named browser shutdown lifecycle phases. Importantly,
@@ -134,18 +153,15 @@ class GlobalFeatures {
   }
 #endif
 
-#if BUILDFLAG(ENABLE_GLIC)
   glic::GlicProfileManager* glic_profile_manager() {
     return glic_profile_manager_.get();
   }
-#endif
-#if BUILDFLAG(ENABLE_GLIC) && !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID)
   glic::GlicBackgroundModeManager* glic_background_mode_manager() {
     return glic_background_mode_manager_.get();
   }
 #endif
 
-#if BUILDFLAG(ENABLE_GLIC)
   glic::GlicSyntheticTrialManager* glic_synthetic_trial_manager() {
     return synthetic_trial_manager_.get();
   }
@@ -153,7 +169,6 @@ class GlobalFeatures {
   glic::GlicGlobalEnabling& glic_global_enabling() {
     return *glic_global_enabling_.get();
   }
-#endif
 
   ApplicationLocaleStorage* application_locale_storage() {
     return application_locale_storage_.get();
@@ -195,6 +210,16 @@ class GlobalFeatures {
   }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
+  tabs_api::TabDragSessionManager* tab_drag_session_manager() {
+    return tab_drag_session_manager_.get();
+  }
+
+#if BUILDFLAG(IS_MAC)
+  GlassFrameService* glass_frame_service() {
+    return glass_frame_service_.get();
+  }
+#endif
+
  protected:
   GlobalFeatures();
 
@@ -207,12 +232,20 @@ class GlobalFeatures {
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   virtual std::unique_ptr<whats_new::WhatsNewRegistry> CreateWhatsNewRegistry();
 #endif
+  virtual std::unique_ptr<GlobalBrowserCollection>
+  CreateGlobalBrowserCollection();
+
+#if BUILDFLAG(IS_MAC)
+  virtual std::unique_ptr<GlassFrameService> CreateGlassFrameService();
+#endif
 
  private:
   static ui::UserDataFactoryWithOwner<BrowserProcess>& GetUserDataFactory();
 
   // Features will each have a controller. e.g.
   // std::unique_ptr<FooFeature> foo_feature_;
+
+  std::unique_ptr<GlobalBrowserCollection> global_browser_collection_;
 
   std::unique_ptr<system_permission_settings::PlatformHandle>
       system_permissions_platform_handle_;
@@ -223,19 +256,13 @@ class GlobalFeatures {
       default_browser_manager_;
 #endif
 
-#if BUILDFLAG(ENABLE_GLIC)
   std::unique_ptr<glic::GlicGlobalEnabling> glic_global_enabling_;
-#endif
-#if BUILDFLAG(ENABLE_GLIC)
   std::unique_ptr<glic::GlicProfileManager> glic_profile_manager_;
-#endif
-#if BUILDFLAG(ENABLE_GLIC) && !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID)
   std::unique_ptr<glic::GlicBackgroundModeManager>
       glic_background_mode_manager_;
 #endif
-#if BUILDFLAG(ENABLE_GLIC)
   std::unique_ptr<glic::GlicSyntheticTrialManager> synthetic_trial_manager_;
-#endif
 
   std::unique_ptr<ApplicationLocaleStorage> application_locale_storage_;
 
@@ -257,9 +284,11 @@ class GlobalFeatures {
   std::unique_ptr<local_network_access::IPAddressSpaceOverridesPrefsObserver>
       ip_address_space_overrides_prefs_observer_;
 
-  std::unique_ptr<GlobalBrowserCollection> global_browser_collection_;
-
 #if !BUILDFLAG(IS_ANDROID)
+  std::unique_ptr<infobars::BrowserInfoBarManager> browser_infobar_manager_;
+#endif
+
+#if BUILDFLAG(IS_WIN)
   std::unique_ptr<StartupLaunchManager> startup_launch_manager_;
 #endif  // !BUILDFLAG(IS_ANDROID)
 
@@ -274,7 +303,18 @@ class GlobalFeatures {
       on_device_translation_installer_;
 
   std::unique_ptr<ProfileLaunchObserver> profile_launch_observer_;
+
+  std::unique_ptr<smart_restart::SmartRestartMetricsObserver>
+      smart_restart_metrics_observer_;
+
+  std::unique_ptr<smart_restart::SmartRestartManager> smart_restart_manager_;
 #endif  // !BUILDFLAG(IS_ANDROID)
+
+  std::unique_ptr<tabs_api::TabDragSessionManager> tab_drag_session_manager_;
+
+#if BUILDFLAG(IS_MAC)
+  std::unique_ptr<GlassFrameService> glass_frame_service_;
+#endif
 };
 
 #endif  // CHROME_BROWSER_GLOBAL_FEATURES_H_

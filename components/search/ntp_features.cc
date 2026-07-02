@@ -46,16 +46,17 @@ BASE_FEATURE(kCustomizeChromeWallpaperSearchButton,
 BASE_FEATURE(kCustomizeChromeWallpaperSearchInspirationCard,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+// If enabled, the EnergyEffect for Realbox will be shown.
+BASE_FEATURE(kEnergyEffect, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, the EnergyEffect animation for Realbox will be shown.
+BASE_FEATURE(kEnergyEffectAnimation, base::FEATURE_DISABLED_BY_DEFAULT);
+
+
 // If enabled, NTP "realbox" will be themed for CR23. Includes realbox
 // matching omnibox theme and increased realbox shadow.
 BASE_FEATURE(kRealboxCr23Theming,
              "NtpRealboxCr23Theming",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// If enabled, the real search box ("realbox") on the New Tab page will show a
-// Google (g) icon instead of the typical magnifying glass (aka loupe).
-BASE_FEATURE(kRealboxUseGoogleGIcon,
-             "NtpRealboxUseGoogleGIcon",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // If enabled, alpha NTP backgrounds will show in Customize Chrome.
@@ -71,10 +72,21 @@ BASE_FEATURE(kNtpBackgroundImageErrorDetection,
 BASE_FEATURE(kNtpCalendarModule, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // If enabled, chrome cart module will be shown.
-BASE_FEATURE(kNtpChromeCartModule, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kNtpChromeCartModule,
+#if BUILDFLAG(IS_ANDROID)
+             base::FEATURE_DISABLED_BY_DEFAULT);
+#else
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif
 
 // If enabled, customization of Chrome will be promoted on the NTP.
-BASE_FEATURE(kNtpCustomizeChromeAutoOpen, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kNtpCustomizeChromeAutoOpen, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, ChromeContentBrowserClient::OverrideNavigationParams no
+// longer treats NTP-sourced renderer-initiated link clicks as browser-
+// initiated.
+BASE_FEATURE(kNtpDisableBrowserInitiatedLinks,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 #if !defined(OFFICIAL_BUILD)
 // If enabled, dummy modules will be shown.
@@ -89,6 +101,9 @@ BASE_FEATURE(kNtpDriveModule, base::FEATURE_ENABLED_BY_DEFAULT);
 // If enabled, the NTP Drive module does not require sync.
 BASE_FEATURE(kNtpDriveModuleHistorySyncRequirement,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+// If enabled, the NTP Drive Module will link to the Drive page.
+BASE_FEATURE(kNtpDriveModuleLink, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // If enabled, segmentation data will be collected to decide whether or not to
 // show the Drive module.
@@ -136,46 +151,37 @@ BASE_FEATURE(kNtpModulesLoad, base::FEATURE_DISABLED_BY_DEFAULT);
 // requirement for all modules.
 BASE_FEATURE(kNtpModuleSignInRequirement, base::FEATURE_ENABLED_BY_DEFAULT);
 
-// If enabled, OneGoogleBar will be shown.
+// If enabled, OneGoogleBar will be shown. Disabled on Android to save memory.
 // This is a kill switch. Keep indefinitely.
-BASE_FEATURE(kNtpOneGoogleBar, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kNtpOneGoogleBar,
+#if BUILDFLAG(IS_ANDROID)
+             base::FEATURE_DISABLED_BY_DEFAULT);
+#else
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif
 
 // If enabled, outlook calendar module will be shown.
-BASE_FEATURE(kNtpOutlookCalendarModule, base::FEATURE_ENABLED_BY_DEFAULT);
-
-// If enabled, Google Photos module will be shown.
-BASE_FEATURE(kNtpPhotosModule, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// If enabled, a customized title will be shown on the opt-in card.
-BASE_FEATURE(kNtpPhotosModuleCustomizedOptInTitle,
+BASE_FEATURE(kNtpOutlookCalendarModule,
+#if BUILDFLAG(IS_ANDROID)
              base::FEATURE_DISABLED_BY_DEFAULT);
-
-// If enabled, a customized art work will be shown on the opt-in card.
-BASE_FEATURE(kNtpPhotosModuleCustomizedOptInArtWork,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// If enabled, Google Photos opt-in card will show a button to soft opt-out.
-BASE_FEATURE(kNtpPhotosModuleSoftOptOut, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// If enabled, the single svg image show in Photos opt-in screen will be
-// replaced by constituent images to support i18n.
-BASE_FEATURE(kNtpPhotosModuleSplitSvgOptInArtWork,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// If enabled, Following Feed module will be shown.
-BASE_FEATURE(kNtpFeedModule, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// If enabled, SafeBrowsing module will be shown to a target user.
-BASE_FEATURE(kNtpSafeBrowsingModule, base::FEATURE_DISABLED_BY_DEFAULT);
+#else
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif
 
 // If enabled, sharepoint module will be shown.
-BASE_FEATURE(kNtpSharepointModule, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kNtpSharepointModule,
+#if BUILDFLAG(IS_ANDROID)
+             base::FEATURE_DISABLED_BY_DEFAULT);
+#else
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif
 
 // If enabled, shortcuts will be shown.
 // This is a kill switch. Keep indefinitely.
 BASE_FEATURE(kNtpShortcuts, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // If enabled, the Tab Resumption module will be shown.
+// TODO(b/516245005): Enable Tab Resumption Module for Android.
 BASE_FEATURE(kNtpMostRelevantTabResumptionModule,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -216,10 +222,17 @@ BASE_FEATURE(kNtpWallpaperSearchButtonAnimationShownThreshold,
 
 // If enabled, the Microsoft Authentication module will be shown.
 BASE_FEATURE(kNtpMicrosoftAuthenticationModule,
+#if BUILDFLAG(IS_ANDROID)
+             base::FEATURE_DISABLED_BY_DEFAULT);
+#else
              base::FEATURE_ENABLED_BY_DEFAULT);
+#endif
 
 // If enabled, the features of NTP Next (AI action chips etc.) will be shown.
 BASE_FEATURE(kNtpNextFeatures, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, the Canvas action chip will be shown.
+BASE_FEATURE(kNtpNextCanvasChip, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // If enabled, the OGB loader will request for the async bar parts payload type.
 BASE_FEATURE(kNtpOneGoogleBarAsyncBarParts, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -239,16 +252,51 @@ BASE_FEATURE(kNtpTabGroupsModuleZeroState,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // If enabled, stale modules will be auto-removed from the NTP.
+// TODO(b/525245973): Enable on Android once customize chrome is implemented.
+#if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kNtpFeatureOptimizationModuleRemoval,
              base::FEATURE_DISABLED_BY_DEFAULT);
+#else
+BASE_FEATURE(kNtpFeatureOptimizationModuleRemoval,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif
 
 // If enabled, stale shortcuts will be auto-removed from the NTP.
+// TODO(b/525245973): Enable on Android once customize chrome is implemented.
+#if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kNtpFeatureOptimizationShortcutsRemoval,
              base::FEATURE_DISABLED_BY_DEFAULT);
+#else
+BASE_FEATURE(kNtpFeatureOptimizationShortcutsRemoval,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif
 
 // If enabled, the dismiss module buttons will be removed from the NTP modules.
 BASE_FEATURE(kNtpFeatureOptimizationDismissModulesRemoval,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// If enabled, will support animated Doodles on the NTP.
+BASE_FEATURE(kNtpAnimatedDoodles, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// If enabled, will support Doodle Murals on the NTP.
+BASE_FEATURE(kNtpDoodleMurals, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, animates the AIM caret on the NTP.
+BASE_FEATURE(kNtpAnimatedCaret, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// If enabled, adds a Whats New Page Edition for Next Features.
+BASE_FEATURE(kLightningTakeoverEdition, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, the shortcuts will be redesigned.
+BASE_FEATURE(kNtpShortcutsRedesign, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, the bookmark bar may be auto-removed on the NTP and new
+// visibility settings are added.
+BASE_FEATURE(kNtpSimplificationBookmarkBar, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, the bookmark bar time interval and number of times it's shown on
+// the NTP before auto-hiding is decreased for testing.
+BASE_FEATURE(kBookmarkBarUpdatesForTesting, base::FEATURE_DISABLED_BY_DEFAULT);
 
 const char kNtpModuleIgnoredCriteriaThreshold[] =
     "NtpModuleIgnoredCriteriaThreshold";
@@ -284,14 +332,6 @@ const char kNtpOutlookCalendarModuleDataParam[] =
     "NtpOutlookCalendarModuleDataParam";
 const char kNtpMiddleSlotPromoDismissalParam[] =
     "NtpMiddleSlotPromoDismissalParam";
-const char kNtpPhotosModuleDataParam[] = "NtpPhotosModuleDataParam";
-const char kNtpPhotosModuleOptInTitleParam[] = "NtpPhotosModuleOptInTitleParam";
-const char kNtpPhotosModuleOptInArtWorkParam[] =
-    "NtpPhotosModuleOptInArtWorkParam";
-const char kNtpSafeBrowsingModuleCooldownPeriodDaysParam[] =
-    "NtpSafeBrowsingModuleCooldownPeriodDaysParam";
-const char kNtpSafeBrowsingModuleCountMaxParam[] =
-    "NtpSafeBrowsingModuleCountMaxParam";
 const char kNtpMostRelevantTabResumptionModuleDataParam[] =
     "NtpMostRelevantTabResumptionModuleDataParam";
 const char kNtpMostRelevantTabResumptionModuleMaxVisitsParam[] =
@@ -323,29 +363,22 @@ const base::FeatureParam<bool> kNtpNextClientSensitivityCheckParam(
     &ntp_features::kNtpNextFeatures,
     "NtpNextClientSensitivityCheckParam",
     false);
-const base::FeatureParam<bool> kNtpNextShowDeepDiveSuggestionsParam(
-    &ntp_features::kNtpNextFeatures,
-    "NtpNextShowDeepDiveSuggestionsParam",
-    false);
-const base::FeatureParam<bool>
-    kNtpNextSuggestionsFromNewSearchSuggestionsEndpointParam(
-        &ntp_features::kNtpNextFeatures,
-        "NtpNextSuggestionsFromNewSearchSuggestionsEndpointParam",
-        false);
 const base::FeatureParam<bool> kNtpNextShowStaticRecentTabChipParam(
     &ntp_features::kNtpNextFeatures,
     "NtpNextShowStaticRecentTabChipParam",
-    true);
-const base::FeatureParam<bool> kNtpNextShowSimplificationUIParam(
-    &ntp_features::kNtpNextFeatures,
-    "NtpNextShowSimplificationUIParam",
     false);
 const base::FeatureParam<bool> kNtpNextShowDismissalUIParam(
     &ntp_features::kNtpNextFeatures,
     "NtpNextShowDismissalUIParam",
     false);
-const base::FeatureParam<int> kMaxTilesBeforeShowMore{
-    &ntp_features::kNtpNextFeatures, "max_tiles_before_show_more", 5};
+const base::FeatureParam<bool> kNtpNextDisablementContextMenuParam(
+    &ntp_features::kNtpNextFeatures,
+    "NtpNextDisablementContextMenuParam",
+    false);
+const base::FeatureParam<bool> kNtpNextDisablementParam(
+    &ntp_features::kNtpNextFeatures,
+    "NtpNextDisablementParam",
+    false);
 const base::FeatureParam<bool> kAddTabUploadDelayOnActionChipClick(
     &ntp_features::kNtpNextFeatures,
     "AddTabUploadDelayOnActionChipClick",
@@ -358,7 +391,7 @@ const base::FeatureParam<int> kNtpCustomizeChromeAutoShownMaxCount(
 const base::FeatureParam<int> kNtpCustomizeChromeAutoShownSessionMaxCount(
     &ntp_features::kNtpCustomizeChromeAutoOpen,
     "max_customize_chrome_auto_shown_session_count",
-    5);
+    1);
 
 const base::FeatureParam<std::string> kNtpCalendarModuleExperimentParam(
     &ntp_features::kNtpCalendarModule,
@@ -472,6 +505,25 @@ const base::FeatureParam<int> kStaleModulesCountThreshold(
     "StaleModulesCountThreshold",
     14);
 
+const base::FeatureParam<int> kMaxTilesInCollapsedState{
+    &ntp_features::kNtpShortcutsRedesign, "max_tiles_in_collapsed_state", 4};
+const base::FeatureParam<int> kMaxShortcutsInExpandedState{
+    &ntp_features::kNtpShortcutsRedesign, "max_shortcuts_in_expanded_state",
+    20};
+const base::FeatureParam<int> kMaxMostVisitedTilesInExpandedState{
+    &ntp_features::kNtpShortcutsRedesign,
+    "max_most_visited_tiles_in_expanded_state", 10};
+const base::FeatureParam<int> kMaxEnterpriseShortcuts{
+    &ntp_features::kNtpShortcutsRedesign, "max_enterprise_shortcuts", 10};
+
+const base::FeatureParam<int> kBookmarkBarCountThreshold{
+    &ntp_features::kNtpSimplificationBookmarkBar, "BookmarkBarCountThreshold",
+    15};
+const base::FeatureParam<base::TimeDelta> kBookmarkBarMinStalenessTimeInterval(
+    &ntp_features::kNtpSimplificationBookmarkBar,
+    "BookmarkBarMinStalenessTimeInterval",
+    base::Days(1));
+
 base::TimeDelta GetModulesLoadTimeout() {
   std::string param_value = base::GetFieldTrialParamValueByFeature(
       kNtpModulesLoadTimeoutMilliseconds,
@@ -515,8 +567,41 @@ int GetWallpaperSearchButtonHideCondition() {
       kNtpWallpaperSearchButtonHideConditionParam, 2);
 }
 
-int GetMaxTilesBeforeShowMore() {
-  return kMaxTilesBeforeShowMore.Get();
+int GetMaxTilesInCollapsedState() {
+  if (!base::FeatureList::IsEnabled(kNtpShortcutsRedesign)) {
+    return 6;
+  }
+  return kMaxTilesInCollapsedState.Get();
+}
+
+int GetMaxShortcutsInExpandedState() {
+  if (!base::FeatureList::IsEnabled(kNtpShortcutsRedesign)) {
+    return 10;
+  }
+  return kMaxShortcutsInExpandedState.Get();
+}
+
+int GetMaxMostVisitedTilesInExpandedState() {
+  if (!base::FeatureList::IsEnabled(kNtpShortcutsRedesign)) {
+    return 8;
+  }
+  return kMaxMostVisitedTilesInExpandedState.Get();
+}
+
+int GetMaxEnterpriseShortcuts() {
+  return kMaxEnterpriseShortcuts.Get();
+}
+base::TimeDelta GetBookmarkBarMinStalenessTimeInterval() {
+  if (base::FeatureList::IsEnabled(kBookmarkBarUpdatesForTesting)) {
+    return base::Seconds(15);
+  }
+  return kBookmarkBarMinStalenessTimeInterval.Get();
+}
+int GetBookmarkBarCountThreshold() {
+  if (base::FeatureList::IsEnabled(kBookmarkBarUpdatesForTesting)) {
+    return 1;
+  }
+  return kBookmarkBarCountThreshold.Get();
 }
 
 }  // namespace ntp_features

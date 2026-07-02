@@ -103,6 +103,9 @@ class PageLoadMetricsObserverTester : public test::WeakMockTimerProvider {
                                        const mojom::FrameMetadata& metadata);
   void SimulateMetadataUpdate(const mojom::FrameMetadata& metadata,
                               content::RenderFrameHost* rfh);
+  void SimulateTimingAndFontLoadingMetricsUpdate(
+      const mojom::PageLoadTiming& timing,
+      mojom::FontLoadingMetricsPtr font_loading_metrics);
   void SimulateFeaturesUpdate(
       const std::vector<blink::UseCounterFeature>& new_features);
   void SimulateResourceDataUseUpdate(
@@ -182,7 +185,11 @@ class PageLoadMetricsObserverTester : public test::WeakMockTimerProvider {
       const std::optional<blink::SubresourceLoadMetrics>&
           subresource_load_metrics,
       content::RenderFrameHost* rfh,
-      const mojom::SoftNavigationMetrics& soft_navigation_metrics);
+      const std::vector<mojom::SoftNavigationMetricsPtr>&
+          soft_navigation_metrics,
+      const std::vector<mojom::LargestContentfulPaintTimingPtr>&
+          soft_largest_contentful_paint,
+      mojom::FontLoadingMetricsPtr font_loading_metrics = nullptr);
 
   content::WebContents* web_contents() const { return web_contents_; }
 

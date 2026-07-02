@@ -15,9 +15,9 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
-#include "base/memory/memory_pressure_listener.h"
-#include "base/memory/memory_pressure_listener_registry.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory_coordinator/memory_coordinator_features.h"
+#include "base/memory_coordinator/test_memory_consumer_registry.h"
 #include "base/metrics/field_trial.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
@@ -131,6 +131,7 @@ class DiskCacheBackendTest : public DiskCacheTestWithCache {
   void InitSparseCache(base::Time* doomed_start, base::Time* doomed_end);
 
   bool CreateSetOfRandomEntries(std::set<std::string>* key_pool);
+  void WriteEntrySequence(int num_entries, int entry_size, std::string prefix);
   bool EnumerateAndMatchKeys(int max_to_open,
                              TestIterator* iter,
                              std::set<std::string>* keys_to_match,
@@ -212,8 +213,17 @@ class DiskCacheBackendTest : public DiskCacheTestWithCache {
                      net::BackendType backend_type,
                      bool expect_limit);
 
+  void UpdateLimitAndReleaseMemory(int percentage) {
+    base::RunLoop run_loop;
+    test_memory_consumer_registry_.NotifyUpdateMemoryLimitAsync(
+        percentage, base::DoNothing());
+    test_memory_consumer_registry_.NotifyReleaseMemoryAsync(
+        run_loop.QuitClosure());
+    run_loop.Run();
+  }
+
  private:
-  base::MemoryPressureListenerRegistry memory_pressure_listener_registry_;
+  base::TestMemoryConsumerRegistry test_memory_consumer_registry_;
 };
 
 class DiskCacheGenericBackendTest
@@ -385,6 +395,27 @@ bool DiskCacheBackendTest::CreateSetOfRandomEntries(
   }
   return key_pool->size() ==
          static_cast<size_t>(GetEntryCount() - initial_entry_count);
+}
+
+// Writes a sequence of |num_entries| entries, each of |entry_size| bytes in
+// size. The entries are written with keys [|prefix| + "0", |prefix| + "1",
+// ...]. All entries use distinct random content.
+void DiskCacheBackendTest::WriteEntrySequence(int num_entries,
+                                              int entry_size,
+                                              std::string prefix) {
+  for (int i = 0; i < num_entries; ++i) {
+    AddDelay();
+    disk_cache::Entry* entry = nullptr;
+    ASSERT_THAT(CreateEntry(prefix + base::NumberToString(i), &entry), IsOk());
+    disk_cache::ScopedEntryPtr entry_closer(entry);
+    auto buffer = CacheTestCreateAndFillBuffer(entry_size, false);
+    EXPECT_EQ(entry_size,
+              WriteData(entry, 1, 0, buffer.get(), entry_size, false));
+  }
+
+  // Some backends may handle evictions asynchronously.
+  FlushQueueForTest();
+  AddDelay();
 }
 
 // Performs iteration over the backend and checks that the keys of entries
@@ -842,6 +873,9 @@ TEST_F(DiskCacheBackendTest, CreateBackend_MissingFile) {
 }
 
 TEST_F(DiskCacheBackendTest, MemoryListensToMemoryPressure) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(base::kStatefulMemoryPressure);
+
   const int kLimit = 16 * 1024;
   const int kEntrySize = 256;
   SetMaxSize(kLimit);
@@ -862,21 +896,13 @@ TEST_F(DiskCacheBackendTest, MemoryListensToMemoryPressure) {
   EXPECT_GT(CalculateSizeOfAllEntries(), 0.8 * kLimit);
 
   // Signal low-memory of various sorts, and see how small it gets.
-  {
-    base::RunLoop run_loop;
-    base::MemoryPressureListener::SimulatePressureNotificationAsync(
-        base::MEMORY_PRESSURE_LEVEL_MODERATE, run_loop.QuitClosure());
-    run_loop.Run();
-  }
+  UpdateLimitAndReleaseMemory(50);
   EXPECT_LT(CalculateSizeOfAllEntries(), 0.5 * kLimit);
 
-  {
-    base::RunLoop run_loop;
-    base::MemoryPressureListener::SimulatePressureNotificationAsync(
-        base::MEMORY_PRESSURE_LEVEL_CRITICAL, run_loop.QuitClosure());
-    run_loop.Run();
-  }
-  EXPECT_LT(CalculateSizeOfAllEntries(), 0.1 * kLimit);
+  // At 10% memory limit, the new policy (linear interpolation between 10% and
+  // 50% of max_size_) sets a limit of ~18%.
+  UpdateLimitAndReleaseMemory(10);
+  EXPECT_LT(CalculateSizeOfAllEntries(), 0.2 * kLimit);
 }
 
 TEST_F(DiskCacheBackendTest, ExternalFiles) {
@@ -1276,7 +1302,12 @@ void DiskCacheBackendTest::BackendLoad() {
   EXPECT_EQ(0, GetEntryCount());
 }
 
-TEST_P(DiskCacheGenericBackendTest, Load) {
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_Load DISABLED_Load
+#else
+#define MAYBE_Load Load
+#endif
+TEST_P(DiskCacheGenericBackendTest, MAYBE_Load) {
   BackendLoad();
 }
 
@@ -3339,18 +3370,7 @@ void DiskCacheBackendTest::BackendEviction() {
   SetMaxSize(kMaxSize);
   InitSparseCache(nullptr, nullptr);
 
-  auto buffer = CacheTestCreateAndFillBuffer(kWriteSize, false);
-
-  std::string key_prefix("prefix");
-  for (int i = 0; i < kWriteEntryCount; ++i) {
-    AddDelay();
-    disk_cache::Entry* entry = nullptr;
-    ASSERT_THAT(CreateEntry(key_prefix + base::NumberToString(i), &entry),
-                IsOk());
-    disk_cache::ScopedEntryPtr entry_closer(entry);
-    EXPECT_EQ(kWriteSize,
-              WriteData(entry, 1, 0, buffer.get(), kWriteSize, false));
-  }
+  WriteEntrySequence(kWriteEntryCount, kWriteSize, "prefix");
 
   int size = CalculateSizeOfAllEntries();
   EXPECT_GT(kMaxSize, size);
@@ -4375,15 +4395,6 @@ class MockCacheEncryptionDelegate : public net::CacheEncryptionDelegate {
 
   void Init(base::OnceCallback<void(net::Error)> callback) override {
     std::move(callback).Run(net::OK);
-  }
-
-  bool EncryptData(base::span<const uint8_t> plaintext,
-                   std::vector<uint8_t>* ciphertext) override {
-    return false;
-  }
-  bool DecryptData(base::span<const uint8_t> ciphertext,
-                   std::vector<uint8_t>* plaintext) override {
-    return false;
   }
   disk_cache::BackendFileOperationsFactory* GetEncryptionFileOperationsFactory(
       scoped_refptr<disk_cache::BackendFileOperationsFactory>
@@ -5966,6 +5977,90 @@ TEST_P(DiskCacheGenericBackendTest, BackendDoomNonExistentEntry) {
   } else {
     EXPECT_THAT(DoomEntry(kNonExistentKey), IsOk());
   }
+}
+
+TEST_P(DiskCacheGenericBackendTest, BackendOnlineQuotaIncrease) {
+  constexpr int kWriteSize = 10 * 1024;
+  constexpr int kWriteEntryCount = 20;
+  constexpr int kInitialQuota = 10 * kWriteSize;
+  constexpr int kIncreasedQuota = 20 * kWriteSize;
+  SetMaxSize(kInitialQuota);
+  InitCache();
+
+  WriteEntrySequence(kWriteEntryCount, kWriteSize, "");
+
+  int size_before_increase = CalculateSizeOfAllEntries();
+
+  cache_->SetMaxBytes(base::ByteSize(kIncreasedQuota));
+  FlushQueueForTest();
+
+  if (backend_to_test() == BackendToTest::kBlockfile) {
+    // Blockfile backend does not implement online quota updates.
+    // But, at the very least, it should not crash if SetMaxBytes is called.
+    return;
+  }
+
+  EXPECT_EQ(base::ByteSize(kIncreasedQuota), cache_->GetMaxBytesForTesting());
+
+  WriteEntrySequence(kWriteEntryCount, kWriteSize, "");
+
+  int size_after_increase = CalculateSizeOfAllEntries();
+  EXPECT_GT(size_before_increase, 0);
+  EXPECT_LE(size_before_increase, kInitialQuota);
+  EXPECT_LE(size_after_increase, kIncreasedQuota);
+  EXPECT_GT(size_after_increase, 0);
+  EXPECT_GT(size_after_increase, kInitialQuota);
+  EXPECT_GT(size_after_increase, size_before_increase);
+}
+
+TEST_P(DiskCacheGenericBackendTest, BackendOnlineQuotaDecrease) {
+  constexpr int kWriteSize = 10 * 1024;
+  constexpr int kWriteEntryCount = 20;
+  constexpr int kInitialQuota = 20 * kWriteSize;
+  constexpr int kDecreasedQuota = 10 * kWriteSize;
+  SetMaxSize(kInitialQuota);
+  InitCache();
+
+  WriteEntrySequence(kWriteEntryCount, kWriteSize, "");
+
+  int size_before_decrease = CalculateSizeOfAllEntries();
+
+  cache_->SetMaxBytes(base::ByteSize(kDecreasedQuota));
+  FlushQueueForTest();
+
+  if (backend_to_test() == BackendToTest::kBlockfile) {
+    // Blockfile backend does not implement online quota updates.
+    // But, at the very least, it should not crash if SetMaxBytes is called.
+    return;
+  }
+
+  EXPECT_EQ(base::ByteSize(kDecreasedQuota), cache_->GetMaxBytesForTesting());
+
+  WriteEntrySequence(kWriteEntryCount, kWriteSize, "");
+
+  int size_after_decrease = CalculateSizeOfAllEntries();
+  EXPECT_GT(size_before_decrease, kDecreasedQuota);
+  EXPECT_LE(size_before_decrease, kInitialQuota);
+  EXPECT_GT(size_after_decrease, 0);
+  EXPECT_LE(size_after_decrease, kDecreasedQuota);
+  EXPECT_LT(size_after_decrease, size_before_decrease);
+}
+
+TEST_P(DiskCacheGenericBackendTest, BackendOnlineSetQuotaToZero) {
+  constexpr int kInitialQuota = 1024;
+  SetMaxSize(kInitialQuota);
+  InitCache();
+
+  cache_->SetMaxBytes(base::ByteSize(0));
+  FlushQueueForTest();
+
+  if (backend_to_test() == BackendToTest::kBlockfile) {
+    // Blockfile backend does not implement online quota updates.
+    // But, at the very least, it should not crash if SetMaxBytes is called.
+    return;
+  }
+
+  EXPECT_EQ(cache_->GetMaxBytesForTesting(), base::ByteSize(0));
 }
 
 INSTANTIATE_TEST_SUITE_P(

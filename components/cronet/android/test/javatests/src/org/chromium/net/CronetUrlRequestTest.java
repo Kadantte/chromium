@@ -37,7 +37,6 @@ import org.chromium.net.CronetTestFramework.CronetImplementation;
 import org.chromium.net.CronetTestRule.IgnoreFor;
 import org.chromium.net.CronetTestRule.RequiresMinAndroidApi;
 import org.chromium.net.CronetTestRule.RequiresMinApi;
-import org.chromium.net.NetworkChangeNotifierAutoDetect.ConnectivityManagerDelegate;
 import org.chromium.net.TestUrlRequestCallback.FailureType;
 import org.chromium.net.TestUrlRequestCallback.ResponseStep;
 import org.chromium.net.apihelpers.UploadDataProviders;
@@ -144,15 +143,15 @@ public class CronetUrlRequestTest {
     public void testBuilderChecks() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
 
+        ExperimentalCronetEngine experimentalCronetEngine =
+                mTestRule.getTestFramework().getEngine();
+        ExecutorService executor = callback.getExecutor();
         NullPointerException e =
                 assertThrows(
                         NullPointerException.class,
                         () ->
-                                mTestRule
-                                        .getTestFramework()
-                                        .getEngine()
-                                        .newUrlRequestBuilder(
-                                                null, callback, callback.getExecutor()));
+                                experimentalCronetEngine.newUrlRequestBuilder(
+                                        null, callback, executor));
         assertThat(e).hasMessageThat().isEqualTo("URL is required.");
 
         e =
@@ -587,6 +586,7 @@ public class CronetUrlRequestTest {
 
     @Test
     @SmallTest
+    @SuppressWarnings("AssertThrowsMinimizer") // Sometimes on .build(), sometimes on .start()
     public void testBadMethod() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         UrlRequest.Builder builder =
@@ -602,6 +602,7 @@ public class CronetUrlRequestTest {
 
     @Test
     @SmallTest
+    @SuppressWarnings("AssertThrowsMinimizer") // Sometimes on .build(), sometimes on .start()
     public void testBadHeaderName() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         UrlRequest.Builder builder =
@@ -645,6 +646,7 @@ public class CronetUrlRequestTest {
 
     @Test
     @SmallTest
+    @SuppressWarnings("AssertThrowsMinimizer") // Sometimes on .build(), sometimes on .start()
     public void testBadHeaderValue() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         UrlRequest.Builder builder =
@@ -891,9 +893,9 @@ public class CronetUrlRequestTest {
                 new MockUrlRequestJobFactory(mTestRule.getTestFramework().getEngine());
         TestUrlRequestCallback callback =
                 startAndWaitForComplete(mNativeTestServer.getMultiRedirectURL());
-        UrlResponseInfo mResponseInfo = callback.getResponseInfoWithChecks();
+        UrlResponseInfo responseInfo = callback.getResponseInfoWithChecks();
         assertThat(callback.mRedirectCount).isEqualTo(2);
-        assertThat(mResponseInfo).hasHttpStatusCodeThat().isEqualTo(200);
+        assertThat(responseInfo).hasHttpStatusCodeThat().isEqualTo(200);
         assertThat(callback.mRedirectResponseInfoList).hasSize(2);
 
         // Check first redirect (multiredirect.html -> redirect.html)
@@ -932,7 +934,7 @@ public class CronetUrlRequestTest {
                         "multi-header-name",
                         "header-value2");
 
-        mTestRule.assertResponseEquals(secondExpectedResponseInfo, mResponseInfo);
+        mTestRule.assertResponseEquals(secondExpectedResponseInfo, responseInfo);
         assertThat(callback.mHttpResponseDataLength).isNotEqualTo(0);
         assertThat(callback.mRedirectCount).isEqualTo(2);
         assertThat(callback.mResponseStep).isEqualTo(ResponseStep.ON_SUCCEEDED);
@@ -1366,6 +1368,7 @@ public class CronetUrlRequestTest {
 
     @Test
     @SmallTest
+    @SuppressWarnings("AssertThrowsMinimizer") // Sometimes on .build(), sometimes on .start()
     public void testUploadSetDataProvider() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         UrlRequest.Builder builder =
@@ -1377,10 +1380,11 @@ public class CronetUrlRequestTest {
                                 callback,
                                 callback.getExecutor());
 
+        ExecutorService executor = callback.getExecutor();
         NullPointerException e =
                 assertThrows(
                         NullPointerException.class,
-                        () -> builder.setUploadDataProvider(null, callback.getExecutor()));
+                        () -> builder.setUploadDataProvider(null, executor));
         assertThat(e).hasMessageThat().isEqualTo("Invalid UploadDataProvider.");
 
         TestUploadDataProvider dataProvider =
@@ -3126,9 +3130,8 @@ public class CronetUrlRequestTest {
             // itself at bind time, not at request execution time.
             // Note: this will never happen in prod, as translation failure can only happen if we're
             // given a fake networkHandle.
-            assertThrows(
-                    IllegalArgumentException.class,
-                    () -> builder.bindToNetwork(-150 /* invalid network handle */).build());
+            builder.bindToNetwork(-150 /* invalid network handle */);
+            assertThrows(IllegalArgumentException.class, builder::build);
             return;
         }
 
@@ -3147,9 +3150,9 @@ public class CronetUrlRequestTest {
     @Test
     public void testBindToDefaultNetworkSucceeds() {
         String url = mNativeTestServer.getEchoMethodURL();
-        ConnectivityManagerDelegate delegate =
-                new ConnectivityManagerDelegate(mTestRule.getTestFramework().getContext());
-        Network defaultNetwork = delegate.getDefaultNetwork();
+        ConnectivityManagerWrapper wrapper =
+                new ConnectivityManagerWrapper(mTestRule.getTestFramework().getContext());
+        Network defaultNetwork = wrapper.getDefaultNetwork();
         assume().that(defaultNetwork).isNotNull();
 
         ExperimentalCronetEngine cronetEngine = mTestRule.getTestFramework().getEngine();
@@ -3347,7 +3350,7 @@ public class CronetUrlRequestTest {
         assertThat(onSucceededRequest.get() == request2).isTrue();
     }
 
-    @NativeMethods("cronet_tests")
+    @NativeMethods
     interface Natives {
         // Return connection migration disable load flag value.
         int getConnectionMigrationDisableLoadFlag();

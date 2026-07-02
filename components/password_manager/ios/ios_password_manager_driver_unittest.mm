@@ -23,10 +23,11 @@
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
 
-using autofill::AutofillJavaScriptFeature;
-using base::SysNSStringToUTF8;
-using password_manager::PasswordManager;
-using testing::Return;
+using ::autofill::AutofillJavaScriptFeature;
+using ::base::SysNSStringToUTF8;
+using ::password_manager::PasswordManager;
+using ::testing::_;
+using ::testing::Return;
 
 // This is a workaround for returning const GURL&, for which .andReturn and
 // .andReturnValue don’t work.
@@ -49,7 +50,7 @@ class MockPasswordManagerClient
  public:
   MOCK_METHOD(bool,
               IsSavingAndFillingEnabled,
-              (const GURL&),
+              (const url::Origin&, base::optional_ref<const GURL>),
               (const, override));
   MOCK_METHOD(password_manager::PasswordStoreInterface*,
               GetProfilePasswordStore,
@@ -100,8 +101,8 @@ class IOSPasswordManagerDriverTest : public PlatformTest {
 
 // Tests that the drivers have the correct ids.
 TEST_F(IOSPasswordManagerDriverTest, GetId) {
-  ASSERT_EQ(driver_->GetId(), 0);
-  ASSERT_EQ(driver2_->GetId(), 1);
+  ASSERT_EQ(driver_->GetId(), password_manager::DriverId(1));
+  ASSERT_EQ(driver2_->GetId(), password_manager::DriverId(2));
 }
 
 // Tests the IsInPrimaryMainFrame method.
@@ -148,12 +149,12 @@ TEST_F(IOSPasswordManagerDriverTest, FormEligibleForGenerationFound) {
       base::MakeRefCounted<password_manager::MockPasswordStoreInterface>();
   EXPECT_CALL(password_manager_client_, GetProfilePasswordStore)
       .WillRepeatedly(testing::Return(store.get()));
-  EXPECT_CALL(*store, IsAbleToSavePasswords)
+  EXPECT_CALL(*store, GetError)
       .Times(3)
-      .WillRepeatedly(Return(true));
+      .WillRepeatedly(Return(password_manager::ActionableError::kNoError));
 
   // Enable password saving and generation in the client.
-  EXPECT_CALL(password_manager_client_, IsSavingAndFillingEnabled(GURL()))
+  EXPECT_CALL(password_manager_client_, IsSavingAndFillingEnabled(_, _))
       .Times(3)
       .WillRepeatedly(Return(true));
   EXPECT_CALL(*password_manager_client_.GetPasswordFeatureManager(),
@@ -218,12 +219,12 @@ TEST_F(IOSPasswordManagerDriverTest,
       base::MakeRefCounted<password_manager::MockPasswordStoreInterface>();
   EXPECT_CALL(password_manager_client_, GetProfilePasswordStore)
       .WillRepeatedly(testing::Return(store.get()));
-  EXPECT_CALL(*store, IsAbleToSavePasswords)
+  EXPECT_CALL(*store, GetError)
       .Times(21)
-      .WillRepeatedly(Return(true));
+      .WillRepeatedly(Return(password_manager::ActionableError::kNoError));
 
   // Enable password saving and generation in the client.
-  EXPECT_CALL(password_manager_client_, IsSavingAndFillingEnabled(GURL()))
+  EXPECT_CALL(password_manager_client_, IsSavingAndFillingEnabled(_, _))
       .Times(21)
       .WillRepeatedly(Return(true));
   EXPECT_CALL(*password_manager_client_.GetPasswordFeatureManager(),

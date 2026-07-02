@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
@@ -22,6 +23,7 @@
 #include "ui/base/ui_base_features.h"
 #include "ui/compositor/layer.h"
 #include "ui/display/display_switches.h"
+#include "ui/display/test/test_screen.h"
 #include "ui/display/types/display_constants.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/native_ui_types.h"
@@ -31,6 +33,8 @@
 #include "ui/views/widget/desktop_aura/desktop_native_widget_aura.h"
 #include "ui/views/widget/widget_delegate.h"
 #include "ui/views/widget/widget_observer.h"
+#include "ui/views/window/default_frame_view.h"
+#include "ui/views/window/frame_view.h"
 
 #if BUILDFLAG(IS_OZONE)
 #include "ui/ozone/public/ozone_platform.h"
@@ -137,6 +141,39 @@ std::unique_ptr<Widget> CreateWidgetWithNativeWidget() {
   return CreateWidgetWithNativeWidgetWithParams(std::move(params));
 }
 
+class CloseOnActivationWidgetObserver : public WidgetObserver {
+ public:
+  explicit CloseOnActivationWidgetObserver(Widget* widget) {
+    observation_.Observe(widget);
+  }
+  ~CloseOnActivationWidgetObserver() override = default;
+
+  void OnWidgetActivationChanged(Widget* widget, bool active) override {
+    observation_.Reset();
+    widget->CloseNow();
+  }
+
+ private:
+  base::ScopedObservation<Widget, WidgetObserver> observation_{this};
+};
+
+class CloseOnBoundsChangedWidgetObserver : public WidgetObserver {
+ public:
+  explicit CloseOnBoundsChangedWidgetObserver(Widget* widget) {
+    observation_.Observe(widget);
+  }
+  ~CloseOnBoundsChangedWidgetObserver() override = default;
+
+  void OnWidgetBoundsChanged(Widget* widget,
+                             const gfx::Rect& new_bounds) override {
+    observation_.Reset();
+    widget->CloseNow();
+  }
+
+ private:
+  base::ScopedObservation<Widget, WidgetObserver> observation_{this};
+};
+
 }  // namespace
 
 class DesktopWindowTreeHostPlatformTest : public ViewsTestBase {
@@ -207,7 +244,20 @@ TEST_F(DesktopWindowTreeHostPlatformTest,
 // Tests that the window shape is updated from the
 // |NonClientView::GetWindowMask|.
 TEST_F(DesktopWindowTreeHostPlatformTest, UpdateWindowShapeFromWindowMask) {
-  std::unique_ptr<Widget> widget = CreateWidgetWithNativeWidget();
+  // Use DefaultFrameView, which produces a non-empty mask, so the test
+  // does not depend on the platform-specific default frame view.
+  auto delegate = std::make_unique<WidgetDelegate>();
+  delegate->SetFrameViewFactory(
+      base::BindRepeating([](Widget* widget) -> std::unique_ptr<FrameView> {
+        return std::make_unique<DefaultFrameView>(widget);
+      }));
+  Widget::InitParams params(Widget::InitParams::CLIENT_OWNS_WIDGET,
+                            Widget::InitParams::TYPE_WINDOW);
+  params.delegate = delegate.get();
+  params.remove_standard_frame = true;
+  params.bounds = gfx::Rect(100, 100, 100, 100);
+  std::unique_ptr<Widget> widget =
+      CreateWidgetWithNativeWidgetWithParams(std::move(params));
   widget->Show();
 
   auto* host_platform = DesktopWindowTreeHostPlatform::GetHostForWidget(
@@ -606,6 +656,55 @@ TEST_F(DesktopWindowTreeHostPlatformTest, FocusParentWindowWillActivate) {
   EXPECT_TRUE(host_platform->IsActive());
 }
 
+TEST_F(DesktopWindowTreeHostPlatformTest,
+       OnActivationChangedSurvivesSynchronousClose) {
+  std::unique_ptr<Widget> widget = CreateWidgetWithNativeWidget();
+  widget->Show();
+
+  auto* host_platform = DesktopWindowTreeHostPlatform::GetHostForWidget(
+      widget->GetNativeWindow()->GetHost()->GetAcceleratedWidget());
+  ASSERT_TRUE(host_platform);
+
+  CloseOnActivationWidgetObserver observer(widget.get());
+
+  // This should not crash.
+  static_cast<ui::PlatformWindowDelegate*>(host_platform)
+      ->OnActivationChanged(false);
+}
+
+TEST_F(DesktopWindowTreeHostPlatformTest, OnPaintAsActiveChanged) {
+  std::unique_ptr<Widget> widget = CreateWidgetWithNativeWidget();
+  widget->Show();
+
+  auto* host_platform = DesktopWindowTreeHostPlatform::GetHostForWidget(
+      widget->GetNativeWindow()->GetHost()->GetAcceleratedWidget());
+  ASSERT_TRUE(host_platform);
+
+  auto* delegate = static_cast<ui::PlatformWindowDelegate*>(host_platform);
+
+  // Start with the widget input-inactive so paint-as-active is driven by
+  // the signal rather than by activation.
+  delegate->OnActivationChanged(false);
+  EXPECT_FALSE(widget->ShouldPaintAsActive());
+
+  // Signal flips on: frame paints as active despite input being elsewhere.
+  delegate->OnPaintAsActiveChanged(true);
+  EXPECT_FALSE(widget->IsActive());
+  EXPECT_TRUE(widget->ShouldPaintAsActive());
+
+  // Redundant true is idempotent.
+  delegate->OnPaintAsActiveChanged(true);
+  EXPECT_TRUE(widget->ShouldPaintAsActive());
+
+  // Signal flips off: paint follows activation again.
+  delegate->OnPaintAsActiveChanged(false);
+  EXPECT_FALSE(widget->ShouldPaintAsActive());
+
+  // Redundant false is a no-op.
+  delegate->OnPaintAsActiveChanged(false);
+  EXPECT_FALSE(widget->ShouldPaintAsActive());
+}
+
 #endif  // !BUILDFLAG(IS_FUCHSIA)
 
 class VisibilityObserver : public aura::WindowObserver {
@@ -640,5 +739,170 @@ TEST_F(DesktopWindowTreeHostPlatformTest, ContentWindowShownOnce) {
 
   host_platform->GetContentWindow()->RemoveObserver(&observer);
 }
+
+#if !BUILDFLAG(IS_FUCHSIA)
+class MaximizeBoundsChangeStubWindow : public ui::StubWindow {
+ public:
+  explicit MaximizeBoundsChangeStubWindow(ui::PlatformWindowDelegate* delegate,
+                                          gfx::AcceleratedWidget widget,
+                                          const gfx::Rect& bounds)
+      : StubWindow(delegate, false, bounds) {
+    InitDelegateWithWidget(delegate, widget);
+  }
+
+  void Maximize() override {
+    delegate()->OnBoundsChanged({/*origin_changed=*/true});
+  }
+};
+
+class MaximizeBoundsChangePlatformWindowFactoryDelegate
+    : public aura::WindowTreeHostPlatform::
+          PlatformWindowFactoryDelegateForTesting {
+ public:
+  MaximizeBoundsChangePlatformWindowFactoryDelegate() {
+    aura::WindowTreeHostPlatform::SetPlatformWindowFactoryDelegateForTesting(
+        this);
+  }
+  MaximizeBoundsChangePlatformWindowFactoryDelegate(
+      const MaximizeBoundsChangePlatformWindowFactoryDelegate&) = delete;
+  MaximizeBoundsChangePlatformWindowFactoryDelegate& operator=(
+      const MaximizeBoundsChangePlatformWindowFactoryDelegate&) = delete;
+  ~MaximizeBoundsChangePlatformWindowFactoryDelegate() override {
+    aura::WindowTreeHostPlatform::SetPlatformWindowFactoryDelegateForTesting(
+        nullptr);
+  }
+
+  std::unique_ptr<ui::PlatformWindow> Create(
+      aura::WindowTreeHostPlatform* host) override {
+    return std::make_unique<MaximizeBoundsChangeStubWindow>(
+        host, ++last_accelerated_widget_, gfx::Rect(100, 100, 100, 100));
+  }
+
+  gfx::AcceleratedWidget last_accelerated_widget_ = gfx::kNullAcceleratedWidget;
+};
+
+TEST_F(DesktopWindowTreeHostPlatformTest,
+       MaximizeSurvivesSynchronousCloseDuringBoundsChange) {
+  auto scoped_platform_window_factory_delegate =
+      std::make_unique<MaximizeBoundsChangePlatformWindowFactoryDelegate>();
+
+  std::unique_ptr<Widget> widget = CreateWidgetWithNativeWidget();
+  widget->Show();
+
+  auto* host_platform = DesktopWindowTreeHostPlatform::GetHostForWidget(
+      widget->GetNativeWindow()->GetHost()->GetAcceleratedWidget());
+  ASSERT_TRUE(host_platform);
+
+  CloseOnBoundsChangedWidgetObserver observer(widget.get());
+
+  // This should not crash or trigger UAF.
+  host_platform->Maximize();
+}
+
+class RestoreBoundsChangeStubWindow : public ui::StubWindow {
+ public:
+  RestoreBoundsChangeStubWindow(ui::PlatformWindowDelegate* delegate,
+                                gfx::AcceleratedWidget widget,
+                                const gfx::Rect& bounds)
+      : StubWindow(delegate, false, bounds) {
+    InitDelegateWithWidget(delegate, widget);
+  }
+
+  void Restore() override {
+    delegate()->OnBoundsChanged({/*origin_changed=*/true});
+  }
+};
+
+class RestoreBoundsChangePlatformWindowFactoryDelegate
+    : public aura::WindowTreeHostPlatform::
+          PlatformWindowFactoryDelegateForTesting {
+ public:
+  RestoreBoundsChangePlatformWindowFactoryDelegate() {
+    aura::WindowTreeHostPlatform::SetPlatformWindowFactoryDelegateForTesting(
+        this);
+  }
+  RestoreBoundsChangePlatformWindowFactoryDelegate(
+      const RestoreBoundsChangePlatformWindowFactoryDelegate&) = delete;
+  RestoreBoundsChangePlatformWindowFactoryDelegate& operator=(
+      const RestoreBoundsChangePlatformWindowFactoryDelegate&) = delete;
+  ~RestoreBoundsChangePlatformWindowFactoryDelegate() override {
+    aura::WindowTreeHostPlatform::SetPlatformWindowFactoryDelegateForTesting(
+        nullptr);
+  }
+
+  std::unique_ptr<ui::PlatformWindow> Create(
+      aura::WindowTreeHostPlatform* host) override {
+    return std::make_unique<RestoreBoundsChangeStubWindow>(
+        host, ++last_accelerated_widget_, gfx::Rect(100, 100, 100, 100));
+  }
+
+  gfx::AcceleratedWidget last_accelerated_widget_ = gfx::kNullAcceleratedWidget;
+};
+
+TEST_F(DesktopWindowTreeHostPlatformTest,
+       RestoreSurvivesSynchronousCloseDuringBoundsChange) {
+  RestoreBoundsChangePlatformWindowFactoryDelegate
+      scoped_platform_window_factory_delegate;
+
+  std::unique_ptr<Widget> widget = CreateWidgetWithNativeWidget();
+  widget->Show();
+
+  auto* host_platform = DesktopWindowTreeHostPlatform::GetHostForWidget(
+      widget->GetNativeWindow()->GetHost()->GetAcceleratedWidget());
+  ASSERT_TRUE(host_platform);
+
+  CloseOnBoundsChangedWidgetObserver observer(widget.get());
+
+  // This should not crash or trigger UAF.
+  host_platform->Restore();
+}
+
+class CenterWindowCloseWidgetScreen : public display::test::TestScreen {
+ public:
+  explicit CenterWindowCloseWidgetScreen(Widget* widget)
+      : display::test::TestScreen(/*create_display=*/false,
+                                  /*register_screen=*/false),
+        widget_(widget) {
+    display_list().AddDisplay({0, gfx::Rect(0, 0, 800, 600)},
+                              display::DisplayList::Type::PRIMARY);
+    old_screen_ = display::Screen::SetScreenInstance(nullptr);
+    display::Screen::SetScreenInstance(this);
+  }
+
+  ~CenterWindowCloseWidgetScreen() override {
+    display::Screen::SetScreenInstance(nullptr);
+    display::Screen::SetScreenInstance(old_screen_);
+  }
+
+  display::Display GetDisplayNearestWindow(
+      gfx::NativeWindow window) const override {
+    if (widget_ && !widget_closed_) {
+      widget_closed_ = true;
+      widget_->CloseNow();
+    }
+    return display::test::TestScreen::GetDisplayNearestWindow(window);
+  }
+
+ private:
+  raw_ptr<Widget> widget_;
+  raw_ptr<display::Screen> old_screen_ = nullptr;
+  mutable bool widget_closed_ = false;
+};
+
+TEST_F(DesktopWindowTreeHostPlatformTest,
+       CenterWindowSurvivesSynchronousClose) {
+  std::unique_ptr<Widget> widget = CreateWidgetWithNativeWidget();
+  widget->Show();
+
+  auto* host_platform = DesktopWindowTreeHostPlatform::GetHostForWidget(
+      widget->GetNativeWindow()->GetHost()->GetAcceleratedWidget());
+  ASSERT_TRUE(host_platform);
+
+  CenterWindowCloseWidgetScreen test_screen(widget.get());
+
+  // This should not crash or trigger UAF.
+  host_platform->CenterWindow(gfx::Size(100, 100));
+}
+#endif  // !BUILDFLAG(IS_FUCHSIA)
 
 }  // namespace views

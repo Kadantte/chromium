@@ -38,26 +38,26 @@ export class SkillsSidebarElement extends CrLitElement {
   static override get properties() {
     return {
       selectedPage: {type: String},
+      menuItems: {type: Array},
     };
   }
 
-  readonly menuItems: MenuItem[] = [
+  accessor menuItems: MenuItem[] = [
+    ...(!loadTimeData.getBoolean('shouldDisableBrowseSkillsPage') ? [{
+      icon: 'skills:explore',
+      name: loadTimeData.getString('browseSkillsTitle'),
+      page: Page.DISCOVER_SKILLS,
+    }] : []),
     {
       icon: 'skills:bolt',
       name: loadTimeData.getString('userSkillsTitle'),
       page: Page.USER_SKILLS,
     },
-    {
-      icon: 'skills:explore',
-      name: loadTimeData.getString('browseSkillsTitle'),
-      page: Page.DISCOVER_SKILLS,
-    },
   ];
 
   protected accessor selectedPage: Page = Page.USER_SKILLS;
 
-  protected onMenuItemActivate_(e: CustomEvent<{item: HTMLAnchorElement}>):
-      void {
+  protected onIronActivate_(e: CustomEvent<{item: HTMLAnchorElement}>): void {
     const newUrl = new URL(e.detail.item.href);
     this.fire('route-click', {path: newUrl.pathname});
   }

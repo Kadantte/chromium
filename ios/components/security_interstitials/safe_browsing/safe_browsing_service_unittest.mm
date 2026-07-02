@@ -17,8 +17,8 @@
 #import "components/prefs/pref_service.h"
 #import "components/prefs/testing_pref_service.h"
 #import "components/safe_browsing/core/browser/db/database_manager.h"
+#import "components/safe_browsing/core/browser/db/sb_database.h"
 #import "components/safe_browsing/core/browser/db/util.h"
-#import "components/safe_browsing/core/browser/db/v4_database.h"
 #import "components/safe_browsing/core/browser/db/v4_get_hash_protocol_manager.h"
 #import "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
 #import "components/safe_browsing/core/browser/db/v4_test_util.h"
@@ -181,7 +181,9 @@ class TestRealtimeUrlLookupService
             min_allowed_timestamp_for_referrer_chains_getter,
             referrer_chain_provider,
             delegate,
-            /*intelligent_scan_delegate=*/nullptr) {}
+            /*intelligent_scan_delegate=*/nullptr,
+            // iOS doesn't support referrer chains yet.
+            /*network_context_getter=*/base::NullCallback()) {}
 
   bool CanCheckSafeBrowsingDb() const override {
     return can_check_safe_browsing_db_;
@@ -209,13 +211,14 @@ class TestRealtimeUrlLookupService
 class SafeBrowsingServiceTest : public PlatformTest {
  public:
   SafeBrowsingServiceTest() : browser_state_(new web::FakeBrowserState()) {
+    // TODO(crbug.com/362791941): Handle v4 references.
     store_factory_ = new safe_browsing::TestV4StoreFactory();
-    safe_browsing::V4Database::RegisterStoreFactoryForTest(
+    safe_browsing::SBDatabase::RegisterStoreFactoryForTest(
         base::WrapUnique(store_factory_.get()));
 
-    v4_db_factory_ = new safe_browsing::TestV4DatabaseFactory();
-    safe_browsing::V4Database::RegisterDatabaseFactoryForTest(
-        base::WrapUnique(v4_db_factory_.get()));
+    sb_db_factory_ = new safe_browsing::TestSBDatabaseFactory();
+    safe_browsing::SBDatabase::RegisterDatabaseFactoryForTest(
+        base::WrapUnique(sb_db_factory_.get()));
 
     v4_get_hash_factory_ =
         new safe_browsing::TestV4GetHashProtocolManagerFactory();
@@ -249,8 +252,8 @@ class SafeBrowsingServiceTest : public PlatformTest {
     }
 
     safe_browsing::V4GetHashProtocolManager::RegisterFactory(nullptr);
-    safe_browsing::V4Database::RegisterDatabaseFactoryForTest(nullptr);
-    safe_browsing::V4Database::RegisterStoreFactoryForTest(nullptr);
+    safe_browsing::SBDatabase::RegisterDatabaseFactoryForTest(nullptr);
+    safe_browsing::SBDatabase::RegisterStoreFactoryForTest(nullptr);
   }
 
   void MarkUrlAsMalware(const GURL& bad_url) {
@@ -304,7 +307,7 @@ class SafeBrowsingServiceTest : public PlatformTest {
         safe_browsing::GetFullHashInfoWithMetadata(
             bad_url, safe_browsing::GetUrlMalwareId(),
             safe_browsing::ThreatMetadata());
-    v4_db_factory_->MarkPrefixAsBad(safe_browsing::GetUrlMalwareId(),
+    sb_db_factory_->MarkPrefixAsBad(safe_browsing::GetUrlMalwareId(),
                                     full_hash_info.full_hash);
     v4_get_hash_factory_->AddToFullHashCache(full_hash_info);
   }
@@ -314,7 +317,7 @@ class SafeBrowsingServiceTest : public PlatformTest {
         safe_browsing::GetFullHashInfoWithMetadata(
             bad_url, safe_browsing::GetUrlMalwareId(),
             safe_browsing::ThreatMetadata());
-    v4_db_factory_->MarkPrefixAsBad(
+    sb_db_factory_->MarkPrefixAsBad(
         safe_browsing::GetUrlHighConfidenceAllowlistId(),
         full_hash_info.full_hash);
     v4_get_hash_factory_->AddToFullHashCache(full_hash_info);
@@ -352,13 +355,13 @@ class SafeBrowsingServiceTest : public PlatformTest {
 
   base::ScopedTempDir temp_dir_;
 
-  // Owned by V4Database.
-  raw_ptr<safe_browsing::TestV4DatabaseFactory, DanglingUntriaged>
-      v4_db_factory_;
+  // Owned by SBDatabase.
+  raw_ptr<safe_browsing::TestSBDatabaseFactory, DanglingUntriaged>
+      sb_db_factory_;
   // Owned by V4GetHashProtocolManager.
   raw_ptr<safe_browsing::TestV4GetHashProtocolManagerFactory, DanglingUntriaged>
       v4_get_hash_factory_;
-  // Owned by V4Database.
+  // Owned by SBDatabase.
   raw_ptr<safe_browsing::TestV4StoreFactory, DanglingUntriaged> store_factory_;
   scoped_refptr<HostContentSettingsMap> host_content_settings_map_;
   std::unique_ptr<safe_browsing::VerdictCacheManager> verdict_cache_manager_;

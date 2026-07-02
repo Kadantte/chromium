@@ -40,9 +40,7 @@ enum class PageVisibility {
 };
 
 // Represents the page's state of prerendering.
-// If the page is previewed, the state starts with kInPreview, and may be
-// transitted to kNoPrerendering after its activation and promotion.
-// If the page is prerendereed, the state starts with kInPrerendering, and may
+// If the page is prerendered, the state starts with kInPrerendering, and may
 // be transmitted to kActivatedNoActivationStart, and kActivated.
 // Otherwise, it sticks on kNoPrerendering.
 //
@@ -50,8 +48,6 @@ enum class PageVisibility {
 enum class PrerenderingState {
   // Not prerenedered
   kNoPrerendering,
-  // Previewed before acitvation and promotion
-  kInPreview,
   // Prerendered before activation
   kInPrerendering,
   // Prerendered and activated, but `PageLoadTiming.activation_start` is not
@@ -116,6 +112,8 @@ class PageLoadMetricsObserverDelegate {
   // The state of index-th restore from the back-forward cache.
   virtual const BackForwardCacheRestore& GetBackForwardCacheRestore(
       size_t index) const = 0;
+  // Get the number of back-forward cache restores recognized thus far.
+  virtual size_t GetNumBackForwardCacheRestores() const = 0;
 
   // True if the page load started in the foreground.
   virtual bool StartedInForeground() const = 0;
@@ -209,6 +207,7 @@ class PageLoadMetricsObserverDelegate {
   virtual const ResourceTracker& GetResourceTracker() const = 0;
   virtual const std::optional<blink::SubresourceLoadMetrics>&
   GetSubresourceLoadMetrics() const = 0;
+  virtual const mojom::FontLoadingMetricsPtr& GetFontLoadingMetrics() const = 0;
 
   // Returns a shared LargestContentfulPaintHandler for page load metrics.
   virtual const LargestContentfulPaintHandler&
@@ -219,11 +218,20 @@ class PageLoadMetricsObserverDelegate {
   virtual const LargestContentfulPaintHandler&
   GetExperimentalLargestContentfulPaintHandler() const = 0;
 
-  // Returns the current soft navigation count - https://bit.ly/soft-navigation
-  // Soft navigations are JS-driven same-document navigations that are using the
-  // history API or the new Navigation API, triggered by a user gesture and
-  // meaningfully modify the DOM, replacing the previous content with new one.
-  virtual mojom::SoftNavigationMetrics& GetSoftNavigationMetrics() const = 0;
+  // Returns the current soft navigation related Largest Contentful Paint info.
+  virtual const ContentfulPaintTimingInfo&
+  GetSoftNavigationLargestContentfulPaint() const = 0;
+
+  // Returns the current soft navigation - Soft navigations are JS-driven
+  // same-document navigations that are using the history API or the new
+  // Navigation API, triggered by a user gesture and meaningfully modify the
+  // DOM, replacing the previous content with new one.
+  // See https://github.com/WICG/soft-navigations for more details.
+  virtual const mojom::SoftNavigationMetrics& GetSoftNavigationMetrics()
+      const = 0;
+
+  // The number of soft navigations that have occurred in the page load.
+  virtual uint64_t GetSoftNavigationCount() const = 0;
 
   // Maps main-frame same-document navigation identified
   // by |same_document_metrics_token| to its UKM source id.

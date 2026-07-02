@@ -23,6 +23,7 @@
 #include "chrome/browser/optimization_guide/browser_test_util.h"
 #include "chrome/browser/optimization_guide/chrome_hints_manager.h"
 #include "chrome/browser/optimization_guide/chrome_model_quality_logs_uploader_service.h"
+#include "chrome/browser/optimization_guide/model_execution/optimization_guide_global_state.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
@@ -196,10 +197,9 @@ IN_PROC_BROWSER_TEST_F(OptimizationGuideKeyedServiceDisabledBrowserTest,
 class OptimizationGuideKeyedServiceBrowserTest
     : public OptimizationGuideKeyedServiceDisabledBrowserTest {
  public:
-  OptimizationGuideKeyedServiceBrowserTest()
-      : network_connection_tracker_(
-            network::TestNetworkConnectionTracker::CreateInstance()) {
-    // Enable visibility of tab organization feature.
+  OptimizationGuideKeyedServiceBrowserTest() {
+    CHECK(network::TestNetworkConnectionTracker::HasInstance());
+    // Enable visibility of features.
     scoped_feature_list_.InitWithFeaturesAndParameters(
         /*enabled_features=*/
         {{features::kOptimizationHints, {}},
@@ -210,13 +210,10 @@ class OptimizationGuideKeyedServiceBrowserTest
          {features::kLogOnDeviceMetricsOnStartup,
           {
               {"on_device_startup_metric_delay", "0"},
-          }},
-         {features::internal::kTabOrganizationSettingsVisibility,
-          {{"allow_unsigned_user", "true"}}}},
+          }}},
         /*disabled_features=*/
         {features::internal::kWallpaperSearchGraduated,
-         features::internal::kComposeGraduated,
-         features::internal::kTabOrganizationGraduated});
+         features::internal::kComposeGraduated});
   }
 
   OptimizationGuideKeyedServiceBrowserTest(
@@ -330,7 +327,8 @@ class OptimizationGuideKeyedServiceBrowserTest
   // Sets the connection type that the Network Connection Tracker will report.
   void SetConnectionType(
       net::NetworkChangeNotifier::ConnectionType connection_type) {
-    network_connection_tracker_->SetConnectionType(connection_type);
+    network::TestNetworkConnectionTracker::GetInstance()->SetConnectionType(
+        connection_type);
   }
 
   // Sets the callback on the consumer of the OptimizationGuideKeyedService. If
@@ -379,7 +377,7 @@ class OptimizationGuideKeyedServiceBrowserTest
         identity_test_env_adaptor_->identity_test_env()
             ->MakePrimaryAccountAvailable("user@gmail.com",
                                           signin::ConsentLevel::kSignin);
-    AccountCapabilitiesTestMutator mutator(&account_info.capabilities);
+    AccountCapabilitiesTestMutator mutator(&account_info);
     mutator.set_can_use_model_execution_features(true);
     identity_test_env_adaptor_->identity_test_env()
         ->UpdateAccountInfoForAccount(account_info);
@@ -869,33 +867,49 @@ class TestSettingsEnabledObserver : public SettingsEnabledObserver {
   bool is_currently_enabled_ = false;
 };
 
-IN_PROC_BROWSER_TEST_F(OptimizationGuideKeyedServiceBrowserTest,
+class OptimizationGuideKeyedServiceUnsignedUserBrowserTest
+    : public OptimizationGuideKeyedServiceBrowserTest {
+ public:
+  OptimizationGuideKeyedServiceUnsignedUserBrowserTest() {
+    scoped_feature_list_.Reset();
+    scoped_feature_list_.InitWithFeaturesAndParameters(
+        /*enabled_features=*/
+        {{features::kOptimizationHints, {}},
+         {features::kOptimizationGuideModelExecution, {}},
+         {features::internal::kComposeSettingsVisibility, {}},
+         {features::internal::kWallpaperSearchSettingsVisibility,
+          {{"allow_unsigned_user", "true"}}},
+         {on_device_model::features::kUseFakeChromeML, {}},
+         {features::kLogOnDeviceMetricsOnStartup,
+          {
+              {"on_device_startup_metric_delay", "0"},
+          }}},
+        /*disabled_features=*/
+        {features::internal::kWallpaperSearchGraduated,
+         features::internal::kComposeGraduated});
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(OptimizationGuideKeyedServiceUnsignedUserBrowserTest,
                        SettingsVisibilitySignedOutVsSignedIn) {
-  // User is not signed-in.
-  EXPECT_FALSE(IsSettingVisible(UserVisibleFeatureKey::kWallpaperSearch));
-
-  // Visibility of tab organizer is allowed for unsigned users.
-  EXPECT_TRUE(IsSettingVisible(UserVisibleFeatureKey::kTabOrganization));
-
-  // Visibility of this feature is enabled via finch but the feature is still
-  // not visible.
+  // User is not signed-in, compose is not visible.
   EXPECT_FALSE(IsSettingVisible(UserVisibleFeatureKey::kCompose));
 
-  // kCompose should now be visible after
-  // sign-in.
+  // Visibility of wallpaper search is allowed for unsigned users.
+  EXPECT_TRUE(IsSettingVisible(UserVisibleFeatureKey::kWallpaperSearch));
+
+  // kCompose should now be visible after sign-in.
   EnableSignIn();
 
   EXPECT_TRUE(IsSettingVisible(UserVisibleFeatureKey::kWallpaperSearch));
-
-  EXPECT_TRUE(IsSettingVisible(UserVisibleFeatureKey::kTabOrganization));
 
   EXPECT_TRUE(IsSettingVisible(UserVisibleFeatureKey::kCompose));
 
 #if !BUILDFLAG(IS_CHROMEOS)
   // SignOut not supported on ChromeOS.
   SignOut();
-  // Tab Organizer is visible to unsigned users.
-  EXPECT_TRUE(IsSettingVisible(UserVisibleFeatureKey::kTabOrganization));
+  // Wallpaper Search is visible to unsigned users.
+  EXPECT_TRUE(IsSettingVisible(UserVisibleFeatureKey::kWallpaperSearch));
   EXPECT_FALSE(IsSettingVisible(UserVisibleFeatureKey::kCompose));
 #endif
 }
@@ -909,9 +923,6 @@ IN_PROC_BROWSER_TEST_F(OptimizationGuideKeyedServiceBrowserTest,
   // Visibility of wallpaper search is enabled on ToT.
   EXPECT_TRUE(IsSettingVisible(UserVisibleFeatureKey::kWallpaperSearch));
 
-  // Visibility of tab organizer is enabled via finch.
-  EXPECT_TRUE(IsSettingVisible(UserVisibleFeatureKey::kTabOrganization));
-
   // Visibility of compose is enabled via finch.
   EXPECT_TRUE(IsSettingVisible(UserVisibleFeatureKey::kCompose));
 
@@ -924,8 +935,6 @@ IN_PROC_BROWSER_TEST_F(OptimizationGuideKeyedServiceBrowserTest,
   // the feature is enabled.
   EXPECT_TRUE(IsSettingVisible(UserVisibleFeatureKey::kWallpaperSearch));
 
-  EXPECT_TRUE(IsSettingVisible(UserVisibleFeatureKey::kTabOrganization));
-
   EXPECT_TRUE(IsSettingVisible(UserVisibleFeatureKey::kCompose));
 
   prefs->SetInteger(
@@ -935,8 +944,6 @@ IN_PROC_BROWSER_TEST_F(OptimizationGuideKeyedServiceBrowserTest,
   // Restarting the browser should cause wallpaper setting to still be visible
   // since the feature is still enabled.
   EXPECT_TRUE(IsSettingVisible(UserVisibleFeatureKey::kWallpaperSearch));
-
-  EXPECT_TRUE(IsSettingVisible(UserVisibleFeatureKey::kTabOrganization));
 
   EXPECT_TRUE(IsSettingVisible(UserVisibleFeatureKey::kCompose));
 }
@@ -959,9 +966,6 @@ IN_PROC_BROWSER_TEST_F(OptimizationGuideKeyedServiceBrowserTest,
       UserVisibleFeatureKey::kWallpaperSearch));
 
   EXPECT_FALSE(ogks->ShouldFeatureBeCurrentlyEnabledForUser(
-      UserVisibleFeatureKey::kTabOrganization));
-
-  EXPECT_FALSE(ogks->ShouldFeatureBeCurrentlyEnabledForUser(
       UserVisibleFeatureKey::kCompose));
 
   auto* prefs = browser()->profile()->GetPrefs();
@@ -976,9 +980,6 @@ IN_PROC_BROWSER_TEST_F(OptimizationGuideKeyedServiceBrowserTest,
       UserVisibleFeatureKey::kWallpaperSearch));
 
   EXPECT_FALSE(ogks->ShouldFeatureBeCurrentlyEnabledForUser(
-      UserVisibleFeatureKey::kTabOrganization));
-
-  EXPECT_FALSE(ogks->ShouldFeatureBeCurrentlyEnabledForUser(
       UserVisibleFeatureKey::kCompose));
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -987,9 +988,6 @@ IN_PROC_BROWSER_TEST_F(OptimizationGuideKeyedServiceBrowserTest,
 
   EXPECT_FALSE(ogks->ShouldFeatureBeCurrentlyEnabledForUser(
       UserVisibleFeatureKey::kWallpaperSearch));
-
-  EXPECT_FALSE(ogks->ShouldFeatureBeCurrentlyEnabledForUser(
-      UserVisibleFeatureKey::kTabOrganization));
 
   EXPECT_FALSE(ogks->ShouldFeatureBeCurrentlyEnabledForUser(
       UserVisibleFeatureKey::kCompose));
@@ -1019,9 +1017,6 @@ IN_PROC_BROWSER_TEST_F(OptimizationGuideKeyedServiceBrowserTest,
       UserVisibleFeatureKey::kWallpaperSearch));
 
   EXPECT_FALSE(ogks->ShouldFeatureBeCurrentlyEnabledForUser(
-      UserVisibleFeatureKey::kTabOrganization));
-
-  EXPECT_FALSE(ogks->ShouldFeatureBeCurrentlyEnabledForUser(
       UserVisibleFeatureKey::kCompose));
 
   auto* prefs = browser()->profile()->GetPrefs();
@@ -1036,9 +1031,6 @@ IN_PROC_BROWSER_TEST_F(OptimizationGuideKeyedServiceBrowserTest,
       UserVisibleFeatureKey::kWallpaperSearch));
 
   EXPECT_FALSE(ogks->ShouldFeatureBeCurrentlyEnabledForUser(
-      UserVisibleFeatureKey::kTabOrganization));
-
-  EXPECT_FALSE(ogks->ShouldFeatureBeCurrentlyEnabledForUser(
       UserVisibleFeatureKey::kCompose));
 
   prefs->SetInteger(
@@ -1050,9 +1042,6 @@ IN_PROC_BROWSER_TEST_F(OptimizationGuideKeyedServiceBrowserTest,
 
   EXPECT_FALSE(ogks->ShouldFeatureBeCurrentlyEnabledForUser(
       UserVisibleFeatureKey::kWallpaperSearch));
-
-  EXPECT_FALSE(ogks->ShouldFeatureBeCurrentlyEnabledForUser(
-      UserVisibleFeatureKey::kTabOrganization));
 
   EXPECT_FALSE(ogks->ShouldFeatureBeCurrentlyEnabledForUser(
       UserVisibleFeatureKey::kCompose));
@@ -1083,135 +1072,6 @@ IN_PROC_BROWSER_TEST_F(OptimizationGuideKeyedServiceBrowserTest,
   EXPECT_FALSE(otr_ogks->ShouldFeatureBeCurrentlyEnabledForUser(
       UserVisibleFeatureKey::kWallpaperSearch));
 }
-
-IN_PROC_BROWSER_TEST_F(
-    OptimizationGuideKeyedServiceOnDeviceModelDisabledBrowserTest,
-    PerformanceClassNotComputedWhenDisabled) {
-  constexpr auto kKey = optimization_guide::mojom::OnDeviceFeature::kCompose;
-  auto* service =
-      OptimizationGuideKeyedServiceFactory::GetForProfile(browser()->profile());
-
-  base::RunLoop loop;
-  // The call should exit early because the service is not enabled.
-  service->GetOnDeviceModelEligibilityAsync(
-      kKey,
-      /*capabilities=*/{},
-      base::IgnoreArgs<optimization_guide::OnDeviceModelEligibilityReason>(
-          loop.QuitClosure()));
-  loop.Run();
-  histogram_tester()->ExpectTotalCount(
-      "OptimizationGuide.ModelExecution.OnDeviceModelPerformanceClass", 0);
-}
-
-#if BUILDFLAG(USE_ON_DEVICE_MODEL_SERVICE)
-class OptimizationGuideKeyedServiceStartupLogDisabledBrowserTest
-    : public OptimizationGuideKeyedServiceBrowserTest {
- public:
-  OptimizationGuideKeyedServiceStartupLogDisabledBrowserTest() {
-    feature_list_.InitWithFeaturesAndParameters(
-        {
-            {features::kOptimizationGuideOnDeviceModel, {}},
-        },
-        {features::kLogOnDeviceMetricsOnStartup});
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_F(
-    OptimizationGuideKeyedServiceStartupLogDisabledBrowserTest,
-    PerformanceClassOnlyComputedOnce) {
-  constexpr auto kKey = optimization_guide::mojom::OnDeviceFeature::kCompose;
-  auto* service =
-      OptimizationGuideKeyedServiceFactory::GetForProfile(browser()->profile());
-
-  base::RunLoop loop1;
-  base::RunLoop loop2;
-  base::RunLoop loop3;
-  // Call multiple times, should only get performance class once.
-  service->GetOnDeviceModelEligibilityAsync(
-      kKey,
-      /*capabilities=*/{},
-      base::IgnoreArgs<optimization_guide::OnDeviceModelEligibilityReason>(
-          loop1.QuitClosure()));
-  service->GetOnDeviceModelEligibilityAsync(
-      kKey,
-      /*capabilities=*/{},
-      base::IgnoreArgs<optimization_guide::OnDeviceModelEligibilityReason>(
-          loop2.QuitClosure()));
-  service->GetOnDeviceModelEligibilityAsync(
-      kKey,
-      /*capabilities=*/{},
-      base::IgnoreArgs<optimization_guide::OnDeviceModelEligibilityReason>(
-          loop3.QuitClosure()));
-
-  loop1.Run();
-  histogram_tester()->ExpectTotalCount(
-      "OptimizationGuide.ModelExecution.OnDeviceModelPerformanceClass", 1);
-
-  loop2.Run();
-  loop3.Run();
-  histogram_tester()->ExpectTotalCount(
-      "OptimizationGuide.ModelExecution.OnDeviceModelPerformanceClass", 1);
-
-  // Call again after waiting, should not get performance class again..
-  base::RunLoop loop4;
-  service->GetOnDeviceModelEligibilityAsync(
-      kKey,
-      /*capabilities=*/{},
-      base::IgnoreArgs<optimization_guide::OnDeviceModelEligibilityReason>(
-          loop4.QuitClosure()));
-  loop4.Run();
-  histogram_tester()->ExpectTotalCount(
-      "OptimizationGuide.ModelExecution.OnDeviceModelPerformanceClass", 1);
-}
-
-IN_PROC_BROWSER_TEST_F(OptimizationGuideKeyedServiceBrowserTest,
-                       LogOnDeviceMetricsAfterStart) {
-  OptimizationGuideKeyedServiceFactory::GetForProfile(browser()->profile());
-
-  EXPECT_TRUE(base::test::RunUntil([&]() {
-    return histogram_tester()
-               ->GetAllSamples(
-                   "OptimizationGuide.ModelExecution."
-                   "OnDeviceModelPerformanceClass")
-               .size() > 0;
-  }));
-
-  histogram_tester()->ExpectTotalCount(
-      "OptimizationGuide.ModelExecution.OnDeviceModelPerformanceClass", 1);
-}
-
-// Creating multiple profiles isn't supported easily on ChromeOS and android.
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
-IN_PROC_BROWSER_TEST_F(OptimizationGuideKeyedServiceBrowserTest,
-                       LogOnDeviceMetricsSingleTimeForMultipleProfiles) {
-  OptimizationGuideKeyedServiceFactory::GetForProfile(browser()->profile());
-
-  // Add a second profile which should not log performance class.
-  ProfileManager* profile_manager = g_browser_process->profile_manager();
-  base::FilePath path = profile_manager->GenerateNextProfileDirectoryPath();
-  ProfileWaiter profile_waiter;
-  profile_manager->CreateProfileAsync(path, {});
-  profile_waiter.WaitForProfileAdded();
-
-  EXPECT_TRUE(base::test::RunUntil([&]() {
-    return histogram_tester()
-               ->GetAllSamples(
-                   "OptimizationGuide.ModelExecution."
-                   "OnDeviceModelPerformanceClass")
-               .size() > 0;
-  }));
-
-  // Make sure all tasks have finished running.
-  content::RunAllTasksUntilIdle();
-
-  histogram_tester()->ExpectTotalCount(
-      "OptimizationGuide.ModelExecution.OnDeviceModelPerformanceClass", 1);
-}
-#endif
-#endif  // BUILDFLAG(USE_ON_DEVICE_MODEL_SERVICE)
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
 // CreateGuestBrowser() is not supported for Android or ChromeOS out of the box.
@@ -1255,7 +1115,7 @@ class OptimizationGuideKeyedServiceBrowserWithModelExecutionFeatureDisabledTest
  public:
   OptimizationGuideKeyedServiceBrowserWithModelExecutionFeatureDisabledTest()
       : OptimizationGuideKeyedServiceBrowserTest() {
-    // Enable visibility of tab organization feature.
+    // Enable visibility of WallpaperSearch feature.
     scoped_feature_list_.Reset();
 
     if (ShouldFeatureBeEnabled()) {
@@ -1263,15 +1123,15 @@ class OptimizationGuideKeyedServiceBrowserWithModelExecutionFeatureDisabledTest
           {features::kOptimizationHints,
            // Enabled.
            features::kOptimizationGuideModelExecution,
-           features::internal::kTabOrganizationSettingsVisibility},
-          {features::internal::kTabOrganizationGraduated});
+           features::internal::kWallpaperSearchSettingsVisibility},
+          {features::internal::kWallpaperSearchGraduated});
     } else {
       scoped_feature_list_.InitWithFeatures(
           {features::kOptimizationHints,
-           features::internal::kTabOrganizationSettingsVisibility},
+           features::internal::kWallpaperSearchSettingsVisibility},
           // Disabled.
           {features::kOptimizationGuideModelExecution,
-           features::internal::kTabOrganizationGraduated});
+           features::internal::kWallpaperSearchGraduated});
     }
   }
 
@@ -1290,9 +1150,6 @@ IN_PROC_BROWSER_TEST_P(
 
   EXPECT_EQ(ShouldFeatureBeEnabled(),
             IsSettingVisible(UserVisibleFeatureKey::kWallpaperSearch));
-
-  EXPECT_EQ(ShouldFeatureBeEnabled(),
-            IsSettingVisible(UserVisibleFeatureKey::kTabOrganization));
 }
 
 class OptimizationGuideKeyedServicePermissionsCheckDisabledTest

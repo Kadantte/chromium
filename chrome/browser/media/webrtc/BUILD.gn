@@ -52,6 +52,8 @@ source_set("webrtc") {
     "native_desktop_media_list.h",
     "permission_bubble_media_access_handler.cc",
     "permission_bubble_media_access_handler.h",
+    "rtc_diagnostic_logging_utils.cc",
+    "rtc_diagnostic_logging_utils.h",
     "rtp_dump_type.h",
     "same_origin_observer.cc",
     "same_origin_observer.h",
@@ -97,6 +99,7 @@ source_set("webrtc") {
     "//build:buildflag_header_h",
     "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/tab_contents",
     "//chrome/common:mojo_bindings",
     "//components/content_settings/core/common",
     "//components/keyed_service/core",
@@ -104,6 +107,7 @@ source_set("webrtc") {
     "//components/prefs",
     "//components/upload_list",
     "//components/webrtc:media_stream_device_enumerator",
+    "//components/webrtc_logging/browser",
     "//components/webrtc_logging/common",
     "//content/public/browser",
     "//ipc:message_support",
@@ -125,17 +129,23 @@ source_set("webrtc") {
     "//chrome/app:command_ids",
     "//chrome/app:generated_resources",
     "//chrome/app:generated_resources_grit",
+    "//chrome/browser:bad_message",
+    "//chrome/browser:browser_features",
     "//chrome/browser:browser_process",
     "//chrome/browser/content_settings:content_settings_factory",
     "//chrome/browser/content_settings:content_settings_util",
+    "//chrome/browser/media",
     "//chrome/browser/media:access_handler",
     "//chrome/browser/media/prefs",
     "//chrome/browser/permissions/system",
     "//chrome/browser/picture_in_picture",
     "//chrome/browser/policy:policy_util",
+    "//chrome/browser/profiles:profile_manager",
     "//chrome/browser/profiles:profile_util",
     "//chrome/browser/safe_browsing",
     "//chrome/browser/status_icons",
+    "//chrome/browser/ui:simple_message_box_headers",
+    "//chrome/browser/ui:tab_modal_confirm_dialog_delegate",
     "//chrome/browser/ui:ui_features",
     "//chrome/common",
     "//chrome/common:channel_info",
@@ -153,7 +163,6 @@ source_set("webrtc") {
     "//components/vector_icons",
     "//components/version_info",
     "//components/webrtc",
-    "//components/webrtc_logging/browser",
     "//content/public/common",
     "//content/public/common:buildflags",
     "//media",
@@ -200,7 +209,6 @@ source_set("webrtc") {
     ]
     deps += [
       "//chrome/browser/controlled_frame:media_access_handler",
-      "//chrome/browser/ui:browser_list",
       "//chrome/browser/ui/tabs:tab_strip",
       "//chrome/browser/ui/web_applications",
       "//extensions/browser",
@@ -211,6 +219,9 @@ source_set("webrtc") {
 
   if (enable_screen_capture) {
     sources += [
+      # This avoids header circular dependencies with //c/b/media.
+      "../capture_access_handler_base.cc",
+      "../capture_access_handler_base.h",
       "desktop_capture_devices_util.cc",
       "desktop_capture_devices_util.h",
       "desktop_media_picker_factory_impl.cc",
@@ -218,9 +229,22 @@ source_set("webrtc") {
       "display_media_access_handler.cc",
       "display_media_access_handler.h",
     ]
-    deps += [ "//chrome/browser/ui:url_identity" ]
-    if (enable_glic) {
-      deps += [ "//chrome/browser/glic" ]
+    deps += [
+      "//chrome/browser/glic",
+      "//chrome/browser/ui:url_identity",
+    ]
+
+    if (is_android) {
+      sources += [
+        # This avoids header circular dependencies with //c/b/media.
+        "../android/desktop_media_picker_android.cc",
+        "../android/desktop_media_picker_android.h",
+        "../android/media_capture_picker_manager_bridge.cc",
+        "../android/media_capture_picker_manager_bridge.h",
+        "../android/tab_sharing_indicator_android.cc",
+        "../android/tab_sharing_indicator_android.h",
+      ]
+      deps += [ "//chrome/android:chrome_jni_headers" ]
     }
 
     if (is_win) {

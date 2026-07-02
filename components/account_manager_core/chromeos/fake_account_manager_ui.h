@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_ACCOUNT_MANAGER_CORE_CHROMEOS_FAKE_ACCOUNT_MANAGER_UI_H_
 #define COMPONENTS_ACCOUNT_MANAGER_CORE_CHROMEOS_FAKE_ACCOUNT_MANAGER_UI_H_
 
+#include <optional>
 #include <string>
 
 #include "base/functional/callback_forward.h"
@@ -19,7 +20,6 @@ class FakeAccountManagerUI : public account_manager::AccountManagerUI {
    public:
     virtual void OnAddAccountDialogShown() {}
     virtual void OnReauthAccountDialogShown() {}
-    virtual void OnManageAccountsSettingsShown() {}
   };
 
   FakeAccountManagerUI();
@@ -37,12 +37,17 @@ class FakeAccountManagerUI : public account_manager::AccountManagerUI {
     return show_account_addition_dialog_calls_;
   }
 
+  const std::optional<account_manager::AccountAdditionOptions>&
+  last_add_account_options() const {
+    return last_add_account_options_;
+  }
+
   int show_account_reauthentication_dialog_calls() const {
     return show_account_reauthentication_dialog_calls_;
   }
 
-  int show_manage_accounts_settings_calls() const {
-    return show_manage_accounts_settings_calls_;
+  const std::optional<std::string>& last_reauth_email() const {
+    return last_reauth_email_;
   }
 
   // AccountManagerUI overrides:
@@ -52,14 +57,15 @@ class FakeAccountManagerUI : public account_manager::AccountManagerUI {
   void ShowReauthAccountDialog(const std::string& email,
                                base::OnceClosure close_dialog_closure) override;
   bool IsDialogShown() override;
-  void ShowManageAccountsSettings() override;
 
  private:
   base::OnceClosure close_dialog_closure_;
   bool is_dialog_shown_ = false;
   int show_account_addition_dialog_calls_ = 0;
   int show_account_reauthentication_dialog_calls_ = 0;
-  int show_manage_accounts_settings_calls_ = 0;
+  std::optional<account_manager::AccountAdditionOptions>
+      last_add_account_options_;
+  std::optional<std::string> last_reauth_email_;
 
   base::ObserverList<Observer> observers_;
 };

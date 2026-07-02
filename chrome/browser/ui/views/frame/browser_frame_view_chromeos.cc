@@ -10,8 +10,6 @@
 #include "ash/multi_user/multi_user_window_manager.h"
 #include "ash/shell.h"
 #include "ash/wm/window_state.h"
-#include "ash/wm/window_util.h"
-#include "ash/wm/wm_highlight_border_overlay_delegate.h"
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/metrics/user_metrics.h"
@@ -33,9 +31,9 @@
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
+#include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
-#include "chrome/browser/ui/views/frame/immersive_mode_controller.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/ui/views/profiles/profile_indicator_icon.h"
@@ -44,6 +42,7 @@
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
+#include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
 #include "chromeos/ash/experiences/system_web_apps/types/system_web_app_delegate.h"
 #include "chromeos/components/kiosk/kiosk_utils.h"
 #include "chromeos/constants/chromeos_features.h"
@@ -52,10 +51,11 @@
 #include "chromeos/ui/base/window_state_type.h"
 #include "chromeos/ui/frame/caption_buttons/frame_caption_button_container_view.h"
 #include "chromeos/ui/frame/default_frame_header.h"
+#include "chromeos/ui/frame/default_highlight_border_overlay_delegate.h"
 #include "chromeos/ui/frame/frame_utils.h"
+#include "chromeos/ui/wm/window_util.h"
 #include "components/services/app_service/public/cpp/app_update.h"
 #include "content/public/browser/render_view_host.h"
-#include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/ax_node_data.h"
@@ -74,7 +74,6 @@
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/views/accessibility/view_accessibility.h"
-#include "ui/views/animation/animation_builder.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/layout/box_layout.h"
@@ -85,40 +84,12 @@
 #include "ui/views/widget/widget_delegate.h"
 #include "ui/views/window/caption_button_layout_constants.h"
 
-#if BUILDFLAG(ENABLE_WEBUI_TAB_STRIP)
-#include "chrome/browser/ui/views/frame/webui_tab_strip_container_view.h"
-#endif  // BUILDFLAG(ENABLE_WEBUI_TAB_STRIP)
-
 DEFINE_UI_CLASS_PROPERTY_TYPE(BrowserFrameViewChromeOS*)
 
 namespace {
 
 // The indicator for teleported windows has 8 DIPs before and below it.
 constexpr int kProfileIndicatorPadding = 8;
-
-// Returns the layer for the specified `web_view`'s native view.
-ui::Layer* GetNativeViewLayer(views::WebView* web_view) {
-  if (web_view) {
-    if (views::NativeViewHost* holder = web_view->holder(); holder) {
-      if (aura::Window* native_view = holder->native_view(); native_view) {
-        return native_view->layer();
-      }
-    }
-  }
-  return nullptr;
-}
-
-// Returns the render widget host for the specified `web_view`.
-content::RenderWidgetHost* GetRenderWidgetHost(views::WebView* web_view) {
-  if (web_view) {
-    if (auto* web_contents = web_view->GetWebContents(); web_contents) {
-      if (auto* rvh = web_contents->GetRenderViewHost(); rvh) {
-        return rvh->GetWidget();
-      }
-    }
-  }
-  return nullptr;
-}
 
 DEFINE_UI_CLASS_PROPERTY_KEY(BrowserFrameViewChromeOS*,
                              kBrowserFrameViewChromeOSKey,
@@ -128,7 +99,8 @@ DEFINE_UI_CLASS_PROPERTY_KEY(BrowserFrameViewChromeOS*,
 // the header used for packaged apps.
 bool UsePackagedAppHeaderStyle(const Browser* browser) {
   if (browser->is_type_normal() ||
-      (browser->is_type_popup() && !browser->is_trusted_source())) {
+      (browser->is_type_popup() &&
+       !WindowFeatureController::From(browser)->IsTrustedSource())) {
     return false;
   }
 
@@ -189,7 +161,7 @@ class BrowserFrameViewChromeOS::ProfileChangeObserver
 BrowserFrameViewChromeOS::BrowserFrameViewChromeOS(BrowserWidget* widget,
                                                    BrowserView* browser_view)
     : BrowserFrameView(widget, browser_view) {
-  ash::window_util::InstallResizeHandleWindowTargeterForWindow(
+  chromeos::wm::InstallResizeHandleWindowTargeterForWindow(
       widget->GetNativeWindow());
 
   aura::Window* frame_window = widget->GetNativeWindow();
@@ -216,9 +188,9 @@ BrowserFrameViewChromeOS* BrowserFrameViewChromeOS::Get(aura::Window* window) {
 void BrowserFrameViewChromeOS::Init() {
   Browser* browser = GetBrowserView()->browser();
 
+  auto* const app_controller = web_app::AppBrowserController::From(browser);
   const bool is_close_button_enabled =
-      !(browser->app_controller() &&
-        browser->app_controller()->IsPreventCloseEnabled());
+      !(app_controller && app_controller->IsPreventCloseEnabled());
 
   caption_button_container_ =
       AddChildView(std::make_unique<chromeos::FrameCaptionButtonContainerView>(
@@ -253,8 +225,15 @@ void BrowserFrameViewChromeOS::Init() {
   display_observer_.emplace(this);
   frame_header_ = CreateFrameHeader();
 
-  if (AppIsPwaWithBorderlessDisplayMode()) {
-    UpdateBorderlessModeEnabled();
+  // BrowserFrameViewChromeOS should not paint titles for Web Apps given that
+  // client view (BrowserView) paints/manages the window title for Web Apps.
+  // (See `BrowserView::web_app_window_title_`)
+  if (GetBrowserView()->GetIsWebAppType()) {
+    frame_header_->SetPaintTitleBar(false);
+  }
+
+  if (AppIsPwaWithUnframedDisplayMode()) {
+    UpdateUnframedModeEnabled();
   }
 
   ImmersiveModeController::From(GetBrowserView()->browser())->AddObserver(this);
@@ -282,17 +261,12 @@ BrowserLayoutParams BrowserFrameViewChromeOS::GetBrowserLayoutParams() const {
     params.trailing_exclusion.content =
         gfx::SizeF(width() - caption_bounds.x(), height);
   }
+  MaybeAddAppIconToLayoutParams(params);
   return params;
 }
 
 bool BrowserFrameViewChromeOS::ShouldShowWebAppFrameToolbar() const {
   if (!GetShowCaptionButtons()) {
-    return false;
-  }
-
-  if (GetBrowserView()->browser()->is_type_app_popup() &&
-      !GetBrowserView()->AppUsesWindowControlsOverlay() &&
-      !GetBrowserView()->AppUsesUnframedMode()) {
     return false;
   }
 
@@ -316,8 +290,7 @@ int BrowserFrameViewChromeOS::GetTopInset(bool restored) const {
     // but the inset is still calculated below, so the overview code can align
     // the window content with a fake header.
     if (!GetOverviewMode() || browser_widget()->IsFullscreen() ||
-        GetBrowserView()->GetTabStripVisible() ||
-        GetBrowserView()->webui_tab_strip()) {
+        GetBrowserView()->GetTabStripVisible()) {
       return 0;
     }
   }
@@ -328,7 +301,7 @@ int BrowserFrameViewChromeOS::GetTopInset(bool restored) const {
 
   Browser* browser = GetBrowserView()->browser();
 
-  int header_height = frame_header_ ? frame_header_->GetHeaderHeight() : 0;
+  int header_height = frame_header_->GetHeaderHeight();
   const gfx::Size toolbar_size =
       GetBrowserView()->GetWebAppFrameToolbarPreferredSize();
   if (!toolbar_size.IsEmpty()) {
@@ -350,7 +323,8 @@ SkColor BrowserFrameViewChromeOS::GetCaptionColor(
     BrowserFrameActiveState active_state) const {
   // Web apps apply a theme color if specified by the extension/manifest.
   std::optional<SkColor> frame_theme_color =
-      GetBrowserView()->browser()->app_controller()->GetThemeColor();
+      web_app::AppBrowserController::From(GetBrowserView()->browser())
+          ->GetThemeColor();
   const SkColor frame_color =
       frame_theme_color.value_or(GetFrameColor(active_state));
   const SkColor active_caption_color =
@@ -374,7 +348,8 @@ SkColor BrowserFrameViewChromeOS::GetFrameColor(
 
   std::optional<SkColor> color;
   if (GetBrowserView()->GetIsWebAppType()) {
-    color = GetBrowserView()->browser()->app_controller()->GetThemeColor();
+    color = web_app::AppBrowserController::From(GetBrowserView()->browser())
+                ->GetThemeColor();
   }
 
   SkColor fallback_color = chromeos::kDefaultFrameColor;
@@ -419,7 +394,8 @@ gfx::Rect BrowserFrameViewChromeOS::GetWindowBoundsForClientBounds(
 }
 
 int BrowserFrameViewChromeOS::NonClientHitTest(const gfx::Point& point) {
-  int hit_test = chromeos::FrameBorderNonClientHitTest(this, point);
+  int hit_test = chromeos::FrameBorderNonClientHitTest(
+      this, point, non_client_hit_test_callback_);
 
   // When the window is restored (and not in tablet split-view mode) we want a
   // large click target above the tabs to drag the window, so redirect clicks in
@@ -462,14 +438,15 @@ void BrowserFrameViewChromeOS::UpdateWindowIcon() {
 }
 
 void BrowserFrameViewChromeOS::UpdateWindowTitle() {
-  if (!browser_widget()->IsFullscreen() && frame_header_) {
+  if (!browser_widget()->IsFullscreen()) {
     frame_header_->SchedulePaintForTitle();
   }
 
   browser_widget()->GetNativeWindow()->SetProperty(
       chromeos::kWindowOverviewTitleKey,
-      GetBrowserView()->browser()->GetWindowTitleForCurrentTab(
-          /*include_app_name=*/false));
+      WindowMetadataController::From(GetBrowserView()->browser())
+          ->GetWindowTitleForCurrentTab(
+              /*include_app_name=*/false));
 }
 
 void BrowserFrameViewChromeOS::SizeConstraintsChanged() {}
@@ -479,17 +456,15 @@ void BrowserFrameViewChromeOS::OnPaint(gfx::Canvas* canvas) {
     return;
   }
 
-  if (frame_header_) {
-    frame_header_->PaintHeader(canvas);
-  }
+  frame_header_->PaintHeader(canvas);
 }
 
-void BrowserFrameViewChromeOS::UpdateBorderlessModeEnabled() {
-  caption_button_container_->UpdateBorderlessModeEnabled(
+void BrowserFrameViewChromeOS::UpdateUnframedModeEnabled() {
+  caption_button_container_->UpdateUnframedModeEnabled(
       GetBrowserView()->IsUnframedModeEnabled());
 }
 
-bool BrowserFrameViewChromeOS::AppIsPwaWithBorderlessDisplayMode() const {
+bool BrowserFrameViewChromeOS::AppIsPwaWithUnframedDisplayMode() const {
   return GetBrowserView()->GetIsWebAppType() &&
          GetBrowserView()->AppUsesUnframedMode();
 }
@@ -498,35 +473,29 @@ void BrowserFrameViewChromeOS::Layout(PassKey) {
   // The header must be laid out before computing |painted_height| because the
   // computation of |painted_height| for app and popup windows depends on the
   // position of the window controls.
-  if (frame_header_) {
-    frame_header_->LayoutHeader();
-  }
+  frame_header_->LayoutHeader();
 
   const int painted_height =
       GetTopInset(false) +
       GetClientFrameElementInfo().tabstrip_preferred_height;
 
-  if (frame_header_) {
-    frame_header_->SetHeaderHeightForPainting(painted_height);
-  }
+  frame_header_->SetHeaderHeightForPainting(painted_height);
 
   if (profile_indicator_icon_) {
     LayoutProfileIndicator();
   }
 
-  if (AppIsPwaWithBorderlessDisplayMode()) {
-    UpdateBorderlessModeEnabled();
+  if (AppIsPwaWithUnframedDisplayMode()) {
+    UpdateUnframedModeEnabled();
   }
 
   LayoutSuperclass<BrowserFrameView>(this);
   UpdateTopViewInset();
 
-  if (frame_header_) {
-    // The top right corner must be occupied by a caption button for easy mouse
-    // access. This check is agnostic to RTL layout.
-    DCHECK_EQ(caption_button_container_->y(), 0);
-    DCHECK_EQ(caption_button_container_->bounds().right(), width());
-  }
+  // The top right corner must be occupied by a caption button for easy mouse
+  // access. This check is agnostic to RTL layout.
+  DCHECK_EQ(caption_button_container_->y(), 0);
+  DCHECK_EQ(caption_button_container_->bounds().right(), width());
 }
 
 gfx::Size BrowserFrameViewChromeOS::GetMinimumSize() const {
@@ -547,8 +516,7 @@ gfx::Size BrowserFrameViewChromeOS::GetMinimumSize() const {
 
   gfx::Size min_client_view_size(
       browser_widget()->client_view()->GetMinimumSize());
-  const int min_frame_width =
-      frame_header_ ? frame_header_->GetMinimumHeaderWidth() : 0;
+  const int min_frame_width = frame_header_->GetMinimumHeaderWidth();
   int min_width = std::max(min_frame_width, min_client_view_size.width());
   if (GetBrowserView()->GetTabStripVisible()) {
     // Ensure that the minimum width is enough to hold a minimum width tab strip
@@ -569,9 +537,7 @@ gfx::Size BrowserFrameViewChromeOS::GetMinimumSize() const {
   }
 
   // Include bottom rounded corners region. See b:294588040.
-  aura::Window* window = GetWidget()->GetNativeWindow();
-  const gfx::RoundedCornersF window_radii =
-      ash::WindowState::Get(window)->GetWindowRoundedCorners();
+  const gfx::RoundedCornersF window_radii = GetWindowRoundedCorners();
   CHECK_EQ(window_radii.lower_left(), window_radii.lower_right());
 
   min_height = min_height + window_radii.lower_left();
@@ -585,7 +551,6 @@ void BrowserFrameViewChromeOS::OnThemeChanged() {
       GetBrowserView()->IsWindowControlsOverlayEnabled(),
       GetFrameHeaderColor(GetBrowserView()->IsActive()));
   BrowserFrameView::OnThemeChanged();
-  MaybeAnimateThemeChanged();
 }
 
 void BrowserFrameViewChromeOS::ChildPreferredSizeChanged(views::View* child) {
@@ -595,29 +560,8 @@ void BrowserFrameViewChromeOS::ChildPreferredSizeChanged(views::View* child) {
   }
 }
 
-bool BrowserFrameViewChromeOS::DoesIntersectRect(const views::View* target,
-                                                 const gfx::Rect& rect) const {
-  DCHECK_EQ(target, this);
-  if (!views::ViewTargeterDelegate::DoesIntersectRect(this, rect)) {
-    // |rect| is outside the frame's bounds.
-    return false;
-  }
-
-  // In immersive mode, the caption buttons container is reparented to the
-  // TopContainerView and hence |rect| should not be claimed here.  See
-  // BrowserFrameViewChromeOS::OnImmersiveRevealStarted().
-  const bool should_leave_to_top_container =
-      ImmersiveModeController::From(GetBrowserView()->browser())->IsRevealed();
-
-  return !should_leave_to_top_container;
-}
-
 views::View::Views BrowserFrameViewChromeOS::GetChildrenInZOrder() {
-  if (frame_header_) {
-    return frame_header_->GetAdjustedChildrenInZOrder(this);
-  }
-
-  return BrowserFrameView::GetChildrenInZOrder();
+  return frame_header_->GetAdjustedChildrenInZOrder(this);
 }
 
 SkColor BrowserFrameViewChromeOS::GetTitleColor() {
@@ -666,7 +610,7 @@ void BrowserFrameViewChromeOS::OnDisplayMetricsChanged(
   // For example, rotating from landscape display to portrait display layout
   // should update snap icons from left/right arrows to upward/downward arrows
   // for top and bottom snaps.
-  if ((changed_metrics & DISPLAY_METRIC_ROTATION) && frame_header_) {
+  if (changed_metrics & DISPLAY_METRIC_ROTATION) {
     frame_header_->InvalidateLayout();
   }
 }
@@ -740,6 +684,11 @@ void BrowserFrameViewChromeOS::OnWindowPropertyChanged(aura::Window* window,
   // the `window`accordingly.
   if (key == chromeos::kWindowHasRoundedCornersKey) {
     UpdateWindowRoundedCorners();
+    if (GetProperty(chromeos::kWindowHasRoundedCornersKey) != old) {
+      if (auto* const browser_view = GetBrowserView()) {
+        browser_view->InvalidateLayout();
+      }
+    }
   }
 
   if (key == aura::client::kShowStateKey) {
@@ -756,7 +705,7 @@ void BrowserFrameViewChromeOS::OnWindowPropertyChanged(aura::Window* window,
 
     // The client view (in particular the tab strip) has different layout in
     // restored vs. maximized/fullscreen. Invalidate the layout because the
-    // window bounds may not have changed. https://crbug.com/1342414
+    // window bounds may not have changed. https://crbug.com/40230996
     if (browser_widget()->client_view()) {
       browser_widget()->client_view()->InvalidateLayout();
     }
@@ -765,7 +714,7 @@ void BrowserFrameViewChromeOS::OnWindowPropertyChanged(aura::Window* window,
   if (key == chromeos::kWindowStateTypeKey) {
     // Update window controls when window state changes as whether or not these
     // are shown can depend on the window state (e.g. hiding the caption buttons
-    // in non-immersive full screen mode, see crbug.com/1336470).
+    // in non-immersive full screen mode, see crbug.com/40228932).
     ResetWindowControls();
 
     // Update the window controls if we are entering or exiting float state.
@@ -773,7 +722,7 @@ void BrowserFrameViewChromeOS::OnWindowPropertyChanged(aura::Window* window,
     const bool was_floated = static_cast<chromeos::WindowStateType>(old) ==
                              chromeos::WindowStateType::kFloated;
 
-    if (frame_header_ && (is_floated != was_floated)) {
+    if (is_floated != was_floated) {
       frame_header_->OnFloatStateChanged();
     }
 
@@ -798,10 +747,6 @@ void BrowserFrameViewChromeOS::OnWindowPropertyChanged(aura::Window* window,
     return;
   }
 
-  if (!frame_header_) {
-    return;
-  }
-
   if (key == aura::client::kShowStateKey) {
     frame_header_->OnShowStateChanged(
         window->GetProperty(aura::client::kShowStateKey));
@@ -810,42 +755,25 @@ void BrowserFrameViewChromeOS::OnWindowPropertyChanged(aura::Window* window,
   }
 }
 
-void BrowserFrameViewChromeOS::OnImmersiveRevealStarted() {
+void BrowserFrameViewChromeOS::OnImmersiveFullscreenEntered() {
   ResetWindowControls();
-  // The frame caption buttons use ink drop highlights and flood fill effects.
-  // They make those buttons paint_to_layer. On immersive mode, the browser's
-  // TopContainerView is also converted to paint_to_layer (see
-  // ImmersiveModeControllerAsh::OnImmersiveRevealStarted()). In this mode, the
-  // TopContainerView is responsible for painting this
-  // BrowserFrameViewChromeOS (see TopContainerView::PaintChildren()).
-  // However, BrowserFrameViewChromeOS is a sibling of TopContainerView
-  // not a child. As a result, when the frame caption buttons are set to
-  // paint_to_layer as a result of an ink drop effect, they will disappear.
-  // https://crbug.com/840242. To fix this, we'll make the caption buttons
-  // temporarily children of the TopContainerView while they're all painting to
-  // their layers.
   auto* container = GetBrowserView()->top_container();
   container->AddChildViewAt(caption_button_container_.get(), 0);
-
-  container->DeprecatedLayoutImmediately();
-}
-
-void BrowserFrameViewChromeOS::OnImmersiveRevealEnded() {
-  ResetWindowControls();
-  AddChildViewAt(caption_button_container_.get(), 0);
-
-  DeprecatedLayoutImmediately();
 }
 
 void BrowserFrameViewChromeOS::OnImmersiveFullscreenExited() {
+  ResetWindowControls();
+  AddChildViewAt(caption_button_container_.get(), 0);
+
   OnImmersiveRevealEnded();
 }
 
 void BrowserFrameViewChromeOS::OnAppUpdate(const apps::AppUpdate& update) {
   Browser* browser = GetBrowserView()->browser();
 
-  if (!browser->app_controller() ||
-      browser->app_controller()->app_id() != update.AppId() ||
+  if (!web_app::AppBrowserController::From(browser) ||
+      web_app::AppBrowserController::From(browser)->app_id() !=
+          update.AppId() ||
       !caption_button_container_) {
     return;
   }
@@ -865,8 +793,13 @@ bool BrowserFrameViewChromeOS::ShouldEnableImmersiveModeController() const {
     return false;
   }
 
+  const aura::Window* frame_window = GetFrameWindow();
+  if (!frame_window) {
+    return false;
+  }
+
   if (IsLockedFullscreen() &&
-      !GetFrameWindow()->GetProperty(chromeos::kUseImmersiveInTrustedPinned)) {
+      (!frame_window->GetProperty(chromeos::kUseImmersiveInTrustedPinned))) {
     return false;
   }
   if (display::Screen::Get()->InTabletMode() &&
@@ -904,9 +837,7 @@ void BrowserFrameViewChromeOS::PaintAsActiveChanged() {
 
   UpdateProfileIcons();
 
-  if (frame_header_) {
-    frame_header_->SetPaintAsActive(ShouldPaintAsActive());
-  }
+  frame_header_->SetPaintAsActive(ShouldPaintAsActive());
 }
 
 void BrowserFrameViewChromeOS::AddedToWidget() {
@@ -917,7 +848,8 @@ void BrowserFrameViewChromeOS::AddedToWidget() {
   }
 
   highlight_border_overlay_ = std::make_unique<HighlightBorderOverlay>(
-      GetWidget(), std::make_unique<ash::WmHighlightBorderOverlayDelegate>());
+      GetWidget(),
+      std::make_unique<chromeos::DefaultHighlightBorderOverlayDelegate>());
 }
 
 BrowserFrameViewChromeOS::BoundsAndMargins
@@ -936,12 +868,17 @@ bool BrowserFrameViewChromeOS::GetShowCaptionButtons() const {
 }
 
 bool BrowserFrameViewChromeOS::GetShowCaptionButtonsWhenNotInOverview() const {
+  const aura::Window* frame_window = GetFrameWindow();
+  if (!frame_window) {
+    return true;
+  }
+
   // Show the caption buttons if an immersive mode is enabled for trusted pined
   // state. This is to show the three dot menu which is a part of caption button
   // container, rather than showing buttons. Only relevant for non-web browser
   // scenarios.
   if (IsLockedFullscreen() &&
-      GetFrameWindow()->GetProperty(chromeos::kUseImmersiveInTrustedPinned)) {
+      frame_window->GetProperty(chromeos::kUseImmersiveInTrustedPinned)) {
     return true;
   }
 
@@ -954,13 +891,8 @@ bool BrowserFrameViewChromeOS::GetShowCaptionButtonsWhenNotInOverview() const {
     return true;
   }
 
-  // Browsers in tablet mode still show their caption buttons in float state,
-  // even with the webUI tab strip.
-  if (display::Screen::Get()->InTabletMode()) {
-    return IsFloated();
-  }
-
-  return !UseWebUITabStrip();
+  // Browsers in tablet mode still show their caption buttons in float state.
+  return !display::Screen::Get()->InTabletMode() || IsFloated();
 }
 
 int BrowserFrameViewChromeOS::GetToolbarLeftInset() const {
@@ -987,19 +919,6 @@ int BrowserFrameViewChromeOS::GetTabStripRightInset() const {
 }
 
 bool BrowserFrameViewChromeOS::GetShouldPaint() const {
-  // Floated windows show their frame as they need to be dragged or hidden.
-  if (IsFloated()) {
-    return true;
-  }
-
-#if BUILDFLAG(ENABLE_WEBUI_TAB_STRIP)
-  // Normal windows that have a WebUI-based tab strip do not need a browser
-  // frame as no tab strip is drawn on top of the browser frame.
-  if (UseWebUITabStrip()) {
-    return false;
-  }
-#endif  // BUILDFLAG(ENABLE_WEBUI_TAB_STRIP)
-
   // We need to paint when the top-of-window views are revealed in immersive
   // fullscreen.
   auto* const immersive_mode_controller =
@@ -1043,7 +962,7 @@ void BrowserFrameViewChromeOS::UpdateTopViewInset() {
       ImmersiveModeController::From(GetBrowserView()->browser())->IsEnabled();
   const bool tab_strip_visible = GetBrowserView()->GetTabStripVisible();
   const int inset = (tab_strip_visible || immersive ||
-                     (AppIsPwaWithBorderlessDisplayMode() &&
+                     (AppIsPwaWithUnframedDisplayMode() &&
                       GetBrowserView()->IsUnframedModeEnabled()))
                         ? 0
                         : GetTopInset(/*restored=*/false);
@@ -1063,15 +982,6 @@ bool BrowserFrameViewChromeOS::GetShowProfileIndicatorIcon() const {
   if (browser->is_type_popup()) {
     return false;
   }
-
-#if BUILDFLAG(ENABLE_WEBUI_TAB_STRIP)
-  // TODO(http://crbug.com/1059514): This check shouldn't be necessary.  Provide
-  // an appropriate affordance for the profile icon with the webUI tabstrip and
-  // remove this block.
-  if (!GetBrowserView()->GetTabStripVisible()) {
-    return false;
-  }
-#endif  // BUILDFLAG(ENABLE_WEBUI_TAB_STRIP)
 
   return ShouldShowAvatar(GetBrowserView()->GetNativeWindow());
 }
@@ -1093,35 +1003,42 @@ void BrowserFrameViewChromeOS::UpdateProfileIcons() {
     if (needs_layout && root_view) {
       // Adding a child does not invalidate the layout.
       InvalidateLayout();
+      if (GetBrowserView()->GetIsWebAppType()) {
+        // We must invalidate the BrowserView layout as it is responsible for
+        // painting the window title in web apps (See
+        // `BrowserView::web_app_window_title_`).
+        GetBrowserView()->InvalidateLayout();
+      }
       root_view->DeprecatedLayoutImmediately();
     }
   } else if (profile_indicator_icon_) {
     RemoveChildViewT(std::exchange(profile_indicator_icon_, nullptr));
+    InvalidateLayout();
+    if (GetBrowserView()->GetIsWebAppType()) {
+      GetBrowserView()->InvalidateLayout();
+    }
     if (root_view) {
       root_view->DeprecatedLayoutImmediately();
     }
   }
 }
 
+gfx::RoundedCornersF BrowserFrameViewChromeOS::GetWindowRoundedCorners() const {
+  if (aura::Window* const window = GetWidget()->GetNativeWindow()) {
+    if (auto* const window_state = ash::WindowState::Get(window)) {
+      return window_state->GetWindowRoundedCorners();
+    }
+  }
+  return gfx::RoundedCornersF();
+}
+
 void BrowserFrameViewChromeOS::UpdateWindowRoundedCorners() {
   DCHECK(GetWidget());
 
-  aura::Window* window = GetWidget()->GetNativeWindow();
-  auto* window_state = ash::WindowState::Get(window);
+  const gfx::RoundedCornersF window_radii = GetWindowRoundedCorners();
 
-  // For certain windows, we do not window state associated with them. (See
-  // `ash::WindowState::Get()` for details)
-  if (!window_state) {
-    return;
-  }
-
-  const gfx::RoundedCornersF window_radii =
-      window_state->GetWindowRoundedCorners();
-
-  if (frame_header_) {
-    CHECK_EQ(window_radii.upper_left(), window_radii.upper_right());
-    frame_header_->SetHeaderCornerRadius(window_radii.upper_left());
-  }
+  CHECK_EQ(window_radii.upper_left(), window_radii.upper_right());
+  frame_header_->SetHeaderCornerRadius(window_radii.upper_left());
 
   if (GetBrowserView()->IsWindowControlsOverlayEnabled()) {
     // With window controls overlay enabled, the caption_button_container is
@@ -1135,10 +1052,30 @@ void BrowserFrameViewChromeOS::UpdateWindowRoundedCorners() {
   GetWidget()->client_view()->UpdateWindowRoundedCorners(window_radii);
 }
 
+void BrowserFrameViewChromeOS::MaybeAddAppIconToLayoutParams(
+    BrowserLayoutParams& params) const {
+  if (GetBrowserView()->ShouldShowWindowIcon() && window_icon_) {
+    const auto icon_bounds = window_icon_->bounds();
+    const float icon_right = icon_bounds.right();
+    const float icon_bottom = icon_bounds.bottom();
+
+    // The icon may extend the size of the exclusion area.
+    params.leading_exclusion.content.set_width(
+        std::max(params.leading_exclusion.content.width(), icon_right));
+    params.leading_exclusion.content.set_height(
+        std::max(params.leading_exclusion.content.height(), icon_bottom));
+
+    // Default space between window icon and title text for ChromeOS.
+    // (See `kTitleIconOffsetX` in chromeos/ui/frame/frame_header.cc).
+    params.leading_exclusion.horizontal_padding = 5.f;
+  }
+}
+
 void BrowserFrameViewChromeOS::LayoutProfileIndicator() {
   DCHECK(profile_indicator_icon_);
   const int frame_height =
-      GetTopInset(false) + GetClientFrameElementInfo().top_area_height();
+      GetTopInset(false) +
+      GetClientFrameElementInfo().tabstrip_preferred_height;
   profile_indicator_icon_->SetPosition(
       gfx::Point(kProfileIndicatorPadding,
                  (frame_height - profile_indicator_icon_->height()) / 2));
@@ -1149,7 +1086,9 @@ void BrowserFrameViewChromeOS::LayoutProfileIndicator() {
 }
 
 bool BrowserFrameViewChromeOS::GetOverviewMode() const {
-  return GetFrameWindow()->GetProperty(chromeos::kIsShowingInOverviewKey);
+  const aura::Window* frame_window = GetFrameWindow();
+  return frame_window &&
+         frame_window->GetProperty(chromeos::kIsShowingInOverviewKey);
 }
 
 bool BrowserFrameViewChromeOS::GetHideCaptionButtonsForFullscreen() const {
@@ -1171,79 +1110,7 @@ void BrowserFrameViewChromeOS::OnUpdateFrameColor() {
   window->SetProperty(chromeos::kFrameInactiveColorKey,
                       GetFrameColor(BrowserFrameActiveState::kInactive));
 
-  if (frame_header_) {
-    frame_header_->UpdateFrameColors();
-  }
-}
-
-void BrowserFrameViewChromeOS::MaybeAnimateThemeChanged() {
-  if (!GetBrowserView()) {
-    return;
-  }
-
-  Browser* browser = GetBrowserView()->browser();
-
-  // Theme change events are only animated for system web apps which explicitly
-  // request the behavior.
-  bool animate_theme_change_for_swa =
-      ash::IsSystemWebApp(browser) &&
-      browser->app_controller()->system_app()->ShouldAnimateThemeChanges();
-  if (!animate_theme_change_for_swa) {
-    return;
-  }
-
-  views::WebView* web_view = GetBrowserView()->contents_web_view();
-  ui::Layer* layer = GetNativeViewLayer(web_view);
-  content::RenderWidgetHost* render_widget_host = GetRenderWidgetHost(web_view);
-  if (!layer || !render_widget_host) {
-    return;
-  }
-
-  // Immediately hide the layer associated with the `contents_web_view()` native
-  // view so that repainting of the web contents (which is janky) is hidden from
-  // user. Note that opacity is set just above `0.f` to pass a DCHECK that
-  // exists in `aura::Window` that might otherwise be tripped when changing
-  // window visibility (see https://crbug.com/351553).
-  layer->SetOpacity(std::nextafter(0.f, 1.f));
-
-  // Cache a callback to invoke to animate the layer back in. Note that because
-  // this is a cancelable callback, any previously created callback will be
-  // cancelled.
-  theme_changed_animation_callback_.Reset(base::BindOnce(
-      [](const base::WeakPtr<BrowserFrameViewChromeOS>& self,
-         base::TimeTicks theme_changed_time, bool success) {
-        if (!self || !self->GetBrowserView()) {
-          return;
-        }
-
-        views::WebView* web_view = self->GetBrowserView()->contents_web_view();
-        ui::Layer* layer = GetNativeViewLayer(web_view);
-        if (!layer) {
-          return;
-        }
-
-        // Delay animating the layer back in at least until the
-        // `chromeos::DefaultFrameHeader` has had a chance to complete its own
-        // color change animation.
-        const base::TimeDelta offset =
-            chromeos::kDefaultFrameColorChangeAnimationDuration -
-            (base::TimeTicks::Now() - theme_changed_time);
-
-        views::AnimationBuilder()
-            .SetPreemptionStrategy(ui::LayerAnimator::PreemptionStrategy::
-                                       IMMEDIATELY_ANIMATE_TO_NEW_TARGET)
-            .Once()
-            .Offset(std::max(offset, base::TimeDelta()))
-            .SetDuration(chromeos::kDefaultFrameColorChangeAnimationDuration)
-            .SetOpacity(layer, 1.f);
-      },
-      weak_ptr_factory_.GetWeakPtr(), base::TimeTicks::Now()));
-
-  // Animate the layer back in only after a round trip through the renderer and
-  // compositor pipelines. This should ensure that the web contents has finished
-  // repainting theme changes.
-  render_widget_host->InsertVisualStateCallback(
-      theme_changed_animation_callback_.callback());
+  frame_header_->UpdateFrameColors();
 }
 
 bool BrowserFrameViewChromeOS::IsFloated() const {
@@ -1254,12 +1121,6 @@ bool BrowserFrameViewChromeOS::IsFloated() const {
 bool BrowserFrameViewChromeOS::IsSnapped() const {
   return ash::WindowState::Get(browser_widget()->GetNativeWindow())
       ->IsSnapped();
-}
-
-bool BrowserFrameViewChromeOS::UseWebUITabStrip() const {
-  return WebUITabStripContainerView::UseTouchableTabStrip(
-             GetBrowserView()->browser()) &&
-         GetBrowserView()->GetSupportsTabStrip();
 }
 
 const aura::Window* BrowserFrameViewChromeOS::GetFrameWindow() const {

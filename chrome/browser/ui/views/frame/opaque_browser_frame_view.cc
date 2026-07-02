@@ -19,6 +19,7 @@
 #include "chrome/browser/ui/views/frame/caption_button_placeholder_container.h"
 #include "chrome/browser/ui/views/frame/opaque_browser_frame_view_layout.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
+#include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/ui/views/tab_icon_view.h"
 #include "chrome/browser/ui/views/tabs/new_tab_button.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
@@ -37,6 +38,7 @@
 #include "ui/base/models/image_model.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
 #include "ui/base/theme_provider.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_provider.h"
 #include "ui/compositor/layer.h"
 #include "ui/gfx/canvas.h"
@@ -51,6 +53,7 @@
 #include "ui/views/controls/label.h"
 #include "ui/views/metadata/view_factory.h"
 #include "ui/views/resources/grit/views_resources.h"
+#include "ui/views/vector_icons.h"
 #include "ui/views/views_delegate.h"
 #include "ui/views/window/frame_background.h"
 #include "ui/views/window/frame_caption_button.h"
@@ -68,6 +71,8 @@
 using content::WebContents;
 
 namespace {
+
+constexpr int kRoundedCaptionButtonSize = 16;
 
 class CaptionButtonBackgroundImageSource : public gfx::CanvasImageSource {
  public:
@@ -143,8 +148,8 @@ OpaqueBrowserFrameView::OpaqueBrowserFrameView(
   }
 
   if (browser_view->AppUsesUnframedMode()) {
-    layout_->SetBorderlessModeEnabled(browser_view->IsUnframedModeEnabled(),
-                                      this);
+    layout_->SetUnframedModeEnabled(browser_view->IsUnframedModeEnabled(),
+                                    this);
   }
   SetLayoutManager(std::unique_ptr<views::LayoutManager>(layout_));
 
@@ -156,7 +161,7 @@ OpaqueBrowserFrameView::~OpaqueBrowserFrameView() = default;
 
 void OpaqueBrowserFrameView::InitViews() {
   web_app::AppBrowserController* controller =
-      GetBrowserView()->browser()->app_controller();
+      web_app::AppBrowserController::From(GetBrowserView()->browser());
 
   if (controller && controller->IsWindowControlsOverlayEnabled()) {
     caption_button_placeholder_container_ =
@@ -166,16 +171,23 @@ void OpaqueBrowserFrameView::InitViews() {
   if (GetFrameButtonStyle() == FrameButtonStyle::kMdButton) {
     minimize_button_ = CreateFrameCaptionButton(
         views::CAPTION_BUTTON_ICON_MINIMIZE, HTMINBUTTON,
-        views::kWindowControlMinimizeIcon);
+        features::IsRoundedIconsEnabled()
+            ? views::kChromeMinimizeIcon
+            : views::kWindowControlMinimizeOldIcon);
     maximize_button_ = CreateFrameCaptionButton(
         views::CAPTION_BUTTON_ICON_MAXIMIZE_RESTORE, HTMAXBUTTON,
-        views::kWindowControlMaximizeIcon);
-    restore_button_ =
-        CreateFrameCaptionButton(views::CAPTION_BUTTON_ICON_MAXIMIZE_RESTORE,
-                                 HTMAXBUTTON, views::kWindowControlRestoreIcon);
-    close_button_ =
-        CreateFrameCaptionButton(views::CAPTION_BUTTON_ICON_CLOSE, HTMAXBUTTON,
-                                 views::kWindowControlCloseIcon);
+        features::IsRoundedIconsEnabled()
+            ? views::kChromeMaximizeIcon
+            : views::kWindowControlMaximizeOldIcon);
+    restore_button_ = CreateFrameCaptionButton(
+        views::CAPTION_BUTTON_ICON_MAXIMIZE_RESTORE, HTMAXBUTTON,
+        features::IsRoundedIconsEnabled()
+            ? views::kChromeRestoreFilledIcon
+            : views::kWindowControlRestoreOldIcon);
+    close_button_ = CreateFrameCaptionButton(
+        views::CAPTION_BUTTON_ICON_CLOSE, HTMAXBUTTON,
+        features::IsRoundedIconsEnabled() ? views::kCloseIcon
+                                          : views::kWindowControlCloseOldIcon);
   } else if (GetFrameButtonStyle() == FrameButtonStyle::kImageButton) {
     minimize_button_ =
         CreateImageButton(IDR_MINIMIZE, IDR_MINIMIZE_H, IDR_MINIMIZE_P,
@@ -553,7 +565,7 @@ bool OpaqueBrowserFrameView::IsTabStripVisible() const {
   return GetBrowserView()->GetTabStripVisible();
 }
 
-bool OpaqueBrowserFrameView::GetBorderlessModeEnabled() const {
+bool OpaqueBrowserFrameView::GetUnframedModeEnabled() const {
   return GetBrowserView()->IsUnframedModeEnabled();
 }
 
@@ -645,12 +657,19 @@ void OpaqueBrowserFrameView::OnPaint(gfx::Canvas* canvas) {
   if (GetFrameButtonStyle() == FrameButtonStyle::kMdButton) {
     for (views::Button* button :
          {minimize_button_, maximize_button_, restore_button_, close_button_}) {
-      DCHECK_EQ(views::FrameCaptionButton::kViewClassName,
-                button->GetClassName());
       views::FrameCaptionButton* frame_caption_button =
-          static_cast<views::FrameCaptionButton*>(button);
+          views::AsViewClass<views::FrameCaptionButton>(button);
+      CHECK(frame_caption_button);
+
       frame_caption_button->SetPaintAsActive(active);
-      frame_caption_button->SetBackgroundColor(frame_color);
+
+      const bool button_in_top_container =
+          button->GetBoundsInScreen().Intersects(
+              GetBrowserView()->top_container()->GetBoundsInScreen());
+      SkColor background_color =
+          button_in_top_container ? GetColorProvider()->GetColor(kColorToolbar)
+                                  : frame_color;
+      frame_caption_button->SetBackgroundColor(background_color);
     }
   }
 
@@ -713,7 +732,10 @@ views::Button* OpaqueBrowserFrameView::CreateFrameCaptionButton(
   views::FrameCaptionButton* button = new views::FrameCaptionButton(
       views::Button::PressedCallback(), icon_type, ht_component);
   button->SetImage(button->GetIcon(), views::FrameCaptionButton::Animate::kNo,
-                   icon_image);
+                   icon_image,
+                   features::IsRoundedIconsEnabled()
+                       ? std::make_optional<int>(kRoundedCaptionButtonSize)
+                       : std::nullopt);
   return button;
 }
 

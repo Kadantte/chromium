@@ -5,6 +5,7 @@
 package org.chromium.content.browser.accessibility;
 
 import static androidx.core.view.accessibility.AccessibilityEventCompat.CONTENT_CHANGE_TYPE_PANE_APPEARED;
+import static androidx.core.view.accessibility.AccessibilityEventCompat.CONTENT_CHANGE_TYPE_SORT_DIRECTION;
 import static androidx.core.view.accessibility.AccessibilityNodeInfoCompat.ACTION_ARGUMENT_EXTEND_SELECTION_BOOLEAN;
 import static androidx.core.view.accessibility.AccessibilityNodeInfoCompat.ACTION_ARGUMENT_HTML_ELEMENT_STRING;
 import static androidx.core.view.accessibility.AccessibilityNodeInfoCompat.ACTION_ARGUMENT_MOVEMENT_GRANULARITY_INT;
@@ -57,6 +58,8 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.content.browser.accessibility.AccessibilityNodeInfoBuilder.EXTRAS_DATA_REQUEST_IMAGE_DATA_KEY;
 import static org.chromium.content.browser.accessibility.AccessibilityNodeInfoBuilder.EXTRAS_KEY_REQUEST_LAYOUT_BASED_ACTIONS;
 import static org.chromium.content.browser.accessibility.AccessibilityNodeInfoBuilder.EXTRAS_KEY_URL;
+import static org.chromium.content.browser.accessibility.AccessibilityNodeInfoBuilder.EXTRA_SELECTION_END_OFFSET_TYPE;
+import static org.chromium.content.browser.accessibility.AccessibilityNodeInfoBuilder.EXTRA_SELECTION_START_OFFSET_TYPE;
 import static org.chromium.content_public.browser.ContentFeatureList.ACCESSIBILITY_EXTENDED_SELECTION;
 import static org.chromium.content_public.browser.ContentFeatureList.ACCESSIBILITY_MANAGE_BROADCAST_RECEIVER_ON_BACKGROUND;
 
@@ -78,7 +81,6 @@ import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.view.ViewStructure;
 import android.view.accessibility.AccessibilityEvent;
-import android.view.accessibility.AccessibilityManager;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityNodeProvider;
 import android.view.autofill.AutofillManager;
@@ -122,10 +124,14 @@ import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContents.UserDataFactory;
 import org.chromium.content_public.browser.WebContentsAccessibility;
 import org.chromium.content_public.browser.WebContentsObserver;
+import org.chromium.content_public.common.ContentFeatures;
+import org.chromium.ui.accessibility.AccessibilityFeatures;
+import org.chromium.ui.accessibility.AccessibilityFeaturesMap;
 import org.chromium.ui.accessibility.AccessibilityState;
 import org.chromium.ui.base.ViewAndroidDelegate;
 import org.chromium.ui.base.WindowAndroid;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -170,6 +176,14 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
     // Maximum number of times that the auto-disable feature can affect |this|.
     private static final int AUTO_DISABLE_SINGLE_INSTANCE_TOGGLE_LIMIT = 3;
 
+    // Extended selection indices
+    public static final int EXT_SEL_START_NODE = 0;
+    public static final int EXT_SEL_START_OFFSET = 1;
+    public static final int EXT_SEL_START_OFFSET_TYPE = 2;
+    public static final int EXT_SEL_END_NODE = 3;
+    public static final int EXT_SEL_END_OFFSET = 4;
+    public static final int EXT_SEL_END_OFFSET_TYPE = 5;
+
     // Accessibility extras key for absolute drawing order (paint order among all
     // nodes in tree). Used to compute occlusion.
     // TODO(419600429): Update to retrieve this string from AccessibilityNodeInfo when possible.
@@ -178,7 +192,6 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
             "android.view.accessibility.extra.ABSOLUTE_DRAWING_ORDER";
 
     private final AccessibilityDelegate mDelegate;
-    protected AccessibilityManager mAccessibilityManager;
     protected Context mContext;
     private final @Nullable String mProductVersion;
     protected long mNativeObj;
@@ -193,16 +206,42 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
     private int mSelectionGranularity;
     private int mAccessibilityFocusId;
     private int mLastAccessibilityFocusId = View.NO_ID;
-    private int mSelectionNodeId;
     private @Nullable View mAutofillPopupView;
     private @Nullable CaptioningController mCaptioningController;
-    private boolean mIsCurrentlyExtendingSelection;
-    private int mSelectionStart;
-    private int mCursorIndex;
     private @Nullable String mSupportedHtmlElementTypes;
     private final AccessibilityNodeInfoBuilder mAccessibilityNodeInfoBuilder;
     private boolean mHasFinishedLatestAccessibilitySnapshot;
     private boolean mPendingSetSequentialFocus;
+    private boolean mDidSendAnyEvent;
+    private int mPendingLoadCompleteId = View.NO_ID;
+    private static boolean sSuppressLoadCompleteEventForTesting;
+
+    /**
+     * Tells if a movement at granularity action (ACTION_PREVIOUS/NEXT_AT_MOVEMENT_GRANULARITY) with
+     * ACTION_ARGUMENT_EXTEND_SELECTION_BOOLEAN set to true has been running. The value is reset
+     * when accessibility focus is changed or another movement at granularity action is received
+     * with the argument set to false.
+     */
+    private boolean mIsCurrentlyExtendingSelection;
+
+    /** This value should match the one in android.view.accessibility.AccessibilityNodeInfo. */
+    private static final int UNDEFINED_SELECTION_INDEX = -1;
+
+    /**
+     * Start index of movement at granularity. When the accessibility focus is changed and there is
+     * an existing extended selection that ends at the accessibility focus node, this variable is
+     * initialized to the selection end offset, otherwise UNDEFINED_SELECTION_INDEX. The value is
+     * updated before and after movement at granularity actions.
+     */
+    private int mMovementAtGranularityIndex = UNDEFINED_SELECTION_INDEX;
+
+    /**
+     * Selection start index for movement at granularity actions when
+     * ACTION_ARGUMENT_EXTEND_SELECTION_BOOLEAN is set to true. This value is set at the first such
+     * action and maintained in the next ones. The value is only used for updating selection on
+     * editable nodes.
+     */
+    private int mSelectionStartIndex;
 
     // Observer for WebContents, used to update state when |this| is shown/hidden.
     private @Nullable WebContentsObserver mWebContentsObserver;
@@ -239,7 +278,14 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
     // apply throttling rules, delay event construction, etc.
     private final AccessibilityEventDispatcher mEventDispatcher;
     private volatile @Nullable String mSystemLanguageTag;
-    private @Nullable BroadcastReceiver mBroadcastReceiver;
+    private final BroadcastReceiver mBroadcastReceiver =
+            new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    mSystemLanguageTag = Locale.getDefault().toLanguageTag();
+                }
+            };
+
     // Only un-register the broadcast receiver if this is true, otherwise it would result in a
     // crash.
     private volatile boolean mIsBroadcastReceiverRegistered;
@@ -260,6 +306,20 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
     // actions to the same sequence to be run serially.
     private static final TaskRunner sSequencedTaskRunner =
             PostTask.createSequencedTaskRunner(TaskTraits.BEST_EFFORT_MAY_BLOCK);
+
+    // Fake android framework's cache for testing.
+    private @Nullable FakeAndroidCache mFakeAndroidCache;
+
+    // A map of native helper objects to their Java counterparts allows unlimited scaling in number
+    // of tabs.
+    private static final Map<Long, WeakReference<WebContentsAccessibilityImpl>> sNativeHelperMap =
+            new HashMap<>();
+
+    @CalledByNative
+    private static @Nullable WebContentsAccessibilityImpl get(long nativeObj) {
+        WeakReference<WebContentsAccessibilityImpl> managerRef = sNativeHelperMap.get(nativeObj);
+        return managerRef != null ? managerRef.get() : null;
+    }
 
     /** Create a WebContentsAccessibilityImpl object. */
     private static class Factory implements UserDataFactory<WebContentsAccessibilityImpl> {
@@ -294,17 +354,22 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         mView = mDelegate.getContainerView();
         mContext = mView.getContext();
         mProductVersion = mDelegate.getProductVersion();
-        mAccessibilityManager =
-                (AccessibilityManager) mContext.getSystemService(Context.ACCESSIBILITY_SERVICE);
 
         // Need to be initialized before AXTreeUpdate initialization because updateMaxNodesInCache
         // gets called then. Also needs to be initialized before the WindowEventObserver is added,
         // which may call #onAttachedToWindow (or detached) if that is the current state.
         mHistogramRecorder = new AccessibilityHistogramRecorder();
 
+        if (ContentFeatureMap.isEnabled(
+                        ContentFeatures.ACCESSIBILITY_REQUEST_SCOPED_CONTENT_CHANGED_EVENTS)
+                && AccessibilityState.isAccessibilityToolPresent()
+                && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            mFakeAndroidCache = new FakeAndroidCache(this, mHistogramRecorder);
+        }
+
         WebContents webContents = mDelegate.getWebContents();
         if (webContents != null) {
-            mCaptioningController = new CaptioningController(webContents);
+            mCaptioningController = CaptioningController.fromWebContents(webContents);
             WindowEventObserverManager.from(webContents).addObserver(this);
             assumeNonNull(webContents.getViewAndroidDelegate()).addObserver(this);
         }
@@ -414,15 +479,18 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                     }
 
                     @Override
-                    public boolean dispatchEvent(int virtualViewId, int eventType) {
+                    public boolean dispatchEvent(
+                            int virtualViewId, int eventType, boolean setSubtreeChanged) {
                         AccessibilityEvent event =
-                                buildAccessibilityEvent(virtualViewId, eventType);
+                                buildAccessibilityEvent(
+                                        virtualViewId, eventType, setSubtreeChanged);
                         if (event == null) return false;
 
                         // Invalidate cached state for the node that has changed.
                         clearNodeInfoCacheForGivenId(virtualViewId);
 
-                        requestSendAccessibilityEvent(event);
+                        requestSendAccessibilityEvent(
+                                event, WindowContentChangedSubtype.NONE, virtualViewId);
 
                         // Always send the ENTER and then the EXIT event, to match a
                         // standard Android View.
@@ -480,27 +548,20 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
     }
 
     /**
-     * Called after the native a11y part is initialized. Overridable by subclasses
-     * to do initialization that is not required until the native is set up.
+     * Called after the native a11y part is initialized. Overridable by subclasses to do
+     * initialization that is not required until the native is set up.
      */
     protected void onNativeInit() {
         TraceEvent.begin("WebContentsAccessibilityImpl.onNativeInit");
         mHistogramRecorder.updateTimeOfNativeInitialization();
         mAccessibilityFocusId = View.NO_ID;
         mLastAccessibilityFocusId = View.NO_ID;
-        mSelectionNodeId = View.NO_ID;
         mIsHovering = false;
         mCurrentRootId = View.NO_ID;
+        mDidSendAnyEvent = false;
 
         mSupportedHtmlElementTypes =
                 WebContentsAccessibilityImplJni.get().getSupportedHtmlElementTypes(mNativeObj);
-        mBroadcastReceiver =
-                new BroadcastReceiver() {
-                    @Override
-                    public void onReceive(Context context, Intent intent) {
-                        mSystemLanguageTag = Locale.getDefault().toLanguageTag();
-                    }
-                };
 
         // Register a broadcast receiver for locale change.
         if (mView.isAttachedToWindow()) {
@@ -525,17 +586,43 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         // Send state values set by embedders to native-side objects.
         refreshNativeState();
 
+        // Finally, also see if we need to fire a load complete event.
+        handleInitialLoadComplete(mPendingLoadCompleteId);
+
         TraceEvent.end("WebContentsAccessibilityImpl.onNativeInit");
     }
 
     @CalledByNative
     protected void onNativeObjectDestroyed() {
+        if (mNativeObj == 0) return;
+        WeakReference<WebContentsAccessibilityImpl> oldValue = sNativeHelperMap.remove(mNativeObj);
+        assert oldValue != null;
+        assert oldValue.get() == this;
         mNativeObj = 0;
     }
 
     @Override
     public boolean isNativeInitialized() {
         return mNativeObj != 0;
+    }
+
+    @Override
+    @Nullable
+    public AccessibilityNodeInfoCompat findFocus(int focus) {
+        if (!isAccessibilityEnabled()) return null;
+
+        if (focus == AccessibilityNodeInfoCompat.FOCUS_ACCESSIBILITY) {
+            if (mAccessibilityFocusId != View.NO_ID) {
+                return createAccessibilityNodeInfo(mAccessibilityFocusId);
+            }
+        } else if (focus == AccessibilityNodeInfoCompat.FOCUS_INPUT) {
+            int id = WebContentsAccessibilityImplJni.get().getFocus(mNativeObj);
+            if (id != 0) {
+                return createAccessibilityNodeInfo(id);
+            }
+        }
+
+        return null;
     }
 
     private boolean isRootManagerConnected() {
@@ -546,7 +633,10 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
     public boolean isAccessibilityEnabled() {
         return isNativeInitialized()
                 && (mAccessibilityEnabledOverride
-                        || mAccessibilityManager.isEnabled()
+                        // The following two checks are both required. Due to previous experiences
+                        // with possible races, either being true should be sufficient for us to
+                        // enable accessibility.
+                        || AccessibilityState.isAccessibilityManagerEnabled()
                         || AccessibilityState.isAnyAccessibilityServiceEnabled());
     }
 
@@ -560,6 +650,10 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                 .setMaxContentChangedEventsToFireForTesting(mNativeObj, maxEvents);
     }
 
+    public SparseArray<Rect> getOccludingRectsForTesting() {
+        return mOccludingRects;
+    }
+
     public int @Nullable [] getChildIdsForTesting(int virtualViewId) {
         if (!isNativeInitialized()) return null;
         assert isRootManagerConnected()
@@ -567,6 +661,13 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                 + " initialized.";
         return WebContentsAccessibilityImplJni.get()
                 .getChildIdsForTesting(mNativeObj, virtualViewId);
+    }
+
+    // TODO(crbug.com/485227837): Rename experiment's methods
+    public int @Nullable [] getChildIdsForExperiment(int virtualViewId) {
+        if (!isRootManagerConnected()) return null;
+        return WebContentsAccessibilityImplJni.get()
+                .getChildIdsForExperiment(mNativeObj, virtualViewId);
     }
 
     public int getParentIdForTesting(int virtualViewId) {
@@ -608,12 +709,21 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         mHistogramRecorder.updateTimeOfFirstShown();
         var oldValue = mTracker;
         mTracker = tracker;
+        mTracker.setWebContentsAccessibilityImpl(this);
         ResettersForTesting.register(() -> mTracker = oldValue);
+    }
+
+    public float getScrollYForTesting() {
+        return mDelegate.getAccessibilityCoordinates().getScrollY();
     }
 
     public void setIsAutoDisableAccessibilityCandidateForTesting(
             boolean isAutoDisableAccessibilityCandidate) {
         mIsAutoDisableAccessibilityCandidate = isAutoDisableAccessibilityCandidate;
+    }
+
+    public static void suppressLoadCompleteEventForTesting() {
+        sSuppressLoadCompleteEventForTesting = true;
     }
 
     public void setThrottleDelayForTesting(Map<Integer, Integer> eventThrottleDelays) {
@@ -644,9 +754,38 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         mHistogramRecorder.recordTotalTimeCreateAccessibilityNodeInfoHistogram();
     }
 
+    public void forceRecordFakeCacheHistogramsForTesting() {
+        if (mFakeAndroidCache != null) {
+            mFakeAndroidCache.validateAccessibilityForExperiment();
+        }
+    }
+
     public boolean hasFinishedLatestAccessibilitySnapshotForTesting() {
         return mHasFinishedLatestAccessibilitySnapshot;
     }
+
+    public Object @Nullable [] getExtendedSelection(int virtualViewId) {
+        if (!isNativeInitialized()) return null;
+        int[] selection =
+                WebContentsAccessibilityImplJni.get()
+                        .getExtendedSelection(mNativeObj, virtualViewId);
+
+        if (selection == null) return null;
+
+        AccessibilityNodeInfoCompat startNode =
+                createAccessibilityNodeInfo(selection[EXT_SEL_START_NODE]);
+        int startOffset = selection[EXT_SEL_START_OFFSET];
+        int startOffsetType = selection[EXT_SEL_START_OFFSET_TYPE];
+        AccessibilityNodeInfoCompat endNode =
+                createAccessibilityNodeInfo(selection[EXT_SEL_END_NODE]);
+        int endOffset = selection[EXT_SEL_END_OFFSET];
+        int endOffsetType = selection[EXT_SEL_END_OFFSET_TYPE];
+
+        return new Object[] {
+            startNode, startOffset, startOffsetType, endNode, endOffset, endOffsetType
+        };
+    }
+
 
     @CalledByNative
     public void handleEndOfTestSignal() {
@@ -711,11 +850,19 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
     }
 
     private void maybeUnregisterReceiver() {
-        if (mIsBroadcastReceiverRegistered) {
-            if (mBroadcastReceiver != null) {
-                ContextUtils.getApplicationContext().unregisterReceiver(mBroadcastReceiver);
-            }
-            mIsBroadcastReceiverRegistered = false;
+        Runnable doUnregister =
+                () -> {
+                    if (mIsBroadcastReceiverRegistered) {
+                        mIsBroadcastReceiverRegistered = false;
+                        ContextUtils.getApplicationContext().unregisterReceiver(mBroadcastReceiver);
+                    }
+                };
+
+        if (ContentFeatureMap.isEnabled(ACCESSIBILITY_MANAGE_BROADCAST_RECEIVER_ON_BACKGROUND)) {
+            // We must always enqueue in case there is already a register task in the queue.
+            sSequencedTaskRunner.execute(doUnregister);
+        } else {
+            doUnregister.run();
         }
     }
 
@@ -741,12 +888,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
             // When the native code was initialized, also record performance metrics unregister
             // our broadcast receiver.
             if (isNativeInitialized()) {
-                if (ContentFeatureMap.isEnabled(
-                        ACCESSIBILITY_MANAGE_BROADCAST_RECEIVER_ON_BACKGROUND)) {
-                    sSequencedTaskRunner.execute(() -> maybeUnregisterReceiver());
-                } else {
-                    maybeUnregisterReceiver();
-                }
+                maybeUnregisterReceiver();
                 mHistogramRecorder.recordAccessibilityPerformanceHistograms();
                 // When we are in an initialized state, accessibility may be disabled. In that
                 // case, we should keep an on-going sum of the time spent disabled (without
@@ -841,6 +983,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         mNodeInfoCache.clear();
         mEventDispatcher.clearQueue();
         mAutoDisableAccessibilityHandler.cancelDisableTimer();
+        maybeUnregisterReceiver();
         WebContents webContents = mDelegate.getWebContents();
         if (webContents == null) {
             deleteEarly();
@@ -959,9 +1102,8 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                     : "WebContentsAccessibility with no webContents should not be initialized, or"
                             + " it should be initialized during constructor with an AXTreeUpdate.";
 
-            mNativeObj =
-                    WebContentsAccessibilityImplJni.get()
-                            .init(this, mDelegate.getWebContents(), mAccessibilityNodeInfoBuilder);
+            mNativeObj = WebContentsAccessibilityImplJni.get().init(mDelegate.getWebContents());
+            sNativeHelperMap.put(mNativeObj, new WeakReference<>(this));
             onNativeInit();
         }
 
@@ -976,10 +1118,19 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
     protected void initializeNativeWithAXTreeUpdate(long nativeAxTree) {
         assert !isNativeInitialized();
 
-        mNativeObj =
-                WebContentsAccessibilityImplJni.get()
-                        .initWithAXTree(this, nativeAxTree, mAccessibilityNodeInfoBuilder);
+        mNativeObj = WebContentsAccessibilityImplJni.get().initWithAXTree(nativeAxTree);
+        sNativeHelperMap.put(mNativeObj, new WeakReference<>(this));
         onNativeInit();
+    }
+
+    @CalledByNative
+    private AccessibilityNodeInfoBuilder getAccessibilityNodeInfoBuilder() {
+        return mAccessibilityNodeInfoBuilder;
+    }
+
+    @CalledByNative
+    private @Nullable FakeAndroidCache getFakeAndroidCache() {
+        return mFakeAndroidCache;
     }
 
     @CalledByNative
@@ -1009,6 +1160,38 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         }
         // Remove this node from requested image data nodes in case data changed with update.
         mImageDataRequestedNodes.remove(virtualViewId);
+    }
+
+    /**
+     * Builds a fresh node for comparison with a cached node.
+     *
+     * <p>Note: This is a temporary method to validate the accessibility node cache.
+     *
+     * @param virtualViewId The virtual view id of the node to build.
+     * @return The fresh node or null if the node is not valid.
+     */
+    public @Nullable AccessibilityNodeInfoCompat buildFreshAccessibilityNodeInfo(
+            int virtualViewId) {
+        if (!isAccessibilityEnabled()
+                || !isFrameInfoInitialized()
+                || !WebContentsAccessibilityImplJni.get().isNodeValid(mNativeObj, virtualViewId)) {
+            return null;
+        }
+        final AccessibilityNodeInfoCompat info = AccessibilityNodeInfoCompat.obtain(mView);
+        info.setPackageName(mContext.getPackageName());
+        info.setSource(mView, virtualViewId);
+
+        if (virtualViewId == mCurrentRootId) {
+            info.setParent(mView);
+        }
+
+        if (WebContentsAccessibilityImplJni.get()
+                .populateAccessibilityNodeInfo(mNativeObj, info, virtualViewId)) {
+            return info;
+        } else {
+            info.recycle();
+            return null;
+        }
     }
 
     /**
@@ -1048,6 +1231,11 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         return Arrays.equals(aParcel.marshall(), bParcel.marshall());
     }
 
+    // TODO(crbug.com/485227837): Remove experiment's methods
+    public int getCurrentRootIdForExperiment() {
+        return mCurrentRootId;
+    }
+
     @Override
     public @Nullable AccessibilityNodeInfoCompat createAccessibilityNodeInfo(int virtualViewId) {
         if (!isAccessibilityEnabled()) {
@@ -1063,7 +1251,11 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         mCurrentRootId = WebContentsAccessibilityImplJni.get().getRootId(mNativeObj);
 
         if (virtualViewId == View.NO_ID) {
-            return createNodeForHost(mCurrentRootId);
+            AccessibilityNodeInfoCompat rootNode = createNodeForHost(mCurrentRootId);
+            if (mFakeAndroidCache != null) {
+                mFakeAndroidCache.addNode(mCurrentRootId, rootNode);
+            }
+            return rootNode;
         }
 
         if (!isFrameInfoInitialized()) {
@@ -1102,22 +1294,14 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                 // Check cache freshness by drawing from C++ (Finch experiment).
                 if (ContentFeatureList.enabledAccessibilityCheckJavaNodeCacheFreshness()) {
                     final AccessibilityNodeInfoCompat freshNode =
-                            AccessibilityNodeInfoCompat.obtain(mView);
-                    freshNode.setPackageName(mContext.getPackageName());
-                    freshNode.setSource(mView, virtualViewId);
-
-                    if (virtualViewId == mCurrentRootId) {
-                        freshNode.setParent(mView);
-                    }
-
-                    if (WebContentsAccessibilityImplJni.get()
-                            .populateAccessibilityNodeInfo(mNativeObj, freshNode, virtualViewId)) {
-                        if (nodesAreEqual(cachedNode, freshNode)) {
-                            mHistogramRecorder.incrementNodeWasFreshInCache();
-                        }
+                            buildFreshAccessibilityNodeInfo(virtualViewId);
+                    if (freshNode != null && nodesAreEqual(cachedNode, freshNode)) {
+                        mHistogramRecorder.incrementNodeWasFreshInCache();
                     } // If node is still in the cache when it's not in C++, treat as stale
                 }
-
+                if (mFakeAndroidCache != null) {
+                    mFakeAndroidCache.addNode(virtualViewId, cachedNode);
+                }
                 return cachedNode;
             } else {
                 // If the node is no longer valid, wipe it from the cache and return null
@@ -1147,6 +1331,9 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                 }
                 mHistogramRecorder.incrementNodeWasCreatedFromScratch();
                 mHistogramRecorder.endAccessibilityNodeInfoConstruction();
+                if (mFakeAndroidCache != null) {
+                    mFakeAndroidCache.addNode(virtualViewId, info);
+                }
                 return info;
             } else {
                 info.recycle();
@@ -1190,7 +1377,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                 : "Two clients are both trying to obscure web contents accessibility. These are "
                         + "duplicate requests, or prone to error.";
         mIsObscuredByAnotherView = isObscured;
-        sendAccessibilityEvent(View.NO_ID, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+        sendWindowContentChangedEvent(View.NO_ID, /* setSubtreeChanged= */ true);
     }
 
     @Override
@@ -1200,7 +1387,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         } else {
             mOccludingRects.remove(viewId);
         }
-        sendAccessibilityEvent(View.NO_ID, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+        sendWindowContentChangedEvent(View.NO_ID, /* setSubtreeChanged= */ true);
     }
 
     private boolean shouldPreventNativeEngineUse() {
@@ -1246,7 +1433,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         if (ContentFeatureMap.isEnabled(ContentFeatureList.ACCESSIBILITY_UNIFIED_SNAPSHOTS)) {
             mNativeAssistDataObj =
                     WebContentsAccessibilityImplJni.get()
-                            .initForAssistData(this, webContents, new AssistDataBuilder());
+                            .initForAssistData(webContents, new AssistDataBuilder());
 
             WebContentsAccessibilityImplJni.get()
                     .requestAccessibilityTreeSnapshot(
@@ -1290,6 +1477,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         // approach. The benefits of using the Compat library makes up for the messier code.
         if (action == ACTION_ACCESSIBILITY_FOCUS.getId()) {
             if (!moveAccessibilityFocusToId(virtualViewId)) return true;
+            initializeMovementAtGranularityOnSetAccessibilityFocus();
             if (!mIsHovering) {
                 scrollToMakeNodeVisible(mAccessibilityFocusId);
             } else {
@@ -1398,7 +1586,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                         /* canWrap= */ false,
                         /* setSequentialFocus= */ false);
             }
-            return nextAtGranularity(granularity, extend, virtualViewId);
+            return moveAtGranularity(granularity, extend, virtualViewId, /* forwards= */ true);
         } else if (action == ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY.getId()) {
             if (arguments == null) return false;
             int granularity = arguments.getInt(ACTION_ARGUMENT_MOVEMENT_GRANULARITY_INT);
@@ -1418,7 +1606,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                         /* canWrap= */ virtualViewId == mCurrentRootId,
                         /* setSequentialFocus= */ false);
             }
-            return previousAtGranularity(granularity, extend, virtualViewId);
+            return moveAtGranularity(granularity, extend, virtualViewId, /* forwards= */ false);
         } else if (action == ACTION_SCROLL_FORWARD.getId()) {
             return scrollForward(virtualViewId);
         } else if (action == ACTION_SCROLL_BACKWARD.getId()) {
@@ -1441,9 +1629,11 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                 return true;
             }
             return false;
-        } else if (action == ACTION_COLLAPSE.getId() || action == ACTION_EXPAND.getId()) {
-            // If something is collapsible or expandable, just activate it to toggle.
-            performClick(virtualViewId);
+        } else if (action == ACTION_EXPAND.getId()) {
+            WebContentsAccessibilityImplJni.get().expand(mNativeObj, virtualViewId);
+            return true;
+        } else if (action == ACTION_COLLAPSE.getId()) {
+            WebContentsAccessibilityImplJni.get().collapse(mNativeObj, virtualViewId);
             return true;
         } else if (action == ACTION_SHOW_ON_SCREEN.getId()) {
             scrollToMakeNodeVisible(virtualViewId);
@@ -1488,11 +1678,12 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                             virtualViewId,
                             arguments.getFloat(ACTION_ARGUMENT_PROGRESS_VALUE));
         } else if (action == ACTION_IME_ENTER.getId()) {
-            if (mDelegate.getWebContents() != null) {
-                if (ImeAdapterImpl.fromWebContents(mDelegate.getWebContents()) != null) {
+            WebContents webContents = mDelegate.getWebContents();
+            if (webContents != null) {
+                ImeAdapterImpl adapter = ImeAdapterImpl.fromWebContents(webContents);
+                if (adapter != null) {
                     // We send an unspecified action to ensure Enter key is hit
-                    return ImeAdapterImpl.fromWebContents(mDelegate.getWebContents())
-                            .performEditorAction(EditorInfo.IME_ACTION_UNSPECIFIED);
+                    return adapter.performEditorAction(EditorInfo.IME_ACTION_UNSPECIFIED);
                 }
             }
             return false;
@@ -1531,15 +1722,26 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                 return true;
             }
 
-            WebContentsAccessibilityImplJni.get()
+            // Get the offset type for the start and end of the selection.
+            // (crbug.com/443078007): The default value for this argument in Android API is text
+            // offset type. If -1 is returned, it means that something is wrong in accessibility
+            // framework. Consider changing the default value to text offset type.
+            int startOffsetType = arguments.getInt(EXTRA_SELECTION_START_OFFSET_TYPE, -1);
+            int endOffsetType = arguments.getInt(EXTRA_SELECTION_END_OFFSET_TYPE, -1);
+            if (startOffsetType == -1 || endOffsetType == -1) {
+                return false;
+            }
+
+            return WebContentsAccessibilityImplJni.get()
                     .setExtendedSelection(
                             mNativeObj,
                             virtualViewId,
                             /* startNodeId= */ selectionStart.first,
                             /* startNodeOffset= */ selectionStart.second,
+                            /* startOffsetType= */ startOffsetType,
                             /* endNodeId= */ selectionEnd.first,
-                            /* endNodeOffset= */ selectionEnd.second);
-            return true;
+                            /* endNodeOffset= */ selectionEnd.second,
+                            /* endOffsetType= */ endOffsetType);
         } else {
             // This should never be hit, so do the equivalent of NOTREACHED;
             assert false : "AccessibilityNodeProvider called performAction with unexpected action.";
@@ -1645,7 +1847,10 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
 
         // Invalidate the container view, since the chrome accessibility tree is now
         // ready and listed as the child of the container view.
-        sendAccessibilityEvent(View.NO_ID, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+        sendWindowContentChangedEvent(View.NO_ID, /* setSubtreeChanged= */ true);
+
+        // Also, notify the web contents possibly on load.
+        handleInitialLoadComplete(mPendingLoadCompleteId);
 
         // (Re-) focus focused element, since we weren't able to create an
         // AccessibilityNodeInfoCompat for this element before.
@@ -1692,116 +1897,98 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         return true;
     }
 
-    private void setGranularityAndUpdateSelection(int granularity) {
+    private void initializeGranularityAndSelection(int granularity, Boolean forwards) {
         mSelectionGranularity = granularity;
+
+        // `mMovementAtGranularityIndex` is reset to UNDEFINED_SELECTION_INDEX when focus changes
+        // and should be initialized before performing the first movement at granularity action
+        // after that.
+        if (mMovementAtGranularityIndex != UNDEFINED_SELECTION_INDEX) {
+            return;
+        }
 
         if (WebContentsAccessibilityImplJni.get().isEditableText(mNativeObj, mAccessibilityFocusId)
                 && WebContentsAccessibilityImplJni.get()
                         .isFocused(mNativeObj, mAccessibilityFocusId)) {
-            // If selection/cursor are "unassigned" (e.g. first user swipe), then assign as needed
-            if (mSelectionStart == -1) {
-                mSelectionStart =
-                        WebContentsAccessibilityImplJni.get()
-                                .getEditableTextSelectionStart(mNativeObj, mAccessibilityFocusId);
-            }
-            if (mCursorIndex == -1) {
-                mCursorIndex =
-                        WebContentsAccessibilityImplJni.get()
-                                .getEditableTextSelectionEnd(mNativeObj, mAccessibilityFocusId);
-            }
-        } else {
-            // `mSelectionStart gets "unassigned" when focus changes and should be initialized for
-            // the first user swipe. For a non-editable node, put selection start on the beginning
-            // of the node. Note that `mCursorIndex` is already set to the end of the node text
-            // when accessibility focus is updated.
-            if (mSelectionStart == -1) {
-                mSelectionStart = 0;
+            // For focused editable nodes, if there is already a selection, use selection end as
+            // the start index for movement. If there isn't a selection, act similar to
+            // non-editable nodes.
+            mMovementAtGranularityIndex =
+                    WebContentsAccessibilityImplJni.get()
+                            .getEditableTextSelectionEnd(mNativeObj, mAccessibilityFocusId);
+            if (mMovementAtGranularityIndex != UNDEFINED_SELECTION_INDEX) {
+                return;
             }
         }
+
+        // For forward moves, use the beginning of the text as start index, and
+        // for backward moves use the end of the text as the start index.
+        mMovementAtGranularityIndex =
+                forwards
+                        ? 0
+                        : WebContentsAccessibilityImplJni.get()
+                                .getTextLength(mNativeObj, mAccessibilityFocusId);
     }
 
-    private boolean nextAtGranularity(int granularity, boolean extendSelection, int virtualViewId) {
-        if (virtualViewId != mSelectionNodeId) return false;
-        setGranularityAndUpdateSelection(granularity);
+    private boolean moveAtGranularity(
+            int granularity, boolean extendSelection, int virtualViewId, boolean forwards) {
+        if (virtualViewId != mAccessibilityFocusId) return false;
+        initializeGranularityAndSelection(granularity, forwards);
 
-        // This calls finishGranularityMoveNext when it's done.
-        // If we are extending or starting a selection, pass the current cursor index, otherwise
-        // default to selection start, which will be the position at the end of the last move
-        if (extendSelection && mIsCurrentlyExtendingSelection) {
-            return WebContentsAccessibilityImplJni.get()
-                    .nextAtGranularity(
-                            mNativeObj,
-                            mSelectionGranularity,
-                            extendSelection,
-                            virtualViewId,
-                            mCursorIndex);
-        } else {
-            return WebContentsAccessibilityImplJni.get()
-                    .nextAtGranularity(
-                            mNativeObj,
-                            mSelectionGranularity,
-                            extendSelection,
-                            virtualViewId,
-                            mSelectionStart);
-        }
-    }
-
-    private boolean previousAtGranularity(
-            int granularity, boolean extendSelection, int virtualViewId) {
-        if (virtualViewId != mSelectionNodeId) return false;
-        setGranularityAndUpdateSelection(granularity);
-
-        // This calls finishGranularityMovePrevious when it's done.
+        // This calls finishGranularityMove when it's done.
         return WebContentsAccessibilityImplJni.get()
-                .previousAtGranularity(
+                .moveAtGranularity(
                         mNativeObj,
                         mSelectionGranularity,
                         extendSelection,
                         virtualViewId,
-                        mCursorIndex);
+                        mMovementAtGranularityIndex,
+                        forwards);
     }
 
     @CalledByNative
-    private void finishGranularityMoveNext(
-            String text, boolean extendSelection, int itemStartIndex, int itemEndIndex) {
+    private void finishGranularityMove(
+            String text,
+            boolean extendSelection,
+            int itemStartIndex,
+            int itemEndIndex,
+            boolean forwards) {
         // Prepare to send a traversal event, and update selection if selection is not extended.
         AccessibilityEvent traverseEvent =
                 buildAccessibilityEvent(
-                        mSelectionNodeId,
+                        mAccessibilityFocusId,
                         AccessibilityEvent.TYPE_VIEW_TEXT_TRAVERSED_AT_MOVEMENT_GRANULARITY);
         if (traverseEvent == null) {
             return;
         }
 
+        // The next move will be from the destination of the granularity move.
+        mMovementAtGranularityIndex = forwards ? itemEndIndex : itemStartIndex;
         int selectionFromIndex = -1;
-        int selectionToIndex = -1;
-        // Set selection start and end dependent on whether user is extending selection or not.
+
+        // Set selection start dependent on whether user is extending selection or not.
         if (extendSelection) {
-            // User started selecting, set the selection start point (only set once per selection)
+            // User started selecting, set the selection start (only set once per selection).
             if (!mIsCurrentlyExtendingSelection) {
                 mIsCurrentlyExtendingSelection = true;
-                mSelectionStart = itemStartIndex;
+                mSelectionStartIndex = forwards ? itemStartIndex : itemEndIndex;
             }
 
-            selectionFromIndex = mSelectionStart;
-            selectionToIndex = itemEndIndex;
+            selectionFromIndex = mSelectionStartIndex;
         } else {
             // User is no longer selecting, or wasn't originally, reset values
             mIsCurrentlyExtendingSelection = false;
-            mSelectionStart = itemEndIndex;
 
-            // Set selection to/from indices to new cursor position, itemEndIndex with forwards nav
-            selectionFromIndex = itemEndIndex;
-            selectionToIndex = itemEndIndex;
+            // Set selection to/from indices to new cursor position.
+            selectionFromIndex = mMovementAtGranularityIndex;
         }
-
-        // Moving forwards, cursor is now at end of granularity move (itemEndIndex)
-        mCursorIndex = itemEndIndex;
 
         // Call back to native code to update selection. This will result in updating
         // selection only if the selection is on a focused editable text. In such cases, a
         // TYPE_VIEW_TEXT_SELECTION_CHANGED event will eventually be sent to the platform.
-        setSelection(selectionFromIndex, selectionToIndex);
+        // Note that when `extendSelection` is false, this is called to move the cursor by
+        // setting a collapsed selection.
+        setSelection(selectionFromIndex, mMovementAtGranularityIndex);
 
         // Build traverse event, set appropriate action
         traverseEvent.setFromIndex(itemStartIndex);
@@ -1809,63 +1996,13 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         traverseEvent.setItemCount(text.length());
         traverseEvent.setMovementGranularity(mSelectionGranularity);
         traverseEvent.setContentDescription(text);
-        traverseEvent.setAction(ACTION_NEXT_AT_MOVEMENT_GRANULARITY.getId());
+        traverseEvent.setAction(
+                forwards
+                        ? ACTION_NEXT_AT_MOVEMENT_GRANULARITY.getId()
+                        : ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY.getId());
 
-        requestSendAccessibilityEvent(traverseEvent);
-    }
-
-    @CalledByNative
-    private void finishGranularityMovePrevious(
-            String text, boolean extendSelection, int itemStartIndex, int itemEndIndex) {
-        // Prepare to send a traversal event, and update selection if selection is not extended.
-
-        AccessibilityEvent traverseEvent =
-                buildAccessibilityEvent(
-                        mSelectionNodeId,
-                        AccessibilityEvent.TYPE_VIEW_TEXT_TRAVERSED_AT_MOVEMENT_GRANULARITY);
-        if (traverseEvent == null) {
-            return;
-        }
-
-        int selectionFromIndex = -1;
-        int selectionToIndex = -1;
-        // Set selection start and end dependent on whether user is extending selection or not.
-        if (extendSelection) {
-            // User started selecting, set the selection start point (only set once per selection)
-            if (!mIsCurrentlyExtendingSelection) {
-                mIsCurrentlyExtendingSelection = true;
-                mSelectionStart = itemEndIndex;
-            }
-
-            selectionFromIndex = mSelectionStart;
-            selectionToIndex = itemStartIndex;
-        } else {
-            // User is no longer selecting, or wasn't originally, reset values
-            mIsCurrentlyExtendingSelection = false;
-            mSelectionStart = itemStartIndex;
-
-            // Set selection to/from indices to new cursor position, itemStartIndex with back nav
-            selectionFromIndex = itemStartIndex;
-            selectionToIndex = itemStartIndex;
-        }
-
-        // Moving backwards, cursor is now at the start of the granularity move (itemStartIndex)
-        mCursorIndex = itemStartIndex;
-
-        // Call back to native code to update selection. This will result in updating
-        // selection only if the selection is on a focused editable text. In such cases, a
-        // TYPE_VIEW_TEXT_SELECTION_CHANGED event will eventually be sent to the platform.
-        setSelection(selectionFromIndex, selectionToIndex);
-
-        // Build traverse event, set appropriate action
-        traverseEvent.setFromIndex(itemStartIndex);
-        traverseEvent.setToIndex(itemEndIndex);
-        traverseEvent.setItemCount(text.length());
-        traverseEvent.setMovementGranularity(mSelectionGranularity);
-        traverseEvent.setContentDescription(text);
-        traverseEvent.setAction(ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY.getId());
-
-        requestSendAccessibilityEvent(traverseEvent);
+        requestSendAccessibilityEvent(
+                traverseEvent, WindowContentChangedSubtype.NONE, mAccessibilityFocusId);
     }
 
     private void scrollToMakeNodeVisible(int virtualViewId) {
@@ -1887,11 +2024,15 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
     }
 
     private void setSelection(int selectionFromIndex, int selectionToIndex) {
-        if (WebContentsAccessibilityImplJni.get().isEditableText(mNativeObj, mSelectionNodeId)
-                && WebContentsAccessibilityImplJni.get().isFocused(mNativeObj, mSelectionNodeId)) {
+        if (WebContentsAccessibilityImplJni.get().isEditableText(mNativeObj, mAccessibilityFocusId)
+                && WebContentsAccessibilityImplJni.get()
+                        .isFocused(mNativeObj, mAccessibilityFocusId)) {
             WebContentsAccessibilityImplJni.get()
                     .setSelection(
-                            mNativeObj, mSelectionNodeId, selectionFromIndex, selectionToIndex);
+                            mNativeObj,
+                            mAccessibilityFocusId,
+                            selectionFromIndex,
+                            selectionToIndex);
         }
     }
 
@@ -1930,16 +2071,9 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         clearNodeInfoCacheForGivenId(newAccessibilityFocusId);
 
         mAccessibilityFocusId = newAccessibilityFocusId;
-        // Used to store the node (edit text field) that has input focus but not a11y focus.
-        // Usually while the user is typing in an edit text field, a11y is on the IME and input
-        // focus is on the edit field. Granularity move needs to know where the input focus is.
-        mSelectionNodeId = mAccessibilityFocusId;
         mSelectionGranularity = NO_GRANULARITY_SELECTED;
         mIsCurrentlyExtendingSelection = false;
-        mSelectionStart = -1;
-        mCursorIndex =
-                WebContentsAccessibilityImplJni.get()
-                        .getTextLength(mNativeObj, mAccessibilityFocusId);
+        mMovementAtGranularityIndex = UNDEFINED_SELECTION_INDEX;
 
         if (WebContentsAccessibilityImplJni.get()
                 .isAutofillPopupNode(mNativeObj, mAccessibilityFocusId)) {
@@ -1958,6 +2092,31 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         return true;
     }
 
+    // If there is an existing extended selection ending at focus node, use its offset to
+    // initialize the start index for movement at granularity.
+    private void initializeMovementAtGranularityOnSetAccessibilityFocus() {
+        // This function is called only when accessibility focus is changed and
+        // `mMovementAtGranularityIndex has` been reset.
+        assert mMovementAtGranularityIndex == UNDEFINED_SELECTION_INDEX;
+        int[] selection =
+                WebContentsAccessibilityImplJni.get()
+                        .getExtendedSelection(mNativeObj, mCurrentRootId);
+        if (selection == null) {
+            return;
+        }
+
+        final int focusNodeId = selection[EXT_SEL_END_NODE];
+        final int focusOffset = selection[EXT_SEL_END_OFFSET];
+        final int focusOffsetType = selection[EXT_SEL_END_OFFSET_TYPE];
+        // If the selection end is not text-selectable, `mMovementAtGranularityIndex` remains
+        // `UNDEFINED_SELECTION_INDEX`. This allows `initializeGranularityAndSelection` to set it
+        // to the beginning or end of the node based on movement direction.
+        if (mAccessibilityFocusId == focusNodeId
+                && focusOffsetType == AccessibilityNodeInfoBuilder.OFFSET_TYPE_TEXT) {
+            mMovementAtGranularityIndex = focusOffset;
+        }
+    }
+
     /** Gets the ID of the current accessibility focused node. */
     @CalledByNative
     private int getAccessibilityFocusId() {
@@ -1970,10 +2129,13 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
      */
     @CalledByNative
     private void sendDelayedWindowContentChangedEvent() {
-        sendAccessibilityEvent(View.NO_ID, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+        sendWindowContentChangedEvent(View.NO_ID, /* setSubtreeChanged= */ true);
     }
 
-    private void sendAccessibilityEvent(int virtualViewId, int eventType) {
+    @VisibleForTesting
+    protected void sendAccessibilityEvent(int virtualViewId, int eventType) {
+        mDidSendAnyEvent = true;
+
         // The container view is indicated by a virtualViewId of NO_ID; post these events directly
         // since there's no web-specific information to attach.
         if (virtualViewId == View.NO_ID) {
@@ -1984,11 +2146,89 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
             return;
         }
 
+        if (mFakeAndroidCache != null) {
+            if (virtualViewId == getCurrentRootIdForExperiment()) {
+                // We clear the whole cache when the event is on the root
+                mFakeAndroidCache.clearNode(virtualViewId, /* recursive= */ true);
+            }
+            switch (eventType) {
+                case AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED:
+                    {
+                        mFakeAndroidCache.clearNode(virtualViewId, /* recursive= */ false);
+                    }
+                    break;
+
+                case AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED:
+                    {
+                        mFakeAndroidCache.clearNode(virtualViewId, /* recursive= */ false);
+                    }
+                    break;
+
+                case AccessibilityEvent.TYPE_VIEW_FOCUSED:
+                    {
+                        mFakeAndroidCache.clearNode(virtualViewId, /* recursive= */ false);
+                    }
+                    break;
+
+                case AccessibilityEvent.TYPE_VIEW_SELECTED:
+                case AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED:
+                case AccessibilityEvent.TYPE_VIEW_CLICKED:
+                case AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED:
+                    {
+                        mFakeAndroidCache.clearNode(virtualViewId, /* recursive= */ false);
+                    }
+                    break;
+
+                case AccessibilityEvent.TYPE_VIEW_SCROLLED:
+                    {
+                        mFakeAndroidCache.clearNode(virtualViewId, /* recursive= */ true);
+                    }
+                    break;
+
+                case AccessibilityEvent.TYPE_WINDOWS_CHANGED:
+                    {
+                        mFakeAndroidCache.clearNode(
+                                getCurrentRootIdForExperiment(), /* recursive= */ true);
+                    }
+                    break;
+                case AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED:
+                    {
+                        mFakeAndroidCache.clearNode(
+                                getCurrentRootIdForExperiment(), /* recursive= */ true);
+                    }
+                    break;
+            }
+        }
+
         mHistogramRecorder.incrementEnqueuedEvents();
-        mEventDispatcher.enqueueEvent(virtualViewId, eventType);
+        mEventDispatcher.enqueueEvent(virtualViewId, eventType, /* setSubtreeChanged= */ false);
+    }
+
+    private void sendWindowContentChangedEvent(int virtualViewId, boolean setSubtreeChanged) {
+        mHistogramRecorder.recordContentChangedSubtreeHistogram(setSubtreeChanged);
+        // The container view is indicated by a virtualViewId of
+        // NO_ID; post these events directly
+        // since there's no web-specific information to attach.
+        if (virtualViewId == View.NO_ID) {
+            mView.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+            return;
+        }
+
+        if (mFakeAndroidCache != null) {
+            mFakeAndroidCache.clearNode(virtualViewId, /* recursive= */ setSubtreeChanged);
+        }
+
+        mHistogramRecorder.incrementEnqueuedEvents();
+        mEventDispatcher.enqueueEvent(
+                virtualViewId, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, setSubtreeChanged);
     }
 
     private @Nullable AccessibilityEvent buildAccessibilityEvent(int virtualViewId, int eventType) {
+        return buildAccessibilityEvent(virtualViewId, eventType, /* setSubtreeChanged= */ true);
+    }
+
+    private @Nullable AccessibilityEvent buildAccessibilityEvent(
+            int virtualViewId, int eventType, boolean setSubtreeChanged) {
         // If accessibility is disabled, node is invalid, or we don't have any frame info,
         // then the virtual hierarchy doesn't exist in the view of the Android framework,
         // so should never send any events.
@@ -2001,7 +2241,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         final AccessibilityEvent event = AccessibilityEvent.obtain(eventType);
         event.setPackageName(mContext.getPackageName());
         event.setSource(mView, virtualViewId);
-        if (eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+        if (eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED && setSubtreeChanged) {
             event.setContentChangeTypes(AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE);
         }
         if (!WebContentsAccessibilityImplJni.get()
@@ -2068,6 +2308,21 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
     }
 
     @CalledByNative
+    protected void handleInitialLoadComplete(int rootId) {
+        if (mDidSendAnyEvent || sSuppressLoadCompleteEventForTesting || rootId == View.NO_ID) {
+            return;
+        }
+
+        if (!isNativeInitialized() || !mNotifyFrameInfoInitializedCalled) {
+            mPendingLoadCompleteId = rootId;
+            return;
+        }
+
+        handleContentChanged(rootId, true);
+        mPendingLoadCompleteId = View.NO_ID;
+    }
+
+    @CalledByNative
     private void handleFocusChanged(int id, boolean isRootOrFrameRoot) {
         // If |mShouldFocusOnPageLoad| is false, that means this is a WebView and
         // we should avoid moving accessibility focus when the page loads, but more
@@ -2107,7 +2362,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
 
             event.setContentChangeTypes(AccessibilityEvent.CONTENT_CHANGE_TYPE_CHECKED);
             event.setSource(mView, id);
-            requestSendAccessibilityEvent(event);
+            requestSendAccessibilityEvent(event, WindowContentChangedSubtype.NONE, id);
         }
     }
 
@@ -2126,7 +2381,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                 event.setContentChangeTypes(subType);
             }
             event.setSource(mView, id);
-            requestSendAccessibilityEvent(event);
+            requestSendAccessibilityEvent(event, WindowContentChangedSubtype.NONE, id);
         }
     }
 
@@ -2162,7 +2417,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         if (delegate != null) {
             delegate.setTextChangeTypes(event, subType);
         }
-        requestSendAccessibilityEvent(event);
+        requestSendAccessibilityEvent(event, WindowContentChangedSubtype.NONE, id);
     }
 
     @CalledByNative
@@ -2178,8 +2433,8 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
     }
 
     @CalledByNative
-    private void handleContentChanged(int id) {
-        sendAccessibilityEvent(id, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+    private void handleContentChanged(int id, boolean setSubtreeChanged) {
+        sendWindowContentChangedEvent(id, setSubtreeChanged);
     }
 
     @CalledByNative
@@ -2192,7 +2447,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
 
             event.setContentChangeTypes(AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE);
             event.setSource(mView, virtualViewId);
-            requestSendAccessibilityEvent(event);
+            requestSendAccessibilityEvent(event, WindowContentChangedSubtype.NONE, virtualViewId);
         }
     }
 
@@ -2202,14 +2457,15 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
         mLastAccessibilityFocusId = View.NO_ID;
         mCurrentRootId = newRootId;
         // Invalidate the host, since its child is now gone.
-        sendAccessibilityEvent(View.NO_ID, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+        sendWindowContentChangedEvent(View.NO_ID, /* setSubtreeChanged= */ true);
+        mDidSendAnyEvent = false;
     }
 
     @CalledByNative
     protected void handleScrollPositionChanged(int id) {
         sendAccessibilityEvent(id, AccessibilityEvent.TYPE_VIEW_SCROLLED);
         if (mPendingScrollToMakeNodeVisible) {
-            sendAccessibilityEvent(id, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+            sendWindowContentChangedEvent(id, /* setSubtreeChanged= */ true);
             mPendingScrollToMakeNodeVisible = false;
         }
     }
@@ -2220,26 +2476,41 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
     }
 
     @CalledByNative
+    @SuppressLint("WrongConstant")
     protected void handleSortDirectionChanged(int id) {
         AccessibilityEvent event =
-                buildAccessibilityEvent(id, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+                buildAccessibilityEvent(
+                        id,
+                        AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+                        /* setSubtreeChanged= */ true);
         if (event == null) return;
 
-        AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
-        if (delegate != null) {
-            // The delegate will attempt to add the specific content change type.
-            if (!delegate.setSortDirectionContentChangeType(event)) {
-                return;
-            }
-        }
+        event.setContentChangeTypes(CONTENT_CHANGE_TYPE_SORT_DIRECTION);
 
-        requestSendAccessibilityEvent(event);
+        requestSendAccessibilityEvent(event, WindowContentChangedSubtype.NONE, id);
     }
 
     @CalledByNative
-    private void handleHover(int id) {
+    protected void handleHover(int id) {
         if (mLastHoverId == id) return;
         if (!mIsHovering) return;
+
+        if (AccessibilityFeaturesMap.isEnabled(
+                AccessibilityFeatures.ACCESSIBILITY_HANDLE_OCCLUDING_VIEWS)) {
+            Rect rect = getAbsolutePositionForNode(id);
+            if (rect != null) {
+                AccessibilityNodeInfoBuilder.convertWebRectToAndroidCoordinates(
+                        rect,
+                        /* extras= */ null,
+                        mDelegate.getAccessibilityCoordinates(),
+                        mView,
+                        /* isScreenCoordinates= */ true);
+                if (AccessibilityNodeInfoUtils.computeUnoccludedRect(rect, mOccludingRects)
+                        == null) {
+                    return;
+                }
+            }
+        }
 
         sendAccessibilityEvent(id, AccessibilityEvent.TYPE_VIEW_HOVER_ENTER);
         // The above call doesn't work reliably for nodes that weren't in the viewport when
@@ -2262,7 +2533,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
 
             event.setContentChangeTypes(CONTENT_CHANGE_TYPE_PANE_APPEARED);
             event.setSource(mView, virtualViewId);
-            requestSendAccessibilityEvent(event);
+            requestSendAccessibilityEvent(event, WindowContentChangedSubtype.NONE, virtualViewId);
         }
     }
 
@@ -2283,7 +2554,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                 // Android system to know about every single node that was affected. Therefore, we
                 // do not queue these events, but instead send them right away.
                 requestSendAccessibilityEvent(
-                        event, WindowContentChangedSubtype.LIVE_REGION_NODE_CHANGED);
+                        event, WindowContentChangedSubtype.LIVE_REGION_NODE_CHANGED, id);
             }
         }
     }
@@ -2299,7 +2570,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                 return;
             }
             event.setSource(mView, virtualViewId);
-            requestSendAccessibilityEvent(event);
+            requestSendAccessibilityEvent(event, WindowContentChangedSubtype.NONE, virtualViewId);
         }
     }
 
@@ -2337,14 +2608,19 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                         mNativeObj, virtualViewId, positionInfoStartIndex, positionInfoLength);
     }
 
-    // Most calls to requestSendAccessibilityEvent() do not require a WindowContentChangedSubtype to
-    // be specified. This information is only used for testing.
+    // Most calls to requestSendAccessibilityEvent() do not require a WindowContentChangedSubtype or
+    // the virtualViewId to be specified. This information is only used for testing.
     protected void requestSendAccessibilityEvent(AccessibilityEvent event) {
         requestSendAccessibilityEvent(event, WindowContentChangedSubtype.NONE);
     }
 
     protected void requestSendAccessibilityEvent(
             AccessibilityEvent event, @WindowContentChangedSubtype int subtype) {
+        requestSendAccessibilityEvent(event, subtype, View.NO_ID);
+    }
+
+    protected void requestSendAccessibilityEvent(
+            AccessibilityEvent event, @WindowContentChangedSubtype int subtype, int virtualViewId) {
         // If there is no parent, then the event can be ignored. In general the parent is only
         // transiently null (such as during teardown, switching tabs...). Also ensure that
         // accessibility is still enabled, throttling may result in events sent late.
@@ -2353,9 +2629,10 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
             if (event.getEventType() == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED) {
                 mHistogramRecorder.recordTimeToFirstAccessibilityFocus();
             }
-            if (mTracker != null) mTracker.addEvent(event, subtype);
+            if (mTracker != null) mTracker.addEvent(event, subtype, virtualViewId);
             try {
                 mView.getParent().requestSendAccessibilityEvent(mView, event);
+                mDidSendAnyEvent = true;
             } catch (IllegalStateException ignored) {
                 // During boot-up of some content shell tests, events will erroneously be sent even
                 // though the AccessibilityManager is not enabled, resulting in a crash.
@@ -2492,7 +2769,18 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                     mDelegate.getAccessibilityCoordinates(),
                     mView,
                     isScreenCoordinates);
-            boundingRects[i] = new RectF(rect);
+            if (AccessibilityFeaturesMap.isEnabled(
+                    AccessibilityFeatures.ACCESSIBILITY_HANDLE_OCCLUDING_VIEWS)) {
+                Rect resizedRect =
+                        AccessibilityNodeInfoUtils.computeUnoccludedRect(rect, mOccludingRects);
+                if (resizedRect != null) {
+                    boundingRects[i] = new RectF(resizedRect);
+                } else {
+                    boundingRects[i] = new RectF();
+                }
+            } else {
+                boundingRects[i] = new RectF(rect);
+            }
         }
 
         info.getExtras()
@@ -2528,19 +2816,12 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
 
     @NativeMethods
     interface Natives {
-        long init(
-                WebContentsAccessibilityImpl self,
-                WebContents webContents,
-                AccessibilityNodeInfoBuilder builder);
+        long init(WebContents webContents);
 
-        long initWithAXTree(
-                WebContentsAccessibilityImpl self,
-                long axTreePtr,
-                AccessibilityNodeInfoBuilder builder);
+        long initWithAXTree(long axTreePtr);
 
         // These two methods are only used for one-off accessibility tree snapshots.
         long initForAssistData(
-                WebContentsAccessibilityImpl self,
                 @Nullable WebContents webContents,
                 AssistDataBuilder builder);
 
@@ -2584,6 +2865,8 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
 
         boolean isFocused(long nativeWebContentsAccessibilityAndroid, int id);
 
+        boolean isTextSelectable(long nativeWebContentsAccessibilityAndroid, int id);
+
         int getEditableTextSelectionStart(long nativeWebContentsAccessibilityAndroid, int id);
 
         int getEditableTextSelectionEnd(long nativeWebContentsAccessibilityAndroid, int id);
@@ -2612,6 +2895,8 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
 
         void blur(long nativeWebContentsAccessibilityAndroid);
 
+        int getFocus(long nativeWebContentsAccessibilityAndroid);
+
         void scrollToMakeNodeVisible(long nativeWebContentsAccessibilityAndroid, int id);
 
         int findElementType(
@@ -2628,29 +2913,25 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
 
         void setSelection(long nativeWebContentsAccessibilityAndroid, int id, int start, int end);
 
-        void setExtendedSelection(
+        boolean setExtendedSelection(
                 long nativeWebContentsAccessibilityAndroid,
                 int id,
                 int startNodeId,
                 int startNodeOffset,
+                int startOffsetType,
                 int endNodeId,
-                int endNodeOffset);
+                int endNodeOffset,
+                int endOffsetType);
 
         void clearExtendedSelection(long nativeWebContentsAccessibilityAndroid, int id);
 
-        boolean nextAtGranularity(
+        boolean moveAtGranularity(
                 long nativeWebContentsAccessibilityAndroid,
                 int selectionGranularity,
                 boolean extendSelection,
                 int id,
-                int cursorIndex);
-
-        boolean previousAtGranularity(
-                long nativeWebContentsAccessibilityAndroid,
-                int selectionGranularity,
-                boolean extendSelection,
-                int id,
-                int cursorIndex);
+                int cursorIndex,
+                boolean forwards);
 
         boolean adjustSlider(long nativeWebContentsAccessibilityAndroid, int id, boolean increment);
 
@@ -2671,6 +2952,10 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
 
         String getSupportedHtmlElementTypes(long nativeWebContentsAccessibilityAndroid);
 
+        void expand(long nativeWebContentsAccessibilityAndroid, int id);
+
+        void collapse(long nativeWebContentsAccessibilityAndroid, int id);
+
         void showContextMenu(long nativeWebContentsAccessibilityAndroid, int id);
 
         boolean isRootManagerConnected(long nativeWebContentsAccessibilityAndroid);
@@ -2683,6 +2968,12 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                 long nativeWebContentsAccessibilityAndroid, int id, int start, int len);
 
         int[] getChildIdsForTesting(long nativeWebContentsAccessibilityAndroid, int virtualViewId);
+
+        int[] getChildIdsForExperiment(
+                long nativeWebContentsAccessibilityAndroid, int virtualViewId);
+
+        int @Nullable [] getExtendedSelection(
+                long nativeWebContentsAccessibilityAndroid, int virtualViewId);
 
         int[] getLabeledByNodeIdsForTesting( // IN-TEST
                 long nativeWebContentsAccessibilityAndroid, int virtualViewId);
@@ -2715,6 +3006,7 @@ public class WebContentsAccessibilityImpl extends AccessibilityNodeProviderCompa
                 boolean hasSentPreviousRequest);
 
         int getPaintOrder(long nativeWebContentsAccessibilityAndroid, int id);
+
         void requestLayoutBasedActions(
                 long nativeWebContentsAccessibilityAndroid,
                 int id,

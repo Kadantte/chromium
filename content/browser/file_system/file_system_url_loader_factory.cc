@@ -15,6 +15,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory/self_deleting.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/sequenced_task_runner.h"
@@ -23,7 +24,7 @@
 #include "components/file_access/scoped_file_access.h"
 #include "components/file_access/scoped_file_access_delegate.h"
 #include "components/services/filesystem/public/mojom/types.mojom.h"
-#include "content/browser/child_process_security_policy_impl.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/child_process_host.h"
@@ -35,10 +36,10 @@
 #include "mojo/public/cpp/system/data_pipe_producer.h"
 #include "mojo/public/cpp/system/string_data_source.h"
 #include "net/base/completion_repeating_callback.h"
-#include "net/base/directory_listing.h"
 #include "net/base/io_buffer.h"
 #include "net/base/mime_sniffer.h"
 #include "net/base/mime_util.h"
+#include "net/base/module/directory_listing.h"
 #include "net/http/http_byte_range.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
@@ -111,9 +112,7 @@ class FileSystemEntryURLLoader : public network::mojom::URLLoader {
 
   // network::mojom::URLLoader:
   void FollowRedirect(
-      const std::vector<std::string>& removed_headers,
-      const net::HttpRequestHeaders& modified_headers,
-      const net::HttpRequestHeaders& modified_cors_exempt_headers,
+      network::HttpRequestHeadersUpdateParams headers_update_params,
       const std::optional<GURL>& new_url) override {}
   void SetPriority(net::RequestPriority priority,
                    int32_t intra_priority_value) override {}
@@ -218,17 +217,16 @@ class FileSystemEntryURLLoader : public network::mojom::URLLoader {
             request.headers.GetHeader(net::HttpRequestHeaders::kRange);
         range_header) {
       std::vector<net::HttpByteRange> ranges;
-      if (net::HttpUtil::ParseRangeHeader(*range_header, &ranges)) {
-        if (ranges.size() == 1) {
-          byte_range_ = ranges[0];
-        } else {
-          // We don't support multiple range requests in one single URL request.
-          // TODO(adamk): decide whether we want to support multiple range
-          // requests.
-          OnClientComplete(net::ERR_REQUEST_RANGE_NOT_SATISFIABLE);
-          return;
-        }
+      if (!net::HttpUtil::ParseRangeHeader(*range_header, &ranges) ||
+          ranges.size() != 1) {
+        // We don't support multiple range requests in one single URL request.
+        // TODO(adamk): decide whether we want to support multiple range
+        // requests.
+        // Fail if the header is malformed or contains multiple ranges.
+        OnClientComplete(net::ERR_REQUEST_RANGE_NOT_SATISFIABLE);
+        return;
       }
+      byte_range_ = ranges[0];
     }
     url_ =
         params_.file_system_context->CrackURL(request.url, params_.storage_key);
@@ -659,8 +657,9 @@ class FileSystemURLLoaderFactory
   FileSystemURLLoaderFactory(
       FactoryParams params,
       scoped_refptr<base::SequencedTaskRunner> io_task_runner,
-      mojo::PendingReceiver<network::mojom::URLLoaderFactory> factory_receiver)
-      : network::SelfDeletingURLLoaderFactory(std::move(factory_receiver)),
+      mojo::PendingReceiver<network::mojom::URLLoaderFactory> factory_receiver,
+      base::SelfDeletingPassKey key)
+      : network::SelfDeletingURLLoaderFactory(std::move(factory_receiver), key),
         params_(std::move(params)),
         io_task_runner_(io_task_runner) {}
 
@@ -668,9 +667,8 @@ class FileSystemURLLoaderFactory
   FileSystemURLLoaderFactory& operator=(const FileSystemURLLoaderFactory&) =
       delete;
 
-  ~FileSystemURLLoaderFactory() override = default;
-
  private:
+  ~FileSystemURLLoaderFactory() override = default;
   void CreateLoaderAndStart(
       mojo::PendingReceiver<network::mojom::URLLoader> loader,
       int32_t request_id,
@@ -720,7 +718,7 @@ CreateFileSystemURLLoaderFactory(
   // The FileSystemURLLoaderFactory will delete itself when there are no more
   // receivers - see the network::SelfDeletingURLLoaderFactory::OnDisconnect
   // method.
-  new FileSystemURLLoaderFactory(
+  base::MakeSelfDeleting<FileSystemURLLoaderFactory>(
       std::move(params), GetIOThreadTaskRunner({}),
       pending_remote.InitWithNewPipeAndPassReceiver());
 

@@ -14,7 +14,6 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/contents_container_outline.h"
 #include "chrome/browser/ui/views/frame/contents_container_view.h"
-#include "chrome/browser/ui/views/frame/multi_contents_view.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/permissions/permission_util.h"
@@ -131,6 +130,38 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessRestorePermissionBubbleViewTest,
 }
 
 IN_PROC_BROWSER_TEST_F(FileSystemAccessRestorePermissionBubbleViewTest,
+                       BubbleDismissedOnTabSwitch) {
+  ASSERT_TRUE(AddTabAtIndex(1, GetURL("foo.com"),
+                            ui::PageTransition::PAGE_TRANSITION_TYPED));
+  browser()->tab_strip_model()->ActivateTabAt(0);
+
+  permissions::PermissionAction callback_result;
+  GetFileSystemAccessRestorePermissionDialogForTesting(
+      kRequestData,
+      base::BindLambdaForTesting([&](permissions::PermissionAction result) {
+        callback_result = result;
+      }),
+      browser()->tab_strip_model()->GetWebContentsAt(0));
+
+  browser()->tab_strip_model()->ActivateTabAt(1);
+
+  EXPECT_EQ(callback_result, permissions::PermissionAction::DISMISSED);
+}
+
+IN_PROC_BROWSER_TEST_F(FileSystemAccessRestorePermissionBubbleViewTest,
+                       NotCreatedForInactiveTab) {
+  ASSERT_TRUE(AddTabAtIndex(1, GetURL("foo.com"),
+                            ui::PageTransition::PAGE_TRANSITION_TYPED));
+  browser()->tab_strip_model()->ActivateTabAt(1);
+
+  auto* bubble = GetFileSystemAccessRestorePermissionDialogForTesting(
+      kRequestData, base::DoNothing(),
+      browser()->tab_strip_model()->GetWebContentsAt(0));
+
+  EXPECT_EQ(bubble, nullptr);
+}
+
+IN_PROC_BROWSER_TEST_F(FileSystemAccessRestorePermissionBubbleViewTest,
                        ShowFileSystemAccessDialog) {
   ASSERT_TRUE(AddTabAtIndex(0, GetURL("example.com"),
                             ui::PageTransition::PAGE_TRANSITION_TYPED));
@@ -142,8 +173,7 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessRestorePermissionBubbleViewTest,
 
   std::vector<ContentsContainerView*> contents_container_views =
       BrowserView::GetBrowserViewForBrowser(browser())
-          ->multi_contents_view()
-          ->contents_container_views();
+          ->GetContentsContainerViews();
   ASSERT_EQ(contents_container_views.size(), 2U);
   EXPECT_FALSE(
       contents_container_views[0]->contents_outline_view()->is_highlighted());

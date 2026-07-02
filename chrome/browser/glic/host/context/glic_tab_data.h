@@ -66,8 +66,12 @@ struct TabDataChange {
 std::ostream& operator<<(std::ostream& os, const TabDataChange& change);
 
 // TODO: Detect changes to windowID.
-class TabDataObserver : public content::WebContentsObserver,
-                        public favicon::FaviconDriverObserver {
+class TabDataObserver : public content::WebContentsObserver
+#if !BUILDFLAG(IS_ANDROID)
+    ,
+                        public favicon::FaviconDriverObserver
+#endif
+{
  public:
   // Observes `web_contents` for changes that would modify the result of
   // `CreateTabData(web_contents)`. `tab_data_changed` is called any time tab
@@ -102,18 +106,19 @@ class TabDataObserver : public content::WebContentsObserver,
   void TitleWasSetForMainFrame(
       content::RenderFrameHost* render_frame_host) override;
 
+#if !BUILDFLAG(IS_ANDROID)
   // favicon::FaviconDriverObserver.
   void OnFaviconUpdated(favicon::FaviconDriver* favicon_driver,
                         NotificationIconType notification_icon_type,
                         const GURL& icon_url,
                         bool icon_url_changed,
                         const gfx::Image& image) override;
+#endif
 
   void SetTaskRunnerForTesting(
       scoped_refptr<base::SequencedTaskRunner> task_runner);
 
  private:
-  void ReportUpdatesPerNavigation();
   void SendRateLimitedUpdate();
   void SendUpdate();
   void ClearObservation();
@@ -166,11 +171,13 @@ class FocusedTabData {
   raw_ptr<tabs::TabInterface> unfocused_tab_;
 };
 
-// Helper function to extract the Tab Id from the current web contents.
+// Helper function to extract the Tab Id.
 int GetTabId(content::WebContents* web_contents);
+int GetTabId(tabs::TabInterface* tab);
 
-// Helper function to extract the Tab url from the current web contents.
+// Helper function to extract the Tab url.
 const GURL& GetTabUrl(content::WebContents* web_contents);
+GURL GetTabUrl(tabs::TabInterface* tab);
 
 // Populates and returns a TabDataPtr from a given Tab, or null if tab is null.
 glic::mojom::TabDataPtr CreateTabData(tabs::TabInterface* tab);

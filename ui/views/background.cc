@@ -16,6 +16,7 @@
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkPath.h"
 #include "third_party/skia/include/core/SkRRect.h"
+#include "ui/base/interaction/safe_castable.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #include "ui/color/color_variant.h"
@@ -35,6 +36,8 @@
 
 namespace views {
 
+DEFINE_SAFE_CAST_TARGET(Background)
+
 // SolidBackground is a trivial Background implementation that fills the
 // background in a solid color.
 class SolidBackground : public Background {
@@ -51,7 +54,7 @@ class SolidBackground : public Background {
   }
 
   void OnViewThemeChanged(View* view) override {
-    if (color().IsSemantic()) {
+    if (color().IsLogical()) {
       view->SchedulePaint();
     }
   }
@@ -92,7 +95,7 @@ class RoundedRectBackground : public Background {
   }
 
   void OnViewThemeChanged(View* view) override {
-    if (color().IsSemantic()) {
+    if (color().IsLogical()) {
       view->SchedulePaint();
     }
   }

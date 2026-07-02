@@ -11,6 +11,7 @@
 #include "base/feature_list.h"
 #include "base/features.h"
 #include "base/metrics/field_trial.h"
+#include "base/metrics/field_trial_params.h"
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
@@ -23,6 +24,7 @@
 #include "components/feed/feed_feature_list.h"
 #include "components/metrics/metrics_pref_names.h"
 #include "components/metrics/persistent_histograms.h"
+#include "components/site_isolation/features.h"
 #include "components/variations/feature_overrides.h"
 #include "components/version_info/version_info.h"
 #include "third_party/blink/public/common/features.h"
@@ -32,15 +34,15 @@
 #include "base/android/bundle_utils.h"
 #include "base/task/thread_pool/environment_config.h"
 #include "build/android_buildflags.h"
-#include "chrome/browser/android/flags/chrome_cached_flags.h"
+#include "chrome/browser/android/flags/chrome_cached_flags.h"  // nogncheck crbug.com/40147906
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "chrome/browser/media/webrtc/desktop_media_picker.h"
 #include "chrome/common/chrome_features.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "content/public/common/content_features.h"
+#include "gpu/config/gpu_finch_features.h"
 #include "media/audio/audio_features.h"
 #include "media/base/media_switches.h"
-#include "gpu/config/gpu_finch_features.h"
 #include "sandbox/policy/features.h"
 #include "ui/gl/gl_features.h"
 #include "ui/gl/gl_switches.h"
@@ -55,6 +57,12 @@
 #include "base/nix/xdg_util.h"
 #include "ui/base/ui_base_features.h"
 #endif  // BUILDFLAG(IS_LINUX)
+
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#include "base/check_deref.h"
+#include "chrome/browser/first_run/first_run.h"
+#include "chrome/browser/signin/before_fre_refresh_hats_field_trial.h"
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 ChromeBrowserFieldTrials::ChromeBrowserFieldTrials(PrefService* local_state)
     : local_state_(local_state) {
@@ -85,6 +93,16 @@ void ChromeBrowserFieldTrials::SetUpClientSideFieldTrials(
     ash::multidevice_setup::CreateFirstRunFieldTrial(feature_list);
   }
 #endif
+
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  // This trial is client controlled on Mac and Linux because the survey is
+  // triggered on the very first run of Chrome. These platforms do not support
+  // variations seed on the first run.
+  if (first_run::IsChromeFirstRun()) {
+    signin::CreateBeforeFreRefreshHatsFieldTrial(
+        CHECK_DEREF(feature_list), entropy_providers.default_entropy());
+  }
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 }
 
 void ChromeBrowserFieldTrials::RegisterSyntheticTrials() {
@@ -131,30 +149,18 @@ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
   // override in the generic IS_ANDROID block below, guarded by an appropriate
   // runtime check.
 
-  // Enable the link hover status bar.
-  // TODO(crbug.com/404678510): Remove when the feature is stable.
-  feature_overrides.EnableFeature(chrome::android::kLinkHoverStatusBar);
+  // Enables media capture (tab+window+screen sharing).
+  // TODO(crbug.com/352187279): Remove when tablet rollout is complete.
+  feature_overrides.EnableFeature(kAndroidMediaPicker);
+  feature_overrides.EnableFeature(features::kUserMediaScreenCapturing);
 
-  // If enabled, render processes associated only with tabs in unfocused windows
-  // will be downgraded to "vis" priority, rather than remaining at "fg". This
-  // will allow tabs in unfocused windows to be prioritized for OOM kill in
-  // low-memory scenarios.
-  feature_overrides.EnableFeature(chrome::android::kChangeUnfocusedPriority);
-
-  // Enable desktop tab management features.
-  // TODO(crbug.com/422902625): Remove when rollout is complete to all form
-  // factors.
-  feature_overrides.EnableFeature(chrome::android::kProcessRankPolicyAndroid);
-  feature_overrides.EnableFeature(chrome::android::kProtectedTabsAndroid);
   // Enable background media capturing on desktop devices.
   // TODO(crbug.com/426461170): Remove once we enable this feature for all form
   // factors. Currently we have no conclusion whether to enable this on mobile
   // phones yet.
   feature_overrides.EnableFeature(
-      features::kAndroidEnableBackgroundMediaCapturing);
-  feature_overrides.EnableFeature(features::kSubframeImportance);
-  // TODO(crbug.com/465596248): Remove when experiment is complete.
-  feature_overrides.EnableFeature(chrome::android::kProtectRecentlyVisibleTab);
+      media::kAndroidEnableBackgroundMediaCapturing);
+
   // TODO(crbug.com/422903297): Remove when tablet rollout is complete.
   feature_overrides.EnableFeature(features::kRendererProcessLimitOnAndroid);
   // Enable V8 optimizations for high-end Android Desktop devices.
@@ -164,10 +170,6 @@ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
   // factors.
   feature_overrides.EnableFeature(
       autofill::features::kAutofillAndroidDesktopSuppressAccessoryOnEmpty);
-  // TODO(crbug.com/436900619): Remove when the long term solution is
-  // implemented.
-  feature_overrides.EnableFeature(
-      chrome::android::kLockTopControlsOnLargeTablets);
   // TODO(crbug.com/445446479): Remove when rollout is complete to all form
   // factors.
   feature_overrides.EnableFeature(
@@ -190,6 +192,14 @@ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
   // TODO(crbug.com/403851785): Remove when the feature is verified to be stable
   // on desktop Android.
   feature_overrides.EnableFeature(media::kContextMenuPictureInPictureAndroid);
+
+  // Enable Media Engagement bypass and preload for desktop Android.
+  // TODO(crbug.com/490450572): Re-evaluate if we want to enable these features
+  // for all Android form factors after analysis.
+  feature_overrides.EnableFeature(
+      media::kMediaEngagementBypassAutoplayPolicies);
+  feature_overrides.EnableFeature(media::kPreloadMediaEngagementData);
+
   // Disables the enhanced pip transition and uses the default animation.
   // TODO(crbug.com/440384447): Remove when enhanced pip transition is fixed.
   feature_overrides.DisableFeature(media::kAllowEnhancedPipTransition);
@@ -199,10 +209,6 @@ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
   // factors.
   feature_overrides.EnableFeature(
       autofill::features::kAutofillAndroidDesktopKeyboardAccessoryRevamp);
-  // Enable by default for desktop platforms, pending a tablet rollout using the
-  // same flag.
-  // TODO(crbug.com/445475304): Remove when tablet rollout is complete.
-  feature_overrides.EnableFeature(feed::kAndroidOpenIncognitoAsWindow);
 
   // Enable ANGLE/Vulkan features.
   // TODO (crbug.com//376280554): Enable these features with runtime checks
@@ -217,19 +223,21 @@ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
   // SitePerProcess is enabled for all necessary or eligible Android devices.
   feature_overrides.EnableFeature(::features::kSitePerProcess);
 
+  // By setting the kSiteIsolationEnableMemoryThresholdAndroid feature, we make
+  // sure that site isolation (enabled by kSitePerProcess above) is not disabled
+  // due to memory thresholds.
+  // TODO(crbug.com/454695278): Find a different way to disable the site
+  // isolation memory thresholds on Android desktop.
+  feature_overrides.DisableFeature(
+      site_isolation::features::kSiteIsolationEnableMemoryThresholdAndroid);
+
   // Enable all tabs to have WebContents at all times for desktop platforms.
   // TODO(crbug.com/448420873): Remove once we enable this feature for all form
   // factors. This is currently blocked by performance regressions on low-end
   // Android devices.
   feature_overrides.EnableFeature(features::kWebContentsDiscard);
   feature_overrides.EnableFeature(features::kLazyBrowserInterfaceBroker);
-  feature_overrides.EnableFeature(chrome::android::kTabFreezingUsesDiscard);
   feature_overrides.EnableFeature(chrome::android::kLoadAllTabsAtStartup);
-
-  // Enable the ability for extensions to override chrome pages.
-  // TODO(crbug.com/404069963): Remove flag when the feature is verified to be
-  // stable on desktop Android.
-  feature_overrides.EnableFeature(chrome::android::kChromeNativeUrlOverriding);
 
   // Enable desktop full screen to a screen feature flag by default for desktop
   // platforms.
@@ -238,10 +246,15 @@ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
   feature_overrides.EnableFeature(
       features::kEnableFullscreenToAnyScreenAndroid);
 
-  // Enables the ability to specify a platform-specific zoom scaling that will
-  // apply transparently to all pages.
-  // TODO(crbug.com/450281745): Remove once feature is enabled by default.
-  feature_overrides.EnableFeature(::features::kAndroidDesktopZoomScaling);
+  // Enables desktop page web prefs for large displays on Android.
+  // TODO(crbug.com/433519850): Remove once feature is enabled by default.
+  feature_overrides.EnableFeature(
+      blink::features::kAndroidDesktopWebPrefsLargeDisplays);
+
+  // Enable timeout for TextClassifier calls.
+  // TODO(crbug.com/504722790): Remove when experiment is complete.
+  feature_overrides.EnableFeature(features::kTextClassifierTimeout);
+
 #endif  // BUILDFLAG(IS_DESKTOP_ANDROID)
   // Desktop-first features which are past incubation should either end up here,
   // or to a finch trial that enables it for all form factors.

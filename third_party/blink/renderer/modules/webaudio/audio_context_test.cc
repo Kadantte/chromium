@@ -18,11 +18,14 @@
 #include "third_party/blink/public/mojom/frame/lifecycle.mojom-blink.h"
 #include "third_party/blink/public/mojom/media/capture_handle_config.mojom-blink.h"
 #include "third_party/blink/public/mojom/permissions/permission.mojom-blink.h"
+#include "third_party/blink/public/mojom/permissions/permission_status.mojom-blink.h"
 #include "third_party/blink/public/platform/web_audio_device.h"
 #include "third_party/blink/public/platform/web_audio_latency_hint.h"
 #include "third_party/blink/public/platform/web_audio_sink_descriptor.h"
 #include "third_party/blink/public/platform/web_runtime_features.h"
+#include "third_party/blink/public/web/web_heap.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_worklet_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_sink_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_union_audiocontextlatencycategory_double.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_union_audiocontextrendersizecategory_unsignedlong.h"
@@ -32,10 +35,15 @@
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
+#include "third_party/blink/renderer/core/workers/worker_thread.h"
 #include "third_party/blink/renderer/modules/mediastream/sub_capture_target.h"
 #include "third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_playback_stats.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_playout_stats.h"
+#include "third_party/blink/renderer/modules/webaudio/audio_worklet.h"
+#include "third_party/blink/renderer/modules/webaudio/audio_worklet_messaging_proxy.h"
+#include "third_party/blink/renderer/modules/webaudio/delay_node.h"
+#include "third_party/blink/renderer/modules/webaudio/media_stream_audio_destination_node.h"
 #include "third_party/blink/renderer/modules/webaudio/realtime_audio_destination_node.h"
 #include "third_party/blink/renderer/modules/webrtc/webrtc_audio_device_impl.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
@@ -176,7 +184,8 @@ class MockPermissionService final : public mojom::blink::PermissionService {
   void HasPermission(mojom::blink::PermissionDescriptorPtr permission,
                      HasPermissionCallback callback) override {
     EXPECT_EQ(permission->name, mojom::blink::PermissionName::AUDIO_CAPTURE);
-    std::move(callback).Run(permission_);
+    std::move(callback).Run(
+        mojom::blink::PermissionStatusWithDetails::New(permission_, nullptr));
   }
 
   void RegisterPageEmbeddedPermissionControl(
@@ -191,12 +200,10 @@ class MockPermissionService final : public mojom::blink::PermissionService {
       RequestPageEmbeddedPermissionCallback callback) override {}
 
   void RequestPermission(mojom::blink::PermissionDescriptorPtr permission,
-                         bool user_gesture,
                          RequestPermissionCallback callback) override {}
 
   void RequestPermissions(
       Vector<mojom::blink::PermissionDescriptorPtr> permissions,
-      bool user_gesture,
       RequestPermissionsCallback callback) override {}
 
   void RevokePermission(mojom::blink::PermissionDescriptorPtr permission,
@@ -204,7 +211,7 @@ class MockPermissionService final : public mojom::blink::PermissionService {
 
   void AddPermissionObserver(
       mojom::blink::PermissionDescriptorPtr permission,
-      mojom::blink::PermissionStatus last_known_status,
+      mojom::blink::PermissionStatusWithDetailsPtr last_known_status,
       mojo::PendingRemote<mojom::blink::PermissionObserver> observer) override {
     EXPECT_EQ(permission->name, mojom::blink::PermissionName::AUDIO_CAPTURE);
     observer_.Bind(std::move(observer));
@@ -222,7 +229,8 @@ class MockPermissionService final : public mojom::blink::PermissionService {
 
   void NotifyObserver() {
     CHECK(observer_.is_bound());
-    observer_->OnPermissionStatusChange(permission_);
+    observer_->OnPermissionStatusChange(
+        mojom::blink::PermissionStatusWithDetails::New(permission_, nullptr));
   }
 
   mojom::blink::PermissionStatus permission_ =
@@ -390,11 +398,48 @@ class AudioContextTest : public PageTestBase {
     return platform_.GetTestingPlatformSupport();
   }
 
+  void ClearAudioContextAsyncStateUseCounters() {
+    GetDocument().ClearUseCounterForTesting(
+        WebFeature::kAudioContextAsyncStateTransitions);
+    GetDocument().ClearUseCounterForTesting(
+        WebFeature::kAudioContextAsyncTransitionToRunningStateRead);
+    GetDocument().ClearUseCounterForTesting(
+        WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead);
+  }
+
  private:
   ScopedTestingPlatformSupport<AudioContextTestPlatform> platform_;
   std::unique_ptr<MockMediaDevicesDispatcherHost>
       mock_media_devices_dispatcher_host_;
 };
+
+TEST_F(AudioContextTest, DisposeOrphansHandlerWhenInterrupted) {
+  AudioContextOptions* options = AudioContextOptions::Create();
+  AudioContext* context = AudioContext::Create(
+      GetFrame().DomWindow(), options, ASSERT_NO_EXCEPTION);
+
+  context->StartContextInterruption();
+
+  scoped_refptr<AudioHandler> handler;
+  {
+    DelayNode* node = context->createDelay(ASSERT_NO_EXCEPTION);
+    handler = &node->Handler();
+  }
+
+  // Before GC, handler should have 1 ref (held by us, as the node itself is
+  // still alive in Oilpan but we have no Persistent handle to it).
+  // In Oilpan tests, a garbage collection cycle must be forced to destroy
+  // the node.
+  WebHeap::CollectAllGarbageForTesting();
+
+  // If the node was orphaned, its handler will be added to the
+  // DeferredTaskHandler's orphan list, meaning it will have at least one ref
+  // there, plus our 'handler' ref. (2 refs)
+  //
+  // If it was NOT orphaned, it would have been destroyed if we didn't hold it,
+  // OR it has only our ref. (HasOneRef() == true) Thus this will fail.
+  EXPECT_FALSE(handler->HasOneRef());
+}
 
 TEST_F(AudioContextTest, AudioContextOptions_WebAudioLatencyHint) {
   AudioContextOptions* interactive_options = AudioContextOptions::Create();
@@ -1360,6 +1405,65 @@ TEST_F(AudioContextStatsTest, PlaybackStatsVisibilityRestriction) {
                                        /*expect_change=*/true);
 }
 
+TEST_F(AudioContextStatsTest, PlaybackStatsVisibilityDataDiscard) {
+  blink::WebRuntimeFeatures::EnableFeatureFromString(
+      "AudioContextPlaybackStats", true);
+  AudioContextOptions* options = AudioContextOptions::Create();
+  AudioContext* audio_context = AudioContext::Create(
+      GetFrame().DomWindow(), options, ASSERT_NO_EXCEPTION);
+  audio_context->set_clock_for_testing(this);
+  FlushPermissionService(audio_context);
+
+  ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
+  ContextRenderer* renderer =
+      MakeGarbageCollected<ContextRenderer>(audio_context);
+  renderer->Init();
+
+  // 1. Page is visible by default. Render some baseline audio.
+  RenderAndCheckIfPlaybackStatsChanged(
+      base::Seconds(1), renderer, script_state, /*expect_change=*/true);
+
+  AudioPlaybackStats* playback_stats = audio_context->playbackStats();
+  int glitches_before = playback_stats->underrunEvents(script_state);
+  double duration_before = playback_stats->totalDuration(script_state);
+
+  // 2. Hide the page.
+  GetPage().SetVisibilityState(mojom::blink::PageVisibilityState::kHidden,
+                               /*is_initial_state=*/false);
+
+  // 3. Render audio with glitches while hidden.
+  fake_time_now_ += base::Seconds(1);
+  renderer->Render(
+      1000, base::Milliseconds(50),
+      media::AudioGlitchInfo{.duration = base::Milliseconds(10), .count = 1});
+  ToEventLoop(script_state).PerformMicrotaskCheckpoint();
+
+  // 4. Make the page visible again.
+  GetPage().SetVisibilityState(mojom::blink::PageVisibilityState::kVisible,
+                               /*is_initial_state=*/false);
+
+  // 5. Render one quantum without glitches to trigger stats update.
+  fake_time_now_ += base::Seconds(1);
+  renderer->Render(1000, base::Milliseconds(50), media::AudioGlitchInfo{});
+  ToEventLoop(script_state).PerformMicrotaskCheckpoint();
+
+  // 6. Verify that stats did NOT increase by the glitches or the duration from
+  // the hidden period.
+  int glitches_after = playback_stats->underrunEvents(script_state);
+  EXPECT_EQ(glitches_before, glitches_after);
+  double duration_after =
+      duration_before + media::AudioTimestampHelper::FramesToTime(
+                            1000, audio_context->sampleRate())
+                            .InSecondsF();
+  // We use EXPECT_NEAR with a 10 microseconds tolerance to allow for
+  // sub-microsecond rounding errors from integer time conversion in
+  // AudioTimestampHelper::FramesToTime. The tolerance is smaller than 1 audio
+  // frame (~20.8 microseconds at 48kHz), ensuring any actually processed frame
+  // would still trigger a failure.
+  EXPECT_NEAR(playback_stats->totalDuration(script_state),
+              duration_after, 0.00001);
+}
+
 TEST_F(AudioContextStatsTest, PlaybackStatsMicrophoneRestrictionStartsDenied) {
   blink::WebRuntimeFeatures::EnableFeatureFromString(
       "AudioContextPlaybackStats", true);
@@ -1420,6 +1524,53 @@ TEST_F(AudioContextStatsTest, PlaybackStatsMicrophoneRestrictionStartsGranted) {
   // Since we have microphone permission, the stats will be updated.
   RenderAndCheckIfPlaybackStatsChanged(base::Seconds(1), renderer, script_state,
                                        /*expect_change=*/true);
+}
+
+// Test that HasPendingActivity returns false after closeContext() is called,
+// even if the permission receiver is bound (which previously caused a leak).
+TEST_F(AudioContextStatsTest, HasPendingActivityAfterClose) {
+  AudioContextOptions* options = AudioContextOptions::Create();
+  AudioContext* audio_context = AudioContext::Create(
+      GetFrame().DomWindow(), options, ASSERT_NO_EXCEPTION);
+
+  // Flush the permission service to ensure the receiver becomes bound.
+  FlushPermissionService(audio_context);
+  EXPECT_TRUE(audio_context->HasPendingActivity());
+
+  ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
+  ScriptState::Scope scope(script_state);
+  DummyExceptionStateForTesting exception_state;
+  audio_context->closeContext(script_state, exception_state);
+
+  EXPECT_FALSE(audio_context->HasPendingActivity());
+}
+
+// Test that AudioWorklet and its messaging proxy are signaled to terminate
+// when the AudioContext is closed.
+TEST_F(AudioContextTest, AudioWorkletTerminatedOnClose) {
+  AudioContextOptions* options = AudioContextOptions::Create();
+  AudioContext* audio_context = AudioContext::Create(
+      GetFrame().DomWindow(), options, ASSERT_NO_EXCEPTION);
+
+  ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
+  ScriptState::Scope scope(script_state);
+
+  // Trigger proxy creation directly via friend access.
+  auto* audio_worklet = audio_context->audioWorklet();
+  audio_worklet->proxies_.push_back(audio_worklet->CreateGlobalScope());
+
+  auto* proxy = audio_worklet->GetMessagingProxy();
+  ASSERT_TRUE(proxy);
+  // Ensure the proxy is not requested to terminate initially.
+  EXPECT_FALSE(proxy->AskedToTerminate());
+
+  DummyExceptionStateForTesting exception_state;
+  audio_context->closeContext(script_state, exception_state);
+
+  EXPECT_TRUE(proxy->AskedToTerminate());
+
+  // Wait for worker thread to shut down to avoid race on g_platform.
+  proxy->GetBackingWorkerThread()->WaitForShutdownForTesting();
 }
 
 TEST_F(AudioContextTest, ChannelCountRunning) {
@@ -2090,6 +2241,510 @@ TEST_F(AudioContextTest, SuspendWhileInterruptedStaysSuspended) {
 
   // Context stays suspended.
   ExpectContextSuspended(audio_context);
+}
+
+// Internal logging must not record the AudioContext async-state
+// UseCounters. AudioContext::SendLogMessage() and the constructor of
+// MediaStreamAudioDestinationNode get the context state for the log
+// messages. To format a log message without recording the counters,
+// they read it via GetStateStringForLogMessage() which uses the
+// non-counting state getter (BaseAudioContext::state()) instead of
+// AudioContext::state().
+TEST_F(AudioContextTest, AsyncStateUseCountersLogMessage) {
+  for (bool feature_enabled : {true, false}) {
+    SCOPED_TRACE(testing::Message() << "feature_enabled: " << feature_enabled);
+
+    ScopedAudioContextAsyncStateTransitionsForTest scoped_feature(
+        feature_enabled);
+
+    AudioContextOptions* options = AudioContextOptions::Create();
+
+    AudioContext* audio_context = AudioContext::Create(
+        GetFrame().DomWindow(), options, ASSERT_NO_EXCEPTION);
+
+    ClearAudioContextAsyncStateUseCounters();
+
+    audio_context->SendLogMessage("function_name", "log_message");
+
+    // AudioContext::SendLogMessage() must not record UseCounters.
+    EXPECT_FALSE(GetDocument().IsUseCounted(
+        WebFeature::kAudioContextAsyncStateTransitions));
+    EXPECT_FALSE(GetDocument().IsUseCounted(
+        WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+    EXPECT_FALSE(GetDocument().IsUseCounted(
+        WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+    ClearAudioContextAsyncStateUseCounters();
+
+    MediaStreamAudioDestinationNode::Create(*audio_context, 2,
+                                            ASSERT_NO_EXCEPTION);
+
+    // MediaStreamAudioDestinationNode::Create() must not record counters.
+    EXPECT_FALSE(GetDocument().IsUseCounted(
+        WebFeature::kAudioContextAsyncStateTransitions));
+    EXPECT_FALSE(GetDocument().IsUseCounted(
+        WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+    EXPECT_FALSE(GetDocument().IsUseCounted(
+        WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+  }
+}
+
+// Tests that kAudioContextAsyncStateTransitions is recorded when
+// an AudioContext is created and begins the initial transition to
+// running, regardless of the feature.
+TEST_F(AudioContextTest, AsyncStateUseCountersInitialTransitionToRunning) {
+  for (bool feature_enabled : {true, false}) {
+    SCOPED_TRACE(testing::Message() << "feature_enabled: " << feature_enabled);
+
+    ScopedAudioContextAsyncStateTransitionsForTest scoped_feature(
+        feature_enabled);
+
+    AudioContextOptions* options = AudioContextOptions::Create();
+
+    ClearAudioContextAsyncStateUseCounters();
+
+    AudioContext::Create(GetFrame().DomWindow(), options, ASSERT_NO_EXCEPTION);
+
+    // kAudioContextAsyncStateTransitions should be recorded when an
+    // AudioContext is created and allowed to start, regardless of the
+    // feature.
+    EXPECT_TRUE(GetDocument().IsUseCounted(
+        WebFeature::kAudioContextAsyncStateTransitions));
+    EXPECT_FALSE(GetDocument().IsUseCounted(
+        WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+    EXPECT_FALSE(GetDocument().IsUseCounted(
+        WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+  }
+}
+
+// Tests that kAudioContextAsyncTransitionToRunningStateRead is recorded when
+// AudioContext::state() is called within the window of the initial transition
+// to "running".
+TEST_F(AudioContextTest, AsyncStateUseCountersReadWhileInitialTransition) {
+  for (bool feature_enabled : {true, false}) {
+    SCOPED_TRACE(testing::Message() << "feature_enabled: " << feature_enabled);
+
+    ScopedAudioContextAsyncStateTransitionsForTest scoped_feature(
+        feature_enabled);
+
+    AudioContextOptions* options = AudioContextOptions::Create();
+
+    AudioContext* audio_context = AudioContext::Create(
+        GetFrame().DomWindow(), options, ASSERT_NO_EXCEPTION);
+
+    ClearAudioContextAsyncStateUseCounters();
+
+    // Get state right after the AudioContext is created. When the feature
+    // is enabled, the state is "suspended" after construction but playback
+    // starts immediately. When the feature is disabled the state is already
+    // "running", but ScheduleInitialTransitionToRunning() still posts an
+    // async task that only clears the pending flag, keeping the window open
+    // so a state() read is counted here as well.
+    EXPECT_EQ(audio_context->state().AsEnum(),
+              feature_enabled ? V8AudioContextState::Enum::kSuspended
+                              : V8AudioContextState::Enum::kRunning);
+
+    // kAudioContextAsyncTransitionToRunningStateRead must be recorded
+    // when AudioContext::state() is called within the initial transition
+    // window, regardless of the feature.
+    EXPECT_FALSE(GetDocument().IsUseCounted(
+        WebFeature::kAudioContextAsyncStateTransitions));
+    EXPECT_TRUE(GetDocument().IsUseCounted(
+        WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+    EXPECT_FALSE(GetDocument().IsUseCounted(
+        WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+    ClearAudioContextAsyncStateUseCounters();
+
+    EXPECT_TRUE(audio_context->GetRealtimeAudioDestinationNode()
+                    ->GetOwnHandler()
+                    .get_platform_destination_is_playing_for_testing());
+
+    // Wait until the state becomes "running".
+    ExpectContextBecomesRunningAsync(audio_context);
+
+    EXPECT_FALSE(GetDocument().IsUseCounted(
+        WebFeature::kAudioContextAsyncStateTransitions));
+    EXPECT_FALSE(GetDocument().IsUseCounted(
+        WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+    EXPECT_FALSE(GetDocument().IsUseCounted(
+        WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+    ClearAudioContextAsyncStateUseCounters();
+
+    // Call AudioContext::state() after the initial transition window.
+    EXPECT_EQ(audio_context->state().AsEnum(),
+              V8AudioContextState::Enum::kRunning);
+
+    // kAudioContextAsyncTransitionToRunningStateRead must not be recorded
+    // when AudioContext::state() is called after the initial transition
+    // finished.
+    EXPECT_FALSE(GetDocument().IsUseCounted(
+        WebFeature::kAudioContextAsyncStateTransitions));
+    EXPECT_FALSE(GetDocument().IsUseCounted(
+        WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+    EXPECT_FALSE(GetDocument().IsUseCounted(
+        WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+    ClearAudioContextAsyncStateUseCounters();
+  }
+}
+
+// Tests that kAudioContextAsyncTransitionToSuspendedStateRead is recorded
+// when AudioContext::state() is called within the window of the state
+// transition to "suspended" after the suspend() call.
+TEST_F(AudioContextTest, AsyncStateUseCountersReadWhileSuspendTransition) {
+  enum TestType {
+    kSuspendBeforeInitialTransition,
+    kSuspendAfterInitialTransition
+  };
+  for (bool feature_enabled : {true, false}) {
+    for (TestType test_type :
+         {kSuspendBeforeInitialTransition, kSuspendAfterInitialTransition}) {
+      SCOPED_TRACE(testing::Message() << "feature_enabled: " << feature_enabled
+                                      << ", test_type: " << test_type);
+
+      ScopedAudioContextAsyncStateTransitionsForTest scoped_feature(
+          feature_enabled);
+
+      ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
+      ScriptState::Scope scope(script_state);
+      AudioContextOptions* options = AudioContextOptions::Create();
+
+      AudioContext* audio_context = AudioContext::Create(
+          GetFrame().DomWindow(), options, ASSERT_NO_EXCEPTION);
+
+      EXPECT_EQ(audio_context->ContextState(),
+                feature_enabled ? V8AudioContextState::Enum::kSuspended
+                                : V8AudioContextState::Enum::kRunning);
+
+      EXPECT_TRUE(audio_context->GetRealtimeAudioDestinationNode()
+                      ->GetOwnHandler()
+                      .get_platform_destination_is_playing_for_testing());
+
+      ClearAudioContextAsyncStateUseCounters();
+
+      switch (test_type) {
+        case kSuspendBeforeInitialTransition:
+          // Suspend right after the AudioContext is created.
+          audio_context->suspendContext(script_state, ASSERT_NO_EXCEPTION);
+
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncStateTransitions));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+          ClearAudioContextAsyncStateUseCounters();
+
+          // Get state right after the suspend call.
+          EXPECT_EQ(audio_context->state().AsEnum(),
+                    V8AudioContextState::Enum::kSuspended);
+          break;
+        case kSuspendAfterInitialTransition:
+          // Wait until "running".
+          ExpectContextBecomesRunningAsync(audio_context);
+
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncStateTransitions));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+          ClearAudioContextAsyncStateUseCounters();
+
+          // Get state after "running".
+          EXPECT_EQ(audio_context->state().AsEnum(),
+                    V8AudioContextState::Enum::kRunning);
+
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncStateTransitions));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+          ClearAudioContextAsyncStateUseCounters();
+
+          // Suspend after the "running" state.
+          audio_context->suspendContext(script_state, ASSERT_NO_EXCEPTION);
+
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncStateTransitions));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+          ClearAudioContextAsyncStateUseCounters();
+
+          // Get state right after the suspend call.
+          EXPECT_EQ(audio_context->state().AsEnum(),
+                    feature_enabled ? V8AudioContextState::Enum::kRunning
+                                    : V8AudioContextState::Enum::kSuspended);
+          break;
+      }
+
+      // kAudioContextAsyncTransitionToSuspendedStateRead should be recorded.
+      EXPECT_FALSE(GetDocument().IsUseCounted(
+          WebFeature::kAudioContextAsyncStateTransitions));
+      EXPECT_FALSE(GetDocument().IsUseCounted(
+          WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+      EXPECT_TRUE(GetDocument().IsUseCounted(
+          WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+      ClearAudioContextAsyncStateUseCounters();
+
+      // State should be suspended.
+      ExpectContextBecomesSuspendedAsync(audio_context);
+
+      EXPECT_FALSE(GetDocument().IsUseCounted(
+          WebFeature::kAudioContextAsyncStateTransitions));
+      EXPECT_FALSE(GetDocument().IsUseCounted(
+          WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+      EXPECT_FALSE(GetDocument().IsUseCounted(
+          WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+      ClearAudioContextAsyncStateUseCounters();
+
+      // Get state after "suspended".
+      EXPECT_EQ(audio_context->state().AsEnum(),
+                V8AudioContextState::Enum::kSuspended);
+
+      EXPECT_FALSE(GetDocument().IsUseCounted(
+          WebFeature::kAudioContextAsyncStateTransitions));
+      EXPECT_FALSE(GetDocument().IsUseCounted(
+          WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+      EXPECT_FALSE(GetDocument().IsUseCounted(
+          WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+      ClearAudioContextAsyncStateUseCounters();
+
+      EXPECT_FALSE(audio_context->GetRealtimeAudioDestinationNode()
+                       ->GetOwnHandler()
+                       .get_platform_destination_is_playing_for_testing());
+    }
+  }
+}
+
+// Tests that kAudioContextAsyncTransitionToSuspendedStateRead is not
+// recorded when the AudioContext is closed or has an error while the
+// state transition to "suspended" after the suspend() call.
+TEST_F(AudioContextTest,
+       AsyncStateUseCountersCloseOrErrorDuringPendingSuspend) {
+  enum TestType { kCloseDuringPending, kErrorDuringPending };
+  for (bool feature_enabled : {true, false}) {
+    for (TestType test_type : {kCloseDuringPending, kErrorDuringPending}) {
+      SCOPED_TRACE(testing::Message() << "feature_enabled: " << feature_enabled
+                                      << ", test_type: " << test_type);
+
+      ScopedAudioContextAsyncStateTransitionsForTest scoped_feature(
+          feature_enabled);
+
+      ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
+      ScriptState::Scope scope(script_state);
+      AudioContextOptions* options = AudioContextOptions::Create();
+
+      AudioContext* audio_context = AudioContext::Create(
+          GetFrame().DomWindow(), options, ASSERT_NO_EXCEPTION);
+
+      // Wait until "running".
+      ExpectContextBecomesRunningAsync(audio_context);
+
+      // Suspend after the "running" state.
+      audio_context->suspendContext(script_state, ASSERT_NO_EXCEPTION);
+
+      EXPECT_EQ(audio_context->ContextState(),
+                feature_enabled ? V8AudioContextState::Enum::kRunning
+                                : V8AudioContextState::Enum::kSuspended);
+
+      ClearAudioContextAsyncStateUseCounters();
+
+      switch (test_type) {
+        case kCloseDuringPending:
+          audio_context->closeContext(script_state, ASSERT_NO_EXCEPTION);
+
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncStateTransitions));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+          ClearAudioContextAsyncStateUseCounters();
+
+          // Get state right after close() invoked.
+          EXPECT_EQ(audio_context->state().AsEnum(),
+                    V8AudioContextState::Enum::kClosed);
+
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncStateTransitions));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+          break;
+        case kErrorDuringPending:
+          audio_context->invoke_onrendererror_from_platform_for_testing();
+
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncStateTransitions));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+          ClearAudioContextAsyncStateUseCounters();
+
+          EXPECT_EQ(audio_context->ContextState(),
+                    feature_enabled ? V8AudioContextState::Enum::kRunning
+                                    : V8AudioContextState::Enum::kSuspended);
+
+          // Wait until "suspended".
+          ExpectContextBecomesSuspendedAsync(audio_context);
+          EXPECT_TRUE(audio_context->render_error_occurred_);
+
+          // Get state after suspended.
+          EXPECT_EQ(audio_context->state().AsEnum(),
+                    V8AudioContextState::Enum::kSuspended);
+
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncStateTransitions));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+          break;
+      }
+    }
+  }
+}
+
+// Tests that kAudioContextAsyncTransitionToSuspendedStateRead is not
+// recorded when the AudioContext::resumeContext() is called after the
+// suspend() call.
+TEST_F(AudioContextTest, AsyncStateUseCountersResumeAfterSuspend) {
+  enum SuspendTiming {
+    kSuspendBeforeInitialTransition,
+    kSuspendAfterInitialTransition
+  };
+  enum ResumeTiming {
+    kResumeBeforeSuspendTransition,
+    kResumeAfterSuspendTransition,
+  };
+  for (bool feature_enabled : {true, false}) {
+    for (SuspendTiming suspend_timing :
+         {kSuspendBeforeInitialTransition, kSuspendAfterInitialTransition}) {
+      for (ResumeTiming resume_timing :
+           {kResumeBeforeSuspendTransition, kResumeAfterSuspendTransition}) {
+        SCOPED_TRACE(testing::Message()
+                     << "feature_enabled: " << feature_enabled
+                     << ", suspend_timing: " << suspend_timing
+                     << ", resume_timing: " << resume_timing);
+
+        ScopedAudioContextAsyncStateTransitionsForTest scoped_feature(
+            feature_enabled);
+
+        ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
+        ScriptState::Scope scope(script_state);
+        AudioContextOptions* options = AudioContextOptions::Create();
+
+        AudioContext* audio_context = AudioContext::Create(
+            GetFrame().DomWindow(), options, ASSERT_NO_EXCEPTION);
+
+        if (suspend_timing == kSuspendAfterInitialTransition) {
+          // Wait until "running".
+          ExpectContextBecomesRunningAsync(audio_context);
+        }
+
+        audio_context->suspendContext(script_state, ASSERT_NO_EXCEPTION);
+
+        if (resume_timing == kResumeAfterSuspendTransition) {
+          // Wait until "suspended".
+          ExpectContextBecomesSuspendedAsync(audio_context);
+        }
+
+        ClearAudioContextAsyncStateUseCounters();
+
+        audio_context->resumeContext(script_state, ASSERT_NO_EXCEPTION);
+
+        // resume() itself must not record any counter.
+        EXPECT_FALSE(GetDocument().IsUseCounted(
+            WebFeature::kAudioContextAsyncStateTransitions));
+        EXPECT_FALSE(GetDocument().IsUseCounted(
+            WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+        EXPECT_FALSE(GetDocument().IsUseCounted(
+            WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+        ClearAudioContextAsyncStateUseCounters();
+
+        auto expected_state_after_resume =
+            V8AudioContextState::Enum::kSuspended;
+        switch (resume_timing) {
+          case kResumeAfterSuspendTransition:
+            EXPECT_EQ(audio_context->state().AsEnum(),
+                      expected_state_after_resume);
+
+            EXPECT_FALSE(GetDocument().IsUseCounted(
+                WebFeature::kAudioContextAsyncStateTransitions));
+            EXPECT_FALSE(GetDocument().IsUseCounted(
+                WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+            EXPECT_FALSE(GetDocument().IsUseCounted(
+                WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+            ClearAudioContextAsyncStateUseCounters();
+            break;
+          case kResumeBeforeSuspendTransition:
+            // With the feature off, suspend() is synchronous. So by resume
+            // time the state is already "suspended", not "running". With the
+            // feature on, only when the context is suspended after the
+            // initial transition, the status is "running".
+            expected_state_after_resume =
+                (feature_enabled &&
+                 suspend_timing == kSuspendAfterInitialTransition)
+                    ? V8AudioContextState::Enum::kRunning
+                    : V8AudioContextState::Enum::kSuspended;
+
+            EXPECT_EQ(audio_context->state().AsEnum(),
+                      expected_state_after_resume);
+
+            EXPECT_FALSE(GetDocument().IsUseCounted(
+                WebFeature::kAudioContextAsyncStateTransitions));
+            // kAudioContextAsyncTransitionToRunningStateRead is recorded
+            // when the AudioContext.state() is called before initial and
+            // suspend state transition is finished.
+            EXPECT_EQ(
+                GetDocument().IsUseCounted(
+                    WebFeature::kAudioContextAsyncTransitionToRunningStateRead),
+                suspend_timing == kSuspendBeforeInitialTransition);
+            EXPECT_FALSE(GetDocument().IsUseCounted(
+                WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+            ClearAudioContextAsyncStateUseCounters();
+        }
+
+        if (expected_state_after_resume ==
+            V8AudioContextState::Enum::kSuspended) {
+          // Resuming the context should make everything start playing again.
+          ContextRenderer* renderer =
+              MakeGarbageCollected<ContextRenderer>(audio_context);
+          renderer->Init();
+          renderer->Render(128, base::Milliseconds(0), {});
+
+          // Rendering drives the context to "running" asynchronously.
+          ExpectContextBecomesRunningAsync(audio_context);
+
+          // Resuming must not record counters.
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncStateTransitions));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+          ClearAudioContextAsyncStateUseCounters();
+
+          // Get state after resumed.
+          EXPECT_EQ(audio_context->state().AsEnum(),
+                    V8AudioContextState::Enum::kRunning);
+
+          // Counters must not be recorded after resumed.
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncStateTransitions));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToRunningStateRead));
+          EXPECT_FALSE(GetDocument().IsUseCounted(
+              WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead));
+          ClearAudioContextAsyncStateUseCounters();
+        }
+      }
+    }
+  }
 }
 
 }  // namespace blink

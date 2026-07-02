@@ -11,8 +11,10 @@
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/numerics/safe_conversions.h"
+#include "third_party/blink/renderer/core/css/active_navigation_condition.h"
 #include "third_party/blink/renderer/core/css/css_selector.h"
 #include "third_party/blink/renderer/core/css/css_selector_list.h"
+#include "third_party/blink/renderer/core/css/parser/conditional_parser.h"
 #include "third_party/blink/renderer/core/css/parser/css_nesting_type.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_context.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_local_context.h"
@@ -20,7 +22,7 @@
 #include "third_party/blink/renderer/core/css/parser/css_parser_save_point.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_token.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_token_stream.h"
-#include "third_party/blink/renderer/core/css/parser/link_condition_parser.h"
+#include "third_party/blink/renderer/core/css/parser/navigation_parser.h"
 #include "third_party/blink/renderer/core/css/properties/css_parsing_utils.h"
 #include "third_party/blink/renderer/core/css/style_sheet_contents.h"
 #include "third_party/blink/renderer/core/dom/document.h"
@@ -74,6 +76,7 @@ CSSSelector::RelationType GetImplicitCombinatorForMatching(
     case CSSSelector::PseudoType::kPseudoFileSelectorButton:
     case CSSSelector::PseudoType::kPseudoPicker:
     case CSSSelector::PseudoType::kPseudoPermissionIcon:
+    case CSSSelector::PseudoType::kPseudoSelectListbox:
       return CSSSelector::RelationType::kUAShadow;
     case CSSSelector::PseudoType::kPseudoPart:
       return CSSSelector::RelationType::kShadowPart;
@@ -195,6 +198,46 @@ base::span<CSSSelector> CSSSelectorParser::ParseScopeBoundary(
   }
   parser.RecordUsageAndDeprecations(result, nesting_type);
   return result;
+}
+
+// static
+ActiveNavigationCondition* CSSSelectorParser::ParseActiveNavigationCondition(
+    CSSParserTokenStream& stream) {
+  // https://drafts.csswg.org/css-navigation-1/#typedef-active-navigation-condition
+  //
+  // <active-navigation-condition> =
+  //   <navigation-relation>? [ <route-location> | link-href ]?
+  // <navigation-relation> = at | with | from | to
+  NavigationPreposition preposition = NavigationPreposition::kWith;
+  if (stream.Peek().GetType() == kIdentToken) {
+    // <navigation-relation>?
+    if (std::optional<NavigationPreposition> parsed_preposition =
+            NavigationParser::ParsePrepositionIdent(stream.Peek())) {
+      preposition = *parsed_preposition;
+      stream.ConsumeIncludingWhitespace();
+    }
+  }
+  RouteLocation* route_location = nullptr;
+  // [ <route-location> | link-href ]?
+  if (!stream.AtEnd()) {
+    // Leave route_location as nullptr if "link-href".
+    if (stream.Peek().GetType() == kIdentToken &&
+        EqualIgnoringAsciiCase(stream.Peek().Value(), "link-href")) {
+      stream.ConsumeIncludingWhitespace();
+    } else {
+      route_location = NavigationParser::ParseLocation(stream);
+      if (!route_location) {
+        return nullptr;
+      }
+    }
+    stream.ConsumeWhitespace();
+  }
+
+  if (!stream.AtEnd()) {
+    return nullptr;
+  }
+  return MakeGarbageCollected<ActiveNavigationCondition>(route_location,
+                                                         preposition);
 }
 
 // static
@@ -456,7 +499,7 @@ static CSSNestingType ConsumeUntilCommaAndFindNestingType(
     }
     if (previous_token.GetType() == kColonToken &&
         token.GetType() == kIdentToken &&
-        EqualIgnoringASCIICase(token.Value(), "scope")) {
+        EqualIgnoringAsciiCase(token.Value(), "scope")) {
       nesting_type = CSSNestingType::kScope;
     }
 
@@ -939,10 +982,10 @@ CSSSelector::PseudoType CSSSelectorParser::ParsePseudoType(
     return pseudo_type;
   }
 
-  if (name.StartsWith("-webkit-")) {
+  if (name.starts_with("-webkit-")) {
     return CSSSelector::PseudoType::kPseudoWebKitCustomElement;
   }
-  if (name.StartsWith("-internal-")) {
+  if (name.starts_with("-internal-")) {
     return CSSSelector::PseudoType::kPseudoBlinkInternalElement;
   }
 
@@ -971,7 +1014,7 @@ PseudoId CSSSelectorParser::ParsePseudoElement(const String& selector_string,
     CSSParserToken selector_name_token = stream.Peek();
     if (selector_name_token.GetType() == kIdentToken) {
       stream.Consume();
-      if (!selector_name_token.Value().ContainsOnlyASCIIOrEmpty()) {
+      if (!selector_name_token.Value().ContainsOnlyAsciiOrEmpty()) {
         return kPseudoIdInvalid;
       }
       if (stream.Peek().GetType() != kEOFToken) {
@@ -981,7 +1024,7 @@ PseudoId CSSSelectorParser::ParsePseudoElement(const String& selector_string,
       // Lowercase for case-insensitive matching. CSS pseudo-elements are
       // case-insensitive, and escape sequences like `:bef\oRE` may produce
       // mixed-case names after tokenization.
-      AtomicString selector_name = AtomicString::LowerASCII(
+      AtomicString selector_name = AtomicString::ToAsciiLower(
           selector_name_token.Value().ToAtomicString());
       CSSSelector::PseudoType pseudo_type = ParsePseudoType(
           selector_name,
@@ -1060,6 +1103,7 @@ PseudoId CSSSelectorParser::ParsePseudoElement(const String& selector_string,
   }
 
   switch (pseudo_id) {
+    case kPseudoIdScrollButton:
     case kPseudoIdHighlight: {
       argument = result.Argument();
       return pseudo_id;
@@ -1181,6 +1225,12 @@ bool IsPseudoClassValidAfterPseudoElement(
     case CSSSelector::kPseudoScrollButton:
       return pseudo_class == CSSSelector::kPseudoDisabled ||
              pseudo_class == CSSSelector::kPseudoEnabled;
+    case CSSSelector::kPseudoAfter:
+    case CSSSelector::kPseudoBefore:
+    case CSSSelector::kPseudoMarker: {
+      return pseudo_class == CSSSelector::kPseudoHover &&
+             RuntimeEnabledFeatures::PseudoElementsHoverableEnabled();
+    }
     default:
       return false;
   }
@@ -1270,7 +1320,7 @@ base::span<CSSSelector> CSSSelectorParser::ConsumeCompoundSelector(
   AtomicString element_name;
   const bool has_q_name = ConsumeName(stream, element_name, namespace_prefix);
   if (context_->IsHTMLDocument()) {
-    element_name = element_name.LowerASCII();
+    element_name = element_name.ToAsciiLower();
   }
 
   // A tag name is not valid following a pseudo-element. This can happen for
@@ -1281,7 +1331,7 @@ base::span<CSSSelector> CSSSelectorParser::ConsumeCompoundSelector(
     return {};  // Failure.
   }
 
-  std::vector<size_t> has_pseudo_index_in_compound;
+  Vector<wtf_size_t> has_pseudo_index_in_compound;
   // Consume all the simple selectors that are not tag names.
   while (ConsumeSimpleSelector(stream, result_flags)) {
     const CSSSelector& simple_selector = output_.back();
@@ -1294,7 +1344,7 @@ base::span<CSSSelector> CSSSelectorParser::ConsumeCompoundSelector(
     output_.back().SetRelation(CSSSelector::kSubSelector);
   }
   if (found_host_in_compound_) {
-    for (size_t has_pseudo_index : has_pseudo_index_in_compound) {
+    for (wtf_size_t has_pseudo_index : has_pseudo_index_in_compound) {
       DCHECK_LT(has_pseudo_index, output_.size());
       CSSSelector* has_pseudo = &output_[has_pseudo_index];
       DCHECK_EQ(has_pseudo->GetPseudoType(), CSSSelector::kPseudoHas);
@@ -1493,7 +1543,7 @@ bool CSSSelectorParser::ConsumeAttribute(CSSParserTokenStream& stream) {
   stream.ConsumeWhitespace();
 
   if (context_->IsHTMLDocument()) {
-    attribute_name = attribute_name.LowerASCII();
+    attribute_name = attribute_name.ToAsciiLower();
   }
 
   AtomicString namespace_uri = DetermineNamespace(namespace_prefix);
@@ -1714,7 +1764,25 @@ bool CSSSelectorParser::ConsumePseudo(CSSParserTokenStream& stream,
       output_.push_back(std::move(selector));
       return true;
     }
-    case CSSSelector::kPseudoPicker:
+    case CSSSelector::kPseudoPicker: {
+      const CSSParserToken& ident = stream.Peek();
+      if (ident.GetType() != kIdentToken) {
+        return false;
+      }
+      // If we add more valid arguments to ::picker() in the future, then we
+      // would probably have to turn this into a list instead of just checking
+      // for "select".
+      if (!EqualIgnoringAsciiCase(ident.Value(), "select")) {
+        return false;
+      }
+      selector.SetArgument(AtomicString("select"));
+      stream.ConsumeIncludingWhitespace();
+      if (!stream.AtEnd()) {
+        return false;
+      }
+      output_.push_back(std::move(selector));
+      return true;
+    }
     case CSSSelector::kPseudoDir:
     case CSSSelector::kPseudoState: {
       const CSSParserToken& ident = stream.Peek();
@@ -1980,9 +2048,23 @@ bool CSSSelectorParser::ConsumePseudo(CSSParserTokenStream& stream,
       if (!RuntimeEnabledFeatures::RouteMatchingEnabled()) {
         return false;
       }
-      if (LinkCondition* link_condition =
-              LinkConditionParser::Parse(stream, *context_->GetDocument())) {
-        selector.SetLinkCondition(link_condition);
+      if (RouteLocation* location = NavigationParser::ParseLocation(stream)) {
+        stream.ConsumeWhitespace();
+        if (!stream.AtEnd()) {
+          return false;
+        }
+        selector.SetRouteLocation(location);
+        output_.push_back(std::move(selector));
+        return true;
+      }
+      return false;
+    case CSSSelector::kPseudoActiveNavigation:
+      if (!RuntimeEnabledFeatures::RouteMatchingEnabled()) {
+        return false;
+      }
+      if (ActiveNavigationCondition* active_navigation_condition =
+              ParseActiveNavigationCondition(stream)) {
+        selector.SetActiveNavigationCondition(active_navigation_condition);
         output_.push_back(std::move(selector));
         return true;
       }
@@ -2103,9 +2185,9 @@ CSSSelector::AttributeMatchType CSSSelectorParser::ConsumeAttributeFlags(
     return CSSSelector::AttributeMatchType::kCaseSensitive;
   }
   const CSSParserToken& flag = stream.ConsumeIncludingWhitespace();
-  if (EqualIgnoringASCIICase(flag.Value(), "i")) {
+  if (EqualIgnoringAsciiCase(flag.Value(), "i")) {
     return CSSSelector::AttributeMatchType::kCaseInsensitive;
-  } else if (EqualIgnoringASCIICase(flag.Value(), "s") &&
+  } else if (EqualIgnoringAsciiCase(flag.Value(), "s") &&
              RuntimeEnabledFeatures::CSSCaseSensitiveSelectorEnabled()) {
     return CSSSelector::AttributeMatchType::kCaseSensitiveAlways;
   }
@@ -2130,11 +2212,11 @@ bool CSSSelectorParser::ConsumeANPlusB(CSSParserTokenStream& stream,
     return true;
   }
   if (token.GetType() == kIdentToken) {
-    if (EqualIgnoringASCIICase(token.Value(), "odd")) {
+    if (EqualIgnoringAsciiCase(token.Value(), "odd")) {
       result = std::make_pair(2, 1);
       return true;
     }
-    if (EqualIgnoringASCIICase(token.Value(), "even")) {
+    if (EqualIgnoringAsciiCase(token.Value(), "even")) {
       result = std::make_pair(2, 0);
       return true;
     }
@@ -2153,9 +2235,9 @@ bool CSSSelectorParser::ConsumeANPlusB(CSSParserTokenStream& stream,
     result.first = ClampTo<int>(token.NumericValue());
     n_string = token.Value().ToString();
   } else if (token.GetType() == kIdentToken) {
-    if (token.Value()[0] == '-') {
+    if (UNSAFE_TODO(token.Value()[0]) == '-') {
       result.first = -1;
-      n_string = token.Value().ToString().Substring(1);
+      n_string = token.Value().ToString().substr(1);
     } else {
       result.first = 1;
       n_string = token.Value().ToString();
@@ -2164,7 +2246,7 @@ bool CSSSelectorParser::ConsumeANPlusB(CSSParserTokenStream& stream,
 
   stream.ConsumeWhitespace();
 
-  if (n_string.empty() || !IsASCIIAlphaCaselessEqual(n_string[0], 'n')) {
+  if (n_string.empty() || !EqualIgnoringAsciiCase<'n'>(n_string[0])) {
     return false;
   }
   if (n_string.length() > 1 && n_string[1] != '-') {
@@ -2172,7 +2254,7 @@ bool CSSSelectorParser::ConsumeANPlusB(CSSParserTokenStream& stream,
   }
 
   if (n_string.length() > 2) {
-    auto parsed = StringToIntStrict(n_string.Substring(1));
+    auto parsed = StringToIntStrict(n_string.subview(1));
     result.second = parsed.value_or(0);
     return parsed.has_value();
   }
@@ -2506,8 +2588,8 @@ WebFeature FeatureForWebKitCustomPseudoElement(const AtomicString& name) {
   for (const auto& entry : feature_table) {
     // SAFETY: The PseudoElementFeatureMapEntry constructor guarantees `key` and
     // `key_length` are safe.
-    if (name == StringView(base::as_bytes(
-                    UNSAFE_BUFFERS(base::span(entry.key, entry.key_length))))) {
+    if (name == StringView(base::as_bytes(UNSAFE_BUFFERS(base::span(
+                    base::unchecked, entry.key, entry.key_length))))) {
       return static_cast<WebFeature>(entry.feature);
     }
   }
@@ -2639,6 +2721,15 @@ static void RecordUsageAndDeprecationsOneSelector(
       if (nesting_type == CSSNestingType::kScope) {
         feature = WebFeature::kCSSPseudoParentInScope;
       }
+      break;
+    case CSSSelector::kPseudoPlaying:
+    case CSSSelector::kPseudoPaused:
+    case CSSSelector::kPseudoSeeking:
+    case CSSSelector::kPseudoBuffering:
+    case CSSSelector::kPseudoStalled:
+    case CSSSelector::kPseudoMuted:
+    case CSSSelector::kPseudoVolumeLocked:
+      webdx_feature = WebDXFeature::kMediaPseudos;
       break;
     default:
       break;

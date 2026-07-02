@@ -200,9 +200,13 @@ class BASE_EXPORT ThreadPoolImpl : public ThreadPoolInstance,
   std::unique_ptr<ThreadGroup> foreground_thread_group_;
   std::unique_ptr<ThreadGroup> utility_thread_group_;
   std::unique_ptr<ThreadGroup> background_thread_group_;
+  std::unique_ptr<ThreadGroup> presentation_thread_group_;
+  std::unique_ptr<ThreadGroup> audio_thread_group_;
 
   // Whether this TaskScheduler was started.
   bool started_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
+
+  bool inherit_task_importance_by_default_ = false;
 
   // Whether the --disable-best-effort-tasks switch is preventing execution of
   // BEST_EFFORT tasks until shutdown.

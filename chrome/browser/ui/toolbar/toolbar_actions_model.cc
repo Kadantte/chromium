@@ -27,6 +27,8 @@
 #include "chrome/browser/ui/extensions/extension_action_view_model.h"
 #include "chrome/browser/ui/toolbar/toolbar_action_view_model.h"
 #include "chrome/browser/ui/toolbar/toolbar_actions_model_factory.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/extension_action_manager.h"
@@ -64,8 +66,9 @@ ToolbarActionsModel::ToolbarActionsModel(
   pref_change_registrar_.Init(prefs_);
   pref_change_registrar_.Add(
       extensions::pref_names::kPinnedExtensions,
-      base::BindRepeating(&ToolbarActionsModel::UpdatePinnedActionIds,
-                          base::Unretained(this)));
+      base::BindRepeating(
+          &ToolbarActionsModel::UpdateAndNotifyPinnedActionIdsChanged,
+          base::Unretained(this)));
 }
 
 ToolbarActionsModel::~ToolbarActionsModel() = default;
@@ -112,8 +115,15 @@ void ToolbarActionsModel::OnExtensionInstalled(
 
   auto* extension_management =
       extensions::ExtensionManagementFactory::GetForBrowserContext(profile_);
-  if (extension_management->GetToolbarPinMode(extension->id()) ==
-      extensions::ManagedToolbarPinMode::kDefaultPinned) {
+  extensions::ManagedToolbarPinMode pin_mode =
+      extension_management->GetToolbarPinMode(extension->id());
+  // Pin the extension if the policy enforces default pinning, OR if no policy
+  // is set and the feature flag for pinning new extensions by default is
+  // enabled.
+  if (pin_mode == extensions::ManagedToolbarPinMode::kDefaultPinned ||
+      (pin_mode == extensions::ManagedToolbarPinMode::kNotSet &&
+       base::FeatureList::IsEnabled(features::kExtensionsPinnedByDefault) &&
+       profile_->GetPrefs()->GetBoolean(prefs::kExtensionsPinnedByDefault))) {
     SetActionVisibility(extension->id(), true);
   }
 }
@@ -160,7 +170,7 @@ void ToolbarActionsModel::OnExtensionUninstalled(
 
 void ToolbarActionsModel::OnExtensionManagementSettingsChanged() {
   // First, update the force-pinned actions. This can notify observers.
-  UpdatePinnedActionIds();
+  UpdateAndNotifyPinnedActionIdsChanged();
 
   // After that, check for any newly-applied `default_pinned` settings.
   // This can happen if policies are loaded after an extension is installed,
@@ -180,8 +190,9 @@ void ToolbarActionsModel::OnExtensionManagementSettingsChanged() {
 
   // action_ids() is a sorted flat_set, so iteration order is deterministic.
   for (const auto& action_id : action_ids_) {
-    // Force-pinned actions are handled by `UpdatePinnedActionIds()` and are not
-    // stored in the user-facing pref.
+    // Force-pinned actions are handled by
+    // `UpdateAndNotifyPinnedActionIdsChanged()` and are not stored in the
+    // user-facing pref.
     if (IsActionForcePinned(action_id)) {
       continue;
     }
@@ -200,7 +211,7 @@ void ToolbarActionsModel::OnExtensionManagementSettingsChanged() {
 
   if (!actions_to_notify.empty()) {
     // This will trigger a single pref change notification, which in turn will
-    // call UpdatePinnedActionIds() and notify observers once.
+    // call UpdateAndNotifyPinnedActionIdsChanged() and notify observers once.
     extension_prefs_->SetPinnedExtensions(new_pinned_list);
 
     for (const auto& action_id : actions_to_notify) {
@@ -222,6 +233,9 @@ void ToolbarActionsModel::OnActiveTabPermissionGranted(
 }
 
 void ToolbarActionsModel::Shutdown() {
+  for (Observer& observer : observers_) {
+    observer.OnToolbarActionsModelShutdown();
+  }
   permissions_manager_observation_.Reset();
 }
 
@@ -281,7 +295,7 @@ void ToolbarActionsModel::AddAction(const ActionId& action_id) {
     observer.OnToolbarActionAdded(action_id);
   }
 
-  UpdatePinnedActionIds();
+  UpdateAndNotifyPinnedActionIdsChanged();
 }
 
 void ToolbarActionsModel::RemoveAction(const ActionId& action_id) {
@@ -291,11 +305,19 @@ void ToolbarActionsModel::RemoveAction(const ActionId& action_id) {
     return;
   }
 
+  // We call `UpdatePinnedActionIds()` instead of
+  // `UpdateAndNotifyPinnedActionIdsChanged()` here to delay the notification.
+  // Observers need to process `OnToolbarActionRemoved()` before
+  // `OnToolbarPinnedActionsChanged()` to ensure that view models don't attempt
+  // to update their pinned UI state while still holding references to the
+  // removed extension.
   UpdatePinnedActionIds();
 
   for (Observer& observer : observers_) {
     observer.OnToolbarActionRemoved(action_id);
   }
+
+  NotifyPinnedActionIdsChanged();
 }
 
 const std::u16string ToolbarActionsModel::GetExtensionName(
@@ -433,8 +455,8 @@ void ToolbarActionsModel::MovePinnedAction(const ActionId& action_id,
   // find that action, and insert the moved action to its left.
   //
   // To further complicate things, force-pinned actions are stored in
-  // |pinned_action_ids_| but not in the pref (crbug.com/1266952). So we have to
-  // find the ID not just of the action to its right, but the first action to
+  // |pinned_action_ids_| but not in the pref (crbug.com/40204281). So we have
+  // to find the ID not just of the action to its right, but the first action to
   // its right that is *not* force-pinned.
   //
   // For example:
@@ -523,10 +545,6 @@ void ToolbarActionsModel::InitializeActionList() {
   pinned_action_ids_ = GetFilteredPinnedActionIds();
 
   if (!profile_->IsOffTheRecord()) {
-    // Prefixed with "ExtensionToolbarModel" rather than "Extensions.Toolbar"
-    // for historical reasons.
-    base::UmaHistogramCounts100("ExtensionToolbarModel.BrowserActionsCount",
-                                action_ids_.size());
     if (extensions::profile_util::ProfileCanUseNonComponentExtensions(
             profile_)) {
       base::UmaHistogramCounts100("Extension.Toolbar.BrowserActionsCount2",
@@ -603,23 +621,6 @@ const extensions::Extension* ToolbarActionsModel::GetExtensionById(
   return extension_registry_->enabled_extensions().GetByID(action_id);
 }
 
-void ToolbarActionsModel::UpdatePinnedActionIds() {
-  // If extensions are not ready, defer to later Populate() call.
-  if (!actions_initialized_) {
-    return;
-  }
-
-  std::vector<ActionId> pinned_extensions = GetFilteredPinnedActionIds();
-  if (pinned_extensions == pinned_action_ids_) {
-    return;
-  }
-
-  pinned_action_ids_ = pinned_extensions;
-  for (Observer& observer : observers_) {
-    observer.OnToolbarPinnedActionsChanged();
-  }
-}
-
 std::vector<ToolbarActionsModel::ActionId>
 ToolbarActionsModel::GetFilteredPinnedActionIds() const {
   // Force-pinned extensions should always be present in the output vector.
@@ -653,5 +654,30 @@ void ToolbarActionsModel::NotifyToolbarActionUpdated(
 
   for (Observer& observer : observers_) {
     observer.OnToolbarActionUpdated(action_id);
+  }
+}
+
+void ToolbarActionsModel::UpdateAndNotifyPinnedActionIdsChanged() {
+  UpdatePinnedActionIds();
+  NotifyPinnedActionIdsChanged();
+}
+
+void ToolbarActionsModel::UpdatePinnedActionIds() {
+  // If extensions are not ready, defer to later `Populate()` call.
+  if (!actions_initialized_) {
+    return;
+  }
+
+  std::vector<ActionId> pinned_extensions = GetFilteredPinnedActionIds();
+  if (pinned_extensions == pinned_action_ids_) {
+    return;
+  }
+
+  pinned_action_ids_ = pinned_extensions;
+}
+
+void ToolbarActionsModel::NotifyPinnedActionIdsChanged() {
+  for (Observer& observer : observers_) {
+    observer.OnToolbarPinnedActionsChanged();
   }
 }

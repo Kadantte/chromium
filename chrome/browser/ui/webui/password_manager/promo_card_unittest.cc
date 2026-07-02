@@ -25,10 +25,13 @@
 #include "chrome/browser/web_applications/test/web_app_test_utils.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
+#include "chrome/browser/webauthn/enclave_manager_factory.h"
+#include "chrome/browser/webauthn/mock_enclave_manager.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/affiliations/core/browser/fake_affiliation_service.h"
 #include "components/password_manager/core/browser/password_form.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/prefs/pref_registry.h"
@@ -118,6 +121,12 @@ class PromoCardBaseTest : public ChromeRenderViewHostTestHarness {
         profile(), base::BindOnce([](content::BrowserContext*) {
           return std::make_unique<affiliations::FakeAffiliationService>();
         }));
+    EnclaveManagerFactory::GetInstance()->SetTestingFactory(
+        profile(),
+        base::BindRepeating(
+            [](content::BrowserContext*) -> std::unique_ptr<KeyedService> {
+              return std::make_unique<MockEnclaveManager>();
+            }));
   }
 
   PrefService* pref_service() { return profile()->GetPrefs(); }
@@ -222,7 +231,7 @@ class PromoCardCheckupTest : public PromoCardBaseTest {
     form.signon_realm = "https://example.com";
     form.username_value = u"username";
     form.in_store = PasswordForm::Store::kProfileStore;
-    store()->AddLogin(form);
+    store()->AddLogin(password_manager::FromPasswordForm(std::move(form)));
     task_environment()->RunUntilIdle();
   }
 
@@ -433,18 +442,13 @@ class PromoCardShortcutTest : public WebAppTest {
  public:
   void SetUp() override {
     WebAppTest::SetUp();
-
-    provider_ = web_app::FakeWebAppProvider::Get(profile());
-    provider_->Start();
+    provider()->Start();
   }
 
-  void TearDown() override { WebAppTest::TearDown(); }
-
   PrefService* pref_service() { return profile()->GetPrefs(); }
-  web_app::FakeWebAppProvider* provider() { return provider_; }
-
- private:
-  raw_ptr<web_app::FakeWebAppProvider, DanglingUntriaged> provider_;
+  web_app::FakeWebAppProvider* provider() {
+    return web_app::FakeWebAppProvider::Get(profile());
+  }
 };
 
 TEST_F(PromoCardShortcutTest, NoPromoIfShortcutInstalled) {

@@ -15,10 +15,17 @@
 #import "components/strings/grit/components_strings.h"
 #import "components/sync/service/sync_service.h"
 #import "ios/chrome/browser/autofill/model/personal_data_manager_factory.h"
-#import "ios/chrome/browser/autofill/ui_bundled/autofill_credit_card_util.h"
+#import "ios/chrome/browser/autofill/ui_bundled/util/autofill_credit_card_util.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
-#import "ios/chrome/browser/passwords/coordinator/password_utils.h"
+#import "ios/chrome/browser/metrics/model/activity_reporter.h"
+#import "ios/chrome/browser/settings/autofill/autofill_and_passwords/coordinator/autofill_and_passwords_coordinator.h"
+#import "ios/chrome/browser/settings/google_services/coordinator/google_services_settings_coordinator.h"
+#import "ios/chrome/browser/settings/google_services/ui/google_services_settings_view_controller.h"
+#import "ios/chrome/browser/settings/manage_accounts/coordinator/manage_accounts_coordinator.h"
+#import "ios/chrome/browser/settings/manage_accounts/coordinator/manage_accounts_coordinator_delegate.h"
+#import "ios/chrome/browser/settings/manage_accounts/public/manage_accounts_table_view_controller_constants.h"
+#import "ios/chrome/browser/settings/manage_sync/coordinator/manage_sync_settings_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/autofill/autofill_credit_card_edit_table_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/autofill/autofill_credit_card_table_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/autofill/autofill_profile_edit_coordinator.h"
@@ -27,12 +34,6 @@
 #import "ios/chrome/browser/settings/ui_bundled/content_settings/content_settings_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/content_settings/content_settings_table_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/default_browser/default_browser_settings_table_view_controller.h"
-#import "ios/chrome/browser/settings/ui_bundled/google_services/google_services_settings_coordinator.h"
-#import "ios/chrome/browser/settings/ui_bundled/google_services/google_services_settings_view_controller.h"
-#import "ios/chrome/browser/settings/ui_bundled/google_services/manage_accounts/manage_accounts_coordinator.h"
-#import "ios/chrome/browser/settings/ui_bundled/google_services/manage_accounts/manage_accounts_coordinator_delegate.h"
-#import "ios/chrome/browser/settings/ui_bundled/google_services/manage_accounts/manage_accounts_table_view_controller_constants.h"
-#import "ios/chrome/browser/settings/ui_bundled/google_services/manage_sync_settings_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/notifications/notifications_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_details/password_details_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_details/password_details_coordinator_delegate.h"
@@ -42,6 +43,7 @@
 #import "ios/chrome/browser/settings/ui_bundled/privacy/privacy_safe_browsing_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/safety_check/safety_check_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/safety_check/safety_check_table_view_controller.h"
+#import "ios/chrome/browser/settings/ui_bundled/search_engine_table_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_navigation_controller_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_root_view_controlling.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_table_view_controller.h"
@@ -52,14 +54,16 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/browser_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/picture_in_picture_commands.h"
 #import "ios/chrome/browser/shared/public/commands/quick_delete_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
+#import "ios/chrome/browser/signin/model/authentication_service.h"
+#import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/sync/model/enterprise_utils.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
-#import "ios/chrome/common/ui/reauthentication/reauthentication_module.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/public/provider/chrome/browser/user_feedback/user_feedback_api.h"
@@ -82,6 +86,7 @@ void ConfigureHandlers(id<SettingsRootViewControlling> controller,
 NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
 
 @interface SettingsNavigationController () <
+    AutofillAndPasswordsCoordinatorDelegate,
     AutofillProfileEditCoordinatorDelegate,
     GeminiSettingsCoordinatorDelegate,
     ContentSettingsCoordinatorDelegate,
@@ -170,7 +175,13 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
 
 @end
 
-@implementation SettingsNavigationController
+@implementation SettingsNavigationController {
+  // Boolean to track if reportDismissalUserAction has been called.
+  BOOL _dismissalUserActionReported;
+  // Autofill and Passwords coordinator.
+  AutofillAndPasswordsCoordinator* _autofillAndPasswordsCoordinator;
+  ActivityReporter* _activityReporter;
+}
 
 #pragma mark - SettingsNavigationController methods.
 
@@ -352,6 +363,21 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
 }
 
 + (instancetype)
+    autofillAndPasswordsControllerForBrowser:(Browser*)browser
+                                    delegate:
+                                        (id<SettingsNavigationControllerDelegate>)
+                                            delegate {
+  SettingsNavigationController* navigationController =
+      [[SettingsNavigationController alloc]
+          initWithRootViewController:nil
+                             browser:browser
+                            delegate:delegate];
+  [navigationController showAutofillAndPasswords];
+
+  return navigationController;
+}
+
++ (instancetype)
     passwordManagerSearchControllerForBrowser:(Browser*)browser
                                      delegate:
                                          (id<SettingsNavigationControllerDelegate>)
@@ -391,7 +417,8 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
                                 delegate:
                                     (id<SettingsNavigationControllerDelegate>)
                                         delegate
-                                    UUID:(NSUUID*)UUID {
+                                    UUID:(NSUUID*)UUID
+    API_AVAILABLE(ios(26.0)) {
   SettingsNavigationController* navigationController =
       [[SettingsNavigationController alloc]
           initWithRootViewController:nil
@@ -399,41 +426,6 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
                             delegate:delegate];
   [navigationController showPasswordManagerForCredentialImport:UUID];
 
-  return navigationController;
-}
-
-+ (instancetype)
-    userFeedbackControllerForBrowser:(Browser*)browser
-                            delegate:(id<SettingsNavigationControllerDelegate>)
-                                         delegate
-                    userFeedbackData:(UserFeedbackData*)userFeedbackData {
-  DCHECK(ios::provider::IsUserFeedbackSupported());
-  id<SceneCommands> sceneHandler =
-      HandlerForProtocol(browser->GetCommandDispatcher(), SceneCommands);
-  UserFeedbackConfiguration* configuration =
-      [[UserFeedbackConfiguration alloc] init];
-  configuration.data = userFeedbackData;
-  configuration.sceneHandler = sceneHandler;
-  configuration.singleSignOnService =
-      GetApplicationContext()->GetSingleSignOnService();
-
-  UIViewController* controller =
-      ios::provider::CreateUserFeedbackViewController(configuration);
-
-  DCHECK(controller);
-  SettingsNavigationController* navigationController =
-      [[SettingsNavigationController alloc]
-          initWithRootViewController:controller
-                             browser:browser
-                            delegate:delegate];
-
-  // Fix for https://crbug.com/1042741 (hide the double header display).
-  navigationController.navigationBarHidden = YES;
-
-  // If the controller overrides overrideUserInterfaceStyle, respect that in the
-  // SettingsNavigationController.
-  navigationController.overrideUserInterfaceStyle =
-      controller.overrideUserInterfaceStyle;
   return navigationController;
 }
 
@@ -550,6 +542,10 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
                               (DefaultBrowserSettingsPageSource)source {
   DefaultBrowserSettingsTableViewController* controller =
       [[DefaultBrowserSettingsTableViewController alloc] init];
+  controller.PIPHandler = HandlerForProtocol(browser->GetCommandDispatcher(),
+                                             PictureInPictureCommands);
+  controller.sceneHandler =
+      HandlerForProtocol(browser->GetCommandDispatcher(), SceneCommands);
   SettingsNavigationController* navigationController =
       [[SettingsNavigationController alloc]
           initWithRootViewController:controller
@@ -558,6 +554,22 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
   [controller navigationItem].leftBarButtonItem =
       [navigationController cancelButton];
   controller.source = source;
+  return navigationController;
+}
+
++ (instancetype)
+    defaultSearchEngineControllerForBrowser:(Browser*)browser
+                                   delegate:
+                                       (id<SettingsNavigationControllerDelegate>)
+                                           delegate {
+  ProfileIOS* profile = browser->GetProfile()->GetOriginalProfile();
+  SearchEngineTableViewController* controller =
+      [[SearchEngineTableViewController alloc] initWithProfile:profile];
+  SettingsNavigationController* navigationController =
+      [[SettingsNavigationController alloc]
+          initWithRootViewController:controller
+                             browser:browser
+                            delegate:delegate];
   return navigationController;
 }
 
@@ -625,6 +637,8 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
   if (self) {
     _browser = browser;
     _settingsNavigationDelegate = delegate;
+    _activityReporter =
+        [[ActivityReporter alloc] initWithDomain:ActivityReportDomainSettings];
 
     // FIXME -- RTTI is bad.
     if ([rootViewController
@@ -664,6 +678,16 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
   self.delegate = self;
 }
 
+- (void)viewWillAppear:(BOOL)animated {
+  [super viewWillAppear:animated];
+  [_activityReporter reportActive];
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+  [super viewDidDisappear:animated];
+  [_activityReporter reportInactive];
+}
+
 #pragma mark - Public
 
 - (UIBarButtonItem*)cancelButton {
@@ -691,7 +715,13 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
 
 - (void)cleanUpSettings {
   // Notify all controllers of a Settings dismissal.
+  base::RecordAction(base::UserMetricsAction("MobileSettingsCleanupStarted"));
   for (UIViewController* controller in [self viewControllers]) {
+    if (!_dismissalUserActionReported &&
+        [controller conformsToProtocol:@protocol(SettingsControllerProtocol)]) {
+      [controller performSelector:@selector(reportDismissalUserAction)];
+    }
+
     if ([controller respondsToSelector:@selector(settingsWillBeDismissed)]) {
       [controller performSelector:@selector(settingsWillBeDismissed)];
     }
@@ -704,6 +734,7 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
   [self stopContentSettingsCoordinator];
   [self stopGoogleServicesSettingsCoordinator];
   [self stopPasswordsCoordinator];
+  [self stopAutofillAndPasswordsCoordinator];
   [self stopSafetyCheckCoordinator];
   [self stopPrivacySafeBrowsingCoordinator];
   [self stopPrivacySettingsCoordinator];
@@ -728,6 +759,7 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
       [controller performSelector:@selector(reportDismissalUserAction)];
     }
   }
+  _dismissalUserActionReported = YES;
 
   [self.settingsNavigationDelegate closeSettings];
 }
@@ -810,6 +842,8 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
   [self.privacySettingsCoordinator start];
 }
 
+// Push the sync services at the top of self. Do nothing if it’s already
+// presents. The user must be signed-in and sign-in must be enabled.
 - (void)showSyncServices {
   if ([self.topViewController
           isKindOfClass:[ManageSyncSettingsCoordinator class]]) {
@@ -817,7 +851,11 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
     // No need to open it.
     return;
   }
-  DCHECK(!self.manageSyncSettingsCoordinator);
+  CHECK(!self.manageSyncSettingsCoordinator, base::NotFatalUntil::M155);
+  AuthenticationService* authService =
+      AuthenticationServiceFactory::GetForProfile(_browser->GetProfile());
+  CHECK(authService->HasPrimaryIdentity(), base::NotFatalUntil::M155);
+  CHECK(authService->SigninEnabled(), base::NotFatalUntil::M155);
   self.manageSyncSettingsCoordinator = [[ManageSyncSettingsCoordinator alloc]
       initWithBaseNavigationController:self
                                browser:self.browser];
@@ -894,6 +932,15 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
   [self.savedPasswordsCoordinator start];
 }
 
+// Shows the Autofill and Passwords settings.
+- (void)showAutofillAndPasswords {
+  _autofillAndPasswordsCoordinator = [[AutofillAndPasswordsCoordinator alloc]
+      initWithBaseNavigationController:self
+                               browser:self.browser];
+  _autofillAndPasswordsCoordinator.delegate = self;
+  [_autofillAndPasswordsCoordinator start];
+}
+
 - (void)showPasswordManagerSearchPage {
   self.savedPasswordsCoordinator = [[PasswordsCoordinator alloc]
       initWithBaseNavigationController:self
@@ -913,8 +960,6 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
       initWithBaseNavigationController:self
                                browser:self.browser
                             credential:credential
-                          reauthModule:password_manager::
-                                           BuildReauthenticationModule()
                                context:DetailsContext::kOutsideSettings];
   self.passwordDetailsCoordinator.delegate = self;
   self.passwordDetailsCoordinator.openInEditMode = editMode;
@@ -926,6 +971,13 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
   [self.savedPasswordsCoordinator stop];
   self.savedPasswordsCoordinator.delegate = nil;
   self.savedPasswordsCoordinator = nil;
+}
+
+// Stops the underlying Autofill and Passwords coordinator if it exists.
+- (void)stopAutofillAndPasswordsCoordinator {
+  [_autofillAndPasswordsCoordinator stop];
+  _autofillAndPasswordsCoordinator.delegate = nil;
+  _autofillAndPasswordsCoordinator = nil;
 }
 
 // Stops the underlying inactive tabs settings coordinator if it exists.
@@ -1006,6 +1058,14 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
 - (void)passwordsCoordinatorDidRemove:(PasswordsCoordinator*)coordinator {
   DCHECK_EQ(self.savedPasswordsCoordinator, coordinator);
   [self stopPasswordsCoordinator];
+}
+
+#pragma mark - AutofillAndPasswordsCoordinatorDelegate
+
+- (void)autofillAndPasswordsCoordinatorDidRemove:
+    (AutofillAndPasswordsCoordinator*)coordinator {
+  DCHECK_EQ(_autofillAndPasswordsCoordinator, coordinator);
+  [self stopAutofillAndPasswordsCoordinator];
 }
 
 #pragma mark - PasswordManagerReauthenticationDelegate
@@ -1159,6 +1219,7 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
   // This command should only be triggered by the settinsg, therefore there is
   // no issue for the UI to be available or not.
   CHECK(!skipIfUINotAvailable);
+  [self stopManageAccountsCoordinator];
   self.manageAccountsCoordinator = [[ManageAccountsCoordinator alloc]
       initWithBaseNavigationController:self
                                browser:self.browser
@@ -1206,12 +1267,24 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
 
 // TODO(crbug.com/41352590) : Do not pass `baseViewController` through
 // dispatcher.
+- (void)showSyncPassphraseSettingsFromViewController:
+            (UIViewController*)baseViewController
+                                          completion:
+                                              (ProceduralBlock)completion {
+  [self showSyncPassphraseSettingsFromViewController:baseViewController];
+}
+
 - (void)showSavedPasswordsSettingsFromViewController:
     (UIViewController*)baseViewController {
   [self showSavedPasswords];
 }
 
-- (void)showPasswordManagerForCredentialImport:(NSUUID*)UUID {
+- (void)showAutofillAndPasswordsSettings {
+  [self showAutofillAndPasswords];
+}
+
+- (void)showPasswordManagerForCredentialImport:(NSUUID*)UUID
+    API_AVAILABLE(ios(26.0)) {
   self.savedPasswordsCoordinator = [[PasswordsCoordinator alloc]
       initWithBaseNavigationController:self
                                browser:self.browser];
@@ -1283,8 +1356,20 @@ NSString* const kSettingsDoneButtonId = @"kSettingsDoneButtonId";
                                                 source {
   DefaultBrowserSettingsTableViewController* controller =
       [[DefaultBrowserSettingsTableViewController alloc] init];
+  controller.PIPHandler = HandlerForProtocol(_browser->GetCommandDispatcher(),
+                                             PictureInPictureCommands);
+  controller.sceneHandler =
+      HandlerForProtocol(_browser->GetCommandDispatcher(), SceneCommands);
   ConfigureHandlers(controller, _browser->GetCommandDispatcher());
   controller.source = source;
+  [self pushViewController:controller animated:YES];
+}
+
+- (void)showDefaultSearchEngineSettings {
+  ProfileIOS* profile = _browser->GetProfile()->GetOriginalProfile();
+  SearchEngineTableViewController* controller =
+      [[SearchEngineTableViewController alloc] initWithProfile:profile];
+  ConfigureHandlers(controller, _browser->GetCommandDispatcher());
   [self pushViewController:controller animated:YES];
 }
 

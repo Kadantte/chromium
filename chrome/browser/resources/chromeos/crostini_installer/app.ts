@@ -194,11 +194,11 @@ class CrostiniInstallerAppElement extends PolymerElement {
 
     this.listenerIds_ = [
       callbackRouter.onProgressUpdate.addListener(
-          (installerState: InstallerState, progressFraction: number) => {
+          (installerState, progressFraction) => {
             this.installerState_ = installerState;
             this.installerProgress_ = progressFraction * 100;
           }),
-      callbackRouter.onInstallFinished.addListener((error: InstallerError) => {
+      callbackRouter.onInstallFinished.addListener(error => {
         if (error === InstallerError.kNone) {
           // Install succeeded.
           this.closePage_();
@@ -287,8 +287,7 @@ class CrostiniInstallerAppElement extends PolymerElement {
     this.installerState_ = InstallerState.kStart;
     this.installerProgress_ = 0;
     this.state_ = State.INSTALLING;
-    BrowserProxy.getInstance().handler.install(
-        BigInt(diskSize), this.username_);
+    BrowserProxy.getInstance().handler.install(diskSize, this.username_);
   }
 
   private onSettingsButtonClick_() {
@@ -506,7 +505,7 @@ class CrostiniInstallerAppElement extends PolymerElement {
 
   private onDiskSizeRadioChanged_(event: CustomEvent<{value: string}>) {
     this.showDiskSlider_ =
-        (event.detail.value !== 'recommended' || !!this.isLowSpaceAvailable_);
+        (event.detail.value !== 'recommended' || this.isLowSpaceAvailable_);
   }
 }
 

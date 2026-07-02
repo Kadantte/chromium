@@ -52,8 +52,7 @@
 #if BUILDFLAG(IS_WIN)
 #include "base/command_line.h"
 #include "base/files/file_path.h"
-
-#include "remoting/host/win/elevated_native_messaging_host.h"
+#include "remoting/host/elevated_native_messaging_host.h"
 #endif  // BUILDFLAG(IS_WIN)
 
 namespace remoting {
@@ -299,19 +298,8 @@ void It2MeNativeMessagingHost::ProcessConnect(base::DictValue message,
     }
   }
 
-  std::optional<ReconnectParams> reconnect_params;
 #if BUILDFLAG(IS_CHROMEOS) || !defined(NDEBUG)
-  bool is_enterprise_admin_user =
-      message.FindBool(kIsEnterpriseAdminUser).value_or(false);
-  if (is_enterprise_admin_user) {
-    const auto* reconnect_params_ptr = message.FindDict(kReconnectParamsDict);
-    if (reconnect_params_ptr) {
-      auto enterprise_params = ChromeOsEnterpriseParams::FromDict(message);
-      CHECK(enterprise_params.allow_reconnections);
-      reconnect_params.emplace(
-          ReconnectParams::FromDict(*reconnect_params_ptr));
-    }
-  }
+  bool is_enterprise_admin_user = enterprise_params_.has_value();
 #endif
 
   It2MeHost::CreateDeferredConnectContext create_connection_context;
@@ -338,8 +326,8 @@ void It2MeNativeMessagingHost::ProcessConnect(base::DictValue message,
       api_token_getter_.set_access_token(access_token);
     }
     std::string ftl_device_id;
-    if (reconnect_params.has_value()) {
-      ftl_device_id = reconnect_params->ftl_device_id;
+    if (reconnect_params_.has_value()) {
+      ftl_device_id = reconnect_params_->ftl_device_id;
     }
     bool is_corp_user = message.FindBool(kIsCorpUser).value_or(false);
     create_connection_context = base::BindOnce(
@@ -378,17 +366,15 @@ void It2MeNativeMessagingHost::ProcessConnect(base::DictValue message,
   base::TimeDelta connection_auto_accept_timeout;
 #if BUILDFLAG(IS_CHROMEOS) || !defined(NDEBUG)
   if (is_enterprise_admin_user) {
-    auto chromeos_enterprise_params =
-        ChromeOsEnterpriseParams::FromDict(message);
     connection_auto_accept_timeout =
-        chromeos_enterprise_params.connection_auto_accept_timeout;
-    it2me_host_->set_chrome_os_enterprise_params(
-        std::move(chromeos_enterprise_params));
+        enterprise_params_->connection_auto_accept_timeout;
+    it2me_host_->set_chrome_os_enterprise_params(*enterprise_params_);
 
     dialog_style = It2MeConfirmationDialog::DialogStyle::kEnterprise;
 
-    if (reconnect_params.has_value()) {
-      it2me_host_->set_reconnect_params(std::move(*reconnect_params));
+    if (reconnect_params_.has_value()) {
+      CHECK(enterprise_params_->allow_reconnections);
+      it2me_host_->set_reconnect_params(*reconnect_params_);
     }
   }
 #endif

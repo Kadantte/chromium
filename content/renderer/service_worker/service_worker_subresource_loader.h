@@ -33,6 +33,7 @@
 #include "third_party/blink/public/mojom/service_worker/service_worker_event_status.mojom-forward.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_fetch_response_callback.mojom.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_stream_handle.mojom-forward.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace network {
 class SharedURLLoaderFactory;
@@ -126,9 +127,7 @@ class CONTENT_EXPORT ServiceWorkerSubresourceLoader
 
   // network::mojom::URLLoader overrides:
   void FollowRedirect(
-      const std::vector<std::string>& removed_headers,
-      const net::HttpRequestHeaders& modified_headers,
-      const net::HttpRequestHeaders& modified_cors_exempt_headers,
+      network::HttpRequestHeadersUpdateParams headers_update_params,
       const std::optional<GURL>& new_url) override;
   void SetPriority(net::RequestPriority priority,
                    int intra_priority_value) override;
@@ -291,6 +290,7 @@ class CONTENT_EXPORT ServiceWorkerSubresourceLoader
   // debug crbug.com/463388771.
   bool response_sent_to_client_ = false;
 
+  const perfetto::NamedTrack trace_track_;
   base::WeakPtrFactory<ServiceWorkerSubresourceLoader> weak_factory_{this};
 };
 

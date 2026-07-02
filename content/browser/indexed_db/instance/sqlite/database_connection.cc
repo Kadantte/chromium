@@ -11,24 +11,29 @@
 #include "base/byte_count.h"
 #include "base/byte_size.h"
 #include "base/check.h"
+#include "base/check_op.h"
 #include "base/containers/heap_array.h"
 #include "base/containers/to_vector.h"
+#include "base/feature_list.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
 #include "base/functional/callback.h"
+#include "base/functional/function_ref.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notimplemented.h"
 #include "base/notreached.h"
+#include "base/numerics/clamped_math.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/system/sys_info.h"
+#include "base/trace_event/process_memory_dump.h"
 #include "base/types/expected.h"
 #include "base/types/expected_macros.h"
 #include "build/build_config.h"
 #include "content/browser/indexed_db/indexed_db_data_format_version.h"
-#include "content/browser/indexed_db/indexed_db_reporting.h"
 #include "content/browser/indexed_db/indexed_db_value.h"
 #include "content/browser/indexed_db/instance/backing_store.h"
 #include "content/browser/indexed_db/instance/blob_reader.h"
@@ -86,6 +91,19 @@
   }
 
 namespace content::indexed_db::sqlite {
+
+#if BUILDFLAG(IS_WIN)
+// This exists as an escape hatch and/or to experiment with its impact on
+// reliability metrics.
+BASE_FEATURE(kIdbSqliteExclusiveDatabaseFileLock,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif
+
+// The delay before a released `DatabaseConnection` actually destructs. This
+// gives the page a chance to re-open the same database without the overhead of
+// closing and re-opening the underlying SQLite connection.
+constexpr base::TimeDelta kDestructionGracePeriod = base::Seconds(2);
+
 namespace {
 
 // Persisted to disk; do not reuse or change values.
@@ -97,6 +115,9 @@ enum class CompressionType : uint8_t {
 
 // Used for tests.
 std::optional<base::ByteSize> g_max_blob_size_override;
+
+// Used for tests.
+const char* g_vfs_name_override = nullptr;
 
 // The maximum number of bytes that will be stored in a single SQLite BLOB
 // column. If a blob is larger than this, it will be chunked into multiple rows
@@ -125,6 +146,43 @@ std::optional<int64_t> GetBlobIdFromLegacyFilePath(
     return blob_number;
   }
   return std::nullopt;
+}
+
+uint32_t GetPageCount(sql::Database& db) {
+  // The maximum page count is ~2^32: https://www.sqlite.org/limits.html.
+  sql::Statement statement(db.GetReadonlyStatement("PRAGMA page_count"));
+  if (!statement.Step()) {
+    return 0;
+  }
+  return base::checked_cast<uint32_t>(statement.ColumnInt(0));
+}
+
+uint32_t GetFreelistCount(sql::Database& db) {
+  sql::Statement statement(db.GetReadonlyStatement("PRAGMA freelist_count"));
+  if (!statement.Step()) {
+    return 0;
+  }
+  return base::checked_cast<uint32_t>(statement.ColumnInt(0));
+}
+
+base::ByteSize GetPageSize(sql::Database& db) {
+  // The maximum page size is 65536 bytes.
+  sql::Statement statement(db.GetReadonlyStatement("PRAGMA page_size"));
+  if (!statement.Step()) {
+    return base::ByteSize();
+  }
+  return base::ByteSize(static_cast<uint64_t>(statement.ColumnInt(0)));
+}
+
+// Returns the size of the used portion of the database (excluding free pages).
+base::ByteSize GetUsedSize(sql::Database& db) {
+  uint32_t page_count = GetPageCount(db);
+  uint32_t freelist_count = GetFreelistCount(db);
+  if (page_count <= freelist_count) {
+    return base::ByteSize();
+  }
+
+  return GetPageSize(db) * (page_count - freelist_count);
 }
 
 // The separator used to join the strings when encoding an `IndexedDBKeyPath` of
@@ -219,13 +277,99 @@ StatusOr<mojo_base::BigBuffer> DoDecompress(
   return base::unexpected(Status::Corruption("unknown compression type"));
 }
 
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(VacuumEvent)
+enum class VacuumEvent {
+  // Unused.
+  kObsolete = 0,
+  // Vacuuming requested on close because conditions were met.
+  kRequestedOnClose = 1,
+  // Vacuuming succeeded.
+  kSucceeded = 2,
+  // Skipped because the backing store was being force-closed.
+  kForceClosing = 3,
+  // Error occurred while determining required/available disk space.
+  kErrorComputingSpaceRequirements = 4,
+  // Not performed because of insufficient disk space.
+  kInsufficientDiskSpace = 5,
+  // Attempted but failed at the SQLite layer.
+  kFailed = 6,
+  // Vacuuming requested on long idle because conditions were met.
+  kRequestedOnLongIdle = 7,
+  // Checkpoint before vacuuming failed.
+  kCheckpointFailed = 8,
+  kMaxValue = kCheckpointFailed,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/storage/enums.xml:IndexedDbSqliteVacuumEvent)
+void LogVacuumEvent(VacuumEvent event) {
+  base::UmaHistogramEnumeration("IndexedDB.SQLite.VacuumEvent", event);
+}
+
+std::tuple<bool, unsigned int /*freelist_percentage*/> NeedsVacuum(
+    sql::Database& db) {
+  unsigned int freelist_percentage =
+      base::ClampDiv(GetFreelistCount(db) * 100, GetPageCount(db));
+  // Default autovacuum is enabled on Android, so reclaiming free space is
+  // not a reason to vacuum.
+  // TODO(crbug.com/436880909): consider vacuuming old-ish databases that
+  // may be fragmented.
+#if !BUILDFLAG(IS_ANDROID)
+  // Note that //sql configures a multi-page chunk size for large DBs, so if
+  // this threshold is too low (<25%), vacuuming may not always reduce the
+  // file size. See SQLITE_FCNTL_CHUNK_SIZE.
+  constexpr unsigned int kMinFreelistPercentageForVacuum = 33;
+  if (freelist_percentage >= kMinFreelistPercentageForVacuum) {
+    return {true, freelist_percentage};
+  }
+#endif
+  return {false, freelist_percentage};
+}
+
+// Returns `true` if vacuuming was attempted and succeeded. Logs success/error
+// `VacuumEvent`s as appropriate. Runs `checkpoint` right before attempting
+// vacuuming, which is expected to checkpoint the WAL (after dropping open
+// resources if needed). Vacuuming is not attempted if this fails.
+bool TryVacuum(sql::Database& db,
+               const base::FilePath& db_path,
+               base::FunctionRef<bool()> checkpoint) {
+  // VACUUM copies the used pages into a temp database and then overwrites the
+  // original, requiring approximately twice the used size in free space:
+  // https://www.sqlite.org/lang_vacuum.html.
+  base::ByteSize needed_space = GetUsedSize(db) * 2;
+  std::optional<base::SysInfo::DiskSpaceInfo> disk_space =
+      base::SysInfo::AmountOfDiskSpace(db_path.DirName());
+  if (needed_space.is_zero() || !disk_space ||
+      disk_space->total < disk_space->available) {
+    LogVacuumEvent(VacuumEvent::kErrorComputingSpaceRequirements);
+    return false;
+  }
+  // Leave a buffer of 1% of total disk space since other write operations
+  // may be in progress.
+  base::ByteSize buffer = disk_space->total / 100;
+  if (needed_space + buffer > disk_space->available) {
+    LogVacuumEvent(VacuumEvent::kInsufficientDiskSpace);
+    return false;
+  }
+  // Checkpointing is needed before vacuuming to ensure deleted data is
+  // wiped from disk. See crbug.com/483899632.
+  if (!checkpoint()) {
+    LogVacuumEvent(VacuumEvent::kCheckpointFailed);
+    return false;
+  }
+  bool success = db.Execute("VACUUM");
+  LogVacuumEvent(success ? VacuumEvent::kSucceeded : VacuumEvent::kFailed);
+  return success;
+}
+
 // Key used in MetaTable to track the data encoding version used by Blink/V8.
 constexpr std::string_view kV8DataVersionKey = "v8_data_version";
 
+// Key used in MetaTable to store the created timestamp of the database.
+constexpr std::string_view kCreationTimestampKey = "created_time";
+
 // These are schema versions of our implementation of `sql::Database`; not the
 // version supplied by the application for the IndexedDB database.
-//
-// The version used to initialize the meta table for the first time.
 constexpr int kCurrentSchemaVersion = 1;
 constexpr int kCompatibleSchemaVersion = kCurrentSchemaVersion;
 
@@ -848,27 +992,44 @@ class IndexCursorImpl : public BackingStoreCursorImpl {
 StatusOr<std::unique_ptr<DatabaseConnection>> DatabaseConnection::Open(
     std::optional<std::u16string_view> name,
     base::FilePath path,
-    BackingStoreImpl& backing_store) {
+    BackingStoreImpl& backing_store,
+    bool erase_if_zygotic) {
   auto connection =
       base::WrapUnique(new DatabaseConnection(path, backing_store));
   Status s = connection->Init(name);
   if (!path.empty() && !s.ok()) {
+    bool should_retry_opening = true;
     IndexedDBDataLossInfo loss;
     if (connection->marked_for_permanent_deletion_) {
-      loss.status = blink::mojom::IDBDataLoss::Total;
-      loss.message = s.ToString();
+      if (!name) {
+        // Don't bother retrying since the caller doesn't want to create the DB.
+        should_retry_opening = false;
+      } else {
+        // Capture and surface data loss info.
+        loss.status = blink::mojom::IDBDataLoss::Total;
+        loss.message = s.ToString();
+      }
     }
-    // If opening fails, recover or destroy the DB and try once more.
-    std::move(*connection).DestroySoon(/*force_closing=*/false).Run();
-    connection = base::WrapUnique(new DatabaseConnection(path, backing_store));
-    s = connection->Init(name);
-    connection->data_loss_info_ = std::move(loss);
-    s.Log("IndexedDB.SQLite.OpenRetryResult");
+    if (should_retry_opening) {
+      // Recover or destroy the DB and try once more.
+      std::move(*connection).GetCleanupTask().Run(/*force_closing=*/false);
+      connection =
+          base::WrapUnique(new DatabaseConnection(path, backing_store));
+      s = connection->Init(name);
+      connection->data_loss_info_ = std::move(loss);
+      s.Log("IndexedDB.SQLite.OpenRetryResult");
+    }
+  }
+  if (s.ok() && erase_if_zygotic && connection->IsZygotic()) {
+    s = Status::Corruption(
+        "Database was zygotic on open, indicating prior unclean shutdown");
+    connection->marked_for_permanent_deletion_ = true;
   }
   if (!s.ok()) {
-    std::move(*connection).DestroySoon(/*force_closing=*/false).Run();
+    std::move(*connection).GetCleanupTask().Run(/*force_closing=*/false);
     return base::unexpected(s);
   }
+
   return connection;
 }
 
@@ -878,8 +1039,30 @@ void DatabaseConnection::Release(base::WeakPtr<DatabaseConnection> db) {
     return;
   }
 
-  // TODO(crbug.com/419203257):  Consider delaying destruction by a short period
-  // in case the page reopens the same database soon.
+  // Just destruct immediately if:
+  // 1. the database isn't finished initializing, or
+  // 2. the database had an error
+  if (db->IsZygotic() || db->sql_error_) {
+    MaybeSelfDestruct(std::move(db));
+    return;
+  }
+
+  // Delay destruction by a short period in case the page reopens the same
+  // database soon. This is effectively equivalent to the 2 second "grace
+  // period" before backing store shutdown in `BucketContext`.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(&DatabaseConnection::MaybeSelfDestruct, std::move(db)),
+      kDestructionGracePeriod);
+}
+
+// static
+void DatabaseConnection::MaybeSelfDestruct(
+    base::WeakPtr<DatabaseConnection> db) {
+  if (!db) {
+    return;
+  }
+
   DatabaseConnection* db_ptr = db.get();
   db.reset();
 
@@ -895,10 +1078,11 @@ void DatabaseConnection::CloseDatabase(
     const base::FilePath& legacy_blob_directory,
     bool should_delete,
     bool should_attempt_recovery,
-    std::optional<std::set<int64_t>> known_legacy_blob_ids) {
+    bool should_vacuum,
+    std::optional<std::set<int64_t>> known_legacy_blob_ids,
+    bool force_closing) {
   if (should_delete) {
-    db.reset();
-    sql::Database::Delete(db_path);
+    db->CloseAndDelete();
     if (!base::DeletePathRecursively(legacy_blob_directory)) {
       base::UmaHistogramEnumeration(
           "IndexedDB.SQLite.SpecificEvent.OnDisk",
@@ -907,13 +1091,25 @@ void DatabaseConnection::CloseDatabase(
     return;
   }
 
-  if (should_attempt_recovery) {
-    // `RecoverIfPossible` will no-op for several reasons including if the error
-    // is thought to be transient.
-    std::ignore = sql::Recovery::RecoverIfPossible(
-        db.get(), db->GetErrorCode(),
-        sql::Recovery::Strategy::kRecoverWithMetaVersionOrRaze);
+  if (force_closing) {
+    if (should_vacuum) {
+      LogVacuumEvent(VacuumEvent::kForceClosing);
+    }
     return;
+  }
+
+  if (should_attempt_recovery) {
+    // This falls back to deleting the database on failure.
+    std::ignore = sql::Recovery::RecoverDatabase(
+        db.get(), sql::Recovery::Strategy::kRecoverWithMetaVersionOrRaze);
+    return;
+  }
+
+  if (should_vacuum) {
+    TryVacuum(*db, db_path,
+              [&]() { return db->CheckpointDatabase(/*truncate=*/false); });
+    // No need to explicitly truncate-checkpoint after the vacuum here since
+    // closing the database deletes the WAL file.
   }
 
   if (known_legacy_blob_ids) {
@@ -944,29 +1140,34 @@ DatabaseConnection::DatabaseConnection(base::FilePath path,
 DatabaseConnection::~DatabaseConnection() {
   // Closing a `sql::Database` can be an expensive operation since it performs a
   // checkpoint. Hence, ensure that closing happens intentionally (in the task
-  // returned by `DestroySoon()`).
-  CHECK(!db_) << "DestroySoon() must be called before destruction";
+  // returned by `GetCleanupTask()`).
+  CHECK(!db_) << "GetCleanupTask() must be called before destruction";
 }
 
-base::OnceClosure DatabaseConnection::DestroySoon(bool force_closing) && {
+void DatabaseConnection::OnSqlError(int error, sql::Statement*) {
+  // Record the first error, but let a catastrophic code displace a
+  // non-catastrophic one since recovery is attempted for catastrophic errors.
+  if (!sql_error_ || (sql::IsErrorCatastrophic(error) &&
+                      !sql::IsErrorCatastrophic(*sql_error_))) {
+    sql_error_ = error;
+  }
+}
+
+base::OnceCallback<void(bool)> DatabaseConnection::GetCleanupTask() && {
   CHECK(db_);
 
   // Although generally active blobs will keep `this` alive, when the backing
   // store is being force-closed, blobs may still be active.
-  if (force_closing) {
-    active_blobs_.clear();
-  } else {
-    CHECK(active_blobs_.empty());
-  }
+  active_blobs_.clear();
 
-  bool had_sql_error =
-      !sql::IsSqliteSuccessCode(sql::ToSqliteResultCode(db_->GetErrorCode()));
+  bool had_sql_error = sql_error_.has_value();
   if (had_sql_error) {
     LogEvent(SpecificEvent::kDatabaseHadSqlError);
   }
 
   bool should_delete_db = false;
   bool should_attempt_recovery = false;
+  bool should_vacuum = false;
   bool should_delete_legacy_blobs = false;
 
   if (!in_memory()) {
@@ -976,39 +1177,53 @@ base::OnceClosure DatabaseConnection::DestroySoon(bool force_closing) && {
     should_delete_db =
         marked_for_permanent_deletion_ || (IsZygotic() && !had_sql_error);
 
-    // Note that `DatabaseConnection` does not set an error callback on
-    // sql::Database. Instead, errors are returned for individual operations,
-    // which will trickle up through backing store agnostic code and close all
+    // `DatabaseConnection`'s error callback only records `sql_error_`; it does
+    // not recover from within the callback. Errors are otherwise returned per
+    // operation and trickle up through backing-store-agnostic code, closing all
     // `Transaction`s, `Connection`s and `Database`s. When the last
-    // `BackingStore::Database` is deleted, `this` will be deleted, at which
-    // point recovery will be attempted if appropriate.
+    // `BackingStore::Database` is deleted, `this` is deleted, at which point
+    // recovery is attempted if `sql_error_` warrants it.
 #if BUILDFLAG(IS_FUCHSIA)
     // Recovery is not supported with WAL mode DBs in Fuchsia.
-    if (had_sql_error && db_->is_open() &&
-        sql::IsErrorCatastrophic(db_->GetErrorCode())) {
+    if (had_sql_error && sql::IsErrorCatastrophic(*sql_error_)) {
       should_delete_db = true;
     }
 #else
-    // Don't attempt recovery if we're force closing. Note that this should be
-    // rare since a database error should lead to only this database being
-    // closed, not the whole backing store.
-    should_attempt_recovery = !force_closing && had_sql_error;
+    should_attempt_recovery =
+        had_sql_error &&
+        sql::Recovery::ShouldAttemptRecovery(db_.get(), *sql_error_);
 #endif
 
-    // Don't clean up legacy blobs if force closing.
-    // Also skip if `legacy_blob_files_to_move_` is non-empty, which would
-    // indicate that there was a migration executed by this instance of
-    // `DatabaseConnection`.
-    should_delete_legacy_blobs = !force_closing && legacy_blob_files_ &&
-                                 legacy_blob_files_to_move_.empty();
+    // Determine whether to vacuum.
+    if (!had_sql_error && !should_delete_db) {
+      unsigned int freelist_percentage;
+      std::tie(should_vacuum, freelist_percentage) = NeedsVacuum(*db_);
+      base::UmaHistogramPercentage("IndexedDB.SQLite.FreelistPercentageAtClose",
+                                   freelist_percentage);
+      if (should_vacuum) {
+        LogVacuumEvent(VacuumEvent::kRequestedOnClose);
+      }
+    }
+
+    // Skip if `legacy_blob_files_to_move_` is non-empty, which would indicate
+    // that there was a migration executed by `this`.
+    should_delete_legacy_blobs =
+        legacy_blob_files_ && legacy_blob_files_to_move_.empty();
   }
 
+  wal_checkpoint_weak_factory_.InvalidateWeakPtrs();
+  cursor_weak_factory_.InvalidateWeakPtrs();
+  cursor_statements_.clear();
+
+  // The error callback is no longer needed since `this` will be deleted soon.
+  db_->reset_error_callback();
   db_->DetachFromSequence();
-  return base::BindOnce(
-      &DatabaseConnection::CloseDatabase, std::move(db_), path_,
-      GetLegacyBlobDirectory(), should_delete_db, should_attempt_recovery,
-      should_delete_legacy_blobs ? std::move(legacy_blob_files_)
-                                 : std::nullopt);
+  return base::BindOnce(&DatabaseConnection::CloseDatabase, std::move(db_),
+                        path_, GetLegacyBlobDirectory(), should_delete_db,
+                        should_attempt_recovery, should_vacuum,
+                        should_delete_legacy_blobs
+                            ? std::move(legacy_blob_files_)
+                            : std::nullopt);
 }
 
 Status DatabaseConnection::Init(std::optional<std::u16string_view> name) {
@@ -1016,12 +1231,30 @@ Status DatabaseConnection::Init(std::optional<std::u16string_view> name) {
 
   constexpr sql::Database::Tag kSqlTag = "IndexedDB";
   constexpr sql::Database::Tag kSqlTagInMemory = "IndexedDBEphemeral";
-  db_ =
-      std::make_unique<sql::Database>(sql::DatabaseOptions()
-                                          .set_exclusive_locking(true)
-                                          .set_wal_mode(true)
-                                          .set_enable_triggers(true),
-                                      in_memory() ? kSqlTagInMemory : kSqlTag);
+  auto options = sql::DatabaseOptions()
+                     .set_enable_triggers(true)
+                     .set_wal_mode(true)
+                     .set_wal_commit_callback(base::BindRepeating(
+                         &DatabaseConnection::OnWalFileWritten,
+                         wal_checkpoint_weak_factory_.GetWeakPtr()));
+
+#if BUILDFLAG(IS_WIN)
+  // *Enforce* exclusivity on Windows, for the purposes of reliability.
+  options.set_exclusive_database_file_lock(
+      base::FeatureList::IsEnabled(kIdbSqliteExclusiveDatabaseFileLock));
+#endif
+
+  if (g_vfs_name_override) {
+    options.set_vfs_name_discouraged(g_vfs_name_override);
+  }
+
+  db_ = std::make_unique<sql::Database>(
+      std::move(options), in_memory() ? kSqlTagInMemory : kSqlTag);
+
+  // `Unretained` is safe here because the error callback is reset before `db_`
+  // is moved out of `this` in `GetCleanupTask()`.
+  db_->set_error_callback(base::BindRepeating(&DatabaseConnection::OnSqlError,
+                                              base::Unretained(this)));
 
   if (in_memory()) {
     RETURN_STATUS_ON_ERROR(db_->OpenInMemory());
@@ -1038,6 +1271,10 @@ Status DatabaseConnection::Init(std::optional<std::u16string_view> name) {
 
   const bool is_new_db = !sql::MetaTable::DoesTableExist(db_.get());
   if (is_new_db) {
+    if (!name) {
+      return Fatal(Status::Corruption("Missing meta table"),
+                   SpecificEvent::kMissingMetaTable);
+    }
     IDB_RETURN_IF_ERROR(CreateSchema(db_.get(), *name));
   }
 
@@ -1055,22 +1292,35 @@ Status DatabaseConnection::Init(std::optional<std::u16string_view> name) {
   // database that is too new (written by a future version of the browser),
   // which will be a fatal error.
   const auto current_data_format = IndexedDBDataFormatVersion::GetCurrent();
+  std::optional<IndexedDBDataFormatVersion> stored_data_format;
   if (!is_new_db) {
     int64_t data_format_version;
     if (!meta_table_->GetValue(kV8DataVersionKey, &data_format_version)) {
       return Fatal(Status::Corruption("Missing data format version"),
                    SpecificEvent::kV8FormatTooNewOrMissing);
     }
-    std::optional<IndexedDBDataFormatVersion> decoded =
+    stored_data_format =
         IndexedDBDataFormatVersion::Decode(data_format_version);
-    if (!decoded || !current_data_format.IsAtLeast(*decoded)) {
+    if (!stored_data_format ||
+        !current_data_format.IsAtLeast(*stored_data_format)) {
       return Fatal(
           Status::NotFound(
               "Unintelligible data format version: invalid or too new"),
           SpecificEvent::kV8FormatTooNewOrMissing);
     }
   }
-  meta_table_->SetValue(kV8DataVersionKey, current_data_format.Encode());
+  // The first write to the DB is SLOW, so we avoid it when possible.
+  if (stored_data_format != current_data_format) {
+    meta_table_->SetValue(kV8DataVersionKey, current_data_format.Encode());
+  }
+
+  if (is_new_db) {
+    // Store the creation timestamp. This may be used for heuristics-based
+    // decisions such as defragmenting the DB in the future.
+    meta_table_->SetValue(
+        kCreationTimestampKey,
+        base::Time::Now().ToDeltaSinceWindowsEpoch().InMicroseconds());
+  }
 
   switch (meta_table_->GetVersionNumber()) {
     // ...
@@ -1102,13 +1352,79 @@ Status DatabaseConnection::Init(std::optional<std::u16string_view> name) {
   // remove blob references that were associated with active blobs. These may
   // have been left behind if Chromium crashed. Deleting the blob references
   // should also delete the blob if appropriate.
-  sql::Statement statement(db_->GetCachedStatement(
-      SQL_FROM_HERE,
+  sql::Statement statement(db_->GetUniqueStatement(
       "DELETE FROM blob_references WHERE record_row_id IS NULL"));
   RETURN_STATUS_ON_ERROR(statement.Run());
 
   RETURN_STATUS_ON_ERROR(transaction.Commit());
   return Status::OK();
+}
+
+// static
+void DatabaseConnection::OnWalFileWritten(base::WeakPtr<DatabaseConnection> db,
+                                          int wal_file_page_count) {
+  // `WeakPtr::IsValid()` is not thread-safe, and this may be called from the
+  // cleanup task runner, but only after `db` has been invalidated in
+  // `GetCleanupTask()`.
+  if (!db.MaybeValid()) {
+    return;
+  }
+
+  db->is_wal_dirty_ = true;
+
+  // The default is to auto-checkpoint after 1000 pages, and each page is 4096
+  // bytes. We mainly rely on `PerformIdleMaintenance()` to checkpoint at times
+  // where the database (and the whole bucket thread) are not in use. However,
+  // we still want to prevent excessively large WAL files.
+  if (wal_file_page_count >= 10000) {
+    db->Checkpoint(/*truncate=*/true);
+  }
+}
+
+bool DatabaseConnection::Checkpoint(bool truncate) {
+  CHECK(!db_->HasActiveTransactions());
+
+  // Open statements would block checkpointing.
+  for (const auto& [_, statement_holder] : cursor_statements_) {
+    const auto& [statement, store_id] = statement_holder;
+    BackingStoreCursorImpl::InvalidateStatement(*statement);
+  }
+
+  // Streaming blob handles would also block checkpointing. Most of the time
+  // this will be a no-op, as each `ActiveBlobStreamer` only holds a blob handle
+  // while serving a single request.
+  for (auto& [_, active_blob] : active_blobs_) {
+    active_blob->ReleaseDatabaseResources();
+  }
+
+  bool success = db_->CheckpointDatabase(truncate);
+  if (success) {
+    is_wal_dirty_ = false;
+  }
+  return success;
+}
+
+void DatabaseConnection::PerformIdleMaintenance(bool long_idle) {
+  if (active_rw_transaction_) {
+    return;
+  }
+  if (in_memory()) {
+    db_->TrimMemory();
+    return;
+  }
+  if (long_idle) {
+    if (std::get<bool>(NeedsVacuum(*db_))) {
+      LogVacuumEvent(VacuumEvent::kRequestedOnLongIdle);
+      if (TryVacuum(*db_, path_,
+                    [this]() { return Checkpoint(/*truncate=*/false); })) {
+        // Disk space used by the WAL file (during vacuum) is not reclaimed
+        // until a TRUNCATE checkpoint. See crbug.com/483988149.
+        Checkpoint(/*truncate=*/true);
+      }
+    }
+  } else if (is_wal_dirty_) {
+    Checkpoint(/*truncate=*/false);
+  }
 }
 
 bool DatabaseConnection::IsZygotic() const {
@@ -1120,39 +1436,18 @@ int64_t DatabaseConnection::GetCommittedVersion() const {
 }
 
 uint64_t DatabaseConnection::GetSize() const {
-  // The maximum page count is ~2^32: https://www.sqlite.org/limits.html.
-  uint32_t page_count = 0;
-  uint32_t freelist_count = 0;
-  // The maximum page size is 65536 bytes.
-  uint16_t page_size = 0;
-  {
-    sql::Statement statement(db_->GetReadonlyStatement("PRAGMA page_count"));
-    if (!statement.Step()) {
-      LogEvent(SpecificEvent::kPragmaPageCountFailed);
-      return 0;
-    }
-    page_count = static_cast<uint32_t>(statement.ColumnInt(0));
+  base::ByteSize used_size = GetUsedSize(*db_);
+  if (used_size.is_zero()) {
+    // Can only happen if one of the pragmas failed. Log under a common bucket.
+    LogEvent(SpecificEvent::kPragmaPageCountFailed);
   }
-  {
-    sql::Statement statement(
-        db_->GetReadonlyStatement("PRAGMA freelist_count"));
-    if (!statement.Step()) {
-      // The rate of failure for this PRAGMA is not expected to be different
-      // from `page_count`, so count failures under the same event type.
-      LogEvent(SpecificEvent::kPragmaPageCountFailed);
-      return 0;
-    }
-    freelist_count = static_cast<uint32_t>(statement.ColumnInt(0));
-  }
-  {
-    sql::Statement statement(db_->GetReadonlyStatement("PRAGMA page_size"));
-    if (!statement.Step()) {
-      LogEvent(SpecificEvent::kPragmaPageSizeFailed);
-      return 0;
-    }
-    page_size = static_cast<uint16_t>(statement.ColumnInt(0));
-  }
-  return static_cast<uint64_t>(page_count - freelist_count) * page_size;
+  return used_size.InBytes();
+}
+
+void DatabaseConnection::ReportMemoryUsage(
+    base::trace_event::ProcessMemoryDump* pmd,
+    const std::string& dump_name) const {
+  db_->ReportMemoryUsage(pmd, dump_name);
 }
 
 std::unique_ptr<BackingStoreDatabaseImpl>
@@ -1264,6 +1559,8 @@ std::optional<sql::StreamingBlobHandle>
 DatabaseConnection::OpenBlobChunkForStreaming(int64_t blob_row_id,
                                               bool readonly,
                                               size_t chunk_index) {
+  backing_store_->on_blob_activity().Run(std::nullopt);
+
   if (chunk_index == 0) {
     return db_->GetStreamingBlob("blobs", "bytes", blob_row_id, readonly);
   }
@@ -2181,16 +2478,22 @@ DatabaseConnection::CreateAllExternalObjects(
 
     // Otherwise the blob is in the database already. Look up or create the
     // object that manages the active blob.
-    auto it = active_blobs_.find(object.blob_number());
-    if (it == active_blobs_.end()) {
-      std::unique_ptr<BlobEndpoint> endpoint;
+    auto [it, inserted] = active_blobs_.try_emplace(object.blob_number());
+    if (inserted) {
       const bool is_legacy_blob = !object.indexed_db_file_path().empty();
       base::UmaHistogramBoolean("IndexedDB.SQLite.BlobServedFromLegacyFile",
                                 is_legacy_blob);
+
+      auto blob_read_complete = base::BindRepeating(
+          [](base::RepeatingCallback<void(std::optional<net::Error>)>
+                 on_activity,
+             net::Error error) { on_activity.Run(error); },
+          backing_store_->on_blob_activity());
+
       if (!is_legacy_blob) {
-        endpoint = std::make_unique<ActiveBlobStreamer>(
+        it->second = std::make_unique<ActiveBlobStreamer>(
             object,
-            // Unretained is safe because `this` owns `endpoint`.
+            // Unretained is safe because `this` owns the `std::unique_ptr`.
             base::BindRepeating(&DatabaseConnection::OpenBlobChunkForStreaming,
                                 base::Unretained(this), object.blob_number(),
                                 /*readonly=*/true),
@@ -2198,18 +2501,16 @@ DatabaseConnection::CreateAllExternalObjects(
             base::BindOnce(&DatabaseConnection::OnBlobBecameInactive,
                            base::Unretained(this), object.blob_number(),
                            /*is_legacy_blob=*/false),
-            base::BindRepeating(&LogNetError, "IndexedDB.BackingStore.ReadBlob",
-                                in_memory()));
+            blob_read_complete);
       } else {
-        endpoint = std::make_unique<BlobReader>(
+        it->second = std::make_unique<BlobReader>(
             object,
-            // Unretained is safe because `this` owns `endpoint`.
+            // Unretained is safe because `this` owns the `std::unique_ptr`.
             base::BindOnce(&DatabaseConnection::OnBlobBecameInactive,
                            base::Unretained(this), object.blob_number(),
-                           /*is_legacy_blob=*/true));
+                           /*is_legacy_blob=*/true),
+            blob_read_complete);
       }
-      it = active_blobs_.emplace(object.blob_number(), std::move(endpoint))
-               .first;
       if (!AddActiveBlobReference(object.blob_number())) {
         LogEvent(SpecificEvent::kAddActiveBlobReferenceFailed);
       }
@@ -2227,6 +2528,7 @@ void DatabaseConnection::DeleteIdbDatabase(
   metadata_ = blink::IndexedDBDatabaseMetadata(metadata_.name);
   interface_wrapper_weak_factory_.InvalidateWeakPtrs();
   CHECK(!blob_writers_weak_factory_.HasWeakPtrs());
+  CHECK(!active_rw_transaction_);
 
   if (CanSelfDestruct()) {
     // Fast path: skip explicitly deleting data as the whole database will be
@@ -2240,22 +2542,38 @@ void DatabaseConnection::DeleteIdbDatabase(
   cursor_statements_.clear();
 
   // Since blobs are still active, reset to zygotic state instead of destroying.
-  bool success =
-      db_->Execute(
-          "DELETE FROM blob_references WHERE record_row_id IS NOT NULL") &&
-      db_->Execute("DELETE FROM index_references") &&
-      db_->Execute("DELETE FROM indexes") &&
-      db_->Execute("DELETE FROM records") &&
-      db_->Execute("DELETE FROM object_stores") && [&]() {
-        sql::Statement statement(db_->GetUniqueStatement(
-            "UPDATE indexed_db_metadata SET version = ?"));
-        statement.BindInt64(0, blink::IndexedDBDatabaseMetadata::NO_VERSION);
-        return statement.Run();
-      }();
+  bool reset_success = [this]() {
+    sql::Transaction delete_txn(db_.get());
+    return delete_txn.Begin() &&
+           db_->Execute(
+               "DELETE FROM blob_references WHERE record_row_id IS NOT NULL") &&
+           db_->Execute("DELETE FROM index_references") &&
+           db_->Execute("DELETE FROM indexes") &&
+           db_->Execute("DELETE FROM records") &&
+           db_->Execute("DELETE FROM object_stores") &&
+           [&]() {
+             sql::Statement statement(db_->GetUniqueStatement(
+                 "UPDATE indexed_db_metadata SET version = ?"));
+             statement.BindInt64(0,
+                                 blink::IndexedDBDatabaseMetadata::NO_VERSION);
+             return statement.Run();
+           }() &&
+           delete_txn.Commit();
+  }();
 
-  // If there are any errors in the above, then blobs will probably error out
-  // too, so go ahead and destroy `this`.
-  if (!success) {
+  if (reset_success) {
+    // Checkpoint to make sure that the data is deleted right away. This ensures
+    // the data will be wiped from disk even if the browser later crashes. We
+    // don't checkpoint on every deletion from the database for performance
+    // reasons, but we do strive to ensure entire database deletion will be
+    // "secure".
+    //
+    // In the case where blobs are *not* still present, this is ensured by the
+    // post-close checkpoint + WAL deletion.
+    Checkpoint(/*truncate=*/true);
+  } else {
+    // If there are any errors in the above, then blobs will probably error out
+    // too, so go ahead and destroy `this`.
     backing_store_->DestroyConnection(metadata_.name, std::move(locks));
     // `this` is deleted.
   }
@@ -2552,6 +2870,16 @@ base::FilePath DatabaseConnection::GetBlobFilePath(int64_t blob_id) const {
 // static
 void DatabaseConnection::OverrideMaxBlobSizeForTesting(base::ByteSize size) {
   g_max_blob_size_override = size;
+}
+
+// static
+void DatabaseConnection::OverrideVfsNameForTesting(const char* vfs_name) {
+  g_vfs_name_override = vfs_name;
+}
+
+// static
+base::TimeDelta DatabaseConnection::GetDestructionGracePeriodForTesting() {
+  return kDestructionGracePeriod;
 }
 
 }  // namespace content::indexed_db::sqlite

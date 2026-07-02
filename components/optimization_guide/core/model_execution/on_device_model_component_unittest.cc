@@ -25,6 +25,7 @@
 #include "build/build_config.h"
 #include "components/optimization_guide/core/model_execution/model_broker_state.h"
 #include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
+#include "components/optimization_guide/core/model_execution/on_device_model_names.h"
 #include "components/optimization_guide/core/model_execution/performance_class.h"
 #include "components/optimization_guide/core/model_execution/test/fake_model_assets.h"
 #include "components/optimization_guide/core/model_execution/test/fake_model_broker.h"
@@ -104,8 +105,12 @@ class OnDeviceModelComponentTest : public testing::Test {
   }
 
   void DoStartup() {
+    base::HistogramTester startup_histograms;
     broker_.GetOrCreateBrokerState();  // Force instantiation.
     task_environment_.FastForwardBy(base::Seconds(1));
+    startup_histograms.ExpectUniqueSample(
+        "OptimizationGuide.OnDeviceModel.OnDeviceModelComponentInstantiated",
+        true, 1);
   }
 
   void SimulateShutdown() { broker_.SimulateShutdown(); }
@@ -140,6 +145,7 @@ class OnDeviceModelComponentTest : public testing::Test {
   FakeModelBroker broker_{{
       .performance_class = OnDeviceModelPerformanceClass::kUnknown,
       .preinstall_base_model = false,
+      .include_classifier = false,
   }};
   base::HistogramTester histograms_;
 };
@@ -202,8 +208,10 @@ TEST_F(OnDeviceModelComponentTest, AlreadyInstalledFlow) {
   ASSERT_TRUE(WaitUntilInstallerRegistered());
   histograms_.ExpectUniqueSample(
       "OptimizationGuide.ModelExecution."
-      "OnDeviceModelInstalledAtRegistrationTime",
+      "OnDeviceModelInstalledAtRegistrationTime.Unknown",
       true, 1);
+  histograms_.ExpectTotalCount(
+      "OptimizationGuide.OnDeviceModel.NewModelInstalled", 0);
 }
 
 TEST_F(OnDeviceModelComponentTest, NotYetInstalledFlow) {
@@ -213,7 +221,7 @@ TEST_F(OnDeviceModelComponentTest, NotYetInstalledFlow) {
   ASSERT_TRUE(WaitUntilInstallerRegistered());
   histograms_.ExpectUniqueSample(
       "OptimizationGuide.ModelExecution."
-      "OnDeviceModelInstalledAtRegistrationTime",
+      "OnDeviceModelInstalledAtRegistrationTime.V3Nano",
       false, 1);
 }
 
@@ -404,6 +412,26 @@ TEST_F(OnDeviceModelComponentTest, UninstallNeeded) {
   ASSERT_FALSE(WaitForUnexpectedInstallerRegistered());
 }
 
+TEST_F(OnDeviceModelComponentTest, BackgroundDownloadPreventsRetentionUninstall) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kOnDeviceModelBackgroundDownload);
+
+  // This pref records that the model was eligible for download previously,
+  // and hasn't been cleaned up yet.
+  broker_.local_state().SetTime(kLastTimeEligibleForOnDeviceModelDownload,
+                                base::Time::Now() - base::Minutes(1) -
+                                    features::GetOnDeviceModelRetentionTime());
+  broker_.local_state().ClearPref(kLastUsageByFeature);
+
+  // Should NOT uninstall because background download is enabled.
+  DoStartup();
+  EnsurePerformanceClassAvailable();
+
+  task_environment_.RunUntilIdle();
+  EXPECT_FALSE(broker_.component_state().uninstall_called());
+  EXPECT_TRUE(broker_.component_state().installer_registered());
+}
+
 TEST_F(OnDeviceModelComponentTest, UninstallNeededDueToDiskSpace) {
   broker_.local_state().SetTime(kLastTimeEligibleForOnDeviceModelDownload,
                                 base::Time::Now());
@@ -417,6 +445,12 @@ TEST_F(OnDeviceModelComponentTest, UninstallNeededDueToDiskSpace) {
   EnsurePerformanceClassAvailable();
   EXPECT_TRUE(base::test::RunUntil(
       [&] { return broker_.component_state().uninstall_called(); }));
+
+  histograms_.ExpectUniqueSample(
+      "OptimizationGuide.ModelExecution.OnDeviceModelUninstallReason.V3Nano",
+      OnDeviceModelComponentStateManager::RegistrationCriteria::
+          UninstallReason::kInsufficientDisk,
+      1);
 }
 
 TEST_F(OnDeviceModelComponentTest, KeepInstalledWhileNotEligible) {
@@ -548,6 +582,11 @@ TEST_F(OnDeviceModelComponentTest, SetReady) {
   const OnDeviceModelComponentState* state = manager().GetState();
   ASSERT_TRUE(state);
 
+  histograms_.ExpectTotalCount("OptimizationGuide.OnDeviceModel.InstalledModel",
+                               1);
+  histograms_.ExpectUniqueSample(
+      "OptimizationGuide.OnDeviceModel.NewModelInstalled",
+      static_cast<int>(OnDeviceBaseModel::kUnknown), 1);
   EXPECT_FALSE(state->GetInstallDirectory().empty());
   EXPECT_EQ(state->GetComponentVersion(), base::Version("0.0.1"));
 
@@ -752,7 +791,6 @@ TEST_F(OnDeviceModelComponentTest,
   DoStartup();
   EnsurePerformanceClassAvailable();
   ASSERT_TRUE(WaitUntilInstallerRegistered());
-  EXPECT_TRUE(broker_.component_state().requested_background_update());
   histograms_.ExpectUniqueSample(
       "OptimizationGuide.ModelExecution.OnDeviceModelInstallCriteria."
       "InitialInstall.IsBackground",
@@ -768,7 +806,6 @@ TEST_F(OnDeviceModelComponentTest, BackgroundDownloadBlockedOnExperimentFlag) {
 
   EnsurePerformanceClassAvailable();
   ASSERT_FALSE(WaitForUnexpectedInstallerRegistered());
-  EXPECT_FALSE(broker_.component_state().requested_background_update());
 }
 
 TEST_F(OnDeviceModelComponentTest,
@@ -804,7 +841,6 @@ TEST_F(OnDeviceModelComponentTest, FeatureUseUpgradesToOnDemand) {
   EnsurePerformanceClassAvailable();
   ASSERT_TRUE(WaitUntilInstallerRegistered());
 
-  EXPECT_TRUE(broker_.component_state().requested_background_update());
   EXPECT_FALSE(broker_.component_state().requested_foreground_update());
 
   broker_.GetOrCreateBrokerState().usage_tracker().OnDeviceEligibleFeatureUsed(

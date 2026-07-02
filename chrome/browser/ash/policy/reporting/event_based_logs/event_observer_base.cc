@@ -9,6 +9,7 @@
 #include <string>
 #include <utility>
 
+#include "ash/constants/ash_policy_pref_names.h"
 #include "base/check_is_test.h"
 #include "base/functional/bind.h"
 #include "base/json/values_util.h"
@@ -18,7 +19,6 @@
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "base/values.h"
-#include "chrome/browser/ash/policy/core/policy_pref_names.h"
 #include "chrome/browser/ash/policy/reporting/event_based_logs/event_based_log_uploader.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/policy/messaging_layer/proto/synced/log_upload_event.pb.h"
@@ -34,7 +34,7 @@ namespace {
 std::optional<base::Time> GetLastUploadTimeOf(const PrefService& local_state,
                                               const std::string& event_name) {
   const base::DictValue& last_upload_times =
-      local_state.GetDict(policy::prefs::kEventBasedLogLastUploadTimes);
+      local_state.GetDict(ash::prefs::kEventBasedLogLastUploadTimes);
   const base::Value* event_upload_time = last_upload_times.Find(event_name);
 
   // If the last upload time is not stored in the local state, it means that
@@ -140,7 +140,8 @@ void EventObserverBase::RecordUploadTime(base::Time timestamp) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   ::prefs::ScopedDictionaryPrefUpdate last_upload_times_update(
-      g_browser_process->local_state(), prefs::kEventBasedLogLastUploadTimes);
+      g_browser_process->local_state(),
+      ash::prefs::kEventBasedLogLastUploadTimes);
   last_upload_times_update->Set(GetEventName(), base::TimeToValue(timestamp));
 }
 

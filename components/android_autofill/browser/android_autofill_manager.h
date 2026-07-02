@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/containers/flat_set.h"
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/notreached.h"
@@ -55,6 +56,14 @@ class AndroidAutofillManager : public AutofillManager,
       const FormData& form,
       const FieldGlobalId& field_id) override {}
 
+  void FillOrPreviewField(mojom::ActionPersistence action_persistence,
+                          mojom::FieldActionType action_type,
+                          const FormGlobalId& form_id,
+                          const FieldGlobalId& field_id,
+                          const std::u16string& value,
+                          FillingProduct filling_product,
+                          std::optional<FieldType> field_type_used) override;
+
   void ReportAutofillWebOTPMetrics(bool used_web_otp) override {}
 
   CreditCardAccessManager* GetCreditCardAccessManager() override;
@@ -82,6 +91,10 @@ class AndroidAutofillManager : public AutofillManager,
 
   void OnFormSubmittedImpl(const FormData& form,
                            mojom::SubmissionSource source) override;
+
+  void OnFormWithEmailVerificationTokenSubmittedImpl(
+      const FormData& form,
+      const FieldGlobalId& field_id) override {}
 
   void OnCaretMovedInFormFieldImpl(const FormData& form,
                                    const FieldGlobalId& field_id,
@@ -120,8 +133,7 @@ class AndroidAutofillManager : public AutofillManager,
 
   void OnBeforeProcessParsedForms() override {}
 
-  void OnFormProcessed(const FormData& form,
-                       const FormStructure& form_structure) override;
+  void OnFormProcessed(const FormStructure& form_structure) override;
 
  private:
   // AutofillManager::Observer:

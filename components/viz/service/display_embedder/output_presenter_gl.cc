@@ -11,6 +11,7 @@
 
 #include "base/check.h"
 #include "base/feature_list.h"
+#include "base/logging.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "components/viz/common/features.h"
@@ -198,8 +199,9 @@ void OutputPresenterGL::ScheduleOverlayPlane(
 #endif
 }
 
-void OutputPresenterGL::SetVSyncDisplayID(int64_t display_id) {
-  presenter_->SetVSyncDisplayID(display_id);
+void OutputPresenterGL::SetVSyncDisplayID(int64_t display_id,
+                                          bool force_update) {
+  presenter_->SetVSyncDisplayID(display_id, force_update);
 }
 
 #if BUILDFLAG(IS_APPLE)

@@ -7,6 +7,7 @@
 
 #include "base/callback_list.h"
 #include "base/containers/flat_set.h"
+#include "base/containers/span.h"
 #include "base/functional/callback_forward.h"
 #include "components/autofill/core/browser/foundations/autofill_manager.h"
 #include "components/autofill/core/browser/foundations/scoped_autofill_managers_observation.h"
@@ -86,8 +87,8 @@ class OtpFieldDetector : public AutofillManager::Observer {
   // navigations without this event.
   void OnAutofillManagerStateChanged(
       AutofillManager& manager,
-      AutofillDriver::LifecycleState previous,
-      AutofillDriver::LifecycleState current) override;
+      AutofillDriver::LifecycleState old_state,
+      AutofillDriver::LifecycleState new_state) override;
 
  protected:
   // Protected to ensure that only derived classes can be instantiated.

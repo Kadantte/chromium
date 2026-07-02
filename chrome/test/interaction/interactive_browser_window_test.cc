@@ -20,10 +20,10 @@
 #include "base/test/test_switches.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "chrome/browser/ui/browser_navigator.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/interaction/interaction_test_util_browser.h"
 #include "chrome/test/interaction/interactive_browser_test_internal.h"
@@ -162,8 +162,10 @@ InteractiveBrowserWindowTestApi::ScreenshotWebUi(
         options.focus = ScreenshotFocusMode::kLeaveFocusWhereItIs;
         const auto result = InteractionTestUtilBrowser::CompareScreenshot(
             el, screenshot_name, baseline_cl, options);
-        test->private_test_impl().HandleActionResult(seq, el, "Screenshot",
-                                                     result);
+        const std::string desc =
+            base::StringPrintf("ScreenshotWebUi(%s)", screenshot_name);
+        test->private_test_impl().HandleActionResult(
+            seq, el, desc, result, /*defer_failure=*/!screenshot_name.empty());
       },
       base::Unretained(this), screenshot_name, baseline_cl, where));
 
@@ -190,8 +192,10 @@ InteractiveBrowserWindowTestApi::ScreenshotSurface(
         const auto result =
             InteractionTestUtilBrowser::CompareSurfaceScreenshot(
                 el, screenshot_name, baseline_cl);
-        test->private_test_impl().HandleActionResult(seq, el, "Screenshot",
-                                                     result);
+        const std::string desc =
+            base::StringPrintf("ScreenshotSurface(%s)", screenshot_name);
+        test->private_test_impl().HandleActionResult(
+            seq, el, desc, result, /*defer_failure=*/!screenshot_name.empty());
       },
       base::Unretained(this), screenshot_name, baseline_cl));
 

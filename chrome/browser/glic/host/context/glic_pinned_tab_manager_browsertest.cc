@@ -112,7 +112,7 @@ class GlicPinnedTabManagerWithOverrides : public GlicPinnedTabManagerImpl {
               IsBrowserValidForSharing,
               (BrowserWindowInterface*),
               (override));
-  MOCK_METHOD(bool, IsValidForSharing, (content::WebContents*), (override));
+  MOCK_METHOD(bool, IsValidForSharing, (tabs::TabInterface*), (override));
   MOCK_METHOD(bool, IsGlicWindowShowing, (), (override));
 };
 
@@ -276,9 +276,6 @@ IN_PROC_BROWSER_TEST_F(GlicPinnedTabManagerBrowserTest, PinTabs) {
 // crashing.
 IN_PROC_BROWSER_TEST_F(GlicPinnedTabManagerBrowserTest,
                        DragPinnedTabsToNewWindow) {
-  // We intentionally create a second window.
-  browser_activator().SetMode(BrowserActivator::Mode::kFirst);
-
   CreateAndAddTab("/why-cats-are-liquid");
 
   TabStripModel* tab_strip_model = browser()->tab_strip_model();

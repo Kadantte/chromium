@@ -4,7 +4,6 @@
 
 #include "ui/gl/swap_chain_presenter.h"
 
-#include <d3d11_1.h>
 #include <d3d11_4.h>
 
 #include "base/feature_list.h"
@@ -396,9 +395,13 @@ bool TryDisableDesktopPlane(IDXGIDecodeSwapChain* decode_swap_chain,
 }
 
 bool IsCompatibleHDRMetadata(const gfx::HDRMetadata& hdr_metadata) {
-  return (
-      (hdr_metadata.smpte_st_2086 && hdr_metadata.smpte_st_2086->IsValid()) ||
-      (hdr_metadata.cta_861_3 && hdr_metadata.cta_861_3->IsValid()));
+  return ((hdr_metadata.HasMDCV() &&
+           (hdr_metadata.GetMDCV().fDisplayPrimaries !=
+                SkNamedPrimariesExt::kInvalid ||
+            hdr_metadata.GetMDCV().fMaximumDisplayMasteringLuminance != 0.f ||
+            hdr_metadata.GetMDCV().fMinimumDisplayMasteringLuminance != 0.f)) ||
+          (hdr_metadata.HasCLLI() && (hdr_metadata.GetCLLI().fMaxCLL > 0 ||
+                                      hdr_metadata.GetCLLI().fMaxFALL > 0)));
 }
 
 }  // namespace
@@ -1297,10 +1300,10 @@ void SwapChainPresenter::RecordPresentationStatistics() {
   UMA_HISTOGRAM_ENUMERATION("GPU.DirectComposition.VideoPresentationMode",
                             presentation_mode);
 
-  TRACE_EVENT_INSTANT2(TRACE_DISABLED_BY_DEFAULT("gpu.service"),
-                       "SwapChain::Present", TRACE_EVENT_SCOPE_THREAD,
-                       "PixelFormat", DxgiFormatToString(swap_chain_format_),
-                       "ZeroCopy", !!decode_swap_chain_);
+  TRACE_EVENT_INSTANT(TRACE_DISABLED_BY_DEFAULT("gpu.service"),
+                      "SwapChain::Present", "PixelFormat",
+                      DxgiFormatToString(swap_chain_format_), "ZeroCopy",
+                      !!decode_swap_chain_);
   Microsoft::WRL::ComPtr<IDXGISwapChainMedia> swap_chain_media =
       GetSwapChainMedia();
   if (swap_chain_media) {
@@ -1321,9 +1324,8 @@ void SwapChainPresenter::RecordPresentationStatistics() {
       mode = stats.CompositionMode;
     }
     // Record CompositionMode as -1 if GetFrameStatisticsMedia() fails.
-    TRACE_EVENT_INSTANT1(TRACE_DISABLED_BY_DEFAULT("gpu.service"),
-                         "GetFrameStatisticsMedia", TRACE_EVENT_SCOPE_THREAD,
-                         "CompositionMode", mode);
+    TRACE_EVENT_INSTANT(TRACE_DISABLED_BY_DEFAULT("gpu.service"),
+                        "GetFrameStatisticsMedia", "CompositionMode", mode);
   }
 }
 

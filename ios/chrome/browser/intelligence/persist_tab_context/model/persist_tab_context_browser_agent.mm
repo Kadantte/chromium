@@ -22,6 +22,7 @@
 #import "ios/chrome/browser/intelligence/persist_tab_context/model/page_content_cache_service_factory.h"
 #import "ios/chrome/browser/intelligence/proto_wrappers/page_context_utils.h"
 #import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper.h"
+#import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper_config.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list_factory.h"
@@ -299,15 +300,16 @@ void DeletePersistedContextsDirectory(base::FilePath contexts_dir) {
 }
 
 // Returns a set of unique identifiers for all WebStates across all regular
-// browsers in the given `profile` that are eligible for persistence.
-std::set<int64_t> GetAllEligibleWebStateIDs(ProfileIOS* profile) {
+// browsers in the given `profile`. When `eligible_only` is true, only
+// WebStates satisfying CanExtractPageContextForWebState() are included.
+std::set<int64_t> GetWebStateIDs(ProfileIOS* profile, bool eligible_only) {
   CHECK(profile);
   BrowserList* browser_list = BrowserListFactory::GetForProfile(profile);
   CHECK(browser_list);
 
   const std::set<Browser*>& browsers =
       browser_list->BrowsersOfType(BrowserList::BrowserType::kRegular);
-  std::set<int64_t> eligible_ids;
+  std::set<int64_t> web_state_ids;
 
   for (Browser* browser : browsers) {
     if (!browser || !browser->GetWebStateList()) {
@@ -316,20 +318,20 @@ std::set<int64_t> GetAllEligibleWebStateIDs(ProfileIOS* profile) {
 
     for (int i = 0; i < browser->GetWebStateList()->count(); i++) {
       web::WebState* web_state = browser->GetWebStateList()->GetWebStateAt(i);
-      if (CanExtractPageContextForWebState(web_state)) {
-        eligible_ids.insert(static_cast<int64_t>(
+      if (!eligible_only || CanExtractPageContextForWebState(web_state)) {
+        web_state_ids.insert(static_cast<int64_t>(
             web_state->GetUniqueIdentifier().identifier()));
       }
     }
   }
-  return eligible_ids;
+  return web_state_ids;
 }
 
 // Calculates the total number of WebStates across all Browser instances
 // associated with the given `profile` which are eligibile to have their
 // contexts persisted.
 int GetPersistedWebStateCountForProfile(ProfileIOS* profile) {
-  return GetAllEligibleWebStateIDs(profile).size();
+  return GetWebStateIDs(profile, /*eligible_only=*/true).size();
 }
 
 // Helper function to adapt the GetPageContentCache callback to the one used in
@@ -572,6 +574,7 @@ void PersistTabContextBrowserAgent::ExtractAndStoreContext(
           base::BindOnce(&DeleteContextFromStorage, webstate_unique_id,
                          storage_directory_path_));
     }
+    return;
   }
 
   // Cancel any ongoing page context operation.
@@ -579,8 +582,17 @@ void PersistTabContextBrowserAgent::ExtractAndStoreContext(
     page_context_wrapper_ = nil;
   }
 
+  bool is_rich_extraction = IsPersistTabContextRichExtractionEnabled();
+  PageContextWrapperConfig config =
+      PageContextWrapperConfigBuilder()
+          .SetGraftCrossOriginFrameContent(is_rich_extraction)
+          .SetUseRichExtraction(is_rich_extraction)
+          .SetExtractPaidContent(is_rich_extraction)
+          .Build();
+
   page_context_wrapper_ = [[PageContextWrapper alloc]
         initWithWebState:web_state
+                  config:config
       completionCallback:
           base::BindOnce(&PersistTabContextBrowserAgent::OnPageContextExtracted,
                          weak_factory_.GetWeakPtr(), web_state->GetWeakPtr())];
@@ -612,12 +624,28 @@ void PersistTabContextBrowserAgent::OnPageContextExtracted(
     base::WeakPtr<web::WebState> weak_web_state,
     PageContextWrapperCallbackResponse response) {
   web::WebState* web_state = weak_web_state.get();
-  if (!response.has_value() || !web_state) {
+  if (!web_state) {
+    return;
+  }
+
+  // Cleanup stored extraction on failure to remove stale extractions.
+  if (!response.has_value()) {
+    std::string webstate_unique_id =
+        base::NumberToString(web_state->GetUniqueIdentifier().identifier());
+    if (use_page_content_cache_) {
+      DeleteContextFromContentCache(
+          web_state->GetUniqueIdentifier().identifier());
+    } else {
+      task_runner_->PostTask(
+          FROM_HERE,
+          base::BindOnce(&DeleteContextFromStorage, webstate_unique_id,
+                         storage_directory_path_));
+    }
     return;
   }
 
   if (use_page_content_cache_) {
-    WriteContextToContentCache(web_state, response);
+    WriteContextToContentCache(web_state, std::move(response));
   } else {
     std::string webstate_unique_id =
         base::NumberToString(web_state->GetUniqueIdentifier().identifier());
@@ -629,11 +657,12 @@ void PersistTabContextBrowserAgent::OnPageContextExtracted(
                                   std::move(serialized_page_context),
                                   webstate_unique_id, storage_directory_path_));
   }
+
 }
 
 void PersistTabContextBrowserAgent::WriteContextToContentCache(
     web::WebState* web_state,
-    const PageContextWrapperCallbackResponse& response) {
+    PageContextWrapperCallbackResponse response) {
   if (!page_content_cache_service_) {
     return;
   }
@@ -641,14 +670,27 @@ void PersistTabContextBrowserAgent::WriteContextToContentCache(
   const GURL& url = web_state->GetLastCommittedURL();
   const base::Time visit_timestamp = web_state->GetLastActiveTime();
   const base::Time extraction_timestamp = base::Time::Now();
-  const optimization_guide::proto::PageContext& page_context =
-      *response.value();
 
-  page_content_cache_service_->CachePageContent(
-      tab_id, url, visit_timestamp, extraction_timestamp, page_context);
+  if (IsPageContextIPCOptimizationEnabled()) {
+    std::unique_ptr<optimization_guide::proto::PageContext> page_context =
+        std::move(response.value());
+    size_t size_in_bytes = page_context->ByteSizeLong();
 
-  base::UmaHistogramCounts10M(kPersistTabContextSizeHistogram,
-                              page_context.ByteSizeLong());
+    page_content_cache_service_->CachePageContent(tab_id, url, visit_timestamp,
+                                                  extraction_timestamp,
+                                                  std::move(*page_context));
+
+    base::UmaHistogramCounts10M(kPersistTabContextSizeHistogram, size_in_bytes);
+  } else {
+    const optimization_guide::proto::PageContext& page_context =
+        *response.value();
+
+    page_content_cache_service_->CachePageContent(
+        tab_id, url, visit_timestamp, extraction_timestamp, page_context);
+
+    base::UmaHistogramCounts10M(kPersistTabContextSizeHistogram,
+                                page_context.ByteSizeLong());
+  }
 }
 
 void PersistTabContextBrowserAgent::ReadAndParseContextFromContentCache(
@@ -751,7 +793,11 @@ void PersistTabContextBrowserAgent::RunCacheCleanup() {
     return;
   }
 
-  std::set<int64_t> active_ids = GetAllEligibleWebStateIDs(profile);
+  // Unrealized WebStates have an empty MIME type and would be wrongly
+  // filtered out here; cache writes are already gated by
+  // CanExtractPageContextForWebState().
+  std::set<int64_t> active_ids =
+      GetWebStateIDs(profile, /*eligible_only=*/false);
 
   page_content_cache_service_->RunCleanUpTasksWithActiveTabs(active_ids);
 }

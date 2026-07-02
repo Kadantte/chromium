@@ -81,8 +81,7 @@ class SingleFieldFillRouterTest : public testing::Test {
   std::unique_ptr<PrefService> prefs_;
   MockAutocompleteHistoryManager autocomplete_history_manager_;
   MockIbanManager iban_manager_;
-  MockMerchantPromoCodeManager merchant_promo_code_manager_{
-      &personal_data_manager().payments_data_manager()};
+  MockMerchantPromoCodeManager merchant_promo_code_manager_;
   SingleFieldFillRouter single_field_fill_router_;
   std::unique_ptr<FormStructure> form_structure_;
 };
@@ -113,9 +112,9 @@ TEST_F(SingleFieldFillRouterTest, RouteToAllFillers_OnWillSubmitForm) {
                       MERCHANT_PROMO_CODE});
 #endif
 
-  EXPECT_CALL(
-      history_manager(),
-      OnWillSubmitFormWithFields(SizeIs(number_of_fields_for_testing), true));
+  EXPECT_CALL(history_manager(),
+              OnWillSubmitFormWithFields(SizeIs(form_data.fields().size()),
+                                         &form_structure, true));
   router().OnWillSubmitForm(form_data, &form_structure,
                             /*is_autocomplete_enabled=*/true);
 }

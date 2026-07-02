@@ -33,7 +33,6 @@ class ProcessorEntityTracker {
   // constructor must be used only if the `initial_sync_state` in
   // `data_type_state` is at least partially-done.
   ProcessorEntityTracker(
-      DataType type,
       const sync_pb::DataTypeState& data_type_state,
       std::map<std::string, std::unique_ptr<sync_pb::EntityMetadata>>
           metadata_map);
@@ -55,7 +54,7 @@ class ProcessorEntityTracker {
   // Starts tracking new locally-created entity (must not be deleted outside
   // current object). The entity will be created unsynced with pending commit
   // data.
-  ProcessorEntity* AddUnsyncedLocal(
+  ProcessorEntity* AddLocalCreation(
       const std::string& storage_key,
       std::unique_ptr<EntityData> data,
       sync_pb::EntitySpecifics trimmed_specifics,
@@ -87,9 +86,10 @@ class ProcessorEntityTracker {
   size_t EstimateMemoryUsage() const;
 
   // Gets the entity for the given tag hash, or null if there isn't one.
-  ProcessorEntity* GetEntityForTagHash(const ClientTagHash& tag_hash);
-  const ProcessorEntity* GetEntityForTagHash(
-      const ClientTagHash& tag_hash) const;
+  ProcessorEntity* GetEntityForClientTagHash(
+      const ClientTagHash& client_tag_hash);
+  const ProcessorEntity* GetEntityForClientTagHash(
+      const ClientTagHash& client_tag_hash) const;
 
   // Gets the entity for the given storage key, or null if there isn't one.
   ProcessorEntity* GetEntityForStorageKey(const std::string& storage_key);

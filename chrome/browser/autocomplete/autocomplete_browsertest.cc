@@ -67,7 +67,7 @@ class AutocompleteBrowserTest : public extensions::ExtensionBrowserTest {
   }
 
   LocationBar* GetLocationBar() const {
-    return browser()->window()->GetLocationBar();
+    return BrowserWindow::FromBrowser(browser())->GetLocationBar();
   }
 
   AutocompleteController* GetAutocompleteController() const {
@@ -98,7 +98,8 @@ IN_PROC_BROWSER_TEST_F(AutocompleteBrowserTest, Basic) {
   // TODO(phajdan.jr): check state of IsSelectAll when it's consistent across
   // platforms.
 
-  location_bar->FocusLocation(true);
+  location_bar->FocusLocation(/*is_user_initiated=*/true,
+                              /*clear_focus_if_failed=*/false);
 
   EXPECT_FALSE(location_bar->navigation_params().destination_url.is_valid());
   EXPECT_EQ(url::kAboutBlankURL16, omnibox_view->GetText());
@@ -125,7 +126,7 @@ IN_PROC_BROWSER_TEST_F(AutocompleteBrowserTest, Basic) {
 }
 
 // Autocomplete test is flaky on ChromeOS.
-// http://crbug.com/52928
+// http://crbug.com/41200172
 #if BUILDFLAG(IS_CHROMEOS)
 #define MAYBE_Autocomplete DISABLED_Autocomplete
 #else

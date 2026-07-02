@@ -18,6 +18,7 @@
 #include "net/base/load_states.h"
 #include "net/base/net_export.h"
 #include "net/base/network_anonymization_key.h"
+#include "net/base/network_handle.h"
 #include "net/base/privacy_mode.h"
 #include "net/base/proxy_chain.h"
 #include "net/base/request_priority.h"
@@ -96,6 +97,23 @@ class NET_EXPORT ClientSocketPool : public LowerLayeredPool {
       base::OnceClosure restart_with_auth_callback)>
       ProxyAuthCallback;
 
+  // Callback for preconnect socket requests.
+  // The first bool argument indicates whether the request is successful.
+  // Currently, preconnect is considered "successful" when a socket is available
+  // for use. This means that if we have multiple preconnect socket requests,
+  // and if any one of them succeeds, we will return true. False is only
+  // returned when *all* preconnect socket requests fail.
+  // Note that even if this returns true, we might not have the preconnected
+  // socket in the pool already, since we might have another request which might
+  // use the socket right after it was preconnected. This is expected behavior,
+  // since we are correctly using the preconnected socket on a subsequent
+  // request. Since the preconnect itself is correctly handled and completed, we
+  // return true in these cases.
+  // The second `ClientSocketHandle` argument contains an initialized handle if
+  // the preconnect succeeds, otherwise it contains a nullptr.
+  using PreconnectCompletionCallback =
+      base::OnceCallback<void(bool, std::unique_ptr<ClientSocketHandle>)>;
+
   // Group ID for a socket request. Requests with the same group ID are
   // considered indistinguishable.
   class NET_EXPORT GroupId {
@@ -113,7 +131,8 @@ class NET_EXPORT ClientSocketPool : public LowerLayeredPool {
             PrivacyMode privacy_mode,
             NetworkAnonymizationKey network_anonymization_key,
             SecureDnsPolicy secure_dns_policy,
-            bool disable_cert_network_fetches);
+            bool disable_cert_network_fetches,
+            handles::NetworkHandle target_network);
     GroupId(const GroupId& group_id);
 
     ~GroupId();
@@ -135,26 +154,14 @@ class NET_EXPORT ClientSocketPool : public LowerLayeredPool {
       return disable_cert_network_fetches_;
     }
 
+    handles::NetworkHandle target_network() const { return target_network_; }
+
     // Returns the group ID as a string, for logging.
     std::string ToString() const;
 
-    bool operator==(const GroupId& other) const {
-      return std::tie(destination_, privacy_mode_, network_anonymization_key_,
-                      secure_dns_policy_, disable_cert_network_fetches_) ==
-             std::tie(other.destination_, other.privacy_mode_,
-                      other.network_anonymization_key_,
-                      other.secure_dns_policy_,
-                      other.disable_cert_network_fetches_);
-    }
+    bool operator==(const GroupId& other) const = default;
 
-    bool operator<(const GroupId& other) const {
-      return std::tie(destination_, privacy_mode_, network_anonymization_key_,
-                      secure_dns_policy_, disable_cert_network_fetches_) <
-             std::tie(other.destination_, other.privacy_mode_,
-                      other.network_anonymization_key_,
-                      other.secure_dns_policy_,
-                      other.disable_cert_network_fetches_);
-    }
+    auto operator<=>(const GroupId& other) const = default;
 
    private:
     // The endpoint of the final destination (not the proxy).
@@ -173,6 +180,8 @@ class NET_EXPORT ClientSocketPool : public LowerLayeredPool {
     // be true for a very limited number of network-configuration related
     // scripts (e.g., PAC fetches).
     bool disable_cert_network_fetches_;
+
+    handles::NetworkHandle target_network_ = handles::kInvalidNetworkHandle;
   };
 
   // Parameters that, in combination with GroupId, proxy, websocket information,
@@ -281,7 +290,7 @@ class NET_EXPORT ClientSocketPool : public LowerLayeredPool {
       scoped_refptr<SocketParams> params,
       const std::optional<NetworkTrafficAnnotationTag>& proxy_annotation_tag,
       size_t num_sockets,
-      CompletionOnceCallback callback,
+      PreconnectCompletionCallback callback,
       const NetLogWithSource& net_log) = 0;
 
   // Called to change the priority of a RequestSocket call that returned
@@ -366,6 +375,11 @@ class NET_EXPORT ClientSocketPool : public LowerLayeredPool {
 
   SocketPoolState StateForTest() const { return State(); }
 
+  void SetSocketSoftCapOverrideForTest(
+      std::optional<size_t> socket_soft_cap_override_for_test) {
+    socket_soft_cap_override_for_test_ = socket_soft_cap_override_for_test;
+  }
+
  protected:
   ClientSocketPool(size_t socket_soft_cap,
                    SocketPoolAdditionalCapacity additional_capacity,
@@ -388,7 +402,11 @@ class NET_EXPORT ClientSocketPool : public LowerLayeredPool {
       SocketTag socket_tag,
       ConnectJob::Delegate* delegate);
 
-  size_t SocketSoftCap() const { return socket_soft_cap_; }
+  size_t SocketSoftCap() const {
+    return socket_soft_cap_override_for_test_
+               ? *socket_soft_cap_override_for_test_
+               : socket_soft_cap_;
+  }
 
   // This should return the sockets the pool considers to be in-use (reserved)
   // of the overall pool. This won't contain 'stalled' sockets as those have yet
@@ -403,15 +421,16 @@ class NET_EXPORT ClientSocketPool : public LowerLayeredPool {
   SocketPoolState State() const { return state_; }
 
   // This should be called exactly once before each attempted socket allocation
-  // via `RequestSocket` or `RequestSockets`. Be sure not to over-invoke to
-  // prevent early capping of the socket pool.
+  // via `RequestSocket` or `RequestSockets` (including before each retry after
+  // dropping idle sockets). Under invoking this function can impact security;
+  // over invoking this function can impact performance.
   void UpdateStateBeforeAllocation();
 
   // This should be called once after each successful socket released (and not
   // reused) via `RequestSocket`, `RequestSockets`, `CancelRequest`,
   // `ReleaseSocket`, `OnConnectJobComplete`, `CloseIdleSockets`, or
-  // `CloseIdleSocketsInGroup`. Be sure not to over-invoke to prevent early
-  // uncapping of the socket pool.
+  // `CloseIdleSocketsInGroup`. Under invoking this function can impact
+  // performance; over invoking this function can impact security.
   void UpdateStateAfterRelease();
 
   // This is used to reset the pool to the initial uncapped state when the
@@ -431,6 +450,9 @@ class NET_EXPORT ClientSocketPool : public LowerLayeredPool {
   const size_t socket_soft_cap_;
   const SocketPoolAdditionalCapacity additional_capacity_;
   SocketPoolState state_ = SocketPoolState::kUncapped;
+
+  // If set, this overrides `socket_soft_cap_` for future calculations.
+  std::optional<size_t> socket_soft_cap_override_for_test_ = std::nullopt;
 
   const ProxyChain proxy_chain_;
   const bool is_for_websockets_;

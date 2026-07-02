@@ -61,10 +61,6 @@ std::unique_ptr<views::View> CreateFullWidthSeparator() {
   return CreateSeparator(/*padded=*/false);
 }
 
-std::unique_ptr<views::View> CreatePaddedSeparator() {
-  return CreateSeparator(/*padded=*/true);
-}
-
 gfx::Insets UserBypassBubbleInsets() {
   auto* provider = ChromeLayoutProvider::Get();
   const int vertical_margin =
@@ -84,8 +80,6 @@ DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(CookieControlsContentView, kToggleButton);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(CookieControlsContentView, kToggleLabel);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(CookieControlsContentView,
                                       kThirdPartyCookiesLabel);
-DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(CookieControlsContentView,
-                                      kFeedbackButton);
 
 CookieControlsContentView::CookieControlsContentView() {
   SetLayoutManager(std::make_unique<views::BoxLayout>(
@@ -93,7 +87,6 @@ CookieControlsContentView::CookieControlsContentView() {
   AddChildView(CreateFullWidthSeparator());
   AddContentLabels();
   AddToggleRow();
-  AddFeedbackSection();
 }
 
 void CookieControlsContentView::AddContentLabels() {
@@ -133,7 +126,6 @@ void CookieControlsContentView::SetCookiesLabel(const std::u16string& label) {
   cookies_label_->SetTextStyle(views::style::STYLE_BODY_5);
   cookies_label_->SetProperty(views::kElementIdentifierKey, kToggleLabel);
 
-  // TODO(https://b/344856056): Update this accessibility label for the new UI.
   const std::u16string accessible_name = base::JoinString(
       {
           l10n_util::GetStringUTF16(
@@ -157,24 +149,8 @@ void CookieControlsContentView::SetEnforcedIconVisible(bool visible) {
   }
 }
 
-void CookieControlsContentView::SetFeedbackSectionVisibility(bool visible) {
-  if (visible && base::FeatureList::IsEnabled(
-                     content_settings::features::kUserBypassFeedback)) {
-    feedback_section_->SetVisible(true);
-    // Ensure that the feedback row is always below ACT feature rows.
-    ReorderChildView(feedback_section_, children().size());
-  } else {
-    feedback_section_->SetVisible(false);
-  }
-}
-
 void CookieControlsContentView::SetCookiesRowVisible(bool visible) {
   cookies_row_->SetVisible(visible);
-}
-
-void CookieControlsContentView::UpdateFeedbackButtonSubtitle(
-    const std::u16string& subtitle) {
-  feedback_button_->SetSubtitleText(subtitle);
 }
 
 void CookieControlsContentView::AddToggleRow() {
@@ -198,36 +174,6 @@ void CookieControlsContentView::AddToggleRow() {
       IDS_COOKIE_CONTROLS_BUBBLE_THIRD_PARTY_COOKIES_LABEL));
   toggle_button_->SetVisible(true);
   toggle_button_->SetProperty(views::kElementIdentifierKey, kToggleButton);
-}
-
-void CookieControlsContentView::AddFeedbackSection() {
-  feedback_section_ = AddChildView(std::make_unique<views::View>());
-  feedback_section_->SetLayoutManager(std::make_unique<views::BoxLayout>(
-      views::BoxLayout::Orientation::kVertical));
-
-  const ui::ImageModel feedback_icon = ui::ImageModel::FromVectorIcon(
-      kSubmitFeedbackIcon, ui::kColorMenuIcon, GetDefaultIconSize());
-  const ui::ImageModel launch_icon = ui::ImageModel::FromVectorIcon(
-      vector_icons::kLaunchIcon, ui::kColorMenuIcon,
-      GetLayoutConstant(LayoutConstant::kPageInfoIconSize));
-
-  feedback_section_->AddChildView(CreatePaddedSeparator());
-
-  feedback_button_ =
-      feedback_section_->AddChildView(std::make_unique<RichHoverButton>(
-          base::BindRepeating(
-              &CookieControlsContentView::NotifyFeedbackButtonPressedCallback,
-              base::Unretained(this)),
-          feedback_icon,
-          l10n_util::GetStringUTF16(
-              IDS_COOKIE_CONTROLS_BUBBLE_SEND_FEEDBACK_BUTTON_TITLE),
-          l10n_util::GetStringUTF16(
-              IDS_COOKIE_CONTROLS_BUBBLE_SEND_FEEDBACK_BUTTON_DESCRIPTION),
-          launch_icon));
-
-  feedback_button_->SetProperty(views::kElementIdentifierKey, kFeedbackButton);
-  feedback_button_->SetTooltipText(l10n_util::GetStringUTF16(
-      IDS_COOKIE_CONTROLS_BUBBLE_SEND_FEEDBACK_BUTTON_TITLE));
 }
 
 void CookieControlsContentView::UpdateContentLabels(
@@ -275,18 +221,8 @@ CookieControlsContentView::RegisterToggleButtonPressedCallback(
   return toggle_button_callback_list_.Add(std::move(callback));
 }
 
-base::CallbackListSubscription
-CookieControlsContentView::RegisterFeedbackButtonPressedCallback(
-    base::RepeatingClosureList::CallbackType callback) {
-  return feedback_button_callback_list_.Add(std::move(callback));
-}
-
 void CookieControlsContentView::NotifyToggleButtonPressedCallback() {
   toggle_button_callback_list_.Notify(toggle_button_->GetIsOn());
-}
-
-void CookieControlsContentView::NotifyFeedbackButtonPressedCallback() {
-  feedback_button_callback_list_.Notify();
 }
 
 BEGIN_METADATA(CookieControlsContentView)

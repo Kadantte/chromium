@@ -9,12 +9,16 @@
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
+#import "ui/base/device_form_factor.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 
 namespace {
 
 // The name of the animation used for the Docking Promo.
 NSString* const kAnimationName = @"docking_promo";
+
+// The name of the animation used for the Docking Promo in dark mode.
+NSString* const kAnimationNameDarkMode = @"docking_promo_darkmode";
 
 // The accessibility identifier for the Docking Promo view.
 NSString* const kDockingPromoAccessibilityId = @"kDockingPromoAccessibilityId";
@@ -55,10 +59,9 @@ NSString* GetSubtitleString() {
 
   if (param == kIOSDockingPromoV2VariationHeader1 ||
       param == kIOSDockingPromoV2VariationHeader2) {
-    return
-        [[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad
-            ? l10n_util::GetNSString(IDS_IOS_DOCKING_PROMO_SUBTITLE_IPAD)
-            : l10n_util::GetNSString(IDS_IOS_DOCKING_PROMO_SUBTITLE);
+    return (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET)
+               ? l10n_util::GetNSString(IDS_IOS_DOCKING_PROMO_SUBTITLE_IPAD)
+               : l10n_util::GetNSString(IDS_IOS_DOCKING_PROMO_SUBTITLE);
   }
   return nil;
 }
@@ -70,7 +73,7 @@ NSString* GetSubtitleString() {
 #pragma mark - UIViewController
 
 - (void)viewDidLoad {
-  self.useLegacyDarkMode = NO;
+  self.animationNameDarkMode = kAnimationNameDarkMode;
   self.animationName = kAnimationName;
   self.animationBackgroundColor = [UIColor
       colorWithDynamicProvider:^UIColor*(UITraitCollection* traitCollection) {
@@ -91,17 +94,6 @@ NSString* GetSubtitleString() {
   [super viewDidLoad];
 
   self.view.accessibilityIdentifier = kDockingPromoAccessibilityId;
-
-  [self registerForTraitChanges:@[ UITraitUserInterfaceStyle.class ]
-                     withAction:@selector(configureAnimationColors)];
-  [self configureAnimationColors];
-}
-
-#pragma mark - Private
-
-// Configures the animation with semantic and custom colors.
-- (void)configureAnimationColors {
-  ConfigureAnimationSemanticColors(self.animationViewWrapper);
 }
 
 @end

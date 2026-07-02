@@ -9,9 +9,9 @@
 #include "base/feature_list.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "chrome/browser/ui/browser_list.h"
-#include "chrome/browser/ui/browser_list_observer.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/find_bar/find_bar.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/bubble_anchor_util_views.h"
@@ -48,8 +48,17 @@ OmniboxView* TestBrowserWindow::TestLocationBar::GetOmniboxView() {
   return nullptr;
 }
 
+OmniboxPopupView* TestBrowserWindow::TestLocationBar::GetOmniboxPopupView() {
+  return nullptr;
+}
+
 OmniboxController* TestBrowserWindow::TestLocationBar::GetOmniboxController() {
   return nullptr;
+}
+
+bool TestBrowserWindow::TestLocationBar::ShouldCloseOmniboxPopup(
+    ui::MouseEvent* event) {
+  return false;
 }
 
 ChipController* TestBrowserWindow::TestLocationBar::GetChipController() {
@@ -82,6 +91,14 @@ Browser* TestBrowserWindow::TestLocationBar::GetBrowser() {
   return nullptr;
 }
 
+Profile* TestBrowserWindow::TestLocationBar::GetProfile() {
+  return nullptr;
+}
+
+bool TestBrowserWindow::TestLocationBar::IsInitialized() const {
+  return true;
+}
+
 bool TestBrowserWindow::TestLocationBar::IsVisible() const {
   return true;
 }
@@ -90,7 +107,7 @@ bool TestBrowserWindow::TestLocationBar::IsDrawn() const {
   return true;
 }
 
-bool TestBrowserWindow::TestLocationBar::IsTopLevelFullscreen() const {
+bool TestBrowserWindow::TestLocationBar::IsFullscreen() const {
   return false;
 }
 
@@ -98,7 +115,15 @@ bool TestBrowserWindow::TestLocationBar::IsEditingOrEmpty() const {
   return false;
 }
 
+bool TestBrowserWindow::TestLocationBar::IsMouseHovered() const {
+  return false;
+}
+
 gfx::Rect TestBrowserWindow::TestLocationBar::Bounds() const {
+  return gfx::Rect();
+}
+
+gfx::Rect TestBrowserWindow::TestLocationBar::BoundsInScreen() const {
   return gfx::Rect();
 }
 
@@ -120,7 +145,8 @@ TestBrowserWindow::TestBrowserWindow() {
   // TestBrowserWindow will always be instantiated before its Browser.
   // TODO(crbug.com/413168662): This can be removed once Browser is updated to
   // always own its BrowserWindow.
-  browser_list_observer_.Observe(BrowserList::GetInstance());
+  browser_collection_observation_.Observe(
+      GlobalBrowserCollection::GetInstance());
 }
 
 TestBrowserWindow::~TestBrowserWindow() {
@@ -192,10 +218,6 @@ std::vector<StatusBubble*> TestBrowserWindow::GetStatusBubbles() {
   return {};
 }
 
-bool TestBrowserWindow::CanDockDevTools() const {
-  return true;
-}
-
 gfx::Rect TestBrowserWindow::GetRestoredBounds() const {
   return gfx::Rect();
 }
@@ -222,10 +244,6 @@ bool TestBrowserWindow::IsMinimized() const {
   return is_minimized_;
 }
 
-bool TestBrowserWindow::ShouldHideUIForFullscreen() const {
-  return false;
-}
-
 bool TestBrowserWindow::GetCanResize() {
   return false;
 }
@@ -235,14 +253,6 @@ ui::mojom::WindowShowState TestBrowserWindow::GetWindowShowState() const {
 }
 
 bool TestBrowserWindow::IsFullscreen() const {
-  return false;
-}
-
-bool TestBrowserWindow::IsFullscreenBubbleVisible() const {
-  return false;
-}
-
-bool TestBrowserWindow::IsForceFullscreen() const {
   return false;
 }
 
@@ -273,16 +283,8 @@ bool TestBrowserWindow::HandleKeyboardEvent(
   return false;
 }
 
-bool TestBrowserWindow::IsBookmarkBarVisible() const {
-  return false;
-}
-
-bool TestBrowserWindow::IsBookmarkBarAnimating() const {
-  return false;
-}
-
 bool TestBrowserWindow::IsTabStripEditable() const {
-  return is_tab_strip_editable_;
+  return false;
 }
 
 void TestBrowserWindow::DisableTabStripEditingForTesting() {
@@ -323,52 +325,10 @@ ShowTranslateBubbleResult TestBrowserWindow::ShowTranslateBubble(
   return ShowTranslateBubbleResult::kSuccess;
 }
 
-void TestBrowserWindow::StartPartialTranslate(
-    const std::string& source_language,
-    const std::string& target_language,
-    const std::u16string& text_selection) {}
-
-qrcode_generator::QRCodeGeneratorBubbleView*
-TestBrowserWindow::ShowQRCodeGeneratorBubble(content::WebContents* contents,
-                                             const GURL& url,
-                                             bool show_back_button) {
-  return nullptr;
-}
-
-SharingDialog* TestBrowserWindow::ShowSharingDialog(
-    content::WebContents* web_contents,
-    SharingDialogData data) {
-  return nullptr;
-}
-
-#if !BUILDFLAG(IS_ANDROID)
-sharing_hub::ScreenshotCapturedBubble*
-TestBrowserWindow::ShowScreenshotCapturedBubble(content::WebContents* contents,
-                                                const gfx::Image& image) {
-  return nullptr;
-}
-#endif
-
-send_tab_to_self::SendTabToSelfBubbleView*
-TestBrowserWindow::ShowSendTabToSelfDevicePickerBubble(
-    content::WebContents* contents) {
-  return nullptr;
-}
-
-send_tab_to_self::SendTabToSelfBubbleView*
-TestBrowserWindow::ShowSendTabToSelfPromoBubble(content::WebContents* contents,
-                                                bool show_signin_button) {
-  return nullptr;
-}
 
 #if BUILDFLAG(IS_CHROMEOS)
 void TestBrowserWindow::ToggleMultitaskMenu() {
   return;
-}
-#else
-sharing_hub::SharingHubBubbleView* TestBrowserWindow::ShowSharingHubBubble(
-    share::ShareAttempt attempt) {
-  return nullptr;
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
@@ -426,9 +386,10 @@ void TestBrowserWindow::SetIsTabModalPopupDeprecated(
   is_tab_modal_popup_deprecated_ = is_tab_modal_popup_deprecated;
 }
 
-void TestBrowserWindow::OnBrowserAdded(Browser* browser) {
-  if (browser->create_params().window == this) {
-    browser_ = browser;
-    browser_list_observer_.Reset();
+void TestBrowserWindow::OnBrowserCreated(BrowserWindowInterface* browser) {
+  Browser* current_browser = browser->GetBrowserForMigrationOnly();
+  if (current_browser->create_params().window == this) {
+    browser_ = current_browser;
+    browser_collection_observation_.Reset();
   }
 }

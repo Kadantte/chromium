@@ -6,9 +6,9 @@
 
 #include <android/keycodes.h>
 
+#include "base/android/callback_android.h"
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
-#include "base/android/jni_callback.h"
 #include "base/android/jni_string.h"
 #include "base/android/scoped_hardware_buffer_handle.h"
 #include "base/android/scoped_java_ref.h"
@@ -31,6 +31,7 @@
 #include "content/public/common/content_features.h"
 #include "content/public/common/referrer.h"
 #include "content/public/common/resource_request_body_android.h"
+#include "printing/buildflags/buildflags.h"
 #include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom.h"
 #include "third_party/blink/public/mojom/frame/blocked_navigation_types.mojom.h"
@@ -44,8 +45,12 @@
 #include "url/android/gurl_android.h"
 #include "url/gurl.h"
 
+#if BUILDFLAG(ENABLE_PRINTING)
+#include "components/printing/browser/print_composite_client.h"  // nogncheck
+#endif
+
 // Must come after all headers that specialize FromJniType() / ToJniType().
-#include "components/embedder_support/android/web_contents_delegate_jni_headers/WebContentsDelegateAndroid_jni.h"
+#include "components/embedder_support/android/web_contents_delegate_jni/WebContentsDelegateAndroid_jni.h"
 
 using base::android::AttachCurrentThread;
 using base::android::ConvertUTF16ToJavaString;
@@ -63,14 +68,21 @@ namespace web_contents_delegate_android {
 
 WebContentsDelegateAndroid::WebContentsDelegateAndroid(
     JNIEnv* env,
-    const jni_zero::JavaRef<jobject>& obj)
-    : weak_java_delegate_(env, obj) {}
+    const jni_zero::JavaRef<jobject>& obj) {
+  Java_WebContentsDelegateAndroid_registerRef(
+      env, reinterpret_cast<intptr_t>(this), obj);
+}
 
-WebContentsDelegateAndroid::~WebContentsDelegateAndroid() = default;
+WebContentsDelegateAndroid::~WebContentsDelegateAndroid() {
+  JNIEnv* env = AttachCurrentThread();
+  Java_WebContentsDelegateAndroid_unregisterRef(
+      env, reinterpret_cast<intptr_t>(this));
+}
 
 ScopedJavaLocalRef<jobject> WebContentsDelegateAndroid::GetJavaDelegate(
     JNIEnv* env) const {
-  return weak_java_delegate_.get(env);
+  return Java_WebContentsDelegateAndroid_getDelegate(
+      env, reinterpret_cast<intptr_t>(this));
 }
 
 // ----------------------------------------------------------------------------
@@ -324,6 +336,17 @@ bool WebContentsDelegateAndroid::ShouldBlockMediaRequest(const GURL& url) {
                                                                  j_gurl);
 }
 
+bool WebContentsDelegateAndroid::CanEnterFullscreenModeForTab(
+    content::RenderFrameHost* requesting_frame) {
+  JNIEnv* env = AttachCurrentThread();
+  ScopedJavaLocalRef<jobject> obj = GetJavaDelegate(env);
+  if (obj.is_null()) {
+    return true;
+  }
+  return Java_WebContentsDelegateAndroid_canEnterFullscreenModeForTab(
+      env, obj, requesting_frame->GetJavaRenderFrameHost());
+}
+
 void WebContentsDelegateAndroid::EnterFullscreenModeForTab(
     content::RenderFrameHost* requesting_frame,
     const blink::mojom::FullscreenOptions& options) {
@@ -409,6 +432,8 @@ content::FullscreenState WebContentsDelegateAndroid::GetFullscreenState(
 void WebContentsDelegateAndroid::OnDidBlockNavigation(
     content::WebContents* web_contents,
     const GURL& blocked_url,
+    const GURL& initiator_url,
+    const url::Origin& initiator_origin,
     blink::mojom::NavigationBlockedReason reason) {}
 
 int WebContentsDelegateAndroid::GetTopControlsHeight() {
@@ -695,6 +720,19 @@ void WebContentsDelegateAndroid::SetContentsBounds(content::WebContents* source,
   ScopedJavaLocalRef<jobject> jsource = source->GetJavaWebContents();
 
   Java_WebContentsDelegateAndroid_setContentsBounds(env, obj, jsource, bounds);
+}
+
+void WebContentsDelegateAndroid::PrintCrossProcessSubframe(
+    content::WebContents* web_contents,
+    const gfx::Rect& rect,
+    int document_cookie,
+    content::RenderFrameHost* subframe_host) const {
+#if BUILDFLAG(ENABLE_PRINTING)
+  auto* client = printing::PrintCompositeClient::FromWebContents(web_contents);
+  if (client) {
+    client->PrintCrossProcessSubframe(rect, document_cookie, subframe_host);
+  }
+#endif
 }
 
 }  // namespace web_contents_delegate_android

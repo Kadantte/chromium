@@ -6,13 +6,16 @@
 
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "components/content_settings/browser/ui/javascript_optimizer_setting.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
-#include "components/content_settings/core/common/features.h"
 #include "components/prefs/pref_service.h"
+#include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
+#include "components/search_engines/template_url_service.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/security_principal.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
@@ -43,11 +46,8 @@ bool CanEnableBlockingJavascriptOptimizersForUnfamiliarSites(Profile* profile) {
     return false;
   }
 
-  if (!(base::FeatureList::IsEnabled(
-            features::kProcessSelectionDeferringConditions) &&
-        base::FeatureList::IsEnabled(
-            content_settings::features::
-                kBlockV8OptimizerOnUnfamiliarSitesSetting))) {
+  if (!base::FeatureList::IsEnabled(
+          features::kProcessSelectionDeferringConditions)) {
     // Blocking js-opt on unfamiliar sites needs to be available to the user.
     return false;
   }
@@ -90,11 +90,39 @@ ComputeDefaultJavascriptOptimizerSetting(Profile* profile) {
     return content_settings::JavascriptOptimizerSetting::kAllowed;
   }
 
-  return profile->GetPrefs()->GetBoolean(
-             prefs::kJavascriptOptimizerBlockedForUnfamiliarSites)
-             ? content_settings::JavascriptOptimizerSetting::
-                   kBlockedForUnfamiliarSites
-             : content_settings::JavascriptOptimizerSetting::kAllowed;
+  PrefService* prefs = profile->GetPrefs();
+  if (prefs->HasPrefPath(
+          prefs::kJavascriptOptimizerBlockedForUnfamiliarSites)) {
+    return prefs->GetBoolean(
+               prefs::kJavascriptOptimizerBlockedForUnfamiliarSites)
+               ? content_settings::JavascriptOptimizerSetting::
+                     kBlockedForUnfamiliarSites
+               : content_settings::JavascriptOptimizerSetting::kAllowed;
+  }
+
+  if (base::FeatureList::IsEnabled(
+          safe_browsing::kMigrateToBlockV8OptimizerOnUnfamiliarSites)) {
+    return content_settings::JavascriptOptimizerSetting::
+        kBlockedForUnfamiliarSites;
+  }
+
+  return content_settings::JavascriptOptimizerSetting::kAllowed;
+}
+
+bool IsV8OptimizerMigrationDryRun(Profile* profile) {
+  if (ComputeDefaultJavascriptOptimizerSetting(profile) !=
+      content_settings::JavascriptOptimizerSetting::
+          kBlockedForUnfamiliarSites) {
+    return false;
+  }
+
+  PrefService* prefs = profile->GetPrefs();
+  if (prefs->HasPrefPath(
+          prefs::kJavascriptOptimizerBlockedForUnfamiliarSites)) {
+    return false;  // Opted in via pref, so don't apply dry run.
+  }
+
+  return safe_browsing::kMigrateToBlockV8OptimizerOnUnfamiliarSitesDryRun.Get();
 }
 
 std::optional<bool> AreV8OptimizationsDisabled(
@@ -151,7 +179,9 @@ void EnableV8Optimizations(content::WebContents* web_contents) {
     return;
   }
 
-  const GURL& site_url = web_contents->GetSiteInstance()->GetSiteURL();
+  const GURL& site_url = web_contents->GetSiteInstance()
+                             ->GetSecurityPrincipal()
+                             .GetDeprecatedSiteURL();
   if (site_url.is_empty()) {
     return;
   }
@@ -159,6 +189,19 @@ void EnableV8Optimizations(content::WebContents* web_contents) {
   map->SetContentSettingDefaultScope(site_url, site_url,
                                      ContentSettingsType::JAVASCRIPT_OPTIMIZER,
                                      ContentSetting::CONTENT_SETTING_ALLOW);
+}
+
+bool IsDefaultSearchEngineUrl(const GURL& url, Profile* profile) {
+  TemplateURLService* template_url_service =
+      TemplateURLServiceFactory::GetForProfile(profile);
+  if (!template_url_service) {
+    return false;
+  }
+  if (!template_url_service->GetDefaultSearchProvider()) {
+    return false;
+  }
+  return template_url_service->IsSearchResultsPageFromDefaultSearchProvider(
+      url);
 }
 
 }  // namespace site_protection

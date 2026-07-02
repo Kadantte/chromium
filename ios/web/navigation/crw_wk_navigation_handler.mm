@@ -4,9 +4,12 @@
 
 #import "ios/web/navigation/crw_wk_navigation_handler.h"
 
+#import <optional>
+
 #import "base/apple/foundation_util.h"
 #import "base/feature_list.h"
 #import "base/ios/ns_error_util.h"
+#import "base/memory/weak_ptr.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/histogram_macros.h"
 #import "base/metrics/user_metrics.h"
@@ -38,6 +41,7 @@
 #import "ios/web/public/download/download_controller.h"
 #import "ios/web/public/navigation/form_warning_type.h"
 #import "ios/web/public/web_client.h"
+#import "ios/web/security/cert_verification_error.h"
 #import "ios/web/security/crw_cert_verification_controller.h"
 #import "ios/web/security/wk_web_view_security_util.h"
 #import "ios/web/session/session_certificate_policy_cache_impl.h"
@@ -96,6 +100,37 @@ enum class ErrorPagePresentationFailed {
   kOtherWKErrorDomain,
   kMaxValue = kOtherWKErrorDomain
 };
+
+// Type of the completion handler for ProcessClientCertAuthForUser.
+using SessionAuthChallengeBlock = void (^)(NSURLSessionAuthChallengeDisposition,
+                                           NSURLCredential*);
+
+// Used in webView:didReceiveAuthenticationChallenge:completionHandler: to reply
+// with NSURLSessionAuthChallengeDisposition and credentials.
+void ProcessClientCertAuthForUser(WKWebView* web_view,
+                                  SessionAuthChallengeBlock completion_handler,
+                                  SecIdentityRef identity) {
+  if (!identity) {
+    // Embedder cancelled authentication. If the web view is attached to a
+    // window, perform default handling to allow the system to potentially show
+    // a certificate picker. If not (e.g., for pre-rendering), cancel the
+    // challenge to avoid showing UI in the background or caching nil response
+    // returned by prerender browser agent.
+    if (web_view.window) {
+      completion_handler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
+    } else {
+      completion_handler(NSURLSessionAuthChallengeCancelAuthenticationChallenge,
+                         nil);
+    }
+    return;
+  }
+  completion_handler(
+      NSURLSessionAuthChallengeUseCredential,
+      [NSURLCredential
+          credentialWithIdentity:identity
+                    certificates:nil
+                     persistence:NSURLCredentialPersistenceForSession]);
+}
 
 void LogPresentingErrorPageFailedWithError(NSError* error) {
   ErrorPagePresentationFailed failure_type =
@@ -240,8 +275,11 @@ void LogPresentingErrorPageFailedWithError(NSError* error) {
       }
     }
 
-    NSString* userAgentString = base::SysUTF8ToNSString(
-        web::GetWebClient()->GetUserAgent(userAgentType));
+    std::optional<std::string> userAgentOverride =
+        self.webStateImpl->GetUserAgentOverride();
+    NSString* userAgentString =
+        base::SysUTF8ToNSString(userAgentOverride.value_or(
+            web::GetWebClient()->GetUserAgent(userAgentType)));
     if (![webView.customUserAgent isEqualToString:userAgentString]) {
       webView.customUserAgent = userAgentString;
     }
@@ -908,17 +946,26 @@ void LogPresentingErrorPageFailedWithError(NSError* error) {
   [self.navigationStates setState:web::WKNavigationState::COMMITTED
                     forNavigation:navigation];
 
+  base::WeakPtr<web::NavigationContextImpl> weakContext =
+      context ? context->GetWeakPtr() : nullptr;
   if (!committedNavigation && context && !context->IsLoadingErrorPage()) {
     self.webStateImpl->OnNavigationFinished(context);
   }
 
   // The actual navigation item will not be committed until the native content
   // or WebUI is shown.
-  if (context && !context->GetUrl().SchemeIs(url::kAboutScheme)) {
-    [self.delegate webViewHandlerUpdateSSLStatusForCurrentNavigationItem:self];
-    if (!context->IsLoadingErrorPage()) {
-      [self setLastCommittedNavigationItemTitle:webView.title];
-    }
+  if (!weakContext) {
+    return;
+  }
+
+  const GURL& url = weakContext->GetUrl();
+  if (!url.is_valid() || url.SchemeIs(url::kAboutScheme)) {
+    return;
+  }
+
+  [self.delegate webViewHandlerUpdateSSLStatusForCurrentNavigationItem:self];
+  if (!weakContext->IsLoadingErrorPage()) {
+    [self setLastCommittedNavigationItemTitle:webView.title];
   }
 }
 
@@ -1075,6 +1122,13 @@ void LogPresentingErrorPageFailedWithError(NSError* error) {
       [authMethod isEqualToString:NSURLAuthenticationMethodHTTPDigest]) {
     [self handleHTTPAuthForChallenge:challenge
                    completionHandler:completionHandler];
+    return;
+  }
+
+  if ([authMethod isEqualToString:NSURLAuthenticationMethodClientCertificate]) {
+    [self handleClientCertAuthForChallenge:challenge
+                                   webView:webView
+                         completionHandler:completionHandler];
     return;
   }
 
@@ -1367,7 +1421,8 @@ void LogPresentingErrorPageFailedWithError(NSError* error) {
 // renderer process for all page frames. With that Chromium does not allow
 // running App specific pages in the same process as a web site from the
 // internet. Allows navigation to app specific URL in the following cases:
-//   - last committed URL is app specific
+//   - last committed virtual URL is app specific
+//   - last committed URL is app specific and loading the same URL
 //   - navigation not a new navigation (back-forward)
 //   - navigation is typed, generated or bookmark
 //   - navigation is performed in iframe and main frame is app-specific page
@@ -1379,10 +1434,16 @@ void LogPresentingErrorPageFailedWithError(NSError* error) {
   web::NavigationItem* lastItem =
       self.webStateImpl->GetNavigationManager()->GetLastCommittedItem();
   if (lastItem &&
-      (web::GetWebClient()->IsAppSpecificURL(lastItem->GetVirtualURL()) ||
-       web::GetWebClient()->IsAppSpecificURL(lastItem->GetURL()))) {
+      (web::GetWebClient()->IsAppSpecificURL(lastItem->GetVirtualURL()))) {
     // Last committed page is also app specific and navigation should be
     // allowed.
+    return YES;
+  }
+
+  if (lastItem && web::GetWebClient()->IsAppSpecificURL(lastItem->GetURL()) &&
+      lastItem->GetURL() == requestURL) {
+    // Last committed page is app specific, but this is not user visible. Only
+    // allow reloading.
     return YES;
   }
 
@@ -1797,6 +1858,24 @@ void LogPresentingErrorPageFailedWithError(NSError* error) {
                  persistence:NSURLCredentialPersistenceForSession]);
 }
 
+// Used in webView:didReceiveAuthenticationChallenge:completionHandler: to reply
+// with NSURLSessionAuthChallengeDisposition and credentials.
+- (void)handleClientCertAuthForChallenge:
+            (NSURLAuthenticationChallenge*)challenge
+                                 webView:(WKWebView*)webView
+                       completionHandler:
+                           (void (^)(NSURLSessionAuthChallengeDisposition,
+                                     NSURLCredential*))completionHandler {
+  NSURLProtectionSpace* space = challenge.protectionSpace;
+  DCHECK([space.authenticationMethod
+      isEqualToString:NSURLAuthenticationMethodClientCertificate]);
+
+  __weak WKWebView* weakWebView = webView;
+  self.webStateImpl->OnAuthRequired(
+      space, base::BindOnce(&ProcessClientCertAuthForUser, weakWebView,
+                            completionHandler));
+}
+
 // Called when a load ends in an error.
 - (void)handleLoadError:(NSError*)error
           forNavigation:(WKNavigation*)navigation
@@ -1889,8 +1968,12 @@ void LogPresentingErrorPageFailedWithError(NSError* error) {
         // WKWebView will revert the url to about:blank. Simply discard pending
         // item and fail the navigation.
         navigationContext->ReleaseItem();
+        base::WeakPtr<web::NavigationContextImpl> weakContext =
+            navigationContext->GetWeakPtr();
         self.webStateImpl->OnNavigationFinished(navigationContext);
-        self.webStateImpl->OnPageLoaded(navigationContext->GetUrl(), false);
+        if (weakContext) {
+          self.webStateImpl->OnPageLoaded(weakContext->GetUrl(), false);
+        }
         return;
       }
     }
@@ -2202,13 +2285,17 @@ void LogPresentingErrorPageFailedWithError(NSError* error) {
         // `OnNavigationFinished` callback.
         navContext->SetUrl(failingURL);
         navContext->SetHasCommitted(true);
+        base::WeakPtr<web::NavigationContextImpl> weakContext =
+            navContext->GetWeakPtr();
         self.webStateImpl->OnNavigationFinished(navContext);
 
         // For SSL cert error pages, SSLStatus needs to be set manually because
         // the placeholder navigation for the error page is committed and
         // there is no server trust (since there's no network navigation), which
         // is required to create a cert in CRWSSLStatusUpdater.
-        if (web::IsWKWebViewSSLCertError(navContext->GetError()) && info.cert) {
+        if (weakContext &&
+            web::IsWKWebViewSSLCertError(weakContext->GetError()) &&
+            info.cert) {
           web::SSLStatus& SSLStatus =
               self.navigationManagerImpl->GetLastCommittedItem()->GetSSL();
           SSLStatus.cert_status = info.cert_status;

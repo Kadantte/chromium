@@ -15,7 +15,6 @@ import android.view.View;
 import android.view.View.AccessibilityDelegate;
 import android.view.View.OnClickListener;
 import android.view.ViewGroup;
-import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.BaseAdapter;
 import android.widget.ImageView;
@@ -44,6 +43,7 @@ import org.chromium.components.favicon.LargeIconBridge;
 import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.components.regional_capabilities.RegionalCapabilitiesService;
 import org.chromium.components.search_engines.ChoiceMadeLocation;
+import org.chromium.components.search_engines.PrepopulatedAndRecentlyVisitedTemplateURLs;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.url.GURL;
@@ -51,6 +51,7 @@ import org.chromium.url.GURL;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -117,7 +118,7 @@ public class SearchEngineAdapter extends BaseAdapter
     private List<TemplateUrl> mRecentSearchEngines = new ArrayList<>();
 
     /** Cache for storing fetched search icon bitmaps. */
-    private final Map<GURL, Bitmap> mIconCache = new HashMap();
+    private final Map<GURL, Bitmap> mIconCache = new HashMap<>();
 
     /**
      * The position (index into mPrepopulatedSearchEngines) of the currently selected search engine.
@@ -206,35 +207,61 @@ public class SearchEngineAdapter extends BaseAdapter
             return; // Flow continues in onTemplateUrlServiceLoaded below.
         }
 
-        RegionalCapabilitiesService regionalCapabilities =
-                RegionalCapabilitiesServiceFactory.getForProfile(mProfile);
-        List<TemplateUrl> templateUrls = templateUrlService.getTemplateUrls();
+        boolean forceRefresh = mIsLocationPermissionChanged;
+        mIsLocationPermissionChanged = false;
 
         // Note: DSE may be null if explicitly blocked by policy.
         @Nullable TemplateUrl defaultSearchEngineTemplateUrl =
                 templateUrlService.getDefaultSearchEngineTemplateUrl();
 
-        sortAndFilterUnnecessaryTemplateUrl(
-                templateUrls,
-                defaultSearchEngineTemplateUrl,
-                regionalCapabilities.isInEeaCountry());
-        boolean forceRefresh = mIsLocationPermissionChanged;
-        mIsLocationPermissionChanged = false;
-        if (!didSearchEnginesChange(templateUrls)) {
-            if (forceRefresh) notifyDataSetChanged();
-            return;
-        }
+        if (ChromeFeatureList.isEnabled(ChromeFeatureList.SEARCH_SETTINGS_UPDATE_V2)) {
+            PrepopulatedAndRecentlyVisitedTemplateURLs engines =
+                    templateUrlService.getPrepopulatedAndRecentlyVisitedTemplateURLs();
 
-        mPrepopulatedSearchEngines = new ArrayList<>();
-        mRecentSearchEngines = new ArrayList<>();
+            // Recently visited search engines may be disabled as site search can set more advanced
+            // settings.
+            List<TemplateUrl> recentlyVisitedUrls =
+                    OmniboxFeatures.sOmniboxSiteSearch.isEnabled()
+                            ? Collections.emptyList()
+                            : engines.getRecentlyVisitedUrls();
 
-        for (int i = 0; i < templateUrls.size(); i++) {
-            TemplateUrl templateUrl = templateUrls.get(i);
-            if (getSearchEngineSourceType(templateUrl, defaultSearchEngineTemplateUrl)
-                    == TemplateUrlSourceType.RECENT) {
-                mRecentSearchEngines.add(templateUrl);
-            } else {
-                mPrepopulatedSearchEngines.add(templateUrl);
+            if (!didSearchEnginesChange(engines.getPrepopulatedUrls(), mPrepopulatedSearchEngines)
+                    && !didSearchEnginesChange(recentlyVisitedUrls, mRecentSearchEngines)) {
+                if (forceRefresh) notifyDataSetChanged();
+                return;
+            }
+
+            mPrepopulatedSearchEngines = new ArrayList<>(engines.getPrepopulatedUrls());
+            mRecentSearchEngines = new ArrayList<>(recentlyVisitedUrls);
+        } else {
+            RegionalCapabilitiesService regionalCapabilities =
+                    RegionalCapabilitiesServiceFactory.getForProfile(mProfile);
+
+            List<TemplateUrl> templateUrls = templateUrlService.getTemplateUrls();
+            sortAndFilterUnnecessaryTemplateUrl(
+                    templateUrls,
+                    defaultSearchEngineTemplateUrl,
+                    regionalCapabilities.isInEeaCountry());
+
+            List<TemplateUrl> combinedLists = new ArrayList<>(mPrepopulatedSearchEngines);
+            combinedLists.addAll(mRecentSearchEngines);
+
+            if (!didSearchEnginesChange(templateUrls, combinedLists)) {
+                if (forceRefresh) notifyDataSetChanged();
+                return;
+            }
+
+            mPrepopulatedSearchEngines = new ArrayList<>();
+            mRecentSearchEngines = new ArrayList<>();
+
+            for (int i = 0; i < templateUrls.size(); i++) {
+                TemplateUrl templateUrl = templateUrls.get(i);
+                if (getSearchEngineSourceType(templateUrl, defaultSearchEngineTemplateUrl)
+                        == TemplateUrlSourceType.RECENT) {
+                    mRecentSearchEngines.add(templateUrl);
+                } else {
+                    mPrepopulatedSearchEngines.add(templateUrl);
+                }
             }
         }
 
@@ -397,16 +424,14 @@ public class SearchEngineAdapter extends BaseAdapter
         return false;
     }
 
-    private boolean didSearchEnginesChange(List<TemplateUrl> templateUrls) {
-        if (templateUrls.size()
-                != mPrepopulatedSearchEngines.size() + mRecentSearchEngines.size()) {
+    private boolean didSearchEnginesChange(
+            List<TemplateUrl> templateUrls, List<TemplateUrl> stashedUrls) {
+        if (templateUrls.size() != stashedUrls.size()) {
             return true;
         }
         for (int i = 0; i < templateUrls.size(); i++) {
             TemplateUrl templateUrl = templateUrls.get(i);
-            if (!containsTemplateUrl(mPrepopulatedSearchEngines, templateUrl)
-                    && !SearchEngineAdapter.containsTemplateUrl(
-                            mRecentSearchEngines, templateUrl)) {
+            if (!containsTemplateUrl(stashedUrls, templateUrl)) {
                 return true;
             }
         }
@@ -499,20 +524,18 @@ public class SearchEngineAdapter extends BaseAdapter
             view = mLayoutInflater.inflate(layoutId, parent, false);
         }
 
-        if (ChromeFeatureList.sAndroidSettingsContainment.isEnabled()) {
-            boolean isTop = position == 0 || getItemViewType(position - 1) == ViewType.DIVIDER;
-            boolean isBottom =
-                    position == getCount() - 1 || getItemViewType(position + 1) == ViewType.DIVIDER;
+        View containerView = view.findViewById(R.id.container);
 
-            View containerView = view.findViewById(R.id.container);
+        boolean isTop = position == 0 || getItemViewType(position - 1) == ViewType.DIVIDER;
+        boolean isBottom =
+                position == getCount() - 1 || getItemViewType(position + 1) == ViewType.DIVIDER;
 
-            ContainerStyle containerStyle =
-                    mContainmentItemController
-                            .createStandardBuilder(isTop, isBottom, /* isSingleLine= */ true)
-                            .build();
-            ContainmentViewStyler.applyBackgroundStyle(containerView, containerStyle);
-            ContainmentViewStyler.applyMargins(containerView, containerStyle);
-        }
+        ContainerStyle containerStyle =
+                mContainmentItemController
+                        .createStandardBuilder(isTop, isBottom, /* isSingleLine= */ true)
+                        .build();
+        ContainmentViewStyler.applyBackgroundStyle(containerView, containerStyle);
+        ContainmentViewStyler.applyMargins(containerView, containerStyle);
 
         if (itemViewType == ViewType.SITE_SEARCH_SETTINGS) {
             view.setOnClickListener(this);
@@ -547,25 +570,17 @@ public class SearchEngineAdapter extends BaseAdapter
 
         updateLogo(logoView, templateUrl, faviconUrl);
 
-        // To improve the explore-by-touch experience, the radio button is hidden from accessibility
-        // and instead, "checked" or "not checked" is read along with the search engine's name, e.g.
-        // "google.com checked" or "google.com not checked".
         radioButton.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        description.setAccessibilityDelegate(
-                new AccessibilityDelegate() {
-                    @Override
-                    public void onInitializeAccessibilityEvent(
-                            View host, AccessibilityEvent event) {
-                        super.onInitializeAccessibilityEvent(host, event);
-                        event.setChecked(selected);
-                    }
+        containerView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
 
+        view.setAccessibilityDelegate(
+                new AccessibilityDelegate() {
                     @Override
                     public void onInitializeAccessibilityNodeInfo(
                             View host, AccessibilityNodeInfo info) {
                         super.onInitializeAccessibilityNodeInfo(host, info);
-                        info.setCheckable(true);
-                        info.setChecked(selected);
+                        info.setSelected(selected);
+                        info.setClassName(RadioButton.class.getName());
                     }
                 });
 

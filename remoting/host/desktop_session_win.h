@@ -31,7 +31,6 @@ namespace remoting {
 class AutoThreadTaskRunner;
 class DaemonProcess;
 class DesktopSession;
-class ScreenResolution;
 class WorkerProcessLauncher;
 class WtsTerminalMonitor;
 
@@ -50,7 +49,7 @@ class DesktopSessionWin : public DesktopSession,
       scoped_refptr<AutoThreadTaskRunner> io_task_runner,
       DaemonProcess* daemon_process,
       int id,
-      const ScreenResolution& resolution);
+      const mojom::DesktopSessionOptions& options);
 
   // Creates a desktop session instance that attaches to a virtual console.
   static std::unique_ptr<DesktopSession> CreateForVirtualTerminal(
@@ -58,10 +57,13 @@ class DesktopSessionWin : public DesktopSession,
       scoped_refptr<AutoThreadTaskRunner> io_task_runner,
       DaemonProcess* daemon_process,
       int id,
-      const ScreenResolution& resolution);
+      const mojom::DesktopSessionOptions& options);
 
   DesktopSessionWin(const DesktopSessionWin&) = delete;
   DesktopSessionWin& operator=(const DesktopSessionWin&) = delete;
+
+  // Returns the Windows Session ID, which is different from id().
+  uint32_t windows_session_id() const { return session_id_; }
 
  protected:
   // Passes the owning |daemon_process|, a unique identifier of the desktop
@@ -112,6 +114,10 @@ class DesktopSessionWin : public DesktopSession,
   void InjectSecureAttentionSequence() override;
   void CrashNetworkProcess() override;
 
+  // DesktopSession implementation.
+  void ReconnectNetworkChannel(
+      const mojom::DesktopSessionOptions& options) override;
+
   // Requests the desktop process to crash.
   void CrashDesktopProcess(const base::Location& location);
 
@@ -146,7 +152,7 @@ class DesktopSessionWin : public DesktopSession,
 
   // The id of the current desktop session being remoted or UINT32_MAX if no
   // session exists.
-  int session_id_ = UINT32_MAX;
+  uint32_t session_id_ = UINT32_MAX;
 };
 
 }  // namespace remoting

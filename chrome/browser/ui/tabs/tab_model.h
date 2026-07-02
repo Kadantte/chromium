@@ -24,6 +24,7 @@ namespace content {
 class WebContents;
 }
 
+class Profile;
 class TabStripModel;
 namespace tabs {
 
@@ -67,7 +68,7 @@ class TabModel final : public TabInterface,
   void SetPinned(bool pinned);
   void SetGroup(std::optional<tab_groups::TabGroupId> group);
 
-  void set_blocked(bool blocked) { blocked_ = blocked; }
+  void SetBlocked(bool blocked);
   void set_split(std::optional<split_tabs::SplitTabId> split) {
     split_ = split;
   }
@@ -125,6 +126,11 @@ class TabModel final : public TabInterface,
   // TabInterface overrides:
   base::WeakPtr<TabInterface> GetWeakPtr() override;
   content::WebContents* GetContents() const override;
+  void LoadIfNeeded() override;
+  std::u16string GetTitle() const override;
+  GURL GetURL() const override;
+  base::Time GetLastActiveTime() const override;
+  Profile* GetProfile() const override;
   base::CallbackListSubscription RegisterWillDiscardContents(
       TabInterface::WillDiscardContentsCallback callback) override;
   bool IsActivated() const override;
@@ -147,6 +153,8 @@ class TabModel final : public TabInterface,
       TabInterface::PinnedStateChangedCallback callback) override;
   base::CallbackListSubscription RegisterGroupChanged(
       TabInterface::GroupChangedCallback callback) override;
+  base::CallbackListSubscription RegisterBlockedStateChanged(
+      TabInterface::BlockedStateChangedCallback callback) override;
 
   bool CanShowModalUI() const override;
   std::unique_ptr<ScopedTabModalUI> ShowModalUI() override;
@@ -238,8 +246,8 @@ class TabModel final : public TabInterface,
   bool visible_ = false;
   // TODO(crbug.com/392951786): Remove this property, and instead determine a
   // tab's split status based on whether it is part of a split tab collection.
-  std::optional<split_tabs::SplitTabId> split_ = std::nullopt;
-  std::optional<tab_groups::TabGroupId> group_ = std::nullopt;
+  std::optional<split_tabs::SplitTabId> split_;
+  std::optional<tab_groups::TabGroupId> group_;
   raw_ptr<TabCollection> parent_collection_ = nullptr;
 
   using WillDiscardContentsCallbackList = base::RepeatingCallbackList<
@@ -278,6 +286,10 @@ class TabModel final : public TabInterface,
   using GroupChangedCallbackList = base::RepeatingCallbackList<
       void(TabInterface*, std::optional<tab_groups::TabGroupId> new_group)>;
   GroupChangedCallbackList group_changed_callback_list_;
+
+  using BlockedStateChangedCallbackList =
+      base::RepeatingCallbackList<void(TabInterface*, bool new_blocked_state)>;
+  BlockedStateChangedCallbackList blocked_state_changed_callback_list_;
 
   using TabInterfaceCallbackList =
       base::RepeatingCallbackList<void(TabInterface*)>;

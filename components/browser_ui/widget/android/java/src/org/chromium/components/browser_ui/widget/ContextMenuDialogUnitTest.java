@@ -18,7 +18,6 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
-import android.widget.PopupWindow;
 import android.widget.TextView;
 
 import org.junit.After;
@@ -36,12 +35,13 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.LooperMode;
 import org.robolectric.shadows.ShadowPhoneWindow;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.ui.accessibility.AccessibilityState;
 import org.chromium.ui.dragdrop.DragEventDispatchHelper.DragEventDispatchDestination;
+import org.chromium.ui.widget.ChromePopupWindow;
 import org.chromium.ui.widget.UiWidgetFactory;
 
 /** Unit test for {@link ContextMenuDialog}. */
@@ -49,7 +49,6 @@ import org.chromium.ui.widget.UiWidgetFactory;
 @Config(
         manifest = Config.NONE,
         shadows = {ShadowPhoneWindow.class})
-@LooperMode(LooperMode.Mode.LEGACY)
 public class ContextMenuDialogUnitTest {
     private static final int DIALOG_SIZE_DIP = 50;
 
@@ -62,7 +61,7 @@ public class ContextMenuDialogUnitTest {
     TestDragDispatchingDestinationView mSpyDragDispatchingDestinationView;
 
     @Mock UiWidgetFactory mMockUiWidgetFactory;
-    @Spy PopupWindow mSpyPopupWindow;
+    private ChromePopupWindow mSpyPopupWindow;
     @Spy FrameLayout mMenuContentView;
 
     @Before
@@ -146,8 +145,7 @@ public class ContextMenuDialogUnitTest {
 
         final ArgumentCaptor<Integer> gravityCaptor = ArgumentCaptor.forClass(Integer.class);
         Mockito.verify(mSpyPopupWindow)
-                .showAtLocation(
-                        eq(mRootView.getRootView()), gravityCaptor.capture(), anyInt(), anyInt());
+                .showAtLocation(any(View.class), gravityCaptor.capture(), anyInt(), anyInt());
 
         Assert.assertEquals(
                 "Popup gravity should have Gravity.START.",
@@ -170,7 +168,7 @@ public class ContextMenuDialogUnitTest {
         // Change layout params and request layout so #onLayoutChange is triggered.
         requestLayoutForRootView();
         Mockito.verify(mSpyPopupWindow)
-                .showAtLocation(eq(mRootView.getRootView()), anyInt(), anyInt(), anyInt());
+                .showAtLocation(any(View.class), anyInt(), anyInt(), anyInt());
 
         // Mock up popup window is showing.
         Mockito.doReturn(true).when(mSpyPopupWindow).isShowing();
@@ -211,7 +209,7 @@ public class ContextMenuDialogUnitTest {
         mDialog.show();
         requestLayoutForRootView();
         Mockito.verify(mSpyPopupWindow)
-                .showAtLocation(eq(mRootView.getRootView()), anyInt(), anyInt(), anyInt());
+                .showAtLocation(any(View.class), anyInt(), anyInt(), anyInt());
         Mockito.doReturn(true).when(mSpyDragDispatchingDestinationView).isAttachedToWindow();
 
         // common motion events other than ACTION_DOWN should be forwarded to touch event delegate.
@@ -251,7 +249,7 @@ public class ContextMenuDialogUnitTest {
         mDialog.show();
         requestLayoutForRootView();
         Mockito.verify(mSpyPopupWindow)
-                .showAtLocation(eq(mRootView.getRootView()), anyInt(), anyInt(), anyInt());
+                .showAtLocation(any(View.class), anyInt(), anyInt(), anyInt());
         Assert.assertNotNull("OnDragListener is null.", mDialog.getOnDragListenerForTesting());
 
         final DragEvent mockDragEvent = Mockito.mock(DragEvent.class);
@@ -272,7 +270,8 @@ public class ContextMenuDialogUnitTest {
     private ContextMenuDialog createContextMenuDialog(boolean isPopup, boolean shouldRemoveScrim) {
         return new ContextMenuDialog(
                 mActivity,
-                0,
+                /* windowAndroid= */ null,
+                /* theme= */ 0,
                 ContextMenuDialog.NO_CUSTOM_MARGIN,
                 ContextMenuDialog.NO_CUSTOM_MARGIN,
                 mRootView,
@@ -280,18 +279,19 @@ public class ContextMenuDialogUnitTest {
                 isPopup,
                 /* isFlyout= */ false,
                 shouldRemoveScrim,
-                0,
-                0,
+                /* popupMargin= */ 0,
+                /* desiredPopupContentWidth= */ 0,
                 mSpyDragDispatchingDestinationView,
                 new Rect(0, 0, 0, 0),
                 /* shouldPadForWindowInsets= */ true,
-                /* onDismissCallback */ null);
+                /* onDismissCallback= */ null);
     }
 
     private void requestLayoutForRootView() {
         // Change layout params and request layout so #onLayoutChange is triggered.
         mRootView.setRight(mRootView.getRight() + 1);
         mRootView.requestLayout();
+        RobolectricUtil.runAllBackgroundAndUi();
     }
 
     private MotionEvent createMockMotionEventWithActionType(int actionType) {

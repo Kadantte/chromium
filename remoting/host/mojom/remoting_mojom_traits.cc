@@ -8,6 +8,7 @@
 
 #include "base/compiler_specific.h"
 #include "remoting/base/source_location.h"
+#include "remoting/host/mojom/desktop_session.mojom-shared.h"
 
 namespace mojo {
 
@@ -97,6 +98,7 @@ bool mojo::StructTraits<remoting::mojom::DesktopEnvironmentOptionsDataView,
   out_options->set_enable_notifications(data_view.enable_notifications());
   out_options->set_terminate_upon_input(data_view.terminate_upon_input());
   out_options->set_enable_remote_webauthn(data_view.enable_remote_webauthn());
+  out_options->set_enable_security_key(data_view.enable_security_key());
 
   if (!data_view.ReadDesktopCaptureOptions(
           out_options->desktop_capture_options())) {
@@ -376,6 +378,16 @@ bool mojo::StructTraits<remoting::mojom::MouseEventDataView,
     out_event->set_delta_y(data_view.delta_y().value());
   }
 
+  remoting::mojom::FractionalCoordinateDataView fractional_coordinate_data_view;
+  data_view.GetFractionalCoordinateDataView(&fractional_coordinate_data_view);
+
+  if (!fractional_coordinate_data_view.is_null()) {
+    mojo::StructTraits<remoting::mojom::FractionalCoordinateDataView,
+                       ::remoting::protocol::FractionalCoordinate>::
+        Read(fractional_coordinate_data_view,
+             out_event->mutable_fractional_coordinate());
+  }
+
   return true;
 }
 
@@ -479,7 +491,10 @@ bool mojo::StructTraits<remoting::mojom::VideoTrackLayoutDataView,
                         ::remoting::protocol::VideoTrackLayout>::
     Read(remoting::mojom::VideoTrackLayoutDataView data_view,
          ::remoting::protocol::VideoTrackLayout* out_track) {
-  out_track->set_screen_id(data_view.screen_id());
+  std::optional<int64_t> screen_id = data_view.screen_id();
+  if (screen_id.has_value()) {
+    out_track->set_screen_id(screen_id.value());
+  }
 
   std::string media_stream_id;
   if (!data_view.ReadMediaStreamId(&media_stream_id)) {
@@ -535,6 +550,14 @@ bool mojo::StructTraits<remoting::mojom::VideoLayoutDataView,
 
   out_layout->set_primary_screen_id(data_view.primary_screen_id());
 
+  std::optional<::remoting::protocol::VideoLayout::PixelType> pixel_type;
+  if (!data_view.ReadPixelType(&pixel_type)) {
+    return false;
+  }
+  if (pixel_type.has_value()) {
+    out_layout->set_pixel_type(pixel_type.value());
+  }
+
   return true;
 }
 
@@ -565,6 +588,40 @@ bool mojo::StructTraits<remoting::mojom::FractionalCoordinateDataView,
   out_coordinate->set_screen_id(data_view.screen_id());
   out_coordinate->set_x(data_view.x());
   out_coordinate->set_y(data_view.y());
+  return true;
+}
+
+// static
+bool mojo::StructTraits<remoting::mojom::MicrophoneControlDataView,
+                        ::remoting::protocol::MicrophoneControl>::
+    Read(remoting::mojom::MicrophoneControlDataView data_view,
+         ::remoting::protocol::MicrophoneControl* out_control) {
+  out_control->set_enable(data_view.enable());
+  return true;
+}
+
+// static
+bool mojo::StructTraits<remoting::mojom::IpcFifoBufferReaderDataView,
+                        std::unique_ptr<remoting::IpcFifoBufferReader>>::
+    Read(remoting::mojom::IpcFifoBufferReaderDataView data_view,
+         std::unique_ptr<remoting::IpcFifoBufferReader>* out_reader) {
+  mojo::ScopedDataPipeConsumerHandle consumer_handle =
+      data_view.TakeConsumerHandle();
+  if (!consumer_handle.is_valid()) {
+    return false;
+  }
+  *out_reader = std::make_unique<remoting::IpcFifoBufferReader>(
+      std::move(consumer_handle));
+  return true;
+}
+
+// static
+bool mojo::StructTraits<remoting::mojom::AudioSampleInfoDataView,
+                        ::remoting::protocol::AudioSampleInfo>::
+    Read(remoting::mojom::AudioSampleInfoDataView data_view,
+         ::remoting::protocol::AudioSampleInfo* out_info) {
+  out_info->sampling_rate = data_view.sampling_rate();
+  out_info->channels = data_view.channels();
   return true;
 }
 

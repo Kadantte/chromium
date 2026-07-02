@@ -146,7 +146,7 @@ void SystemClipboard::WritePlainText(const String& plain_text,
   // currently under-specified.
   String text = plain_text;
 #if BUILDFLAG(IS_WIN)
-  text = NormalizeLineEndingsToCRLF(text);
+  text = NormalizeLineEndingsToCrLf(text);
 #endif
   clipboard_->WriteText(NonNullString(text));
 }
@@ -194,7 +194,7 @@ String SystemClipboard::ReadHTML(KURL& url,
 void SystemClipboard::ReadHTML(
     mojom::blink::ClipboardHost::ReadHtmlCallback callback) {
   if (!IsValidBufferType(buffer_) || !clipboard_.is_bound()) {
-    std::move(callback).Run(String(), KURL(), 0, 0);
+    std::move(callback).Run(String(), NullUrl(), 0, 0);
     return;
   }
   clipboard_->ReadHtml(buffer_, std::move(callback));
@@ -264,6 +264,27 @@ mojo_base::BigBuffer SystemClipboard::ReadPng(
   return png;
 }
 
+void SystemClipboard::ReadPng(
+    mojom::blink::ClipboardBuffer buffer,
+    mojom::blink::ClipboardHost::ReadPngCallback callback) {
+  if (!IsValidBufferType(buffer) || !clipboard_.is_bound()) {
+    std::move(callback).Run(mojo_base::BigBuffer());
+    return;
+  }
+  // The async overload intentionally does not consult or populate
+  // `snapshot_`. `snapshot_` is only entered via
+  // ScopedSystemClipboardSnapshot, used by the synchronous DataTransfer
+  // paste pipeline; mixing the two would require thread-hopping the
+  // BigBuffer back into the snapshot before the outer scope exits, with
+  // no observable benefit (Async Clipboard callers do not enter a
+  // snapshot scope).
+  clipboard_->ReadPng(buffer, std::move(callback));
+}
+
+String SystemClipboard::ReadImageAsImageMarkup() {
+  return ReadImageAsImageMarkup(buffer_);
+}
+
 String SystemClipboard::ReadImageAsImageMarkup(
     mojom::blink::ClipboardBuffer buffer) {
   mojo_base::BigBuffer png_data = ReadPng(buffer);
@@ -314,7 +335,7 @@ void SystemClipboard::WriteImageWithTag(Image* image,
     // into rich text editors, such as Gmail, reveals the image. We also don't
     // want to call writeText(), since some applications (WordPad) don't pick
     // the image if there is also a text format on the clipboard.
-    clipboard_->WriteHtml(URLToImageMarkup(url, title), KURL());
+    clipboard_->WriteHtml(URLToImageMarkup(url, title), NullUrl());
   }
 }
 
@@ -377,13 +398,13 @@ void SystemClipboard::WriteDataObject(DataObject* data_object) {
   // allow receiving side to extract the data required.
   // TODO(crbug.com/332571415): Properly support text/uri-list here.
   HashMap<String, String> custom_data;
-  WebDragData data = data_object->ToWebDragData();
+  WebDragData data = data_object->ToWebDragData(nullptr);
   for (const WebDragData::Item& item : data.Items()) {
     if (const auto* string_item = std::get_if<WebDragData::StringItem>(&item)) {
       if (string_item->type == ui::kMimeTypePlainText) {
         clipboard_->WriteText(NonNullString(string_item->data));
       } else if (string_item->type == ui::kMimeTypeHtml) {
-        clipboard_->WriteHtml(NonNullString(string_item->data), KURL());
+        clipboard_->WriteHtml(NonNullString(string_item->data), NullUrl());
       } else if (string_item->type != ui::kMimeTypeDownloadUrl) {
         custom_data.insert(string_item->type, NonNullString(string_item->data));
       }

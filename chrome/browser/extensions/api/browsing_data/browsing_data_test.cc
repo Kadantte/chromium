@@ -81,7 +81,7 @@ class ExtensionBrowsingDataTestWithStoragePartitioning
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-// TODO(http://crbug.com/1266606): appcache is a noop and should be removed.
+// TODO(http://crbug.com/40802227): appcache is a noop and should be removed.
 const char kRemoveEverythingArguments[] =
     R"([{"since": 1000}, {
     "appcache": true, "cache": true, "cookies": true,
@@ -101,7 +101,7 @@ bool SetGaiaCookieForProfile(Profile* profile) {
       "SAPISID", std::string(), "." + google_url.GetHost(), "/", base::Time(),
       base::Time(), base::Time(), base::Time(),
       /*secure=*/true, false, net::CookieSameSite::NO_RESTRICTION,
-      net::COOKIE_PRIORITY_DEFAULT);
+      net::COOKIE_PRIORITY_DEFAULT, net::CookieSourceType::kOther);
 
   base::test::TestFuture<net::CookieAccessResult> set_cookie_future;
   network::mojom::CookieManager* cookie_manager =
@@ -215,7 +215,7 @@ void CreateLocalStorageForKey(Profile* profile, const blink::StorageKey& key) {
   {
     base::test::TestFuture<bool> put_future;
     area->Put({'k', 'e', 'y'}, {'v', 'a', 'l', 'u', 'e'}, std::nullopt,
-              "source", put_future.GetCallback());
+              /*source=*/nullptr, put_future.GetCallback());
     ASSERT_TRUE(put_future.Get());
   }
 }
@@ -420,12 +420,14 @@ IN_PROC_BROWSER_TEST_F(BrowsingDataApiTest, ValidateFilters) {
           chrome.test.succeed();
       },
       async function emptyOriginsFilter() {
+          // Define the expected error regex for empty `origins` list.
           const expectedError = new RegExp(
               '.* Array must have at least 1 items; found 0.');
+          // Verify `chrome.browsingData.remove` throws when `origins` is empty.
           chrome.test.assertThrows(
-              chrome.browsingData.remove,
-              chrome.browsingData,
-              [{'origins': []}, {'cookies': true}],
+              chrome.browsingData.remove.bind(
+                  null, /* options */ {'origins': []},
+                  /* dataToRemove */ {'cookies': true}),
               expectedError);
           chrome.test.succeed();
       },

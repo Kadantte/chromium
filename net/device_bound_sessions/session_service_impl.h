@@ -10,10 +10,8 @@
 #include <optional>
 #include <ranges>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
-#include "base/containers/unique_ptr_adapters.h"
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "base/timer/elapsed_timer.h"
@@ -26,6 +24,8 @@
 #include "net/device_bound_sessions/session.h"
 #include "net/device_bound_sessions/session_key.h"
 #include "net/device_bound_sessions/session_service.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace net {
 class URLRequest;
@@ -42,15 +42,13 @@ namespace net::device_bound_sessions {
 class SessionStore;
 
 struct DeferredURLRequest {
-  explicit DeferredURLRequest(SessionService::RefreshCompleteCallback callback);
-  DeferredURLRequest(DeferredURLRequest&& other) noexcept;
-
-  DeferredURLRequest& operator=(DeferredURLRequest&& other) noexcept;
-
-  ~DeferredURLRequest();
-
+  // A weak pointer to the deferred request. Stored to allow resiliently
+  // selecting a new triggering request if the original triggering request is
+  // canceled during asynchronous key restoration.
+  base::WeakPtr<URLRequest> request;
   base::ElapsedTimer timer;
   SessionService::RefreshCompleteCallback callback;
+  bool triggered_refresh = false;
 };
 
 class NET_EXPORT SessionServiceImpl : public SessionService {
@@ -155,28 +153,22 @@ class NET_EXPORT SessionServiceImpl : public SessionService {
 
   // The key is the site (eTLD+1) of the session's origin and the
   // session id.
+  // NOTE: This map needs to be ordered, and thus is not a hash map.
   using SessionsMap = std::map<SessionKey, std::unique_ptr<Session>>;
   using DeferredRequestsMap =
-      std::map<SessionKey, absl::InlinedVector<DeferredURLRequest, 1>>;
-  using ProactiveRefreshMap = std::map<SessionKey, base::ElapsedTimer>;
+      absl::flat_hash_map<SessionKey,
+                          absl::InlinedVector<DeferredURLRequest, 1>>;
+  using ProactiveRefreshMap =
+      absl::flat_hash_map<SessionKey, base::ElapsedTimer>;
   using LatestSignedRefreshChallengesMap =
-      std::map<SessionKey, SignedRefreshChallenge>;
+      absl::flat_hash_map<SessionKey, SignedRefreshChallenge>;
 
   struct Observer {
-    Observer(const GURL& url,
-             base::RepeatingCallback<void(const SessionAccess&)> callback);
-
-    Observer(const Observer&) = delete;
-    Observer& operator=(const Observer&) = delete;
-
-    ~Observer();
-
     GURL url;
     base::RepeatingCallback<void(const SessionAccess&)> callback;
   };
 
-  using ObserverSet =
-      std::set<std::unique_ptr<Observer>, base::UniquePtrComparator>;
+  using ObserverSet = absl::flat_hash_set<std::unique_ptr<Observer>>;
 
   enum class RefreshTrigger {
     // Refresh due to a request missing a bound cookie.
@@ -211,7 +203,8 @@ class NET_EXPORT SessionServiceImpl : public SessionService {
   void UnblockDeferredRequests(
       const SessionKey& session_key,
       RefreshResult result,
-      std::optional<SessionError::ErrorType> fetch_error = std::nullopt,
+      std::optional<net::device_bound_sessions::SessionError> fetch_error =
+          std::nullopt,
       std::optional<SessionDisplay> new_session_display = std::nullopt,
       std::optional<bool> is_proactive_refresh_candidate = std::nullopt,
       std::optional<base::TimeDelta> minimum_proactive_refresh_threshold =
@@ -264,7 +257,8 @@ class NET_EXPORT SessionServiceImpl : public SessionService {
       const SessionKey& session_key,
       OnAccessCallback on_access_callback,
       base::OnceCallback<
-          void(std::optional<unexportable_keys::UnexportableKeyId>)> callback);
+          void(std::optional<unexportable_keys::UnexportableSigningKeyId>)>
+          callback);
 
   // Callback after unwrapping a session key. `on_access_callback` is
   // used to notify the browser that this request led to usage of a
@@ -274,8 +268,8 @@ class NET_EXPORT SessionServiceImpl : public SessionService {
   void OnSessionKeyRestored(
       const SessionKey& session_key,
       OnAccessCallback on_access_callback,
-      base::OnceCallback<
-          void(std::optional<unexportable_keys::UnexportableKeyId>)> callback,
+      base::OnceCallback<void(
+          std::optional<unexportable_keys::UnexportableSigningKeyId>)> callback,
       Session::KeyIdOrError key_id_or_error);
 
   // Helper function for starting a refresh
@@ -283,7 +277,7 @@ class NET_EXPORT SessionServiceImpl : public SessionService {
       RefreshTrigger trigger,
       base::WeakPtr<URLRequest> maybe_request,
       const SessionKey& session_key,
-      std::optional<unexportable_keys::UnexportableKeyId> key_id);
+      std::optional<unexportable_keys::UnexportableSigningKeyId> key_id);
 
   // Whether the site has exceeded its refresh quota.
   bool RefreshQuotaExceeded(const SchemefulSite& site);
@@ -313,20 +307,20 @@ class NET_EXPORT SessionServiceImpl : public SessionService {
       SessionKey provider_session_key,
       std::string provider_key_thumbprint,
       base::OnceCallback<void(base::expected<Session*, SessionError>)> callback,
-      std::optional<unexportable_keys::UnexportableKeyId> provider_key);
+      std::optional<unexportable_keys::UnexportableSigningKeyId> provider_key);
 
   void OnAddSessionKeyRestored(
       const SchemefulSite& site,
       SessionParams params,
       base::OnceCallback<void(SessionError::ErrorType)> callback,
-      unexportable_keys::ServiceErrorOr<unexportable_keys::UnexportableKeyId>
-          key_or_error);
+      unexportable_keys::ServiceErrorOr<
+          unexportable_keys::UnexportableSigningKeyId> key_or_error);
 
   base::expected<std::unique_ptr<Session>, SessionError::ErrorType>
   CreateSessionFromUnexportableKey(
       SessionParams params,
-      unexportable_keys::ServiceErrorOr<unexportable_keys::UnexportableKeyId>
-          key_or_error);
+      unexportable_keys::ServiceErrorOr<
+          unexportable_keys::UnexportableSigningKeyId> key_or_error);
 
   // If `minimum_cookie_lifetime` is small enough and there are no
   // pending refreshes for `session_key`, start a proactive refresh.
@@ -382,7 +376,7 @@ class NET_EXPORT SessionServiceImpl : public SessionService {
   SessionsMap unpartitioned_sessions_;
 
   // All observers of sessions.
-  std::map<net::SchemefulSite, ObserverSet> observers_by_site_;
+  absl::flat_hash_map<net::SchemefulSite, ObserverSet> observers_by_site_;
 
   // Observers for DBSC events. Used for DevTools.
   base::RepeatingCallbackList<void(const SessionEvent&)> event_callbacks_;
@@ -390,22 +384,29 @@ class NET_EXPORT SessionServiceImpl : public SessionService {
   // Per-site session refresh quota. In order to be robust across
   // session parameter changes, we enforce refresh quota for a site.
   // This functionality is being replaced with `signing_times_`.
-  std::map<net::SchemefulSite, std::vector<base::TimeTicks>> refresh_times_;
+  absl::flat_hash_map<net::SchemefulSite, std::vector<base::Time>>
+      refresh_times_;
 
   // Per-site record of the most recent refresh result. This is used
   // for histograms.
-  std::map<net::SchemefulSite, SessionError> refresh_last_result_;
+  absl::flat_hash_map<net::SchemefulSite, SessionError> refresh_last_result_;
 
   // Per-site session signing quota. In order to be robust across
   // session parameter changes, we enforce signing quota for a site.
   // This is updated whenever a site triggers signing.
-  std::map<net::SchemefulSite, std::vector<base::TimeTicks>> signing_times_;
+  //
+  // NOTE: We use `base::Time` instead of `base::TimeTicks` because
+  // `base::TimeTicks` pauses during system sleep on macOS
+  // (crbug.com/489704854), which would prevent the quota from decaying
+  // overnight.
+  absl::flat_hash_map<net::SchemefulSite, std::vector<base::Time>>
+      signing_times_;
 
   // The latest signed challenges per session.
   LatestSignedRefreshChallengesMap latest_signed_refresh_challenges_;
 
   // Holds all currently live registration fetchers.
-  std::set<std::unique_ptr<RegistrationFetcher>, base::UniquePtrComparator>
+  absl::flat_hash_set<std::unique_ptr<RegistrationFetcher>>
       registration_fetchers_;
 
   // List of sites that are restricted from starting Device Bound

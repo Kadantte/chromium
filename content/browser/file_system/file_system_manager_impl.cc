@@ -17,8 +17,8 @@
 #include "build/build_config.h"
 #include "components/services/filesystem/public/mojom/types.mojom.h"
 #include "content/browser/blob_storage/chrome_blob_storage_context.h"
-#include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/file_system/browser_file_system_helper.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/child_process_id.h"
@@ -58,7 +58,7 @@ namespace {
 
 void RevokeFilePermission(ChildProcessId child_id, const base::FilePath& path) {
   // This call happens on the IO thread, where there is no guarantee that the
-  // corresponding SecurityState is still modifiable, because the
+  // corresponding ProcessState is still modifiable, because the
   // RenderProcessHost may be gone. In that case, the call will silently have no
   // effect.
   ChildProcessSecurityPolicyImpl::GetInstance()->RevokeAllPermissionsForFile(
@@ -213,13 +213,12 @@ void FileSystemManagerImpl::BindReceiver(
   receivers_.Add(this, std::move(receiver), storage_key);
 }
 
-void FileSystemManagerImpl::Open(const url::Origin& origin,
-                                 blink::mojom::FileSystemType file_system_type,
+void FileSystemManagerImpl::Open(blink::mojom::FileSystemType file_system_type,
                                  OpenCallback callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
   // Run the access check on the UI thread using a duplicated
-  // ChildProcessSecurityPolicy::Handle, ensuring the SecurityState exists when
+  // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
   // the task runs even if this instance and its Handle are gone at the time.
   GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -227,15 +226,14 @@ void FileSystemManagerImpl::Open(const url::Origin& origin,
           &ChildProcessSecurityPolicyImpl::Handle::CanAccessDataForOrigin,
           std::make_unique<ChildProcessSecurityPolicyImpl::Handle>(
               security_policy_handle_.Duplicate()),
-          origin),
+          receivers_.current_context().origin()),
       base::BindOnce(&FileSystemManagerImpl::ContinueOpen,
-                     weak_factory_.GetWeakPtr(), origin, file_system_type,
+                     weak_factory_.GetWeakPtr(), file_system_type,
                      receivers_.GetBadMessageCallback(), std::move(callback),
                      receivers_.current_context()));
 }
 
 void FileSystemManagerImpl::ContinueOpen(
-    const url::Origin& origin,
     blink::mojom::FileSystemType file_system_type,
     mojo::ReportBadMessageCallback bad_message_callback,
     OpenCallback callback,
@@ -269,7 +267,7 @@ void FileSystemManagerImpl::ResolveURL(const GURL& filesystem_url,
   }
 
   // Run the access check on the UI thread using a duplicated
-  // ChildProcessSecurityPolicy::Handle, ensuring the SecurityState exists when
+  // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
   // the task runs even if this instance and its Handle are gone at the time.
   GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -315,7 +313,7 @@ void FileSystemManagerImpl::Move(const GURL& src_path,
     return;
   }
   // Run the access check on the UI thread using a duplicated
-  // ChildProcessSecurityPolicy::Handle, ensuring the SecurityState exists when
+  // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
   // the task runs even if this instance and its Handle are gone at the time.
   GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -372,7 +370,7 @@ void FileSystemManagerImpl::Copy(const GURL& src_path,
   }
 
   // Run the access check on the UI thread using a duplicated
-  // ChildProcessSecurityPolicy::Handle, ensuring the SecurityState exists when
+  // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
   // the task runs even if this instance and its Handle are gone at the time.
   GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -424,7 +422,7 @@ void FileSystemManagerImpl::Remove(const GURL& path,
   }
 
   // Run the access check on the UI thread using a duplicated
-  // ChildProcessSecurityPolicy::Handle, ensuring the SecurityState exists when
+  // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
   // the task runs even if this instance and its Handle are gone at the time.
   GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -472,7 +470,7 @@ void FileSystemManagerImpl::ReadMetadata(const GURL& path,
   }
 
   // Run the access check on the UI thread using a duplicated
-  // ChildProcessSecurityPolicy::Handle, ensuring the SecurityState exists when
+  // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
   // the task runs even if this instance and its Handle are gone at the time.
   GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -528,7 +526,7 @@ void FileSystemManagerImpl::Create(const GURL& path,
   }
 
   // Run the access check on the UI thread using a duplicated
-  // ChildProcessSecurityPolicy::Handle, ensuring the SecurityState exists when
+  // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
   // the task runs even if this instance and its Handle are gone at the time.
   GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -586,7 +584,7 @@ void FileSystemManagerImpl::Exists(const GURL& path,
   }
 
   // Run the access check on the UI thread using a duplicated
-  // ChildProcessSecurityPolicy::Handle, ensuring the SecurityState exists when
+  // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
   // the task runs even if this instance and its Handle are gone at the time.
   GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -644,7 +642,7 @@ void FileSystemManagerImpl::ReadDirectory(
   }
 
   // Run the access check on the UI thread using a duplicated
-  // ChildProcessSecurityPolicy::Handle, ensuring the SecurityState exists when
+  // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
   // the task runs even if this instance and its Handle are gone at the time.
   GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -694,7 +692,7 @@ void FileSystemManagerImpl::ReadDirectorySync(
     return;
   }
   // Run the access check on the UI thread using a duplicated
-  // ChildProcessSecurityPolicy::Handle, ensuring the SecurityState exists when
+  // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
   // the task runs even if this instance and its Handle are gone at the time.
   GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -752,7 +750,7 @@ void FileSystemManagerImpl::Write(
     return;
   }
   // Run the access check on the UI thread using a duplicated
-  // ChildProcessSecurityPolicy::Handle, ensuring the SecurityState exists when
+  // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
   // the task runs even if this instance and its Handle are gone at the time.
   GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -829,7 +827,7 @@ void FileSystemManagerImpl::WriteSync(
     return;
   }
   // Run the access check on the UI thread using a duplicated
-  // ChildProcessSecurityPolicy::Handle, ensuring the SecurityState exists when
+  // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
   // the task runs even if this instance and its Handle are gone at the time.
   GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -886,7 +884,7 @@ void FileSystemManagerImpl::Truncate(
     return;
   }
   // Run the access check on the UI thread using a duplicated
-  // ChildProcessSecurityPolicy::Handle, ensuring the SecurityState exists when
+  // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
   // the task runs even if this instance and its Handle are gone at the time.
   GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -943,7 +941,7 @@ void FileSystemManagerImpl::TruncateSync(const GURL& file_path,
   }
 
   // Run the access check on the UI thread using a duplicated
-  // ChildProcessSecurityPolicy::Handle, ensuring the SecurityState exists when
+  // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
   // the task runs even if this instance and its Handle are gone at the time.
   GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -1000,7 +998,7 @@ void FileSystemManagerImpl::CreateSnapshotFile(
     return;
   }
   // Run the access check on the UI thread using a duplicated
-  // ChildProcessSecurityPolicy::Handle, ensuring the SecurityState exists when
+  // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
   // the task runs even if this instance and its Handle are gone at the time.
   GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -1055,7 +1053,7 @@ void FileSystemManagerImpl::GetPlatformPath(const GURL& path,
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
   base::FilePath platform_path;
   // The access check for `path` runs on the UI thread using a duplicated
-  // ChildProcessSecurityPolicy::Handle, ensuring the SecurityState exists when
+  // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
   // the task runs even if `security_policy_handle_` has been deleted.
   context_->default_file_task_runner()->PostTask(
       FROM_HERE,
@@ -1076,7 +1074,7 @@ void FileSystemManagerImpl::RegisterBlob(
       context_->CrackURL(url, receivers_.current_context());
 
   // Run the access check on the UI thread using a duplicated
-  // ChildProcessSecurityPolicy::Handle, ensuring the SecurityState exists when
+  // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
   // the task runs even if this instance and its Handle are gone at the time.
   GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -1285,7 +1283,7 @@ void FileSystemManagerImpl::DidCreateSnapshot(
   }
 
   // Check and grant file read permission on the UI thread using a duplicated
-  // ChildProcessSecurityPolicy::Handle, ensuring the SecurityState exists when
+  // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
   // the task runs even if this instance and its Handle are gone at the time.
   // Access to these functions on the IO thread should be avoided.
   GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
@@ -1303,7 +1301,7 @@ void FileSystemManagerImpl::DidCreateSnapshot(
               // for the file's platform path. By now, it has already been
               // verified that the renderer has sufficient permissions to read
               // the file, so giving per-file permission here must be safe.
-              // Note that SecurityState mutations are only allowed if the
+              // Note that ProcessState mutations are only allowed if the
               // RenderProcessHost still exists, so check that it exists at the
               // time the task runs on the UI thread.
               ChildProcessId child_id = security_policy_handle->child_id();

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/audio/fuchsia/audio_input_stream_fuchsia.h"
 
 #include <lib/sys/cpp/component_context.h>
@@ -63,7 +58,7 @@ AudioInputStream::OpenOutcome AudioInputStreamFuchsia::Open() {
   factory->CreateAudioCapturer(capturer_.NewRequest(), is_loopback);
   capturer_.set_error_handler([this](zx_status_t status) {
     ZX_LOG(ERROR, status) << "AudioCapturer disconnected";
-    ReportError();
+    ReportError(Error::kRuntimeError);
   });
 
   // Bind the event for incoming packets.
@@ -108,7 +103,7 @@ AudioInputStream::OpenOutcome AudioInputStreamFuchsia::Open() {
 
 void AudioInputStreamFuchsia::Start(AudioInputCallback* callback) {
   if (!capturer_) {
-    callback->OnError();
+    callback->OnError(Error::kStartupFailed);
     return;
   }
 
@@ -172,7 +167,7 @@ void AudioInputStreamFuchsia::OnPacketProduced(
       packet.payload_size % bytes_per_frame != 0 ||
       packet.payload_size < bytes_per_frame) {
     LOG(ERROR) << "Received invalid packet from AudioCapturer.";
-    ReportError();
+    ReportError(Error::kRuntimeError);
     return;
   }
 
@@ -192,10 +187,10 @@ void AudioInputStreamFuchsia::OnPacketProduced(
   capturer_->ReleasePacket(std::move(packet));
 }
 
-void AudioInputStreamFuchsia::ReportError() {
+void AudioInputStreamFuchsia::ReportError(Error error_code) {
   capturer_.Unbind();
   if (callback_)
-    callback_->OnError();
+    callback_->OnError(error_code);
 }
 
 }  // namespace media

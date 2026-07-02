@@ -21,6 +21,7 @@ import androidx.core.app.ActivityCompat;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
+import org.chromium.base.SplitCompatService;
 import org.chromium.base.shared_preferences.SharedPreferencesManager;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
@@ -28,7 +29,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
-import org.chromium.chrome.browser.base.SplitCompatService;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.notifications.NotificationUmaTracker;
 import org.chromium.chrome.browser.notifications.NotificationWrapperBuilderFactory;
 import org.chromium.chrome.browser.notifications.channels.ChromeChannelDefinitions;
@@ -150,14 +151,13 @@ public class MediaCaptureNotificationServiceImpl extends SplitCompatService.Impl
                 mSharedPreferences.readStringSet(
                         ChromePreferenceKeys.MEDIA_WEBRTC_NOTIFICATION_IDS, null);
         if (notificationIds == null) return;
-        // Manual notification cleanup is only required when background media capturing is disabled.
-        // When enabled, the foreground service manages the notification lifecycle.
-        if (!isBackgroundMediaCapturingEnabled()) {
-            Iterator<String> iterator = notificationIds.iterator();
-            while (iterator.hasNext()) {
-                mNotificationManager.cancel(
-                        NOTIFICATION_NAMESPACE, Integer.parseInt(iterator.next()));
-            }
+        Iterator<String> iterator = notificationIds.iterator();
+        while (iterator.hasNext()) {
+            // When background media capturing is enabled, this operation is a no-op because the
+            // foreground service handles notification updates. We avoid calling
+            // isBackgroundMediaCapturingEnabled() here because this code may execute during early
+            // startup before the JNI library is initialized.
+            mNotificationManager.cancel(NOTIFICATION_NAMESPACE, Integer.parseInt(iterator.next()));
         }
         mSharedPreferences.removeKey(ChromePreferenceKeys.MEDIA_WEBRTC_NOTIFICATION_IDS);
     }
@@ -181,9 +181,9 @@ public class MediaCaptureNotificationServiceImpl extends SplitCompatService.Impl
                 && !doesNotificationNeedUpdate(notificationId, mediaTypes)) {
             return;
         }
-        boolean hasNewMediaTypesToUpate = !mediaTypes.isEmpty();
-        destroyNotification(notificationId, hasNewMediaTypesToUpate);
-        if (hasNewMediaTypesToUpate) {
+        boolean hasNewMediaTypesToUpdate = !mediaTypes.isEmpty();
+        destroyNotification(notificationId, hasNewMediaTypesToUpdate);
+        if (hasNewMediaTypesToUpdate) {
             createNotification(notificationId, mediaTypes, url, isIncognito);
         }
         if (mNotificationsType.size() == 0) {
@@ -204,25 +204,41 @@ public class MediaCaptureNotificationServiceImpl extends SplitCompatService.Impl
     }
 
     /**
+     * Attempts to stop the media capture overlay for a given tab.
+     *
+     * @param tabId Id of the tab to stop media capture for.
+     */
+    private void tryStopMediaCapture(int tabId) {
+        // Closing a window that is actively screen sharing can cause the tab's WebContents or its
+        // TopLevelNativeWindow to be destroyed or detached before the tab is fully removed from
+        // TabWindowManager.
+        Tab tab = TabWindowManagerSingleton.getInstance().getTabById(tabId);
+        if (tab == null) return;
+
+        WebContents webContents = tab.getWebContents();
+        if (webContents == null) return;
+
+        WindowAndroid window = webContents.getTopLevelNativeWindow();
+        if (window == null) return;
+
+        MediaCaptureOverlayController overlayController =
+                MediaCaptureOverlayController.from(window);
+        if (overlayController == null) return;
+
+        overlayController.stopCapture(tab);
+    }
+
+    /**
      * Destroys the notification for the id notificationId.
      *
      * @param notificationId Unique id of the notification.
      */
-    private void destroyNotification(int notificationId, boolean hasNewMediaTypesToUpate) {
+    private void destroyNotification(int notificationId, boolean hasNewMediaTypesToUpdate) {
         if (doesNotificationExist(notificationId)) {
             final var oldMediaTypes = mNotificationsType.get(notificationId);
             if (hasCapturingMediaType(oldMediaTypes)) {
                 final int tabId = getTabIdFromNotificationId(notificationId);
-                final Tab tab = TabWindowManagerSingleton.getInstance().getTabById(tabId);
-                if (tab != null) {
-                    WindowAndroid window =
-                            assumeNonNull(tab.getWebContents()).getTopLevelNativeWindow();
-                    MediaCaptureOverlayController overlayController =
-                            MediaCaptureOverlayController.from(window);
-                    if (overlayController != null) {
-                        overlayController.stopCapture(tab);
-                    }
-                }
+                tryStopMediaCapture(tabId);
             }
             mNotificationsType.remove(notificationId);
             if (isBackgroundMediaCapturingEnabled()) {
@@ -231,7 +247,7 @@ public class MediaCaptureNotificationServiceImpl extends SplitCompatService.Impl
                         lastIndex >= 0 && mNotifications.get(lastIndex).first == notificationId;
                 mNotifications.removeIf(
                         notificationEntry -> notificationEntry.first == notificationId);
-                if (!hasNewMediaTypesToUpate) {
+                if (!hasNewMediaTypesToUpdate) {
                     if (mNotifications.isEmpty()) {
                         stopForegroundService();
                     } else if (isRemovingLatestNotification
@@ -373,6 +389,9 @@ public class MediaCaptureNotificationServiceImpl extends SplitCompatService.Impl
         }
         if (allMediaTypes.contains(MediaType.TAB_CAPTURE)) {
             foregroundServiceType |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
+            if (ChromeFeatureList.sAndroidNewMediaPicker.isEnabled()) {
+                foregroundServiceType |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+            }
         }
         if (allMediaTypes.contains(MediaType.SCREEN_CAPTURE)
                 || allMediaTypes.contains(MediaType.WINDOW_CAPTURE)) {

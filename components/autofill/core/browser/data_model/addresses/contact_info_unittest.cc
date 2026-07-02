@@ -84,9 +84,6 @@ class SetFullAlternativeNameTest
     : public testing::TestWithParam<FullAlternativeNameTestCase> {};
 
 TEST_P(SetFullAlternativeNameTest, SetFullAlternativeName) {
-  base::test::ScopedFeatureList scoped_feature_list(
-      features::kAutofillSupportPhoneticNameForJP);
-
   auto test_case = GetParam();
   SCOPED_TRACE(test_case.full_name_input);
 
@@ -181,8 +178,6 @@ class NameInfoTest : public testing::Test {
   }
 
  private:
-  base::test::ScopedFeatureList scoped_feature_list_{
-      features::kAutofillSupportPhoneticNameForJP};
 };
 
 TEST_F(NameInfoTest, GetMatchingTypes) {
@@ -695,9 +690,6 @@ TEST_F(NameInfoTest, MergeNamesWithWhitespaceDifferences) {
 }
 
 TEST_F(NameInfoTest, MergeCJKNames) {
-  base::test::ScopedFeatureList scoped_feature_list{
-      features::kAutofillSupportPhoneticNameForJP};
-
   // Korean names that are all mergeable, but constructed differently.
   NameInfo name1 = CreateNameInfo(u"호", u"", u"이영", u"이영 호");
   NameInfo name2 = CreateNameInfo(u"이영호", u"", u"", u"이영호");
@@ -759,9 +751,6 @@ TEST_F(NameInfoTest, MergeCJKNames) {
 }
 
 TEST_F(NameInfoTest, MergeCJKNamesWhereAlternativeNameNormalizationIsNeeded) {
-  base::test::ScopedFeatureList scoped_feature_list{
-      features::kAutofillSupportPhoneticNameForJP};
-
   // Phonetic name using Hiragana.
   NameInfo name1 = CreateNameInfo(u"葵", u"", u"山本", u"山本・葵", u"あおい",
                                   u"やまもと", u"");
@@ -822,8 +811,6 @@ TEST_F(NameInfoTest, MergeCJKNamesWhereAlternativeNameNormalizationIsNeeded) {
 
 TEST_F(NameInfoTest, HaveMergeableAlternativeNames) {
   base::HistogramTester histogram_tester;
-  base::test::ScopedFeatureList scoped_feature_list{
-      features::kAutofillSupportPhoneticNameForJP};
 
   NameInfo empty = CreateNameInfo(u"", u"", u"", u"", u"", u"", u"",
                                   /*should_support_alternative_name=*/true);
@@ -1025,7 +1012,11 @@ struct IsNameVariantOfTestCase {
 
 class NameInfoIsNameVariantOfTest
     : public NameInfoTest,
-      public testing::WithParamInterface<IsNameVariantOfTestCase> {};
+      public testing::WithParamInterface<IsNameVariantOfTestCase> {
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_{
+      features::kAutofillOptimizeIsNormalizedNameVariantOf};
+};
 
 TEST_P(NameInfoIsNameVariantOfTest, NameVariants) {
   const IsNameVariantOfTestCase test_case = GetParam();
@@ -1057,7 +1048,23 @@ INSTANTIATE_TEST_SUITE_P(
          .other_full_name = u"te perier"},
         {.full_name = u"Timothe Noël Etienne Perier",
          .other_full_name = u"etienne noel perier",
-         .are_variant = false}}));
+         .are_variant = false},
+        {.full_name = u"Mary Jane Watson", .other_full_name = u"MJ Watson"},
+        {.full_name = u"Mary Jane Watson", .other_full_name = u"M.J. Watson"},
+        {.full_name = u"Mary Jane Watson", .other_full_name = u"MJW"},
+        {.full_name = u"John Smith", .other_full_name = u"John S"},
+        {.full_name = u"John Quincy Public", .other_full_name = u"J Q Public"},
+        {.full_name = u"Петров Иван Николаевич",
+         .other_full_name = u"Петров И."},
+        {.full_name = u"Mary Jane Watson", .other_full_name = u""},
+        {.full_name = u"",
+         .other_full_name = u"Mary Jane Watson",
+         .are_variant = false},
+        {.full_name = u"", .other_full_name = u""},
+        {.full_name = u"   ", .other_full_name = u"  "},
+        {.full_name = u"-", .other_full_name = u" "},
+        {.full_name = u"-, -", .other_full_name = u""},
+    }));
 
 // Verifies that `IsNameVariantOf` works correctly with CJK names where one is
 // the same as the other.
@@ -1083,6 +1090,8 @@ INSTANTIATE_TEST_SUITE_P(
         {.full_name = u"王磊", .other_full_name = u"磊"},
         {.full_name = u"王 磊", .other_full_name = u"王"},
         {.full_name = u"王 磊", .other_full_name = u"磊"},
+        {.full_name = u"王 磊", .other_full_name = u"王磊"},
+        {.full_name = u"王磊", .other_full_name = u"王 磊"},
         {.full_name = u"ワ　タシ", .other_full_name = u"ワ"},
         {.full_name = u"ワ　タシ", .other_full_name = u"タシ"},
         {.full_name = u"ワ・タシ", .other_full_name = u"ワ"},
@@ -1090,7 +1099,12 @@ INSTANTIATE_TEST_SUITE_P(
         {.full_name = u"이영호", .other_full_name = u"이"},
         {.full_name = u"이영호", .other_full_name = u"영호"},
         {.full_name = u"이 영호", .other_full_name = u"영호"},
-        {.full_name = u"이 영호", .other_full_name = u"이"}}));
+        {.full_name = u"이 영호", .other_full_name = u"이"},
+        {.full_name = u"王", .other_full_name = u""},
+        {.full_name = u"王", .other_full_name = u"  "},
+        {.full_name = u"王", .other_full_name = u"・  ・"},
+        {.full_name = u"・", .other_full_name = u"王", .are_variant = false},
+        {.full_name = u"・", .other_full_name = u""}}));
 
 TEST_F(NameInfoTest, HaveMergeableNames) {
   NameInfo empty = CreateNameInfo(u"", u"", u"", u"");
@@ -1403,8 +1417,6 @@ class NameInfoNameMigrationTest
 // migrate them to the alternative name fields. Those that do have other
 // characters than phonetic symbols should not be migrated.
 TEST_P(NameInfoNameMigrationTest, NameMigration) {
-  base::test::ScopedFeatureList feature_list{
-      features::kAutofillSupportPhoneticNameForJP};
   AutofillProfile profile(GetParam().country_code);
 
   profile.SetRawInfo(NAME_FULL, base::UTF8ToUTF16(GetParam().name));

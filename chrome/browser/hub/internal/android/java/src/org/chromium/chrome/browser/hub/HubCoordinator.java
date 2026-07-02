@@ -132,7 +132,7 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, OnPa
 
         // Get bottom toolbar delegate and visibility supplier
         HubBottomToolbarDelegate bottomToolbarDelegate =
-                HubBottomToolbarDelegateFactory.createDelegate();
+                HubBottomToolbarDelegateFactory.createDelegate(activity);
         NonNullObservableSupplier<Boolean> bottomToolbarVisibilitySupplier =
                 bottomToolbarDelegate != null
                         ? bottomToolbarDelegate.getBottomToolbarVisibilitySupplier()
@@ -369,6 +369,18 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, OnPa
         return mHubPaneHostCoordinator.getSnackbarContainer();
     }
 
+    /** Attaches the provided bottom bar view to the container. */
+    public void attachBottomBarView(View view) {
+        if (mHubBottomToolbarCoordinator != null) {
+            mHubBottomToolbarCoordinator.attachBottomBarView(view);
+        }
+    }
+
+    /** Returns whether the hub has a bottom toolbar. */
+    public boolean hasBottomToolbar() {
+        return mHubBottomToolbarCoordinator != null;
+    }
+
     private @Nullable Pane getFocusedPane() {
         return mPaneManager.getFocusedPaneSupplier().get();
     }
@@ -381,7 +393,7 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, OnPa
         mHandleBackPressSupplier.set(shouldHandleBackPress);
     }
 
-    @SuppressWarnings("NullAway")
+    @SuppressWarnings({"NullAway", "unchecked"}) // Unavoidable raw -> parameterized Callback cast.
     private <T> Callback<T> castCallback(Callback callback) {
         return (Callback<T>) callback;
     }

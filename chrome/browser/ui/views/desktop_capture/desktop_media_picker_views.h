@@ -10,6 +10,7 @@
 #include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/types/expected.h"
+#include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "chrome/browser/media/webrtc/desktop_media_picker.h"
 #include "chrome/browser/ui/views/desktop_capture/audio_capture_permission_checker.h"
@@ -190,7 +191,6 @@ class DesktopMediaPickerDialogView : public views::DialogDelegateView,
 
 #if BUILDFLAG(IS_MAC)
   void OnPermissionUpdate(bool has_permission);
-  void RecordPermissionInteractionUma() const;
   void OnAudioSharingApprovedByUserUpdate();
   void OnAudioPermissionUpdate();
   void RecordUserActionOnDeniedAudioPermissionUma(
@@ -230,11 +230,19 @@ class DesktopMediaPickerDialogView : public views::DialogDelegateView,
 
   std::optional<content::DesktopMediaID> accepted_source_;
 
+#if BUILDFLAG(IS_WIN)
+  // Track the session ID for excluding Picture-in-Picture windows from screen
+  // capture while this picker is open (Windows only).
+  std::optional<base::UnguessableToken> pip_exclusion_session_id_;
+
+  // Set to true when the user accepts/confirms the dialog, indicating that
+  // the actual screen capture session is about to start.
+  bool accepted_ = false;
+#endif
+
 #if BUILDFLAG(IS_MAC)
   std::unique_ptr<ScreenCapturePermissionChecker>
       screen_capture_permission_checker_;
-  std::optional<bool> initial_permission_state_;
-  bool permission_pane_was_shown_ = false;
   std::unique_ptr<AudioCapturePermissionChecker>
       audio_capture_permission_checker_;
 #endif

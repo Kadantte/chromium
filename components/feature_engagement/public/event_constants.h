@@ -80,6 +80,9 @@ extern const char kGlicOnboardingCompleted[];
 // The user has opened Chrome (cold start or from background).
 extern const char kChromeOpened[];
 
+// The user had at least one active session today.
+extern const char kChromeActiveSessionDay[];
+
 // The user has opened an incognito tab.
 extern const char kIncognitoTabOpened[];
 
@@ -169,9 +172,6 @@ extern const char kBlueDotPromoOverflowMenuDismissed[];
 
 // The user snoozed the Credential Provider Extension Promo.
 extern const char kCredentialProviderExtensionPromoSnoozed[];
-
-// The user tapped Remind Me Later on the Docking Promo.
-extern const char kDockingPromoRemindMeLater[];
 
 // The user opened an url from omnibox.
 extern const char kOpenUrlFromOmnibox[];
@@ -275,6 +275,9 @@ extern const char kMadeForIOSPromoTrigger[];
 
 // The stay safe default browser promo was triggered.
 extern const char kStaySafePromoTrigger[];
+
+// The default browser promos group was triggered.
+extern const char kDefaultBrowserPromosGroupTrigger[];
 
 // The tailored default browser promo group was triggered.
 extern const char kTailoredDefaultBrowserPromosGroupTrigger[];
@@ -412,8 +415,30 @@ extern const char kIOSGeminiFlowStartedNonPromo[];
 // Event fired when the Gemini consent is given.
 extern const char kIOSGeminiConsentGiven[];
 
+// Event fired when the user successfully switches to Gemini Live mode.
+extern const char kIOSGeminiLiveUsed[];
+
+// Event fired when the Gemini Live "New" badge is triggered.
+extern const char kIOSGeminiLiveNewBadgeTriggered[];
+
+// Event fired when the Gemini Live 1st-time IPH is triggered.
+extern const char kIOSGeminiLiveIPHTriggered[];
+
+// Event fired when the user taps the "What can Gemini do" suggestion chip.
+extern const char kIOSGeminiWhatCanGeminiDoTapped[];
+
+// Event fired when the "What can Gemini do" suggestion chip is shown to the
+// user. This is different from WhatCanGeminiDoTapped because it can be
+// triggered without the user tapping the chip.
+extern const char kIOSGeminiWhatCanGeminiDoTriggered[];
+
 // Event fired when the user pins a site to the most visited tile.
 extern const char kIOSPinMVTSiteUsed[];
+
+// Event fired on each foreground transition where no scene has a startup
+// parameter. This includes switching between two windows in multi-window mode
+// when the user opens Chrome from the icon.
+extern const char kIOSChromeOpenedFromIcon[];
 
 #endif  // BUILDFLAG(IS_IOS)
 
@@ -422,6 +447,8 @@ extern const char kIOSPinMVTSiteUsed[];
 // The user has explicitly used the Install menu item under the App Menu.
 extern const char kPwaInstallMenuSelected[];
 #endif  // BUILDFLAG(IS_ANDROID)
+
+extern const char kTabSearchComboButtonUsed[];
 
 }  // namespace events
 

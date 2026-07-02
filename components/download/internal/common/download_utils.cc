@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "base/files/file_util.h"
 #include "base/format_macros.h"
@@ -37,6 +38,7 @@
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "url/origin.h"
+#include "url/url_constants.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "components/download/internal/common/android/download_collection_bridge.h"
@@ -63,6 +65,9 @@ const int kDefaultOverwrittenDownloadExpiredTimeInDays = 90;
 
 // Default buffer size in bytes to write to the download file.
 const int kDefaultDownloadFileBufferSize = 524288;
+
+// Maximum size of a data URL. URLs larger than this will be truncated.
+const size_t kMaxDataURLSize = 1024u;
 
 #if BUILDFLAG(IS_ANDROID)
 // Default maximum length of a downloaded file name on Android.
@@ -175,12 +180,25 @@ void OnInterMediateUriCreated(LocalPathCallback callback,
 
 const uint32_t DownloadItem::kInvalidId = 0;
 
+void TruncateDataUrlAtTheEndIfNeeded(std::vector<GURL>* url_chain) {
+  for (GURL& url : *url_chain) {
+    if (url.SchemeIs(url::kDataScheme)) {
+      const std::string& data_url = url.spec();
+      if (data_url.size() > kMaxDataURLSize) {
+        GURL truncated_url(data_url.substr(0, kMaxDataURLSize));
+        url.Swap(&truncated_url);
+      }
+    }
+  }
+}
+
 DownloadInterruptReason HandleRequestCompletionStatus(
     net::Error error_code,
     bool has_strong_validators,
     net::CertStatus cert_status,
     bool is_partial_request,
-    DownloadInterruptReason abort_reason) {
+    DownloadInterruptReason abort_reason,
+    bool is_served_from_service_worker) {
   if (error_code == net::ERR_ABORTED) {
     // ERR_ABORTED == something outside of the network
     // stack cancelled the request.  There aren't that many things that
@@ -191,10 +209,22 @@ DownloadInterruptReason HandleRequestCompletionStatus(
     // TODO(asanka): A lid close or other power event should result in an
     // interruption that doesn't discard the partial state, unlike
     // USER_CANCELLED. (https://crbug.com/166179)
-    if (net::IsCertStatusError(cert_status))
+    if (net::IsCertStatusError(cert_status)) {
       return DOWNLOAD_INTERRUPT_REASON_SERVER_CERT_PROBLEM;
-    else
-      return DOWNLOAD_INTERRUPT_REASON_USER_CANCELED;
+    }
+    // For a download served by a Service Worker, an aborted response body
+    // stream (e.g. the fetch handler's ReadableStream calling
+    // controller.error()) is a transient body-transmission failure, not a user
+    // action: a genuine user cancellation goes through DownloadItem::Cancel().
+    // Per the Fetch standard this is a plain "network error", distinct from an
+    // "aborted network error" driven by the request's AbortSignal. Map it to a
+    // resumable NETWORK_FAILED so the download interrupts (and can restart on
+    // resume) instead of terminating as a non-resumable CANCELLED.
+    // (https://crbug.com/40410035)
+    if (is_served_from_service_worker) {
+      return DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED;
+    }
+    return DOWNLOAD_INTERRUPT_REASON_USER_CANCELED;
   } else if (abort_reason != DOWNLOAD_INTERRUPT_REASON_NONE) {
     // If a more specific interrupt reason was specified before the request
     // was explicitly cancelled, then use it.
@@ -293,7 +323,7 @@ DownloadInterruptReason HandleSuccessfulServerResponse(
   }
 
   // The caller is expecting a partial response.
-  if (save_info && save_info->offset > 0) {
+  if (save_info) {
     if (http_headers.response_code() != net::HTTP_PARTIAL_CONTENT) {
       // Requested a partial range, but received the entire response, when
       // the range request header is "Range:bytes={offset}-".
@@ -564,6 +594,8 @@ DownloadDBEntry CreateDownloadDBEntryFromItem(const DownloadItemImpl& item) {
   auto range_request_offset = item.GetRangeRequestOffset();
   in_progress_info.range_request_from = range_request_offset.first;
   in_progress_info.range_request_to = range_request_offset.second;
+  in_progress_info.fetched_via_service_worker =
+      item.fetched_via_service_worker();
 
   download_info.in_progress_info = std::move(in_progress_info);
 
@@ -584,10 +616,13 @@ std::unique_ptr<DownloadEntry> CreateDownloadEntryFromDownloadDBEntry(
   if (!ukm_info || !in_progress_info)
     return nullptr;
 
-  return std::make_unique<DownloadEntry>(
+  auto download_entry = std::make_unique<DownloadEntry>(
       entry->download_info->guid, std::string(), ukm_info->download_source,
       in_progress_info->fetch_error_body, in_progress_info->request_headers,
       ukm_info->ukm_download_id);
+  download_entry->fetched_via_service_worker =
+      in_progress_info->fetched_via_service_worker;
+  return download_entry;
 }
 
 uint64_t GetUniqueDownloadId() {
@@ -862,12 +897,9 @@ bool IsContentDispositionAttachmentInHead(
   if (!response_head.headers) {
     return false;
   }
-  std::string disposition =
-      response_head.headers->GetNormalizedHeader("content-disposition")
-          .value_or(std::string());
-  return !disposition.empty() &&
-         net::HttpContentDisposition(disposition, std::string())
-             .is_attachment();
+  return net::HttpContentDisposition(*response_head.headers,
+                                     /*referrer_charset=*/std::string())
+      .is_attachment();
 }
 
 }  // namespace download

@@ -11,6 +11,7 @@
 
 @protocol ComposeboxInputPlateMutator;
 @protocol ComposeboxInputPlateViewControllerDelegate;
+@class ComposeboxMetricsRecorder;
 @class ComposeboxTheme;
 @protocol TextFieldViewContaining;
 
@@ -28,6 +29,9 @@
 
 // The input plate view to be used in animations.
 @property(nonatomic, readonly) UIView* inputPlateViewForAnimation;
+
+/// The container view for the omnibox/text field.
+@property(nonatomic, readonly) UIView* omniboxContainer;
 
 // Whether the UI is in compact (single line) mode.
 @property(nonatomic, readonly, getter=isCompact) BOOL compact;
@@ -48,6 +52,9 @@
 
 /// Sets the omnibox edit view.
 - (void)setEditView:(UIView<TextFieldViewContaining>*)editView;
+
+/// Shows the multimodal menu. Same as pressing the plus button.
+- (void)showMultimodalMenu;
 
 @end
 

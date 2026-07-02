@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "ash/constants/ash_extension_constants.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/webui/file_manager/file_manager_ui.h"
 #include "base/command_line.h"
@@ -62,8 +63,6 @@
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/extensions/api/file_manager_private.h"
-#include "chrome/common/extensions/extension_constants.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/disks/disk.h"
 #include "chromeos/ash/components/drivefs/drivefs_host.h"
 #include "chromeos/ash/components/login/login_state/login_state.h"
@@ -646,7 +645,7 @@ void EventRouter::Shutdown() {
   extensions::ExtensionRegistry::Get(profile_)->RemoveObserver(this);
 
   drivefs_event_router_->Reset();
-  DriveIntegrationService::Observer::Reset();
+  drive_observation_.Reset();
 
   if (VolumeManager* const manager = VolumeManager::Get(profile_)) {
     manager->RemoveObserver(this);
@@ -711,7 +710,10 @@ void EventRouter::ObserveEvents() {
 
   if (DriveIntegrationService* const service =
           DriveIntegrationServiceFactory::FindForProfile(profile_)) {
-    DriveIntegrationService::Observer::Observe(service);
+    if (service != drive_observation_.GetSource()) {
+      drive_observation_.Reset();
+      drive_observation_.Observe(service);
+    }
     drivefs_event_router_->Observe(service);
   }
 
@@ -727,20 +729,19 @@ void EventRouter::ObserveEvents() {
     pref_change_registrar_->Add(drive::prefs::kDisableDriveOverCellular, cb);
     pref_change_registrar_->Add(drive::prefs::kDisableDrive, cb);
     pref_change_registrar_->Add(ash::prefs::kFilesAppTrashEnabled, cb);
-    pref_change_registrar_->Add(prefs::kSearchSuggestEnabled, cb);
-    pref_change_registrar_->Add(prefs::kUse24HourClock, cb);
+    pref_change_registrar_->Add(ash::prefs::kUse24HourClock, cb);
     pref_change_registrar_->Add(arc::prefs::kArcEnabled, cb);
     pref_change_registrar_->Add(arc::prefs::kArcHasAccessToRemovableMedia, cb);
     pref_change_registrar_->Add(ash::prefs::kFilesAppFolderShortcuts, cb);
-    pref_change_registrar_->Add(prefs::kOfficeFileMovedToOneDrive, cb);
-    pref_change_registrar_->Add(prefs::kOfficeFileMovedToGoogleDrive, cb);
+    pref_change_registrar_->Add(ash::prefs::kOfficeFileMovedToOneDrive, cb);
+    pref_change_registrar_->Add(ash::prefs::kOfficeFileMovedToGoogleDrive, cb);
   }
 
   {
     const base::RepeatingClosure cb = base::BindRepeating(
         &EventRouter::BroadcastOnAppsUpdatedEvent, weak_factory_.GetWeakPtr());
-    pref_change_registrar_->Add(prefs::kDefaultTasksByMimeType, cb);
-    pref_change_registrar_->Add(prefs::kDefaultTasksBySuffix, cb);
+    pref_change_registrar_->Add(ash::prefs::kDefaultTasksByMimeType, cb);
+    pref_change_registrar_->Add(ash::prefs::kDefaultTasksBySuffix, cb);
   }
 
   ash::system::TimezoneSettings::GetInstance()->AddObserver(this);
@@ -1050,6 +1051,10 @@ void EventRouter::OnFileSystemMountFailed() {
 void EventRouter::OnDriveConnectionStatusChanged(
     drive::util::ConnectionStatus status) {
   NotifyDriveConnectionStatusChanged();
+}
+
+void EventRouter::OnDriveIntegrationServiceDestroyed() {
+  drive_observation_.Reset();
 }
 
 // Send crostini share, unshare event.

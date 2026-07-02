@@ -37,10 +37,9 @@ WebAppOriginAssociationManager::Task::Task(
       unique_origins.insert(scope_extension.origin);
     }
   }
-  for (const proto::WebAppMigrationSource& migration_source :
-       migration_sources_input_) {
+  for (const MigrationSource& migration_source : migration_sources_input_) {
     url::Origin origin =
-        url::Origin::Create(GURL(migration_source.manifest_id()));
+        url::Origin::Create(migration_source.manifest_id().value());
     CHECK(!origin.opaque());
     // Same origin migration is allowed without checking a .well-known file, so
     // no need to do origin validation for that source.
@@ -120,10 +119,9 @@ void WebAppOriginAssociationManager::Task::Finalize() {
     result_.scope_extensions.insert(scope_extension);
   }
 
-  for (const proto::WebAppMigrationSource& migration_source :
-       migration_sources_input_) {
+  for (const MigrationSource& migration_source : migration_sources_input_) {
     url::Origin origin_to_check =
-        url::Origin::Create(GURL(migration_source.manifest_id()));
+        url::Origin::Create(migration_source.manifest_id().value());
     if (origin_to_check.opaque()) {
       continue;
     }

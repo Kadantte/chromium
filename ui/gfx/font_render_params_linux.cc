@@ -196,11 +196,15 @@ bool QueryFontconfig(const FontRenderParamsQuery& query,
 }
 
 void SetForceDisableSubpixelFontRendering(bool disable) {
+  if (force_disable_subpixel_font_rendering == disable) {
+    return;
+  }
   force_disable_subpixel_font_rendering = disable;
+  ClearFontRenderParamsCache();
 }
 
-bool GetFontRenderParamsSubpixelRenderingEnabledForTesting() {
-  return force_disable_subpixel_font_rendering;
+bool GetFontRenderParamsSubpixelRenderingEnabled() {
+  return !force_disable_subpixel_font_rendering;
 }
 
 FontRenderParams GetFontRenderParams(const FontRenderParamsQuery& query,
@@ -284,7 +288,7 @@ FontRenderParams GetFontRenderParams(const FontRenderParamsQuery& query,
   return params;
 }
 
-void ClearFontRenderParamsCacheForTest() {
+void ClearFontRenderParamsCache() {
   SynchronizedCache& synchronized_cache = GetSynchronizedCache();
   base::AutoLock lock(synchronized_cache.lock);
   synchronized_cache.cache.Clear();

@@ -36,6 +36,13 @@ struct VectorIcon;
 class AutocompleteInput;
 class AutocompleteProviderClient;
 
+// How the action should be presented in the UI.
+// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.omnibox.action
+enum class ActionPresentationMode {
+  CHIP = 1,
+  BUTTON = 2,
+};
+
 // Omnibox Actions are additional actions associated with matches. They appear
 // in the suggestion button row and are not matches themselves.
 //
@@ -101,6 +108,13 @@ class OmniboxAction : public base::RefCountedThreadSafe<OmniboxAction> {
     // and if it's false then lens is used to contextualize without showing UI.
     virtual void OpenLensOverlay(bool show) = 0;
 
+    // Returns true if the client should open the Cobrowse panel (bypassing
+    // Lens).
+    virtual bool ShouldOpenCoBrowsePanel() const;
+
+    // Opens the CoBrowse side panel.
+    virtual void OpenCoBrowsePanel();
+
     // Passes the contextual search request to Lens to handle fulfillment. Lens
     // uses the destination URL to grab the query and keep any additional
     // params that are attached to the URL.
@@ -157,9 +171,10 @@ class OmniboxAction : public base::RefCountedThreadSafe<OmniboxAction> {
     int enter_starter_pack_id_;
   };
 
-  OmniboxAction(LabelStrings strings,
-                GURL url,
-                bool show_as_action_button = false);
+  OmniboxAction(
+      LabelStrings strings,
+      GURL url,
+      ActionPresentationMode presentation_mode = ActionPresentationMode::CHIP);
 
   // Provides read access to labels associated with this Action.
   const LabelStrings& GetLabelStrings() const;
@@ -213,8 +228,8 @@ class OmniboxAction : public base::RefCountedThreadSafe<OmniboxAction> {
   // For navigation Actions, this holds the destination URL. Otherwise, empty.
   GURL url_;
 
-  // Whether to show as action button.
-  bool show_as_action_button_;
+  // How the action should be presented in the UI.
+  ActionPresentationMode presentation_mode_;
 
 #if BUILDFLAG(IS_ANDROID)
   mutable base::android::ScopedJavaGlobalRef<jobject> j_omnibox_action_;

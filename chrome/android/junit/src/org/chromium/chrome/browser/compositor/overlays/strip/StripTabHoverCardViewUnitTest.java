@@ -70,6 +70,7 @@ public class StripTabHoverCardViewUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Captor private ArgumentCaptor<Callback<Bitmap>> mGetThumbnailCallbackCaptor;
+    @Captor private ArgumentCaptor<Callback<Long>> mMemoryUsageCallbackCaptor;
 
     @Mock private Tab mHoveredTab;
     @Mock private TabModelSelector mTabModelSelector;
@@ -89,6 +90,7 @@ public class StripTabHoverCardViewUnitTest {
     private TabThumbnailView mThumbnailView;
     private TextView mTitleView;
     private TextView mUrlView;
+    private TextView mMemoryUsageView;
     private Context mContext;
     private Bitmap mBitmap;
     private int mHoverCardWidth;
@@ -107,6 +109,7 @@ public class StripTabHoverCardViewUnitTest {
         mThumbnailView = mTabHoverCardView.findViewById(R.id.thumbnail);
         mTitleView = mTabHoverCardView.findViewById(R.id.title);
         mUrlView = mTabHoverCardView.findViewById(R.id.url);
+        mMemoryUsageView = mTabHoverCardView.findViewById(R.id.memory_usage);
 
         mContext = mTabHoverCardView.getContext();
         mContext.getResources().getDisplayMetrics().density = 1f;
@@ -168,6 +171,35 @@ public class StripTabHoverCardViewUnitTest {
                 "Thumbnail image bitmap is incorrect.",
                 mBitmap,
                 ((BitmapDrawable) mThumbnailView.getDrawable()).getBitmap());
+    }
+
+    @Test
+    public void show_MemoryUsage() {
+        var url = JUnitTestGURLs.EXAMPLE_URL;
+        var title = "Tab 1";
+        when(mHoveredTab.getTitle()).thenReturn(title);
+        when(mHoveredTab.getUrl()).thenReturn(url);
+        when(mHoveredTab.getId()).thenReturn(1);
+
+        mTabHoverCardView.show(mHoveredTab, false, 10, 20, STRIP_STACK_HEIGHT, 0f);
+
+        verify(mHoveredTab).getMemoryUsageBytes(mMemoryUsageCallbackCaptor.capture());
+
+        long bytes = 100_000_000; // 100 MB in decimal (base 1000) as used by Android's Formatter.
+        mMemoryUsageCallbackCaptor.getValue().onResult(bytes);
+
+        String expectedMemoryText =
+                mContext.getString(
+                        R.string.tab_hover_card_memory_usage,
+                        android.text.format.Formatter.formatShortFileSize(mContext, bytes));
+        assertEquals(
+                "Memory usage text is incorrect.",
+                expectedMemoryText,
+                mMemoryUsageView.getText().toString());
+        assertEquals(
+                "Memory usage view should be visible.",
+                View.VISIBLE,
+                mMemoryUsageView.getVisibility());
     }
 
     @Test
@@ -557,5 +589,25 @@ public class StripTabHoverCardViewUnitTest {
                 R.drawable.popup_bg_8dp,
                 shadowOf(mContentView.getBackground()).getCreatedFromResId());
         assertNull("Container background should be null.", mTabHoverCardView.getBackground());
+    }
+
+    @Test
+    public void testComponentOrder() {
+        assertEquals(
+                "Component at index 0 should be the title.",
+                R.id.title,
+                mContentView.getChildAt(0).getId());
+        assertEquals(
+                "Component at index 1 should be the URL.",
+                R.id.url,
+                mContentView.getChildAt(1).getId());
+        assertEquals(
+                "Component at index 2 should be the thumbnail.",
+                R.id.thumbnail,
+                mContentView.getChildAt(2).getId());
+        assertEquals(
+                "Component at index 3 should be the memory usage.",
+                R.id.memory_usage,
+                mContentView.getChildAt(3).getId());
     }
 }

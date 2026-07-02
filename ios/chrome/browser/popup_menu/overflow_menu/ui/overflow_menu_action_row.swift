@@ -105,7 +105,7 @@ struct OverflowMenuActionRow: View {
         .labelStyle(.iconOnly)
         .tint(.chromeBlue)
         .accessibilityRemoveTraits(.isSelected)
-        rowIcon
+        rowIcon?.foregroundColor(action.symbolTintColor.map { Color(uiColor: $0) })
         centerTextView
         Spacer()
       }
@@ -123,9 +123,14 @@ struct OverflowMenuActionRow: View {
           newLabelIconView
         }
         Spacer()
-        if let rowIcon = rowIcon {
-          rowIcon
+        if let previewImage = action.previewImage {
+          CircularPreviewContainer(size: previewImage.size.height) {
+            Image(uiImage: previewImage)
+              .resizable()
+              .aspectRatio(contentMode: .fill)
+          }
         }
+        rowIcon?.foregroundColor(action.symbolTintColor.map { Color(uiColor: $0) })
       }
       .padding([.trailing], Self.rowEndPadding)
     }
@@ -146,16 +151,12 @@ struct OverflowMenuActionRow: View {
   var button: some View {
     if isEditing {
       rowContent
-    } else if let menu = action.menu {
-      Button(action: {}) {
-        rowContent
-      }
-      .overlay(UIMenuPresenter(menu: menu))
     } else {
       Button(
         action: {
-          metricsHandler?.popupMenuTookAction()
+          metricsHandler?.popupMenuTriggerElement()
           metricsHandler?.popupMenuUserSelectedAction()
+          metricsHandler?.popupMenuDidTriggerAction(action.actionType)
           action.handler()
         },
         label: {
@@ -220,18 +221,24 @@ struct OverflowMenuActionRow: View {
   }
 }
 
-/// A UIViewRepresentable that wraps a UIButton to present a UIMenu on primary tap.
-struct UIMenuPresenter: UIViewRepresentable {
-  /// The UIMenu to present.
-  let menu: UIMenu
+/// A generic circular container with a 1pt separator-colored border.
+/// It clips its content to a circle.
+struct CircularPreviewContainer<Content: View>: View {
+  var size: CGFloat
+  var content: Content
 
-  func makeUIView(context: Context) -> UIButton {
-    let button = UIButton()
-    button.showsMenuAsPrimaryAction = true
-    return button
+  init(size: CGFloat, @ViewBuilder content: () -> Content) {
+    self.size = size
+    self.content = content()
   }
 
-  func updateUIView(_ uiView: UIButton, context: Context) {
-    uiView.menu = menu
+  var body: some View {
+    ZStack {
+      Circle()
+        .stroke(Color(uiColor: .separator), lineWidth: 1)
+      content
+        .clipShape(Circle())
+    }
+    .frame(width: size, height: size)
   }
 }

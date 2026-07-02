@@ -10,7 +10,10 @@
 #include <utility>
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_pref_names.h"
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
@@ -30,6 +33,9 @@
 #include "chrome/browser/ash/settings/scoped_test_device_settings_service.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
+#include "chrome/browser/notifications/notification_display_service_tester.h"
+#include "chrome/browser/notifications/notification_handler.h"
+#include "chrome/browser/notifications/system_notification_helper.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "chromeos/ash/components/dbus/session_manager/fake_session_manager_client.h"
@@ -57,6 +63,7 @@
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/message_center/public/cpp/notification.h"
 #include "url/gurl.h"
 
 namespace policy {
@@ -66,6 +73,8 @@ namespace test_utils = ash::geolocation::test_utils;
 namespace {
 
 const RemoteCommandJob::UniqueIDType kUniqueID = 123456789;
+constexpr base::TimeDelta kVeryOldCommandAge = base::Days(365 - 1);
+constexpr base::TimeDelta kExpiredCommandAge = base::Days(365) + base::Seconds(1);
 // Helper to create the command proto.
 em::RemoteCommand GenerateCommandProto(base::TimeDelta age_of_command) {
   em::RemoteCommand command_proto;
@@ -117,6 +126,15 @@ class DeviceCommandQueryGeolocationJobTest : public testing::Test {
   void SetUp() override {
     ash::DBusThreadManager::Initialize();
     ash::DeviceSettingsService::Initialize();
+
+    auto* local_state =
+        TestingBrowserProcess::GetGlobal()->GetTestingLocalState();
+    if (!local_state->FindPreference(
+            ash::prefs::kDeviceCommandQueryGeolocationReported)) {
+      DeviceCommandQueryGeolocationJob::RegisterPrefs(local_state->registry());
+    }
+    TestingBrowserProcess::GetGlobal()->SetSystemNotificationHelper(
+        std::make_unique<SystemNotificationHelper>());
     network_handler_test_helper_ =
         std::make_unique<ash::NetworkHandlerTestHelper>();
 
@@ -128,10 +146,14 @@ class DeviceCommandQueryGeolocationJobTest : public testing::Test {
     auto external_data_manager =
         std::make_unique<MockCloudExternalDataManager>();
 
+    TestingBrowserProcess::GetGlobal()->SetSharedURLLoaderFactory(
+        test_url_loader_factory_.GetSafeWeakWrapper());
+
     test_manager_ = std::make_unique<TestDeviceCloudPolicyManagerAsh>(
         std::move(store), std::move(external_data_manager));
-    pref_service_ = std::make_unique<TestingPrefServiceSimple>();
-    test_manager_->Initialize(pref_service_.get());
+    test_manager_->Initialize(
+        TestingBrowserProcess::GetGlobal()->local_state(),
+        TestingBrowserProcess::GetGlobal()->shared_url_loader_factory());
 
     // Initialize SystemLocationProvider for the test.
     ash::SystemLocationProvider::Initialize(
@@ -170,6 +192,8 @@ class DeviceCommandQueryGeolocationJobTest : public testing::Test {
     test_manager_->Shutdown();
     network_handler_test_helper_.reset();
     ash::SystemLocationProvider::DestroyForTesting();
+    TestingBrowserProcess::GetGlobal()->SetSystemNotificationHelper(nullptr);
+    TestingBrowserProcess::GetGlobal()->SetSharedURLLoaderFactory(nullptr);
     ash::DeviceSettingsService::Shutdown();
     ash::DBusThreadManager::Shutdown();
   }
@@ -189,7 +213,8 @@ class DeviceCommandQueryGeolocationJobTest : public testing::Test {
   std::unique_ptr<DeviceCommandQueryGeolocationJob> CreateJob(
       base::TimeTicks issued_time,
       const DeviceCloudPolicyManagerAsh* manager) {
-    auto job = std::make_unique<DeviceCommandQueryGeolocationJob>(manager);
+    auto job = std::make_unique<DeviceCommandQueryGeolocationJob>(
+        TestingBrowserProcess::GetGlobal()->local_state(), manager);
     auto command_proto =
         GenerateCommandProto(base::TimeTicks::Now() - issued_time);
     EXPECT_TRUE(
@@ -222,9 +247,52 @@ class DeviceCommandQueryGeolocationJobTest : public testing::Test {
   network::TestURLLoaderFactory test_url_loader_factory_;
   std::unique_ptr<ash::NetworkHandlerTestHelper> network_handler_test_helper_;
   base::TimeTicks test_start_time_ = base::TimeTicks::Now();
-  std::unique_ptr<TestingPrefServiceSimple> pref_service_;
   std::unique_ptr<TestDeviceCloudPolicyManagerAsh> test_manager_;
 };
+
+TEST_F(DeviceCommandQueryGeolocationJobTest, ShowNotificationWhenPrefIsSet) {
+  TestingBrowserProcess::GetGlobal()->GetTestingLocalState()->SetBoolean(
+      ash::prefs::kDeviceCommandQueryGeolocationReported, true);
+
+  NotificationDisplayServiceTester tester(/*profile=*/nullptr);
+  DeviceCommandQueryGeolocationJob::ShowLocationReportedNotificationIfNeeded(
+      TestingBrowserProcess::GetGlobal()->local_state());
+
+  std::optional<message_center::Notification> notification =
+      tester.GetNotification("device-located-disabled-device");
+  EXPECT_TRUE(notification);
+}
+
+TEST_F(DeviceCommandQueryGeolocationJobTest, NoNotificationWhenPrefNotSet) {
+  TestingBrowserProcess::GetGlobal()->GetTestingLocalState()->SetBoolean(
+      ash::prefs::kDeviceCommandQueryGeolocationReported, false);
+
+  NotificationDisplayServiceTester tester(/*profile=*/nullptr);
+  DeviceCommandQueryGeolocationJob::ShowLocationReportedNotificationIfNeeded(
+      TestingBrowserProcess::GetGlobal()->local_state());
+
+  std::optional<message_center::Notification> notification =
+      tester.GetNotification("device-located-disabled-device");
+  EXPECT_FALSE(notification);
+}
+
+TEST_F(DeviceCommandQueryGeolocationJobTest, ClearPrefOnNotificationClose) {
+  TestingBrowserProcess::GetGlobal()->GetTestingLocalState()->SetBoolean(
+      ash::prefs::kDeviceCommandQueryGeolocationReported, true);
+
+  NotificationDisplayServiceTester tester(/*profile=*/nullptr);
+  DeviceCommandQueryGeolocationJob::ShowLocationReportedNotificationIfNeeded(
+      TestingBrowserProcess::GetGlobal()->local_state());
+
+  tester.RemoveNotification(
+      NotificationHandler::Type::TRANSIENT,
+      "device-located-disabled-device", /*by_user=*/true);
+
+  EXPECT_FALSE(TestingBrowserProcess::GetGlobal()
+                   ->GetTestingLocalState()
+                   ->GetBoolean(
+                       ash::prefs::kDeviceCommandQueryGeolocationReported));
+}
 
 TEST_F(DeviceCommandQueryGeolocationJobTest, CommandFailsIfNotDisabled) {
   SetDevicePolicy(em::DeviceState::DEVICE_MODE_NORMAL,
@@ -233,6 +301,7 @@ TEST_F(DeviceCommandQueryGeolocationJobTest, CommandFailsIfNotDisabled) {
   base::test::TestFuture<void> job_finished_future;
   EXPECT_TRUE(job->Run(base::Time::Now(), base::TimeTicks::Now(),
                        job_finished_future.GetCallback()));
+  task_environment_.FastForwardBy(base::Seconds(10));
   ASSERT_TRUE(job_finished_future.Wait());
   EXPECT_EQ(job->status(), RemoteCommandJob::Status::FAILED);
   std::unique_ptr<std::string> payload = job->GetResultPayload();
@@ -250,6 +319,45 @@ TEST_F(DeviceCommandQueryGeolocationJobTest, CommandFailsIfNotDisabled) {
 }
 
 TEST_F(DeviceCommandQueryGeolocationJobTest,
+       CommandSucceedsIfDeviceBecomesDisabledDuringRetry) {
+  SetDevicePolicy(em::DeviceState::DEVICE_MODE_NORMAL,
+                  /*location_tracking_enabled=*/true);
+
+  const double latitude = 51.0;
+  const double longitude = -0.1;
+  const double accuracy = 1200.4;
+  const GURL geolocation_url = GetGeolocationUrl();
+  AddMockResponse(geolocation_url, test_utils::kSimpleResponseBody);
+
+  auto job = CreateJob(test_start_time_, test_manager_.get());
+  base::test::TestFuture<void> job_finished_future;
+  EXPECT_TRUE(job->Run(base::Time::Now(), base::TimeTicks::Now(),
+                       job_finished_future.GetCallback()));
+
+  // Device becomes disabled during the 10 seconds delay.
+  task_environment_.FastForwardBy(base::Seconds(5));
+  SetDevicePolicy(em::DeviceState::DEVICE_MODE_DISABLED,
+                  /*location_tracking_enabled=*/true);
+  task_environment_.FastForwardBy(base::Seconds(5));
+
+  ASSERT_TRUE(job_finished_future.Wait());
+  EXPECT_EQ(job->status(), RemoteCommandJob::Status::SUCCEEDED);
+
+  std::unique_ptr<std::string> payload = job->GetResultPayload();
+  ASSERT_TRUE(payload);
+
+  const std::optional<base::Value> parsed_payload =
+      base::JSONReader::Read(*payload, base::JSON_PARSE_RFC);
+  ASSERT_TRUE(parsed_payload.has_value());
+  ASSERT_TRUE(parsed_payload->is_dict());
+  const base::DictValue& dict = parsed_payload->GetDict();
+
+  EXPECT_EQ(dict.FindDouble("latitude"), latitude);
+  EXPECT_EQ(dict.FindDouble("longitude"), longitude);
+  EXPECT_EQ(dict.FindDouble("accuracy"), accuracy);
+}
+
+TEST_F(DeviceCommandQueryGeolocationJobTest,
        CommandFailsIfLocationTrackingDisabled) {
   SetDevicePolicy(em::DeviceState::DEVICE_MODE_DISABLED,
                   /*location_tracking_enabled=*/false);
@@ -257,6 +365,7 @@ TEST_F(DeviceCommandQueryGeolocationJobTest,
   base::test::TestFuture<void> job_finished_future;
   EXPECT_TRUE(job->Run(base::Time::Now(), base::TimeTicks::Now(),
                        job_finished_future.GetCallback()));
+  task_environment_.FastForwardBy(base::Seconds(10));
   ASSERT_TRUE(job_finished_future.Wait());
   EXPECT_EQ(job->status(), RemoteCommandJob::Status::FAILED);
   std::unique_ptr<std::string> payload = job->GetResultPayload();
@@ -280,6 +389,7 @@ TEST_F(DeviceCommandQueryGeolocationJobTest, CommandFailsForUnmanagedDevice) {
   base::test::TestFuture<void> job_finished_future;
   EXPECT_TRUE(job->Run(base::Time::Now(), base::TimeTicks::Now(),
                        job_finished_future.GetCallback()));
+  task_environment_.FastForwardBy(base::Seconds(10));
   ASSERT_TRUE(job_finished_future.Wait());
 
   EXPECT_EQ(job->status(), RemoteCommandJob::Status::FAILED);
@@ -323,6 +433,11 @@ TEST_F(DeviceCommandQueryGeolocationJobTest, GetLocationSuccess) {
   ASSERT_TRUE(timestamp_str);
   int64_t timestamp_val;
   EXPECT_TRUE(base::StringToInt64(*timestamp_str, &timestamp_val));
+
+  EXPECT_TRUE(TestingBrowserProcess::GetGlobal()
+                  ->GetTestingLocalState()
+                  ->GetBoolean(
+                      ash::prefs::kDeviceCommandQueryGeolocationReported));
 }
 
 TEST_F(DeviceCommandQueryGeolocationJobTest, GetLocationTimeout) {
@@ -448,6 +563,25 @@ TEST_F(DeviceCommandQueryGeolocationJobTest,
   // TIMEOUT result code.
   EXPECT_EQ(dict.FindInt("result_code"),
             std::optional<int>(em::QueryGeolocationCommandResultCode::TIMEOUT));
+}
+
+// Make sure that the command is still valid 365-1 days after being issued.
+TEST_F(DeviceCommandQueryGeolocationJobTest, TestCommandLifetime) {
+  auto job =
+      CreateJob(test_start_time_ - kVeryOldCommandAge, test_manager_.get());
+
+  EXPECT_TRUE(
+      job->Run(base::Time::Now(), base::TimeTicks::Now(), base::DoNothing()));
+}
+
+// Make sure that the command is expired after 365 days.
+TEST_F(DeviceCommandQueryGeolocationJobTest, TestCommandExpired) {
+  auto job =
+      CreateJob(test_start_time_ - kExpiredCommandAge, test_manager_.get());
+
+  EXPECT_FALSE(
+      job->Run(base::Time::Now(), base::TimeTicks::Now(), base::DoNothing()));
+  EXPECT_EQ(job->status(), RemoteCommandJob::Status::EXPIRED);
 }
 
 }  // namespace policy

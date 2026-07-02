@@ -13,6 +13,7 @@
 #include <string>
 
 #include "base/debug/crash_logging.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/task/thread_pool.h"
 #include "content/browser/accessibility/browser_accessibility_state_impl.h"
@@ -165,7 +166,8 @@ void BrowserAccessibilityStateImplAuralinux::OnDiscoveredOrca(
     OnAssistiveTechFound(ui::AssistiveTech::kOrca);
     if (!screen_reader_mode_) {
       screen_reader_mode_ = CreateScopedModeForProcess(
-          ui::kAXModeComplete | ui::AXMode::kScreenReader);
+          ui::kAXModeComplete | ui::AXMode::kScreenReader |
+          ui::AXMode::kFromPlatform);
     }
   } else {
     base::debug::ClearCrashKeyString(ax_orca_crash_key);

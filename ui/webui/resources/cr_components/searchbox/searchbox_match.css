@@ -53,6 +53,11 @@
   padding-bottom: 12px;
 }
 
+.aria-hidden-container {
+  /* Ignore container for visual layout. */
+  display: contents;
+}
+
 :host([has-action]) .container {
   height: 38px;
   padding-top: 3px;
@@ -132,7 +137,7 @@
   position: relative;
 }
 
-#focus-indicator {
+#focusIndicator {
   --searchbox-match-focus-indicator-width_: 7px;
   background-color: var(--color-searchbox-results-focus-indicator);
   border-radius: 3px;
@@ -144,7 +149,7 @@
 }
 
 /* Focus indicator only shown for vertically rendered matches. */
-:host-context(.vertical):host(:is(:focus-visible, [selected]:not(:focus-within))) #focus-indicator:not(.selected-within) {
+:host-context(.vertical):host(:is(:focus-visible, [selected]:not(:focus-within))) #focusIndicator:not(.selected-within) {
   display: block;
 }
 
@@ -203,6 +208,12 @@
   white-space: normal;
 }
 
+:host([is-lens-searchbox_]) #suggestion {
+  /* The above "display: -webkit-box" doesn't get inherited properly, so
+     force to display inline to ensure the text clamps correctly. */
+  display: inline;
+}
+
 :host([has-action]) #text-container {
   padding-inline-end: 4px;
 }
@@ -224,6 +235,18 @@
 /* Deemphasizes description for rich suggestions. */
 :host([is-rich-suggestion]) #description {
   font-size: .875em;
+}
+
+:host([is-contextual-suggestion_]) #description,
+:host([is-contextual-suggestion_]) #separator {
+  display: none;
+}
+
+:host([is-contextual-suggestion_]) .container:not(.actions):hover #description,
+:host([is-contextual-suggestion_]) .container:not(.actions):hover #separator,
+:host-context(cr-searchbox-match:-webkit-any(:focus-within, [selected])):host([is-contextual-suggestion_]) #description,
+:host-context(cr-searchbox-match:-webkit-any(:focus-within, [selected])):host([is-contextual-suggestion_]) #separator {
+  display: inline;
 }
 
 .match {

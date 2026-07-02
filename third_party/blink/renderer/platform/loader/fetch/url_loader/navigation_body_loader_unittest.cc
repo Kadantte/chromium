@@ -42,7 +42,7 @@ using ::testing::ElementsAre;
 class UppercaseDecoder : public BodyTextDecoder {
   String Decode(base::span<const char> data,
                 String* auto_detected_charset) override {
-    return String(data).UpperASCII();
+    return String(data).ToAsciiUpper();
   }
 
   String Flush() override { return String(); }
@@ -523,9 +523,9 @@ TEST_F(NavigationBodyLoaderTest, FillResponseReferrerRedirects) {
   ASSERT_EQ(navigation_params.redirects[0].new_referrer,
             WebString(Referrer::NoReferrer()));
   ASSERT_EQ(navigation_params.redirects[1].new_referrer,
-            WebString::FromUTF8(second_redirect_url.spec()));
+            WebString::FromUtf8(second_redirect_url.spec()));
   ASSERT_EQ(navigation_params.response.CurrentRequestUrl().GetString().Utf8(),
-            WebString::FromUTF8(commit_url.spec()).Utf8());
+            WebString::FromUtf8(commit_url.spec()).Utf8());
 }
 
 // A loader client which keeps track of chunks of data that are received in a

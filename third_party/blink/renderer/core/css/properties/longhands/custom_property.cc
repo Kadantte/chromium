@@ -118,7 +118,7 @@ void CustomProperty::ApplyInherit(StyleResolverState& state) const {
 
 void CustomProperty::ApplyValue(StyleResolverState& state,
                                 const CSSValue& value,
-                                ValueMode value_mode) const {
+                                ValueModeFlags value_mode) const {
   ComputedStyleBuilder& builder = state.StyleBuilder();
   DCHECK(!value.IsCSSWideKeyword());
 
@@ -188,8 +188,9 @@ void CustomProperty::ApplyValue(StyleResolverState& state,
   if (!registered_value) {
     DCHECK(declaration);
     CSSVariableData& data = *declaration->VariableDataValue();
-    CSSParserLocalContext local_context =
-        CSSParserLocalContext(GetCSSPropertyName());
+    CSSParserLocalContext local_context(GetCSSPropertyName(),
+                                        CSSPropertyID::kInvalid,
+                                        /*custom_function_name=*/g_null_atom);
     registered_value = Parse(data.OriginalText(), *context, local_context);
   }
 
@@ -203,7 +204,8 @@ void CustomProperty::ApplyValue(StyleResolverState& state,
     return;
   }
 
-  bool is_animation_tainted = value_mode == ValueMode::kAnimated;
+  bool is_animation_tainted =
+      value_mode & static_cast<ValueModeFlags>(ValueMode::kAnimated);
 
   // Note that the computed value ("SetVariableValue") is stored separately
   // from the substitution value ("SetVariableData") on ComputedStyle.
@@ -211,8 +213,10 @@ void CustomProperty::ApplyValue(StyleResolverState& state,
   // the custom property, and the computed value is generally used in other
   // cases (e.g. serialization).
 
-  bool is_attr_tainted = declaration && declaration->VariableDataValue() &&
-                         declaration->VariableDataValue()->IsAttrTainted();
+  bool is_attr_tainted =
+      (value_mode & static_cast<ValueModeFlags>(ValueMode::kAttrTainted)) ||
+      (declaration && declaration->VariableDataValue() &&
+       declaration->VariableDataValue()->IsAttrTainted());
 
   registered_value = &StyleBuilderConverter::ConvertRegisteredPropertyValue(
       state, *registered_value, context);

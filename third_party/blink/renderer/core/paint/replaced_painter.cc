@@ -183,7 +183,6 @@ void ReplacedPainter::Paint(const PaintInfo& paint_info) {
                                                         layout_replaced_);
     layout_replaced_.PaintReplaced(content_paint_state.GetPaintInfo(),
                                    content_paint_state.PaintOffset());
-    MeasureOverflowMetrics();
 
     // Ad Highlight Logic
     //
@@ -203,7 +202,7 @@ void ReplacedPainter::Paint(const PaintInfo& paint_info) {
     DCHECK(scrollable_area);
     if (!scrollable_area->HasLayerForScrollCorner()) {
       ScrollableAreaPainter(*scrollable_area)
-          .PaintResizer(local_paint_info.context, paint_offset,
+          .PaintResizer(local_paint_info, paint_offset,
                         local_paint_info.GetCullRect());
     }
     // Otherwise the resizer will be painted by the scroll corner layer.
@@ -247,7 +246,7 @@ void ReplacedPainter::Paint(const PaintInfo& paint_info) {
     Color selection_bg = HighlightStyleUtils::HighlightBackgroundColor(
         layout_replaced_.GetDocument(), layout_replaced_.StyleRef(),
         layout_replaced_.GetNode(), std::nullopt, kPseudoIdSelection,
-        SearchTextIsActiveMatch::kNo);
+        paint_info.IsPrivacyPreserving(), SearchTextIsActiveMatch::kNo);
     local_paint_info.context.FillRect(
         selection_painting_int_rect, selection_bg,
         PaintAutoDarkMode(layout_replaced_.StyleRef(),
@@ -282,40 +281,6 @@ bool ReplacedPainter::ShouldPaint(const ScopedPaintState& paint_state) const {
     return false;
 
   return true;
-}
-
-void ReplacedPainter::MeasureOverflowMetrics() const {
-  if (!layout_replaced_.BelongsToElementChangingOverflowBehaviour() ||
-      layout_replaced_.ClipsToContentBox() ||
-      !layout_replaced_.HasVisualOverflow()) {
-    return;
-  }
-
-  auto overflow_size = layout_replaced_.VisualOverflowRect().size;
-  auto overflow_area = overflow_size.width * overflow_size.height;
-
-  auto content_size = layout_replaced_.StitchedSize();
-  auto content_area = content_size.width * content_size.height;
-
-  DCHECK_GE(overflow_area, content_area);
-  if (overflow_area == content_area)
-    return;
-
-  const float device_pixel_ratio =
-      layout_replaced_.GetDocument().DevicePixelRatio();
-  const int overflow_outside_content_rect =
-      (overflow_area - content_area).ToInt() / pow(device_pixel_ratio, 2);
-  UMA_HISTOGRAM_COUNTS_100000(
-      "Blink.Overflow.ReplacedElementAreaOutsideContentRect",
-      overflow_outside_content_rect);
-
-  UseCounter::Count(layout_replaced_.GetDocument(),
-                    WebFeature::kReplacedElementPaintedWithOverflow);
-  constexpr int kMaxContentBreakageHeuristic = 5000;
-  if (overflow_outside_content_rect > kMaxContentBreakageHeuristic) {
-    UseCounter::Count(layout_replaced_.GetDocument(),
-                      WebFeature::kReplacedElementPaintedWithLargeOverflow);
-  }
 }
 
 void ReplacedPainter::PaintBoxDecorationBackground(

@@ -61,6 +61,10 @@ class MockHistorySyncOptinHelperDelegate
               (signin::SigninChoiceCallback),
               (override));
   MOCK_METHOD(void, FinishFlowWithoutHistorySyncOptin, (), (override));
+  MOCK_METHOD(void,
+              ShowSignInCelebration,
+              (base::OnceClosure celebration_finished),
+              (override));
 };
 
 std::unique_ptr<KeyedService> CreateTestSyncService(content::BrowserContext*) {
@@ -258,13 +262,15 @@ IN_PROC_BROWSER_TEST_P(
           .WillOnce([&](const CoreAccountId&, signin_metrics::AccessPoint,
                         base::OnceCallback<void(Profile*, bool)> callback) {
             // Mark management as accepted.
-            enterprise_util::SetUserAcceptedAccountManagement(GetProfile(),
-                                                              true);
+            enterprise_util::SetUserAcceptedAccountManagement(
+                GetProfile(),
+                /*accepted=*/true);
             // The callback is executed asynchronously, to better reflect
             // the production implementation.
             base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
                 FROM_HERE,
-                base::BindOnce(std::move(callback), GetProfile(), true));
+                base::BindOnce(std::move(callback), GetProfile(),
+                               /*management_required_by_policy=*/true));
           });
       break;
     case HistorySyncOptinHelper::LaunchContext::kInProfilePicker:
@@ -402,7 +408,8 @@ IN_PROC_BROWSER_TEST_P(
 IN_PROC_BROWSER_TEST_P(
     HistorySyncOptinHelperLaunchContextParamBrowserTest,
     WaitsForSyncServiceStartupBeforeTriggeringHistorySyncScreen) {
-  if (!base::FeatureList::IsEnabled(syncer::kEnableAwaitSyncServiceStartup)) {
+  if (!base::FeatureList::IsEnabled(
+          kEnableAwaitSyncServiceStartupOnHistorySync)) {
     GTEST_SKIP() << "EnableAwaitSyncServiceStartup must be enable to wait the "
                     "sync engine status";
   }
@@ -429,7 +436,7 @@ IN_PROC_BROWSER_TEST_P(
   EXPECT_TRUE(history_sync_optin_helper
                   ->GetSyncServiceStartupStateObserverForTesting());
 
-  // When sync becomes active, thepl flow resumes to showing the history sync
+  // When sync becomes active, the flow resumes to showing the history sync
   // optin screen.
   EXPECT_CALL(delegate, ShowHistorySyncOptinScreen(GetProfile(), testing::_))
       .Times(1);
@@ -464,12 +471,19 @@ IN_PROC_BROWSER_TEST_P(
                                      /*expected_count=*/0);
   histogram_tester_.ExpectTotalCount("Signin.HistorySyncOptIn.Declined",
                                      /*expected_count=*/0);
+  histogram_tester_.ExpectTotalCount(
+      "Signin.HistorySyncOptin.SyncStartupAwaitTime.Complete",
+      /*expected_count=*/1);
+  histogram_tester_.ExpectTotalCount(
+      "Signin.HistorySyncOptin.SyncStartupAwaitTime.Timeout",
+      /*expected_count=*/0);
 }
 
 IN_PROC_BROWSER_TEST_P(
     HistorySyncOptinHelperLaunchContextParamBrowserTest,
     WaitsForSyncServiceStartupThenSkipsHistorySyncScreenIfSyncDisabledByPolicy) {
-  if (!base::FeatureList::IsEnabled(syncer::kEnableAwaitSyncServiceStartup)) {
+  if (!base::FeatureList::IsEnabled(
+          kEnableAwaitSyncServiceStartupOnHistorySync)) {
     GTEST_SKIP() << "EnableAwaitSyncServiceStartup must be enable to wait the "
                     "sync engine status";
   }
@@ -506,12 +520,19 @@ IN_PROC_BROWSER_TEST_P(
             GetTestSyncService()->GetTransportState());
   ASSERT_TRUE(GetTestSyncService()->HasDisableReason(
       syncer::SyncService::DISABLE_REASON_ENTERPRISE_POLICY));
+  histogram_tester_.ExpectTotalCount(
+      "Signin.HistorySyncOptin.SyncStartupAwaitTime.Complete",
+      /*expected_count=*/1);
+  histogram_tester_.ExpectTotalCount(
+      "Signin.HistorySyncOptin.SyncStartupAwaitTime.Timeout",
+      /*expected_count=*/0);
 }
 
 IN_PROC_BROWSER_TEST_P(
     HistorySyncOptinHelperLaunchContextParamBrowserTest,
     WaitsForSyncServiceStartupThenShowsHistorySyncScreenIfWaitingTimesout) {
-  if (!base::FeatureList::IsEnabled(syncer::kEnableAwaitSyncServiceStartup)) {
+  if (!base::FeatureList::IsEnabled(
+          kEnableAwaitSyncServiceStartupOnHistorySync)) {
     GTEST_SKIP() << "EnableAwaitSyncServiceStartup must be enable to wait the "
                     "sync engine status";
   }
@@ -542,6 +563,11 @@ IN_PROC_BROWSER_TEST_P(
   EXPECT_CALL(delegate, ShowHistorySyncOptinScreen).Times(1);
   history_sync_optin_helper->GetSyncServiceStartupStateObserverForTesting()
       ->MockTimeoutReachedForTesting();
+  histogram_tester_.ExpectTotalCount(
+      "Signin.HistorySyncOptin.SyncStartupAwaitTime.Timeout",
+      /*expected_count=*/1);
+  histogram_tester_.ExpectTotalCount("Signin.HistorySyncOptin.Complete",
+                                     /*expected_count=*/0);
 }
 
 IN_PROC_BROWSER_TEST_P(HistorySyncOptinHelperLaunchContextParamBrowserTest,
@@ -653,4 +679,96 @@ IN_PROC_BROWSER_TEST_F(HistorySyncOptinHelperBrowserTest,
       /*sample=*/
       signin_metrics::AccessPoint::kHistorySyncOptinExpansionPillOnStartup,
       /*expected_count=*/1);
+}
+
+class HistorySyncOptinHelperFreBrowserTest
+    : public HistorySyncOptinHelperBrowserTest {
+ public:
+  HistorySyncOptinHelperFreBrowserTest() {
+    scoped_features_.InitWithFeatures(
+        /*enabled_features=*/{syncer::kReplaceSyncPromosWithSignInPromos,
+                              switches::kFirstRunDesktopRefresh,
+                              switches::kFirstRunDesktopRevamp},
+        /*disabled_features=*/{});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_features_;
+};
+
+IN_PROC_BROWSER_TEST_F(HistorySyncOptinHelperFreBrowserTest,
+                       TriggersSignInCelebrationForConsumerAccount) {
+  AccountInfo account_info = MakeAccountInfoAvailableAndSignIn();
+  MockHistorySyncOptinHelperDelegate delegate;
+
+  base::test::TestFuture<void> celebration_shown_future;
+  EXPECT_CALL(delegate, ShowSignInCelebration)
+      .WillOnce([&](base::OnceClosure celebration_finished) {
+        celebration_shown_future.SetValue();
+        std::move(celebration_finished).Run();
+      });
+
+  base::test::TestFuture<void> flow_finished_future;
+  HistorySyncOptinHelperTestObserver observer(flow_finished_future);
+
+  auto history_sync_optin_helper = HistorySyncOptinHelper::Create(
+      identity_test_env()->identity_manager(), GetProfile(), account_info,
+      &delegate, HistorySyncOptinHelper::LaunchContext::kInProfilePicker,
+      signin_metrics::AccessPoint::kForYouFre);
+  history_sync_optin_helper->AddObserver(&observer);
+  history_sync_optin_helper->StartHistorySyncOptinFlow();
+
+  UpdateAccountManagementInfo(account_info, /*is_managed=*/false);
+
+  EXPECT_TRUE(celebration_shown_future.Wait());
+  EXPECT_TRUE(flow_finished_future.Wait());
+}
+
+IN_PROC_BROWSER_TEST_F(HistorySyncOptinHelperFreBrowserTest,
+                       BypassesSignInCelebrationForManagedAccount) {
+  AccountInfo account_info = MakeAccountInfoAvailableAndSignIn();
+  MockHistorySyncOptinHelperDelegate delegate;
+
+  // Mock accepting the user management screen (Profile Picker version only).
+  EXPECT_CALL(delegate, ShowAccountManagementScreen)
+      .WillOnce([&](signin::SigninChoiceCallback callback) {
+        std::move(callback).Run(signin::SIGNIN_CHOICE_NEW_PROFILE);
+      });
+
+  EXPECT_CALL(delegate, ShowSignInCelebration).Times(0);
+
+  base::test::TestFuture<void> flow_finished_future;
+  HistorySyncOptinHelperTestObserver observer(flow_finished_future);
+
+  auto history_sync_optin_helper = HistorySyncOptinHelper::Create(
+      identity_test_env()->identity_manager(), GetProfile(), account_info,
+      &delegate, HistorySyncOptinHelper::LaunchContext::kInProfilePicker,
+      signin_metrics::AccessPoint::kForYouFre);
+  history_sync_optin_helper->AddObserver(&observer);
+  history_sync_optin_helper->StartHistorySyncOptinFlow();
+
+  UpdateAccountManagementInfo(account_info, /*is_managed=*/true);
+  EXPECT_TRUE(flow_finished_future.Wait());
+}
+
+IN_PROC_BROWSER_TEST_F(HistorySyncOptinHelperFreBrowserTest,
+                       DoesNotTriggerSignInCelebrationOutsideFirstRun) {
+  AccountInfo account_info = MakeAccountInfoAvailableAndSignIn();
+  MockHistorySyncOptinHelperDelegate delegate;
+
+  EXPECT_CALL(delegate, ShowSignInCelebration).Times(0);
+
+  base::test::TestFuture<void> flow_finished_future;
+  HistorySyncOptinHelperTestObserver observer(flow_finished_future);
+
+  auto history_sync_optin_helper = HistorySyncOptinHelper::Create(
+      identity_test_env()->identity_manager(), GetProfile(), account_info,
+      &delegate, HistorySyncOptinHelper::LaunchContext::kInProfilePicker,
+      signin_metrics::AccessPoint::kSettings);
+  history_sync_optin_helper->AddObserver(&observer);
+  history_sync_optin_helper->StartHistorySyncOptinFlow();
+
+  UpdateAccountManagementInfo(account_info, /*is_managed=*/false);
+
+  EXPECT_TRUE(flow_finished_future.Wait());
 }

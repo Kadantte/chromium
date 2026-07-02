@@ -11,10 +11,12 @@
 <translation id="1556537182262721003">ପ୍ରୋଫାଇଲ୍‌କୁ ଏକ୍ସଟେନ୍‌ସନ୍ ଡିରେକ୍ଟୋରୀ ପଠାଯାଇପାରିଲାନାହିଁ।</translation>
 <translation id="1610570795592207282">ସ୍କ୍ରିପ୍ଟ ପାଇଁ css '<ph name="RELATIVE_PATH" />'କୁ ଲୋଡ କରାଯାଇପାରିଲା ନାହିଁ।</translation>
 <translation id="1616298854599875024">ଏକ୍ସଟେନ୍‌ସନ୍ <ph name="IMPORT_NAME" /> ଇମ୍ପୋର୍ଟ କରାଯାଇପାରିଲା ନାହିଁଁ କାରଣ ଏହା ଏକ ସେୟାର୍ କରାଯାଇଥିବା ମଡ୍ୟୁଲ୍ ନୁହେଁ</translation>
+<translation id="1757786065507923842">ବାପାମା'ଙ୍କ ଅନୁମତି ଅନୁରୋଧ ବିଫଳ ହୋଇଛି।</translation>
 <translation id="1803557475693955505">'<ph name="BACKGROUND_PAGE" />' ପୃଷ୍ଠପଟ ପୃଷ୍ଠା ଲୋଡ୍‌ ହୋଇପାରିଲା ନାହିଁ।</translation>
 <translation id="1875387611427697908">ଏହା କେବଳ <ph name="CHROME_WEB_STORE" />ରୁ ଯୋଗ କରାଯାଇପାରିବ</translation>
 <translation id="2131077480075264">"<ph name="IMPORT_NAME" />" ଦ୍ୱାରା ଅନୁମତି ପ୍ରାପ୍ତ ହୋଇନଥିବା କାରଣ ଯୋଗୁଁ "<ph name="APP_NAME" />" ଇନ୍‌ଷ୍ଟଲ୍ କରିବାକୁ ଅକ୍ଷମ</translation>
 <translation id="2159915644201199628">ଛବି ଡିକୋଡ୍ କରିପାରିଲା ନାହିଁ: '<ph name="IMAGE_NAME" />'</translation>
+<translation id="2193567467390483943">ତୁମ ବାପାମା ଏହି ଏକ୍ସଟେନସନକୁ ଅନୁମୋଦନ କରିନାହାଁନ୍ତି</translation>
 <translation id="2350172092385603347">ସ୍ଥାନୀୟକରଣ ବ୍ୟବହାର କରାଯାଇଛି, କିନ୍ତୁ ମାନିଫେଷ୍ଟରେ default_locale ନିର୍ଦ୍ଦିଷ୍ଟ କରାଯାଇନାହିଁ।</translation>
 <translation id="2576842806987913196">ପୂର୍ବରୁ ଏହି ନାମରେ ଏକ CRX ଫାଇଲ୍‌ ଅଛି।</translation>
 <translation id="2662876636500006917">Chrome ୱେବ୍ ଷ୍ଟୋର୍</translation>
@@ -25,13 +27,16 @@
 <translation id="3115238746683532089"><ph name="VENDOR_ID" /> (କ୍ରମିକ ସଂଖ୍ୟା <ph name="SERIAL_NUMBER" />) ବିକ୍ରେତାଙ୍କ ତରଫରୁ <ph name="PRODUCT_ID" /> ଅଜଣା ପ୍ରଡକ୍ଟ</translation>
 <translation id="3144135466825225871">crx ଫାଇଲ୍‍କୁ ପ୍ରତିସ୍ଥାପିତ କରିହେଲା ନାହିଁ। ଫାଇଲ୍‍ଟି ବ୍ୟବହାର କରାଯାଉଛି କି ନାହିଁ ତାହା ଯାଞ୍ଚ କରନ୍ତୁ।</translation>
 <translation id="3163201441334626963">ଭେଣ୍ଡର <ph name="VENDOR_ID" />ରୁ ଅଜଣା ପ୍ରଡକ୍ଟ <ph name="PRODUCT_ID" /></translation>
+<translation id="3174723475300476613">ଆପଣଙ୍କ ସଂସ୍ଥା ଦ୍ୱାରା ଏହି ଏକ୍ସଟେନସନକୁ ଆକ୍ସେସ ବ୍ଲକ କରାଯାଇଛି।</translation>
 <translation id="3242289508736283383">'kiosk_only' ମାନିଫେଷ୍ଟ ଆଟ୍ରିବ୍ୟୁଟ ଥିବା ଆପ ChromeOS କିଓସ୍କ ମୋଡରେ ଇନଷ୍ଟଲ କରାଯିବା ଉଚିତ</translation>
+<translation id="3364986687961713424">ଆପଣଙ୍କ ଆଡମିନିଷ୍ଟ୍ରେଟରଙ୍କ ଠାରୁ: <ph name="ADMIN_MESSAGE" /></translation>
 <translation id="3393440416772303020"><ph name="PRODUCT_NAME" /> (କ୍ରମିକ ସଂଖ୍ୟା <ph name="SERIAL_NUMBER" />)</translation>
 <translation id="3466070586188012397">ବିକ୍ରେତା <ph name="VENDOR_ID" />ଙ୍କ ତରଫରୁ <ph name="PRODUCT_NAME" /> (କ୍ରମିକ ସଂଖ୍ୟା <ph name="SERIAL_NUMBER" />)</translation>
 <translation id="3561217442734750519">ବ୍ୟକ୍ତିଗତ କୀ ପାଇଁ ମୂଲ୍ୟ ନିଶ୍ଚିତରୂପେ ଏକ ବୈଧ ପାଥ୍‌ ହେବା ଆବଶ୍ୟକ।</translation>
 <translation id="3834775135533257713">"<ph name="TO_INSTALL_APP_NAME" />" ଆପ୍ଲିକେସନ୍ ଯୋଗ କରାଯାଇପାରିଲା ନାହିଁ କାରଣ ଏହାର "<ph name="INSTALLED_APP_NAME" />" ସହିତ କିଛି ବିବାଦ ଅଛି।</translation>
 <translation id="388442998277590542"><ph name="OPTIONS_PAGE" />' ବିକଳ୍ପ ଥିବା ପୃଷ୍ଠା ଲୋଡ୍‌ କରିହେଲା ନାହିଁ।</translation>
 <translation id="3984413272403535372">ଏକ୍ସଟେନ୍‌ସନ୍ ସାଇନ୍‌ କରିବା ସମୟରେ ତ୍ରୁଟି।</translation>
+<translation id="4094452115117798451">ଆପଣଙ୍କ ସଂସ୍ଥା ଦ୍ୱାରା ଏହି ଏକ୍ସଟେନସନ ବର୍ଗକୁ ଆକ୍ସେସ ବ୍ଲକ କରାଯାଇଛି।</translation>
 <translation id="4233778200880751280">'<ph name="ABOUT_PAGE" />' ପୃଷ୍ଠା ବିଷୟରେ ଲୋଡ୍‌ କରିହେଲା ନାହିଁ।</translation>
 <translation id="424963718355121712">ଆପ୍‌ଗୁଡ଼ିକୁ ସେମାନଙ୍କ ଦ୍ଵାରା ପ୍ରଭାବିତ ହେଉଥିବା ହୋଷ୍ଟରୁ ସେବା ଦେବା ଆବଶ୍ୟକ</translation>
 <translation id="4306119971288449206">"<ph name="CONTENT_TYPE" />" ବିଷୟବସ୍ତୁ-ପ୍ରକାର ସହିତ ହିଁ ଆପ୍‌ଗୁଡ଼ିକୁ ସେବା ଦିଆଯିବା ଦରକାର</translation>
@@ -64,6 +69,7 @@
 <translation id="7003844668372540529"><ph name="VENDOR_NAME" />ରୁ <ph name="PRODUCT_ID" /> ଅଜଣା ପ୍ରଡକ୍ଟ</translation>
 <translation id="7068383018033524534">ମାନିଫେଷ୍ଟ ଫାଇଲ୍ ଅବୈଧ ଅଟେ</translation>
 <translation id="7217838517480956708">ଏହି ମେସିନ୍‌ର ବ୍ୟବସ୍ଥାପକ <ph name="EXTENSION_NAME" />କୁ ଇନ୍‍ଷ୍ଟଲ୍ କରିବା ଆବଶ୍ୟକ କରୁଛନ୍ତି। ଏହାକୁ କଢ଼ାଯାଇପାରିବ ନାହିଁ କିମ୍ବା ସଂଶୋଧିତ କରାଯାଇପାରିବ ନାହିଁ।</translation>
+<translation id="7287143125007575591">ଆକ୍ସେସ୍‍ ପ୍ରତ୍ୟାଖ୍ୟାନ କରାଗଲା।</translation>
 <translation id="7612608473764576263">ବ୍ୟକ୍ତିଗତ କୀ ପାଇଁ ଇନ୍‌ପୁଟ୍‍ ମୂଲ୍ୟ ନିଶ୍ଚିତରୂପେ ଏକ ବୈଧ ଫର୍ମାଟ୍ ହେବା ଆବଶ୍ୟକ (PKCS#8- ଫର୍ମାଟ୍‌ PEM-ଏନକୋଡ୍ ହୋଇଥିବା RSA କୀ') ।</translation>
 <translation id="765293928828334535">ଏହି ୱେବସାଇଟରୁ ଆପ୍ସ, ଏକ୍ସଟେ‌ନସନ ଏବଂ ୟୁଜରଙ୍କ ସ୍କ୍ରିପ୍ଟ ଯୋଗ କରାଯାଇପାରିବ ନାହିଁ</translation>
 <translation id="7876803335449432072">ବିଷୟବସ୍ତୁ ସ୍କ୍ରିପ୍ଟ ପାଇଁ '<ph name="RELATIVE_PATH" />' ଫାଇଲକୁ ଲୋଡ କରାଯାଇପାରିଲା ନାହିଁ, ବିଷୟବସ୍ତୁ ସ୍କ୍ରିପ୍ଟ ଷ୍ଟାଇଲ ସିଟଗୁଡ଼ିକୁ କେବଳ .css ଫାଇଲଗୁଡ଼ିକ ପରି ସପୋର୍ଟ କରୁଥିବା ଷ୍ଟାଇଲ ସିଟ ଫାଇଲଗୁଡ଼ିକରୁ ଲୋଡ କରାଯାଇପାରିବ।</translation>

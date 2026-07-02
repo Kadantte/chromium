@@ -25,11 +25,12 @@
 #include "components/services/storage/privileged/mojom/indexed_db_client_state_checker.mojom.h"
 #include "components/services/storage/public/mojom/storage_service.mojom-forward.h"
 #include "content/browser/background_sync/background_sync_context_impl.h"
-#include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/content_index/content_index_context_impl.h"
+#include "content/browser/declarative_performance_observer/declarative_performance_observer_store.h"
 #include "content/browser/dom_storage/dom_storage_context_wrapper.h"
 #include "content/browser/locks/lock_manager.h"
 #include "content/browser/notifications/platform_notification_context_impl.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/browser/service_worker/service_worker_context_wrapper.h"
 #include "content/browser/worker_host/dedicated_worker_service_impl.h"
 #include "content/common/content_export.h"
@@ -43,8 +44,9 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/unique_receiver_set.h"
 #include "net/cookies/cookie_setting_override.h"
+#include "services/network/public/cpp/connection_allowlist.h"
 #include "services/network/public/cpp/network_service_buildflags.h"
-#include "services/network/public/cpp/originating_process.h"
+#include "services/network/public/cpp/originating_process_id.h"
 #include "services/network/public/mojom/cert_verifier_service_updater.mojom.h"
 #include "services/network/public/mojom/device_bound_sessions.mojom.h"
 #include "services/network/public/mojom/network_context.mojom-forward.h"
@@ -135,6 +137,10 @@ class CONTENT_EXPORT StoragePartitionImpl
   // browser context starts shutting down its corresponding IO thread residents
   // (e.g. resource context).
   ~StoragePartitionImpl() override;
+
+  // Returns true if the session storage database should be cleared instead of
+  // preserving data from the previous session.
+  bool ShouldClearSessionStorageOnStartup() const;
 
   // Quota managed data uses a different representation for storage types than
   // StoragePartition uses. This method generates that representation.
@@ -235,20 +241,17 @@ class CONTENT_EXPORT StoragePartitionImpl
   leveldb_proto::ProtoDatabaseProvider* GetProtoDatabaseProviderForTesting()
       override;
   void ClearDataForOrigin(uint32_t remove_mask,
-                          uint32_t quota_storage_remove_mask,
                           const GURL& storage_origin,
                           base::OnceClosure callback) override;
   void ClearDataForBuckets(const blink::StorageKey& storage_key,
                            const std::set<std::string>& storage_buckets,
                            base::OnceClosure callback) override;
   void ClearData(uint32_t remove_mask,
-                 uint32_t quota_storage_remove_mask,
                  const blink::StorageKey& storage_key,
                  const base::Time begin,
                  const base::Time end,
                  base::OnceClosure callback) override;
   void ClearData(uint32_t remove_mask,
-                 uint32_t quota_storage_remove_mask,
                  BrowsingDataFilterBuilder* filter_builder,
                  StorageKeyPolicyMatcherFunction storage_key_policy_matcher,
                  network::mojom::CookieDeletionFilterPtr cookie_deletion_filter,
@@ -319,7 +322,7 @@ class CONTENT_EXPORT StoragePartitionImpl
       mojo::PendingReceiver<blink::mojom::StorageArea> receiver) override;
 
   // network::mojom::NetworkContextClient interface.
-  void OnFileUploadRequested(int32_t process_id,
+  void OnFileUploadRequested(const network::OriginatingProcessId& process_id,
                              bool async,
                              const std::vector<base::FilePath>& file_paths,
                              const GURL& destination_url,
@@ -379,6 +382,8 @@ class CONTENT_EXPORT StoragePartitionImpl
       network::mojom::TransportType transport_type,
       network::mojom::IPAddressSpace ip_address_space,
       OnLocalNetworkAccessPermissionRequiredCallback callback) override;
+  void OnPlatformLocalNetworkPermissionRequired(
+      OnPlatformLocalNetworkPermissionRequiredCallback callback) override;
   void OnClearSiteData(
       const GURL& url,
       const std::string& header_value,
@@ -485,7 +490,7 @@ class CONTENT_EXPORT StoragePartitionImpl
 
   mojo::PendingRemote<network::mojom::URLLoaderNetworkServiceObserver>
   CreateURLLoaderNetworkObserverForServiceOrSharedWorker(
-      const network::OriginatingProcess& process_id,
+      const network::OriginatingProcessId& process_id,
       const url::Origin& worker_origin);
 
   mojo::PendingRemote<network::mojom::DeviceBoundSessionAccessObserver>
@@ -523,27 +528,28 @@ class CONTENT_EXPORT StoragePartitionImpl
           receiver,
       std::unique_ptr<NavigationStateKeepAlive> handle);
 
-  // Forward the call to `NetworkContext::RevokeNetworkForNonces` and save the
-  // nonces in `StoragePartitionImpl`. Clients should revoke network access for
-  // nonces using this function instead of calling
-  // `NetworkContext::RevokeNetworkForNonces` directly. This is because this
-  // function saves the nonces so that they can be restored in case of a
+  // Forward the call to `NetworkContext::RestrictNetworkForIds` and save the
+  // IDs in `StoragePartitionImpl`. Clients should restrict network access for
+  // IDs using this function instead of calling
+  // `NetworkContext::RestrictNetworkForIds` directly. This is because this
+  // function saves the IDs so that they can be restored in case of a
   // `NetworkService` crash.
-  void RevokeNetworkForNoncesInNetworkContext(
-      const std::map<base::UnguessableToken, std::set<std::string>>&
-          nonces_to_patterns,
+  void RestrictNetworkForIdsInNetworkContext(
+      const std::map<base::UnguessableToken, network::ConnectionAllowlists>&
+          ids_to_allowlists,
       base::OnceClosure callback);
 
-  // Forward the call to `NetworkContext::ClearNonces` and remove the stored
-  // nonce values in `StoragePartitionImpl`. Clients should clear nonces using
-  // this function instead of calling `NetworkContext::ClearNonces` directly.
-  // This should only be called when the nonces saved by
-  // `RevokeNetworkForNoncesInNetworkContext` are no longer relevant.
-  // The nonces are cleared after a time delay, which will prevent races where
-  // network requests succeed while the fenced frame corresponding to the
-  // nonces is being destroyed.
-  void ClearNoncesInNetworkContextAfterDelay(
-      const std::vector<base::UnguessableToken>& nonces);
+  // Forward the call to `NetworkContext::ClearNetworkRestrictions` and remove
+  // the stored ID values in `StoragePartitionImpl`. Clients should clear
+  // restrictions using this function instead of calling
+  // `NetworkContext::ClearNetworkRestrictions` directly.
+  // This should only be called when the IDs saved by
+  // `RestrictNetworkForIdsInNetworkContext` are no longer relevant.
+  // The IDs are cleared after a time delay, which will prevent races where
+  // network requests succeed while the frame corresponding to the IDs is being
+  // destroyed.
+  void ClearNetworkRestrictionsAfterDelay(
+      const std::vector<base::UnguessableToken>& network_restrictions_ids);
 
   // Get the NavigationStateKeepAlive associated with `frame_token`. See
   // `navigation_state_keep_alive_map_`.
@@ -555,7 +561,7 @@ class CONTENT_EXPORT StoragePartitionImpl
   void RemoveKeepAliveHandleFromMap(blink::LocalFrameToken frame_token,
                                     NavigationStateKeepAlive* keep_alive);
 
-  void SetClearNoncesInNetworkContextParamsForTesting(
+  void SetClearNetworkRestrictionsParamsForTesting(
       const base::TimeDelta& delay,
       base::RepeatingClosure callback);
 
@@ -568,6 +574,11 @@ class CONTENT_EXPORT StoragePartitionImpl
   void DecrementActiveDocumentCount(const net::NetworkIsolationKey& nik);
   int GetActiveDocumentCount(const net::NetworkIsolationKey& nik);
 
+  DeclarativePerformanceObserverStore*
+  GetDeclarativePerformanceObserverStore() {
+    return declarative_performance_observer_store_.get();
+  }
+
   enum class ContextType {
     kRenderFrameHostContext,
     kNavigationRequestContext,
@@ -576,7 +587,6 @@ class CONTENT_EXPORT StoragePartitionImpl
 
  private:
   class DataDeletionHelper;
-  class QuotaManagedDataDeletionHelper;
   class ServiceWorkerCookieAccessObserver;
   class ServiceWorkerTrustTokenAccessObserver;
   class ServiceWorkerSharedDictionaryAccessObserver;
@@ -646,7 +656,7 @@ class CONTENT_EXPORT StoragePartitionImpl
         GlobalRenderFrameHostId global_render_frame_host_id);
 
     // Used when `type` is `kSharedOrServiceWorkerContext`.
-    URLLoaderNetworkContext(const network::OriginatingProcess& process_id,
+    URLLoaderNetworkContext(const network::OriginatingProcessId& process_id,
                             const url::Origin& worker_origin);
 
     // Used when `type` is `kNavigationRequestContext`.
@@ -661,7 +671,7 @@ class CONTENT_EXPORT StoragePartitionImpl
       return navigation_or_document_.get();
     }
 
-    network::OriginatingProcess process_id() const { return process_id_; }
+    network::OriginatingProcessId process_id() const { return process_id_; }
     const std::optional<url::Origin>& worker_origin() const {
       return worker_origin_;
     }
@@ -678,7 +688,7 @@ class CONTENT_EXPORT StoragePartitionImpl
     scoped_refptr<NavigationOrDocumentHandle> navigation_or_document_;
 
     // Only valid when `type_` is kSharedOrServiceWorkerContext.
-    network::OriginatingProcess process_id_;
+    network::OriginatingProcessId process_id_;
 
     // Only valid and non-nullopt when `type_` is kSharedOrServiceWorkerContext.
     std::optional<url::Origin> worker_origin_;
@@ -720,7 +730,6 @@ class CONTENT_EXPORT StoragePartitionImpl
   // `filter_builder`/`storage_key_policy_matcher` will never both be populated.
   void ClearDataImpl(
       uint32_t remove_mask,
-      uint32_t quota_storage_remove_mask,
       const blink::StorageKey& storage_key,
       BrowsingDataFilterBuilder* filter_builder,
       StorageKeyPolicyMatcherFunction storage_key_policy_matcher,
@@ -759,8 +768,8 @@ class CONTENT_EXPORT StoragePartitionImpl
 
   void DeleteStaleSessionOnlyCookiesAfterDelay();
 
-  void ClearNoncesInNetworkContextAfterDelayCallback(
-      const std::vector<base::UnguessableToken>& nonces);
+  void ClearNetworkRestrictionsAfterDelayCallback(
+      const std::vector<base::UnguessableToken>& network_restrictions_ids);
 
   // The callback for BindLockManager, invoked after bucket info is resolved.
   void CreateLockManagerWithBucketInfo(
@@ -960,8 +969,8 @@ class CONTENT_EXPORT StoragePartitionImpl
   // allowlists in `NetworkContext`. It is used for restoring the
   // `NetworkContext` nonces when there is a `NetworkService`
   // crash.
-  std::map<base::UnguessableToken, std::set<std::string>>
-      network_revocation_nonces_;
+  std::map<base::UnguessableToken, network::ConnectionAllowlists>
+      network_restrictions_ids_;
 
   // We need to delay deleting stale session cookies until after the cookie db
   // has initialized, otherwise we will bypass lazy loading and block.
@@ -971,11 +980,11 @@ class CONTENT_EXPORT StoragePartitionImpl
   // We need a delay when removing fenced frame nonces from here and from the
   // network service, to avoid races where a fenced frame could regain network
   // access during destruction. See the comment on
-  // `ClearNoncesInNetworkContextAfterDelay` for more info.
-  base::TimeDelta clear_nonces_in_network_context_delay_{base::Minutes(1)};
-  // Because removing the nonces after a delay is async, we need a callback to
+  // `ClearNetworkRestrictionsAfterDelay` for more info.
+  base::TimeDelta clear_network_restrictions_delay_{base::Minutes(1)};
+  // Because removing the IDs after a delay is async, we need a callback to
   // execute when the task completes in order to test it.
-  base::RepeatingClosure clear_nonces_in_network_context_callback_for_testing_ =
+  base::RepeatingClosure clear_network_restrictions_callback_for_testing_ =
       base::DoNothing();
 
   // Tracks the number of active documents within the same StoragePartition,
@@ -994,6 +1003,9 @@ class CONTENT_EXPORT StoragePartitionImpl
       performance_scenarios::PerformanceScenarioObserverList,
       performance_scenarios::MatchingScenarioObserver>
       performance_scenario_observation_{this};
+
+  std::unique_ptr<DeclarativePerformanceObserverStore>
+      declarative_performance_observer_store_;
 
   base::WeakPtrFactory<StoragePartitionImpl> weak_factory_{this};
 };

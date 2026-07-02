@@ -68,11 +68,9 @@
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/layout/layout_shift_tracker.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
-#include "third_party/blink/renderer/core/layout/text_autosizer.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/scroll/scroll_into_view_util.h"
 #include "third_party/blink/renderer/platform/instrumentation/histogram.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/timer.h"
 
 namespace blink {
@@ -192,17 +190,18 @@ bool TextFinder::Find(int identifier,
                       const mojom::blink::FindOptions& options,
                       bool wrap_within_frame,
                       bool* active_now) {
-  return FindInternal(identifier, search_text, options, wrap_within_frame,
-                      active_now);
+  return FindInternal(identifier, search_text, options,
+                      /* first_match */ nullptr, wrap_within_frame,
+                      /* wrapped_around */ false, active_now);
 }
 
 bool TextFinder::FindInternal(int identifier,
                               const String& search_text,
                               const mojom::blink::FindOptions& options,
+                              const Range* first_match,
                               bool wrap_within_frame,
-                              bool* active_now,
-                              Range* first_match,
-                              bool wrapped_around) {
+                              bool wrapped_around,
+                              bool* active_now) {
   // Searching text without forcing DisplayLocks is likely to hit bad layout
   // state, so force them here and update style and layout in order to get good
   // layout state.
@@ -234,7 +233,7 @@ bool TextFinder::FindInternal(int identifier,
   // TODO(editing-dev): The use of VisibleSelection should be audited. See
   // crbug.com/657237 for details.
   VisibleSelection selection(
-      OwnerFrame().GetFrame()->Selection().ComputeVisibleSelectionInDOMTree());
+      OwnerFrame().GetFrame()->Selection().ComputeVisibleSelectionInDomTree());
   bool active_selection = !selection.IsNone();
   if (active_selection) {
     active_match_ = CreateRange(FirstEphemeralRangeOf(selection));
@@ -376,8 +375,9 @@ void TextFinder::SetFindEndstateFocusAndSelection() {
 
   // If the user has set the selection since the match was found, we
   // don't focus anything.
-  if (!GetFrame()->Selection().GetSelectionInDOMTree().IsNone())
+  if (!GetFrame()->Selection().GetSelectionInDomTree().IsNone()) {
     return;
+  }
 
   // Need to clean out style and layout state before querying
   // Element::isFocusable().
@@ -399,15 +399,12 @@ void TextFinder::SetFindEndstateFocusAndSelection() {
       auto* element = DynamicTo<Element>(runner);
       if (!element)
         continue;
-      bool focusable =
-          RuntimeEnabledFeatures::KeyboardFocusabilityAfterFindInPageEnabled()
-              ? element->IsKeyboardFocusableSlow()
-              : element->IsFocusable();
+      bool focusable = element->IsKeyboardFocusableSlow();
       if (focusable) {
         // Found a focusable parent node. Set the active match as the
         // selection and focus to the focusable node.
         GetFrame()->Selection().SetSelectionAndEndTyping(
-            SelectionInDOMTree::Builder()
+            SelectionInDomTree::Builder()
                 .SetBaseAndExtent(active_match_range)
                 .Build());
         GetFrame()->GetDocument()->SetFocusedElement(
@@ -439,7 +436,7 @@ void TextFinder::SetFindEndstateFocusAndSelection() {
   // we have nothing focused (otherwise you might have text selected but
   // a link focused, which is weird).
   GetFrame()->Selection().SetSelectionAndEndTyping(
-      SelectionInDOMTree::Builder()
+      SelectionInDomTree::Builder()
           .SetBaseAndExtent(active_match_range)
           .Build());
   GetFrame()->GetDocument()->ClearFocusedElement();
@@ -921,21 +918,12 @@ void TextFinder::Scroll(std::unique_ptr<AsyncScrollContext> context) {
     active_match_ = context->range;
 
     FindInternal(context->identifier, context->search_text, context->options,
-                 context->wrap_within_frame, /*active_now=*/nullptr,
-                 context->first_match, context->wrapped_around);
+                 context->first_match, context->wrap_within_frame,
+                 context->wrapped_around, /* active_now */ nullptr);
     return;
   }
 
   ScrollToVisible(context->range);
-
-  // If the user is browsing a page with autosizing, adjust the zoom to the
-  // column where the next hit has been found. Doing this when autosizing is
-  // not set will result in a zoom reset on small devices.
-  if (GetFrame()->GetDocument()->GetTextAutosizer()->PageNeedsAutosizing()) {
-    OwnerFrame().LocalRoot()->FrameWidgetImpl()->ZoomToFindInPageRect(
-        OwnerFrame().GetFrameView()->ConvertToRootFrame(
-            ComputeTextRect(EphemeralRange(context->range))));
-  }
 
   // DidFindMatch will race against this to add a text match marker to this
   // range. In the case where the match is hidden and the beforematch event (or

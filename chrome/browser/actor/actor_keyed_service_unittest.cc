@@ -9,10 +9,9 @@
 
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "chrome/browser/actor/actor_features.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/actor_test_util.h"
-#include "chrome/browser/actor/enterprise_policy_url_checker.h"
+#include "chrome/browser/actor/enterprise_policy_checker.h"
 #include "chrome/browser/actor/execution_engine.h"
 #include "chrome/browser/actor/ui/event_dispatcher.h"
 #include "chrome/browser/actor/ui/test_support/mock_actor_ui_state_manager.h"
@@ -21,6 +20,9 @@
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "components/actor/core/actor_features.h"
+#include "components/actor/core/task_source_info.h"
+#include "components/actor/public/mojom/actor_types.mojom.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -79,7 +81,7 @@ class ActorKeyedServiceTest : public testing::Test {
 // Adds a task to ActorKeyedService
 TEST_F(ActorKeyedServiceTest, AddActiveTask) {
   auto* actor_service = ActorKeyedService::Get(profile());
-  actor_service->CreateTask(NoEnterprisePolicyChecker());
+  actor_service->CreateTask(TestTaskSourceInfo(), NoEnterprisePolicyChecker());
   ASSERT_EQ(actor_service->GetActiveTasks().size(), 1u);
   EXPECT_EQ(actor_service->GetActiveTasks().begin()->second->GetState(),
             ActorTask::State::kCreated);
@@ -88,12 +90,14 @@ TEST_F(ActorKeyedServiceTest, AddActiveTask) {
 // Stops a task.
 TEST_F(ActorKeyedServiceTest, StopActiveTask) {
   auto* actor_service = ActorKeyedService::Get(profile());
-  TaskId id = actor_service->CreateTask(NoEnterprisePolicyChecker());
+  TaskId id = actor_service->CreateTask(TestTaskSourceInfo(),
+                                        NoEnterprisePolicyChecker());
 
   // Add a tab to the task
   base::WeakPtr<ActorTask> task = actor_service->GetTask(id)->GetWeakPtr();
   base::RunLoop loop;
   task->AddTab(tabs::TabHandle(123),
+               /*stop_task_on_detach=*/true,
                base::BindLambdaForTesting([&](mojom::ActionResultPtr result) {
                  EXPECT_TRUE(IsOk(*result));
                  loop.Quit();
@@ -116,8 +120,9 @@ TEST_F(ActorKeyedServiceTest, StopActiveTask) {
 
 TEST_F(ActorKeyedServiceTest, FindTaskIdsInActive_ReturnsSuccessfully) {
   auto* actor_service = ActorKeyedService::Get(profile());
-  actor_service->CreateTask(NoEnterprisePolicyChecker());
-  const TaskId id2 = actor_service->CreateTask(NoEnterprisePolicyChecker());
+  actor_service->CreateTask(TestTaskSourceInfo(), NoEnterprisePolicyChecker());
+  const TaskId id2 = actor_service->CreateTask(TestTaskSourceInfo(),
+                                               NoEnterprisePolicyChecker());
   actor_service->GetTask(id2)->Pause(/*from_actor=*/true);
 
   // Find a single active task.
@@ -132,7 +137,8 @@ TEST_F(ActorKeyedServiceTest, FindTaskIdsInActive_ReturnsSuccessfully) {
 // Test that adding a tab to a paused or stopped task has no effect.
 TEST_F(ActorKeyedServiceTest, AddTabToPausedOrStoppedTask) {
   auto* actor_service = ActorKeyedService::Get(profile());
-  TaskId id = actor_service->CreateTask(NoEnterprisePolicyChecker());
+  TaskId id = actor_service->CreateTask(TestTaskSourceInfo(),
+                                        NoEnterprisePolicyChecker());
 
   base::WeakPtr<ActorTask> task = actor_service->GetTask(id)->GetWeakPtr();
   ASSERT_TRUE(task);
@@ -145,6 +151,7 @@ TEST_F(ActorKeyedServiceTest, AddTabToPausedOrStoppedTask) {
   {
     base::RunLoop loop;
     task->AddTab(tab_handle,
+                 /*stop_task_on_detach=*/true,
                  base::BindLambdaForTesting([&](mojom::ActionResultPtr result) {
                    EXPECT_EQ(result->code,
                              mojom::ActionResultCode::kTaskPaused);
@@ -164,7 +171,8 @@ TEST_F(ActorKeyedServiceTest, AddTabToPausedOrStoppedTask) {
 // Test tab association to a paused task.
 TEST_F(ActorKeyedServiceTest, PausedTaskTabs) {
   auto* actor_service = ActorKeyedService::Get(profile());
-  TaskId id = actor_service->CreateTask(NoEnterprisePolicyChecker());
+  TaskId id = actor_service->CreateTask(TestTaskSourceInfo(),
+                                        NoEnterprisePolicyChecker());
 
   base::WeakPtr<ActorTask> task = actor_service->GetTask(id)->GetWeakPtr();
   ASSERT_TRUE(task);
@@ -172,7 +180,8 @@ TEST_F(ActorKeyedServiceTest, PausedTaskTabs) {
 
   {
     base::test::TestFuture<mojom::ActionResultPtr> future;
-    task->AddTab(tab_handle, future.GetCallback());
+    task->AddTab(tab_handle, /*stop_task_on_detach=*/true,
+                 future.GetCallback());
     ASSERT_TRUE(future.Wait());
   }
 
@@ -219,6 +228,43 @@ TEST_F(ActorKeyedServiceTest, PausedTaskTabs) {
   actor_service->StopTask(id, ActorTask::StoppedReason::kTaskComplete);
   WaitForPostedTask();
   EXPECT_FALSE(task);
+}
+
+TEST_F(ActorKeyedServiceTest, SetsTaskSourceInfo) {
+  auto* actor_service = ActorKeyedService::Get(profile());
+  const TaskSourceInfo::SourceDefinedId kId1 = "task1id";
+  const TaskSourceInfo::SourceDefinedId kId2 = "task2id";
+
+  TaskId task1 = actor_service->CreateTask(
+      TaskSourceInfo(TaskSourceInfo::Client::kTest, kId1),
+      NoEnterprisePolicyChecker());
+  TaskId task2 = actor_service->CreateTask(
+      TaskSourceInfo(TaskSourceInfo::Client::kTest, kId2),
+      NoEnterprisePolicyChecker());
+
+  EXPECT_EQ(actor_service->GetTask(task1)->source_info().id, kId1);
+  EXPECT_EQ(actor_service->GetTask(task2)->source_info().id, kId2);
+}
+
+// Tests that GetActiveTasks() can be called from a TaskStateChangedCallback
+// without crashing, even when a task is completing.
+TEST_F(ActorKeyedServiceTest, GetActiveTasksDuringStateChangeCallback) {
+  auto* actor_service = ActorKeyedService::Get(profile());
+  TaskId id = actor_service->CreateTask(TestTaskSourceInfo(),
+                                        NoEnterprisePolicyChecker());
+
+  bool callback_called = false;
+  auto subscription = actor_service->AddTaskStateChangedCallback(
+      base::BindLambdaForTesting([&](ActorTask& task) {
+        if (ActorTask::IsCompletedState(task.GetState())) {
+          // This should not crash. Repro for crash in http://b/493610427.
+          actor_service->GetActiveTasks();
+          callback_called = true;
+        }
+      }));
+
+  actor_service->StopTask(id, ActorTask::StoppedReason::kTaskComplete);
+  EXPECT_TRUE(callback_called);
 }
 
 }  // namespace

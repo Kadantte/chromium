@@ -25,6 +25,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mockito;
 
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Restriction;
@@ -37,6 +38,7 @@ import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ntp.IncognitoNewTabPageStation;
 import org.chromium.components.externalauth.ExternalAuthUtils;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.test.util.DeviceRestriction;
 
 import java.util.concurrent.TimeoutException;
@@ -73,6 +75,7 @@ public class IncognitoTabLauncherTest {
     @Feature("Incognito")
     @MediumTest
     @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511287105
     public void testLaunchIncognitoNewTab() throws TimeoutException {
         IncognitoNewTabPageStation ntp = startOnIncognitoNtp(false);
         assertIncognitoTabLaunched(ntp.getActivity(), false);
@@ -82,6 +85,7 @@ public class IncognitoTabLauncherTest {
     @Feature("Incognito")
     @MediumTest
     @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511287105
     public void testLaunchIncognitoNewTab_omniboxFocused_enabled_thirdParty()
             throws TimeoutException {
         IncognitoNewTabPageStation ntp = startOnIncognitoNtp(false);
@@ -91,7 +95,7 @@ public class IncognitoTabLauncherTest {
     @Test
     @Feature("Incognito")
     @MediumTest
-    @DisabledTest(message = "crbug.com/1237504")
+    @DisabledTest(message = "crbug.com/40783511")
     public void testLaunchIncognitoNewTab_omniboxFocused_enabled_firstParty()
             throws TimeoutException {
         IncognitoNewTabPageStation ntp = startOnIncognitoNtp(true);
@@ -125,7 +129,7 @@ public class IncognitoTabLauncherTest {
         CustomTabsConnection connection = CustomTabsTestUtils.setUpConnection();
         CustomTabsSession session = CustomTabsTestUtils.bindWithCallback(null).session;
 
-        CustomTabsIntent custom_tab_intent = new CustomTabsIntent.Builder(session).build();
+        CustomTabsIntent customTabIntent = new CustomTabsIntent.Builder(session).build();
 
         // Restrict ourselves to Chrome's package, on the off chance the testing device has
         // another application that answers to the ACTION_LAUNCH_NEW_INCOGNITO_TAB action.
@@ -136,7 +140,7 @@ public class IncognitoTabLauncherTest {
         BundleCompat.putBinder(
                 extras,
                 CustomTabsIntent.EXTRA_SESSION,
-                custom_tab_intent.intent.getExtras().getBinder(CustomTabsIntent.EXTRA_SESSION));
+                customTabIntent.intent.getExtras().getBinder(CustomTabsIntent.EXTRA_SESSION));
 
         intent.putExtras(extras);
         return intent;

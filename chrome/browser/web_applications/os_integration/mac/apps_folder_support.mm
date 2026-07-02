@@ -30,7 +30,7 @@ namespace web_app {
 namespace {
 
 // Set to true the first time the localized name of the chrome apps dir has been
-// updated sucessfully, as this only needs to be done once.
+// updated successfully, as this only needs to be done once.
 bool g_have_localized_app_dir_name = false;
 
 base::FilePath GetLocalizableAppShortcutsSubdirName() {
@@ -128,7 +128,7 @@ void SetWorkspaceIconOnWorkerThread(const base::FilePath& apps_directory,
   // bug when dealing with named NSImages where it incorrectly handles alpha
   // premultiplication. This is most noticeable with small assets since the 1px
   // border is a much larger component of the small icons.
-  // See http://crbug.com/305373 for details.
+  // See http://crbug.com/40336190 for details.
   for (int id : {IDR_APPS_FOLDER_16, IDR_APPS_FOLDER_32}) {
     const auto& found = images.find(id);
     DCHECK(found != images.end());

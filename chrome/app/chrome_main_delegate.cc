@@ -29,6 +29,7 @@
 #include "base/process/process.h"
 #include "base/process/process_handle.h"
 #include "base/profiler/thread_group_profiler.h"
+#include "base/rand_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
@@ -114,7 +115,7 @@
 #include "base/base_switches.h"
 #include "base/files/important_file_writer_cleaner.h"
 #include "base/process/process_handle.h"
-#include "base/win/atl.h"
+#include "base/win/current_module.h"
 #include "base/win/dark_mode_support.h"
 #include "base/win/resource_exhaustion.h"
 #include "chrome/browser/chrome_browser_main_win.h"
@@ -171,6 +172,7 @@
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "chrome/common/chrome_descriptors_android.h"
 #include "components/crash/android/pure_java_exception_handler.h"
+#include "components/metrics/android_unconditional_persistent_histograms_field_trial.h"
 #include "net/android/network_change_notifier_factory_android.h"
 #else  // BUILDFLAG(IS_ANDROID)
 // Diagnostics is only available on non-android platforms.
@@ -215,6 +217,10 @@
 #if BUILDFLAG(IS_OZONE)
 #include "ui/ozone/public/ozone_platform.h"
 #endif  // BUILDFLAG(IS_OZONE)
+
+#if BUILDFLAG(CHROME_FOR_TESTING)
+#include "chrome/browser/chrome_for_testing/config.h"
+#endif
 
 base::LazyInstance<ChromeContentGpuClient>::DestructorAtExit
     g_chrome_content_gpu_client = LAZY_INSTANCE_INITIALIZER;
@@ -446,7 +452,7 @@ std::optional<int> HandlePackExtensionSwitches(
   // This happens before the default flow for FeatureList initialization, but
   // packing an extension can depend on different base::Features. Thus, we
   // should have always created a stub FeatureList by this point.
-  // See https://crbug.com/1506254.
+  // See https://crbug.com/40946904.
   CHECK(WillExitBeforeBrowserFeatureListInitialization());
   CHECK(base::FeatureList::GetInstance());
 
@@ -680,7 +686,7 @@ void OnResourceExhausted() {
   // RegisterClassEx will fail if the session's pool of ATOMs is exhausted. This
   // appears to happen most often when the browser is being driven by automation
   // tools, though the underlying reason for this remains a mystery
-  // (https://crbug.com/1470483). There is nothing that Chrome can do to
+  // (https://crbug.com/40925772). There is nothing that Chrome can do to
   // meaningfully run until the user restarts their session by signing out of
   // Windows or restarting their computer.
   if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
@@ -704,6 +710,14 @@ bool IsCanaryDev() {
   const auto channel = chrome::GetChannel();
   return channel == version_info::Channel::CANARY ||
          channel == version_info::Channel::DEV;
+}
+
+bool IsHangWatcherCrashReportingEnabled() {
+  const auto channel = chrome::GetChannel();
+  const bool canary_dev_beta = (channel == version_info::Channel::CANARY ||
+                                channel == version_info::Channel::DEV ||
+                                channel == version_info::Channel::BETA);
+  return canary_dev_beta || base::ShouldRecordSubsampledMetric(0.01);
 }
 
 }  // namespace
@@ -778,7 +792,7 @@ std::optional<int> ChromeMainDelegate::PostEarlyInitialization(
 
 #if BUILDFLAG(IS_WIN)
   // Initialize the cleaner of left-behind tmp files now that the main thread
-  // has its SequencedTaskRunner; see https://crbug.com/1075917.
+  // has its SequencedTaskRunner; see https://crbug.com/40687964.
   base::ImportantFileWriterCleaner::GetInstance().Initialize();
 
   // Make sure the 'uxtheme.dll' is pinned.
@@ -819,15 +833,6 @@ std::optional<int> ChromeMainDelegate::PostEarlyInitialization(
     chrome_feature_list_creator->CreateFeatureList();
   }
 
-#if BUILDFLAG(IS_OZONE)
-  // Initialize Ozone platform and add required feature flags as per platform's
-  // properties.
-#if BUILDFLAG(IS_LINUX)
-  ui::SetOzonePlatformForLinuxIfNeeded(*base::CommandLine::ForCurrentProcess());
-#endif
-  ui::OzonePlatform::PreEarlyInitialization();
-#endif  // BUILDFLAG(IS_OZONE)
-
   content::InitializeMojoCore();
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -849,6 +854,15 @@ std::optional<int> ChromeMainDelegate::PostEarlyInitialization(
   std::string actual_locale = LoadLocalState(
       chrome_feature_list_creator, invoked_in_browser->is_running_test);
   chrome_feature_list_creator->SetApplicationLocale(actual_locale);
+
+#if BUILDFLAG(CHROME_FOR_TESTING)
+  // Exit early if Chrome for Testing configuration is specified but cannot be
+  // loaded. The error info will be sent to stderr.
+  if (!chrome_for_testing::LoadConfig(
+          chrome_feature_list_creator->local_state())) {
+    return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+  }
+#endif
 
   // On Chrome OS, initialize D-Bus clients that depend on feature list.
 #if BUILDFLAG(IS_CHROMEOS)
@@ -982,16 +996,8 @@ void ChromeMainDelegate::CommonEarlyInitialization() {
     hang_watcher_process_type = base::HangWatcher::ProcessType::kUnknownProcess;
   }
 
-  const bool emit_crashes =
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || \
-    BUILDFLAG(IS_WIN)
-      IsCanaryDev();
-#else
-      false;
-#endif
-
-  base::HangWatcher::InitializeOnMainThread(hang_watcher_process_type,
-                                            emit_crashes);
+  base::HangWatcher::InitializeOnMainThread(
+      hang_watcher_process_type, IsHangWatcherCrashReportingEnabled());
 
   base::features::Init();
 }
@@ -1080,7 +1086,7 @@ std::optional<int> ChromeMainDelegate::BasicStartupComplete() {
   }
 
   // The DevTools remote debugging pipe file descriptors need to be checked
-  // before any other files are opened, see https://crbug.com/1423048.
+  // before any other files are opened, see https://crbug.com/40259890.
   const bool is_browser = !command_line.HasSwitch(switches::kProcessType);
 #if BUILDFLAG(IS_WIN)
   const bool pipes_are_specified_explicitly =
@@ -1147,11 +1153,14 @@ std::optional<int> ChromeMainDelegate::BasicStartupComplete() {
   // Attempt to launch an isolated browser. If this is successful, this browser
   // process becomes the stub, and will terminate after the main browser has
   // terminated, with the exit code from the main browser.
-  if (is_browser && !command_line.HasSwitch(::switches::kIsolated) &&
-      chrome::IsIsolationEnabled(command_line)) {
-    const auto isolated_process = chrome::IsolatedBrowser::Launch(command_line);
+  if (is_browser && chrome::IsIsolationEnabled(&command_line)) {
+    const auto isolated_process = chrome::LaunchIsolatedBrowser(command_line);
     if (isolated_process.has_value()) {
-      return isolated_process.value()->WaitForExit();
+      int exit_code = 0;
+      if (isolated_process->WaitForExit(&exit_code)) {
+        return exit_code;
+      }
+      return CHROME_RESULT_CODE_INVALID_ISOLATED_BROWSER_PROCESS;
     }
   }
 
@@ -1348,7 +1357,6 @@ void ChromeMainDelegate::PreSandboxStartup() {
   // Register component_updater PathProvider after DIR_USER_DATA overridden by
   // command line flags. Maybe move the chrome PathProvider down here also?
   component_updater::RegisterPathProvider(chrome::DIR_COMPONENTS,
-                                          chrome::DIR_INTERNAL_PLUGINS,
                                           chrome::DIR_USER_DATA);
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WIN)
@@ -1361,8 +1369,8 @@ void ChromeMainDelegate::PreSandboxStartup() {
   // TODO(zturner): Throbber icons and cursors are still stored in chrome.dll,
   // this can be killed once those are merged into resources.pak. See
   // BrowserFrameViewWin::InitThrobberIcons(), https://crbug.com/41104393 and
-  // https://crbug.com/1178117.
-  ui::SetResourcesDataDLL(_AtlBaseModule.GetResourceInstance());
+  // https://crbug.com/40748911.
+  ui::SetResourcesDataDLL(CURRENT_MODULE());
 #endif
 
   if (SubprocessNeedsResourceBundle(process_type)) {
@@ -1493,6 +1501,18 @@ void ChromeMainDelegate::PreSandboxStartup() {
 #if BUILDFLAG(ENABLE_PDF)
   MaybePatchGdiGetFontData();
 #endif
+
+#if BUILDFLAG(IS_OZONE)
+  if (process_type.empty()) {
+    // Initialize Ozone platform and add required feature flags as per
+    // platform's properties.
+#if BUILDFLAG(IS_LINUX)
+    ui::SetOzonePlatformForLinuxIfNeeded(
+        *base::CommandLine::ForCurrentProcess());
+#endif
+    ui::OzonePlatform::PreSandboxStartup();
+  }
+#endif  // BUILDFLAG(IS_OZONE)
 }
 
 void ChromeMainDelegate::SandboxInitialized(const std::string& process_type) {
@@ -1508,15 +1528,20 @@ void ChromeMainDelegate::SandboxInitialized(const std::string& process_type) {
 
   // If this is a browser process, initialize the persistent histograms system
   // unless headless mode is in effect. This is done as soon as possible to
-  // ensure metrics collection coverage. For Fuchsia, persistent histogram
-  // initialization is done after field trial initialization (so that it can be
-  // controlled from the serverside and experimented with). Note: this is done
-  // before field trial initialization, so the values of
-  // `kPersistentHistogramsFeature` and `kPersistentHistogramsStorage` will
-  // not be used. Persist histograms to a memory-mapped file.
+  // ensure metrics collection coverage. Note: this is done before field trial
+  // initialization, so the values of `kPersistentHistogramsFeature` and
+  // `kPersistentHistogramsStorage` will not be used. Persist histograms to a
+  // memory-mapped file.
   if (process_type.empty() && !headless::IsHeadlessMode()) {
     base::FilePath metrics_dir;
     if (base::PathService::Get(chrome::DIR_USER_DATA, &metrics_dir)) {
+#if BUILDFLAG(IS_ANDROID)
+      // Enroll Chrome in the client-side field trial for unconditional
+      // persistent histograms. This is done here to explicitly exclude WebView.
+      metrics::android_unconditional_persistent_histograms_field_trial::
+          EnrollClient();
+#endif
+
       InstantiatePersistentHistograms(
           metrics_dir,
           /*persistent_histograms_enabled=*/true,

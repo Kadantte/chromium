@@ -18,10 +18,12 @@ class NET_EXPORT URLFetcher : public URLRequest::Delegate {
  public:
   URLFetcher(const URLRequestContext* context,
              GURL url,
-             std::optional<net::NetLogSource> net_log_source);
+             std::optional<net::NetLogSource> net_log_source,
+             bool is_refresh);
   ~URLFetcher() override;
 
   void Start(base::OnceClosure complete_callback);
+  std::string TakeDataReceived();
 
   URLRequest& request() { return *request_; }
   const std::string& data_received() const { return data_received_; }

@@ -155,6 +155,10 @@ build_recipe(
 )
 
 build_recipe(
+    name = "recipe:chromium/autotest_runner",
+)
+
+build_recipe(
     name = "recipe:chromium/builder_config_verifier",
 )
 
@@ -278,6 +282,10 @@ build_recipe(
 
 build_recipe(
     name = "recipe:chromium_toolchain/package_rust",
+)
+
+build_recipe(
+    name = "recipe:chromium_toolchain/trusted_packaging",
 )
 
 build_recipe(

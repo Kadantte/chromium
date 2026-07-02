@@ -91,6 +91,10 @@ constexpr wgpu::TextureUsage kAllowedReadableMailboxTextureUsages =
 constexpr wgpu::TextureUsage kAllowedMailboxTextureUsages =
     kAllowedWritableMailboxTextureUsages | kAllowedReadableMailboxTextureUsages;
 
+constexpr wgpu::BufferUsage kAllowedMailboxBufferUsages =
+    wgpu::BufferUsage::CopySrc | wgpu::BufferUsage::CopyDst |
+    wgpu::BufferUsage::Storage;
+
 template <typename T1, typename T2>
 void ChainStruct(T1& head, T2* struct_to_chain) {
   DCHECK(struct_to_chain->nextInChain == nullptr);
@@ -1289,7 +1293,9 @@ ContextResult WebGPUDecoderImpl::Initialize(
     // ES 3.1 is required for compute.
     attribs.allow_es_version_fallback = false;
     gl_context_ = new gl::GLContextEGL(nullptr);
-    gl_context_->Initialize(gl_surface.get(), attribs);
+    if (!gl_context_->Initialize(gl_surface.get(), attribs)) {
+      return ContextResult::kFatalFailure;
+    }
     DCHECK(gl_context_->default_surface());
   }
   return ContextResult::kSuccess;
@@ -1301,6 +1307,7 @@ bool WebGPUDecoderImpl::IsFeatureExposed(wgpu::FeatureName feature) const {
     case wgpu::FeatureName::MultiDrawIndirect:
     case wgpu::FeatureName::SharedBufferMemoryD3D12Resource:
     case wgpu::FeatureName::ChromiumExperimentalSubgroupMatrix:
+    case wgpu::FeatureName::TextureCompressionUnaligned:
       return safety_level_ == webgpu::SafetyLevel::kUnsafe;
     case wgpu::FeatureName::AdapterPropertiesD3D:
     case wgpu::FeatureName::AdapterPropertiesVk:
@@ -1330,7 +1337,8 @@ bool WebGPUDecoderImpl::IsFeatureExposed(wgpu::FeatureName feature) const {
     case wgpu::FeatureName::TextureFormatsTier1:
     case wgpu::FeatureName::TextureFormatsTier2:
     case wgpu::FeatureName::PrimitiveIndex:
-    case wgpu::FeatureName::TextureComponentSwizzle: {
+    case wgpu::FeatureName::TextureComponentSwizzle:
+    case wgpu::FeatureName::SubgroupSizeControl: {
       // Likely case when no features are blocked.
       if (runtime_unsafe_features_.empty() ||
           safety_level_ == webgpu::SafetyLevel::kUnsafe) {
@@ -1520,6 +1528,11 @@ WGPUFuture WebGPUDecoderImpl::RequestDeviceImpl(
       // supported when running on the corresponding backend.
       wgpu::FeatureName::SharedTextureMemoryIOSurface,
       wgpu::FeatureName::SharedFenceMTLSharedEvent,
+
+#if BUILDFLAG(IS_CHROMEOS)
+      wgpu::FeatureName::SharedTextureMemoryDmaBuf,
+      wgpu::FeatureName::SharedFenceSyncFD,
+#endif
 
 #if BUILDFLAG(IS_ANDROID)
       wgpu::FeatureName::SharedTextureMemoryAHardwareBuffer,
@@ -1805,6 +1818,14 @@ wgpu::Adapter WebGPUDecoderImpl::CreatePreferredAdapter(
     // SwiftShader adapter. For SwiftShader, we will perform a manual
     // upload/readback to/from shared images.
     bool supports_external_textures = false;
+
+#if BUILDFLAG(IS_CHROMEOS)
+    if (!adapter.HasFeature(wgpu::FeatureName::SharedTextureMemoryDmaBuf) ||
+        !adapter.HasFeature(wgpu::FeatureName::SharedFenceSyncFD)) {
+      return false;
+    }
+#endif
+
 #if BUILDFLAG(IS_APPLE)
     supports_external_textures =
         adapter.HasFeature(wgpu::FeatureName::SharedTextureMemoryIOSurface);
@@ -2313,8 +2334,19 @@ WebGPUDecoderImpl::AssociateMailboxDawnBuffer(const Mailbox& mailbox,
       shared_image_representation_factory_->ProduceDawnBuffer(
           mailbox, device, backendType, shared_context_state_);
 
+  // Checks similar to ValidateAssociateMailboxAndSetSharedImageClearState but
+  // for buffers.
   if (!shared_buffer) {
     DLOG(ERROR) << "AssociateMailboxDawnBuffer: Couldn't produce shared image";
+    return nullptr;
+  }
+  if (usage & ~kAllowedMailboxBufferUsages) {
+    DLOG(ERROR) << "AssociateMailboxDawnBuffer: Unsupported Buffer usages.";
+    return nullptr;
+  }
+  if (!shared_buffer->usage().HasAll(SHARED_IMAGE_USAGE_WEBGPU_READ |
+                                     SHARED_IMAGE_USAGE_WEBGPU_WRITE)) {
+    DLOG(ERROR) << "AssociateMailboxDawnBuffer: Missing SharedImage usages.";
     return nullptr;
   }
 

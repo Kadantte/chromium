@@ -65,6 +65,7 @@
 #include "third_party/blink/renderer/core/pointer_type_names.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/core/scheduler/task_attribution_util.h"
+#include "third_party/blink/renderer/core/timing/event_timing.h"
 #include "third_party/blink/renderer/core/workers/worker_or_worklet_global_scope.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
@@ -505,12 +506,11 @@ void EventTarget::SetDefaultAddEventListenerOptions(
     options->setPassive(false);
 
   if (!options->passive() && !options->PassiveSpecified()) {
-    String message_text = String::Format(
-        "Added non-passive event listener to a scroll-blocking '%s' event. "
-        "Consider marking event handler as 'passive' to make the page more "
-        "responsive. See "
-        "https://www.chromestatus.com/feature/5745543795965952",
-        event_type.GetString().Utf8().c_str());
+    String message_text = StrCat(
+        {"Added non-passive event listener to a scroll-blocking '", event_type,
+         "' event. Consider marking event handler as 'passive' to make the "
+         "page more responsive. See "
+         "https://www.chromestatus.com/feature/5745543795965952"});
 
     PerformanceMonitor::ReportGenericViolation(
         GetExecutionContext(), PerformanceMonitor::kDiscouragedAPIUse,
@@ -707,7 +707,7 @@ void EventTarget::AddedEventListener(
     } else if (event_util::IsSnapEventType(event_type)) {
       UseCounter::Count(*document, WebFeature::kSnapEvent);
     } else if (RuntimeEnabledFeatures::
-                   DesktopPWAsAdditionalWindowingControlsEnabled() &&
+                   DesktopPWAsAdditionalWindowingControlsOnMoveEnabled() &&
                (event_type == event_type_names::kMove)) {
       UseCounter::Count(*document, WebFeature::kMoveEvent);
     }
@@ -877,10 +877,6 @@ DispatchEventResult EventTarget::DispatchEventInternal(Event& event) {
   }
   event.SetEventPhase(Event::PhaseType::kNone);
   return dispatch_result;
-}
-
-EventTargetData* EventTarget::GetEventTargetData() {
-  return data_.Get();
 }
 
 EventTargetData& EventTarget::EnsureEventTargetData() {
@@ -1112,14 +1108,21 @@ EventListenerVector* EventTarget::GetEventListeners(
   return data->event_listener_map.Find(event_type);
 }
 
+const EventListenerVector* EventTarget::GetEventListeners(
+    const AtomicString& event_type) const {
+  if (const EventTargetData* data = GetEventTargetData()) {
+    return data->event_listener_map.Find(event_type);
+  }
+  return nullptr;
+}
+
 int EventTarget::NumberOfEventListeners(const AtomicString& event_type) const {
-  EventListenerVector* listeners =
-      const_cast<EventTarget*>(this)->GetEventListeners(event_type);
+  const EventListenerVector* listeners = GetEventListeners(event_type);
   return listeners ? listeners->size() : 0;
 }
 
-Vector<AtomicString> EventTarget::EventTypes() {
-  EventTargetData* d = GetEventTargetData();
+Vector<AtomicString> EventTarget::EventTypes() const {
+  const EventTargetData* d = GetEventTargetData();
   return d ? d->event_listener_map.EventTypes() : Vector<AtomicString>();
 }
 
@@ -1154,6 +1157,11 @@ void EventTarget::DispatchEnqueuedEvent(
   std::optional<scheduler::TaskAttributionTracker::TaskScope> task_scope(
       SetCurrentTaskStateIfTopLevel(task_state, GetExecutionContext(),
                                     TaskScopeType::kMiscEvent));
+  // Wrap enqueued events in NavigationEventTiming. This is needed for
+  // hashchange (and has no effect for other enqueued events that are not
+  // navigation events).
+  NavigationEventTiming event_timing_scope(
+      ExecutingWindow() ? ExecutingWindow()->GetFrame() : nullptr, *event);
   DispatchEvent(*event);
 }
 

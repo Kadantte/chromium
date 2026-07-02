@@ -60,7 +60,7 @@ bool IsAccessibilityHandleOccludingViewsEnabled() {
       ::features::kAccessibilityHandleOccludingViews);
 }
 
-BASE_FEATURE(kAccessibilityTextChangeTypes, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAccessibilityTextChangeTypes, base::FEATURE_ENABLED_BY_DEFAULT);
 bool IsAccessibilityTextChangeTypesEnabled() {
   return base::FeatureList::IsEnabled(
       ::features::kAccessibilityTextChangeTypes);
@@ -129,38 +129,11 @@ bool IsImageDescriptionsAlternateRoutingEnabled() {
       ::features::kImageDescriptionsAlternateRouting);
 }
 
-BASE_FEATURE(kAutoDisableAccessibility, base::FEATURE_DISABLED_BY_DEFAULT);
-bool IsAutoDisableAccessibilityEnabled() {
-  return base::FeatureList::IsEnabled(::features::kAutoDisableAccessibility);
-}
-
-BASE_FEATURE(kEnableAccessibilityAriaVirtualContent,
-             "AccessibilityAriaVirtualContent",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-bool IsAccessibilityAriaVirtualContentEnabled() {
-  return base::FeatureList::IsEnabled(
-      ::features::kEnableAccessibilityAriaVirtualContent);
-}
-
-BASE_FEATURE(kEnableAccessibilityLanguageDetection,
-             "AccessibilityLanguageDetection",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-bool IsAccessibilityLanguageDetectionEnabled() {
-  return base::FeatureList::IsEnabled(
-      ::features::kEnableAccessibilityLanguageDetection);
-}
-
 BASE_FEATURE(kExtensionManifestV3NetworkSpeechSynthesis,
              base::FEATURE_ENABLED_BY_DEFAULT);
 bool IsExtensionManifestV3NetworkSpeechSynthesisEnabled() {
   return base::FeatureList::IsEnabled(
       ::features::kExtensionManifestV3NetworkSpeechSynthesis);
-}
-
-
-BASE_FEATURE(kTextBasedAudioDescription, base::FEATURE_DISABLED_BY_DEFAULT);
-bool IsTextBasedAudioDescriptionEnabled() {
-  return base::FeatureList::IsEnabled(::features::kTextBasedAudioDescription);
 }
 
 BASE_FEATURE(kUseAXPositionForDocumentMarkers,
@@ -181,6 +154,39 @@ BASE_FEATURE(kAccessibilityOnScreenMode,
 
 bool IsAccessibilityOnScreenAXModeEnabled() {
   return base::FeatureList::IsEnabled(::features::kAccessibilityOnScreenMode);
+}
+
+BASE_FEATURE(kAccessibilityCanvas, base::FEATURE_DISABLED_BY_DEFAULT);
+
+namespace {
+
+constexpr base::FeatureParam<CanvasAccessibilityMode>::Option
+    kAccessibilityCanvasParamOptions[2] = {
+        {CanvasAccessibilityMode::kBasic, "Basic"},
+        {CanvasAccessibilityMode::kAdvanced, "Advanced"}};
+
+BASE_FEATURE_ENUM_PARAM(CanvasAccessibilityMode,
+                        kCanvasAccessibilityMode,
+                        &kAccessibilityCanvas,
+                        CanvasAccessibilityMode::kBasic,
+                        &kAccessibilityCanvasParamOptions);
+
+}  // namespace
+
+CanvasAccessibilityMode GetCanvasAccessibilityMode() {
+  if (!base::FeatureList::IsEnabled(::features::kAccessibilityCanvas)) {
+    return CanvasAccessibilityMode::kDisabled;
+  }
+  return kCanvasAccessibilityMode.Get();
+}
+
+BASE_FEATURE(kEnableCollectAccessibilityHeuristicInCanvasUkm,
+             "EnableCollectAccessibilityHeuristicInCanvasUkm",
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+bool IsCollectAccessibilityHeuristicInCanvasUkmEnabled() {
+  return base::FeatureList::IsEnabled(
+      ::features::kEnableCollectAccessibilityHeuristicInCanvasUkm);
 }
 
 #if BUILDFLAG(IS_WIN)
@@ -205,8 +211,6 @@ bool IsIChromeAccessibleEnabled() {
 }
 
 BASE_FEATURE(kUiaDisconnectRootProviders, base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kUiaProvider, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kUiaEventOptimization, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -238,13 +242,6 @@ BASE_FEATURE(kAccessibilityReducedAnimationsInKiosk,
 bool IsAccessibilityReducedAnimationsInKioskEnabled() {
   return base::FeatureList::IsEnabled(
       ::features::kAccessibilityReducedAnimationsInKiosk);
-}
-
-BASE_FEATURE(kExperimentalAccessibilityGoogleTtsHighQualityVoices,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-bool IsExperimentalAccessibilityGoogleTtsHighQualityVoicesEnabled() {
-  return base::FeatureList::IsEnabled(
-      ::features::kExperimentalAccessibilityGoogleTtsHighQualityVoices);
 }
 
 BASE_FEATURE(kExperimentalAccessibilityDictationContextChecking,
@@ -287,6 +284,13 @@ bool IsAccessibilityFlashScreenFeatureEnabled() {
       ::features::kAccessibilityFlashScreenFeature);
 }
 
+BASE_FEATURE(kAccessibilityInvertedMouseCursor,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+bool IsAccessibilityInvertedMouseCursorEnabled() {
+  return base::FeatureList::IsEnabled(
+      ::features::kAccessibilityInvertedMouseCursor);
+}
+
 BASE_FEATURE(kAccessibilityShakeToLocate, base::FEATURE_DISABLED_BY_DEFAULT);
 bool IsAccessibilityShakeToLocateEnabled() {
   return base::FeatureList::IsEnabled(::features::kAccessibilityShakeToLocate);
@@ -313,6 +317,13 @@ bool IsAccessibilityManifestV3EnabledForGoogleTts() {
       ::features::kAccessibilityManifestV3GoogleTts);
 }
 
+BASE_FEATURE(kAccessibilityChromeVoxJapaneseBraille,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+bool IsAccessibilityChromeVoxJapaneseBrailleEnabled() {
+  return base::FeatureList::IsEnabled(
+      ::features::kAccessibilityChromeVoxJapaneseBraille);
+}
+
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_ANDROID)
@@ -329,6 +340,16 @@ BASE_FEATURE(kAccessibilityMagnificationFollowsFocus,
 bool IsAccessibilityMagnificationFollowsFocusEnabled() {
   return base::FeatureList::IsEnabled(
       ::features::kAccessibilityMagnificationFollowsFocus);
+}
+
+BASE_FEATURE(kAccessibilityAndroidMath, base::FEATURE_DISABLED_BY_DEFAULT);
+bool IsAccessibilityAndroidMathEnabled() {
+  return base::FeatureList::IsEnabled(::features::kAccessibilityAndroidMath);
+}
+
+BASE_FEATURE(kReadAloudNative, base::FEATURE_DISABLED_BY_DEFAULT);
+bool IsReadAloudNativeEnabled() {
+  return base::FeatureList::IsEnabled(::features::kReadAloudNative);
 }
 
 #endif  // BUILDFLAG(IS_ANDROID)
@@ -348,16 +369,7 @@ bool IsScreenAIOCREnabled() {
   return base::FeatureList::IsEnabled(ax::mojom::features::kScreenAIOCREnabled);
 }
 
-// This feature is only used for generating training data for Screen2x and
-// should never be used in any other circumstance, and should not be enabled by
-// default.
-BASE_FEATURE(kDataCollectionModeForScreen2x, base::FEATURE_DISABLED_BY_DEFAULT);
-bool IsDataCollectionModeForScreen2xEnabled() {
-  return base::FeatureList::IsEnabled(
-      ::features::kDataCollectionModeForScreen2x);
-}
-
-BASE_FEATURE(kImmersiveReadAnything, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kImmersiveReadAnything, base::FEATURE_ENABLED_BY_DEFAULT);
 bool IsImmersiveReadAnythingEnabled() {
   return base::FeatureList::IsEnabled(::features::kImmersiveReadAnything);
 }
@@ -365,6 +377,18 @@ bool IsImmersiveReadAnythingEnabled() {
 BASE_FEATURE(kMainNodeAnnotations, base::FEATURE_DISABLED_BY_DEFAULT);
 bool IsMainNodeAnnotationsEnabled() {
   return base::FeatureList::IsEnabled(::features::kMainNodeAnnotations);
+}
+
+BASE_FEATURE(kImprovedReadAloud, base::FEATURE_DISABLED_BY_DEFAULT);
+bool IsImprovedReadAloudEnabled() {
+  return base::FeatureList::IsEnabled(::features::kImprovedReadAloud);
+}
+
+BASE_FEATURE(kPdfAccessibilityHeuristicEnhancements,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+bool IsPdfAccessibilityHeuristicEnhancementsEnabled() {
+  return base::FeatureList::IsEnabled(
+      ::features::kPdfAccessibilityHeuristicEnhancements);
 }
 
 BASE_FEATURE(kReadAnythingMenuShuffleExperiment,
@@ -405,13 +429,6 @@ bool IsReadAnythingReadAloudPhraseHighlightingEnabled() {
       ::features::kReadAnythingReadAloudPhraseHighlighting);
 }
 
-BASE_FEATURE(kReadAnythingReadAloudTSTextSegmentation,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-bool IsReadAnythingReadAloudTSTextSegmentationEnabled() {
-  return base::FeatureList::IsEnabled(
-      ::features::kReadAnythingReadAloudTSTextSegmentation);
-}
-
 BASE_FEATURE(kReadAnythingOmniboxChip, base::FEATURE_DISABLED_BY_DEFAULT);
 bool IsReadAnythingOmniboxChipEnabled() {
   return base::FeatureList::IsEnabled(::features::kReadAnythingOmniboxChip);
@@ -422,14 +439,17 @@ bool IsReadAnythingLineFocusEnabled() {
   return base::FeatureList::IsEnabled(::features::kReadAnythingLineFocus);
 }
 
-BASE_FEATURE(kReadAnythingImagesViaAlgorithm,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kHatsReadingModeSurvey, base::FEATURE_DISABLED_BY_DEFAULT);
+bool IsHatsReadingModeSurveyEnabled() {
+  return base::FeatureList::IsEnabled(::features::kHatsReadingModeSurvey);
+}
+
+BASE_FEATURE(kReadAnythingImagesViaAlgorithm, base::FEATURE_ENABLED_BY_DEFAULT);
 bool IsReadAnythingImagesViaAlgorithmEnabled() {
   return base::FeatureList::IsEnabled(
       ::features::kReadAnythingImagesViaAlgorithm);
 }
 
-BASE_FEATURE(kReadAnythingDocsIntegration, base::FEATURE_DISABLED_BY_DEFAULT);
 bool IsReadAnythingDocsIntegrationEnabled() {
   return base::FeatureList::IsEnabled(
       ax::mojom::features::kReadAnythingDocsIntegration);
@@ -444,17 +464,22 @@ bool IsReadAnythingDocsLoadMoreButtonEnabled() {
 
 BASE_FEATURE(kReadAnythingWithReadability, base::FEATURE_DISABLED_BY_DEFAULT);
 bool IsReadAnythingWithReadabilityEnabled() {
-  return base::FeatureList::IsEnabled(
-             ::features::kReadAnythingReadAloudTSTextSegmentation) &&
-         base::FeatureList::IsEnabled(::features::kReadAnythingWithReadability);
-  ;
+  return base::FeatureList::IsEnabled(::features::kReadAnythingWithReadability);
 }
 
-// This feature is only for debug purposes and for security/privacy reasons,
-// should be never enabled by default .
-BASE_FEATURE(kScreenAIDebugMode, base::FEATURE_DISABLED_BY_DEFAULT);
-bool IsScreenAIDebugModeEnabled() {
-  return base::FeatureList::IsEnabled(::features::kScreenAIDebugMode);
+BASE_FEATURE(kReadAnythingReadabilitySelectText,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+bool IsReadAnythingReadabilitySelectTextEnabled() {
+  return base::FeatureList::IsEnabled(
+             ::features::kReadAnythingReadabilitySelectText) &&
+         base::FeatureList::IsEnabled(::features::kReadAnythingWithReadability);
+}
+
+BASE_FEATURE(kReadAnythingDistillationQualityEvaluation,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+bool IsReadAnythingDistillationQualityEvaluationEnabled() {
+  return base::FeatureList::IsEnabled(
+      ::features::kReadAnythingDistillationQualityEvaluation);
 }
 
 // This feature is only used in tests and must not be enabled by default.
@@ -495,6 +520,12 @@ BASE_FEATURE(kBlockRootWindowAccessibleNameChangeEvent,
 bool IsBlockRootWindowAccessibleNameChangeEventEnabled() {
   return base::FeatureList::IsEnabled(
       ::features::kBlockRootWindowAccessibleNameChangeEvent);
+}
+
+BASE_FEATURE(kMacAccessibilityTextOperation, base::FEATURE_DISABLED_BY_DEFAULT);
+bool IsMacAccessibilityTextOperationEnabled() {
+  return base::FeatureList::IsEnabled(
+      ::features::kMacAccessibilityTextOperation);
 }
 #endif  // BUILDFLAG(IS_MAC)
 

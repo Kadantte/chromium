@@ -22,12 +22,12 @@
 #include "components/enterprise/connectors/core/cloud_content_scanning/common.h"
 #include "components/enterprise/connectors/core/content_analysis_delegate_base.h"
 #include "components/enterprise/data_controls/core/browser/test_utils.h"
-#include "components/policy/core/common/cloud/realtime_reporting_job_configuration.h"
 #include "content/public/browser/clipboard_types.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/navigation_simulator.h"
+#include "content/public/test/test_renderer_host.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/clipboard/clipboard_monitor.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
@@ -159,6 +159,25 @@ class PasteAllowedRequestTest : public testing::Test {
         main_rfh());
   }
 
+  content::RenderFrameHost& child_rfh() {
+    if (!child_rfh_) {
+      content::RenderFrameHostTester::For(&main_rfh())
+          ->InitializeRenderFrameIfNeeded();
+      child_rfh_ = content::RenderFrameHostTester::For(&main_rfh())
+                       ->AppendChild("child");
+    }
+    return *child_rfh_;
+  }
+
+  content::ClipboardEndpoint child_endpoint() {
+    return content::ClipboardEndpoint(
+        ui::DataTransferEndpoint(GURL("https://google.com")),
+        base::BindLambdaForTesting([this]() -> content::BrowserContext* {
+          return static_cast<content::BrowserContext*>(profile_);
+        }),
+        child_rfh());
+  }
+
   content::WebContents* secondary_web_contents() {
     if (!secondary_web_contents_) {
       content::WebContents::CreateParams params(profile_);
@@ -183,10 +202,12 @@ class PasteAllowedRequestTest : public testing::Test {
  protected:
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+  content::RenderViewHostTestEnabler rvh_test_enabler_;
   TestingProfileManager profile_manager_;
   raw_ptr<TestingProfile> profile_;
   std::unique_ptr<content::WebContents> main_web_contents_;
   std::unique_ptr<content::WebContents> secondary_web_contents_;
+  raw_ptr<content::RenderFrameHost> child_rfh_ = nullptr;
 #if BUILDFLAG(IS_CHROMEOS)
   std::unique_ptr<ash::network_config::CrosNetworkConfigTestHelper>
       network_config_helper_;
@@ -430,6 +451,39 @@ TEST_F(PasteAllowedRequestTest,
   EXPECT_EQ(1u, PasteAllowedRequest::requests_count_for_testing());
 }
 
+TEST_F(PasteAllowedRequestTest, ChildFrameDestinationCreatesSeparateRequest) {
+  auto seqno = ui::Clipboard::GetForCurrentThread()->GetSequenceNumber(
+      ui::ClipboardBuffer::kCopyPaste);
+
+  // Seed a completed request for the main frame so that a paste targeting it
+  // would resolve to `kCachedText`.
+  const std::u16string kCachedText = u"cached";
+  content::ClipboardPasteData cached_data;
+  cached_data.text = kCachedText;
+  PasteAllowedRequest cached_request;
+  cached_request.Complete(cached_data);
+  PasteAllowedRequest::AddRequestToCacheForTesting(
+      main_rfh().GetGlobalId(), seqno, std::move(cached_request));
+  EXPECT_EQ(1u, PasteAllowedRequest::requests_count_for_testing());
+
+  // A paste into a child frame of the same page must not be coalesced into the
+  // main frame's request, so it should be evaluated independently and resolve
+  // to its own data rather than the main frame's cached result.
+  const std::u16string kChildText = u"child";
+  content::ClipboardPasteData child_data;
+  child_data.text = kChildText;
+
+  base::test::TestFuture<std::optional<content::ClipboardPasteData>> future;
+  PasteAllowedRequest::StartPasteAllowedRequest(
+      /*source*/ secondary_endpoint(), /*destination*/ child_endpoint(),
+      {.seqno = seqno}, child_data, future.GetCallback());
+
+  ASSERT_TRUE(future.Get());
+  EXPECT_EQ(future.Get()->text, kChildText);
+
+  EXPECT_EQ(2u, PasteAllowedRequest::requests_count_for_testing());
+}
+
 TEST_F(PasteAllowedRequestTest, UnknownSource) {
   auto seqno = ui::Clipboard::GetForCurrentThread()->GetSequenceNumber(
       ui::ClipboardBuffer::kCopyPaste);
@@ -599,64 +653,33 @@ TEST_F(PasteAllowedRequestScanningTest, DifferentDestinationSource) {
   base::RunLoop run_loop;
   validator.SetDoneClosure(run_loop.QuitClosure());
 
-  if (base::FeatureList::IsEnabled(
-          policy::kUploadRealtimeReportingEventsUsingProto)) {
-    chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
+  chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
 
-    expected_event.set_url("");
-    expected_event.set_tab_url("");
-    expected_event.set_source("https://google.com/");
-    expected_event.set_destination("");
-    expected_event.set_file_name("Text data");
-    expected_event.set_content_type("text/plain");
-    expected_event.set_content_size(4);
-    expected_event.set_scan_id(kScanId);
-    expected_event.set_event_result(
-        chrome::cros::reporting::proto::EventResult::EVENT_RESULT_BLOCKED);
-    expected_event.set_clicked_through(false);
-    expected_event.set_trigger(
-        chrome::cros::reporting::proto::DataTransferEventTrigger::
-            WEB_CONTENT_UPLOAD);
+  expected_event.set_url("");
+  expected_event.set_tab_url("");
+  expected_event.set_source("https://google.com/");
+  expected_event.set_destination("");
+  expected_event.set_file_name("Text data");
+  expected_event.set_content_type("text/plain");
+  expected_event.set_content_size(4);
+  expected_event.set_scan_id(kScanId);
+  expected_event.set_event_result(
+      chrome::cros::reporting::proto::EventResult::EVENT_RESULT_BLOCKED);
+  expected_event.set_clicked_through(false);
+  expected_event.set_trigger(chrome::cros::reporting::proto::
+                                 DataTransferEventTrigger::WEB_CONTENT_UPLOAD);
 
-    chrome::cros::reporting::proto::TriggeredRuleInfo triggered_rule;
-    triggered_rule.set_action(
-        chrome::cros::reporting::proto::TriggeredRuleInfo::BLOCK);
-    triggered_rule.set_rule_name("paste_rule_name");
+  chrome::cros::reporting::proto::TriggeredRuleInfo triggered_rule;
+  triggered_rule.set_action(
+      chrome::cros::reporting::proto::TriggeredRuleInfo::BLOCK);
+  triggered_rule.set_rule_name("paste_rule_name");
 
-    *expected_event.add_triggered_rule_info() = triggered_rule;
+  *expected_event.add_triggered_rule_info() = triggered_rule;
 
-    expected_event.set_profile_identifier(profile_->GetPath().AsUTF8Unsafe());
-    expected_event.set_profile_user_name("test-user@chromium.org");
+  expected_event.set_profile_identifier(profile_->GetPath().AsUTF8Unsafe());
+  expected_event.set_profile_user_name("test-user@chromium.org");
 
-    validator.ExpectSensitiveDataEvent(std::move(expected_event));
-  } else {
-    validator.ExpectSensitiveDataEvent(
-        /*url*/
-        "",
-        /*tab_url*/ "",
-        /*source*/ "https://google.com/",
-        /*destination*/ "",
-        /*filename*/ "Text data",
-        /*sha*/ "",
-        /*trigger*/ "WEB_CONTENT_UPLOAD",
-        /*dlp_verdict*/
-        CreateResult(enterprise_connectors::ContentAnalysisResponse::Result::
-                         TriggeredRule::BLOCK),
-        /*mimetype*/
-        []() {
-          static std::set<std::string> set = {"text/plain"};
-          return &set;
-        }(),
-        /*size*/ 4,
-        /*result*/
-        enterprise_connectors::EventResultToString(
-            enterprise_connectors::EventResult::BLOCKED),
-        /*username*/ "test-user@chromium.org",
-        /*profile_identifier*/ profile_->GetPath().AsUTF8Unsafe(),
-        /*scan_id*/ kScanId,
-        /*content_transfer_method*/ std::nullopt,
-        /*user_justification*/ std::nullopt);
-  }
+  validator.ExpectSensitiveDataEvent(std::move(expected_event));
 
   auto seqno = ui::Clipboard::GetForCurrentThread()->GetSequenceNumber(
       ui::ClipboardBuffer::kCopyPaste);

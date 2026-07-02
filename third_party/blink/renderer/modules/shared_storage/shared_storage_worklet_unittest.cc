@@ -21,6 +21,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "build/build_config.h"
 #include "components/persistent_cache/pending_backend.h"
 #include "gin/array_buffer.h"
 #include "gin/dictionary.h"
@@ -52,6 +53,7 @@
 #include "third_party/blink/public/platform/cross_variant_mojo_util.h"
 #include "third_party/blink/public/platform/web_runtime_features.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_microtasks_scope.h"
 #include "third_party/blink/renderer/core/messaging/blink_cloneable_message_mojom_traits.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/core/workers/worker_thread_test_helper.h"
@@ -337,6 +339,14 @@ class MockMojomCoceCacheHost : public blink::mojom::blink::CodeCacheHost {
     data_ = std::move(data);
   }
 
+  void DidGenerateSourceKeyedCacheableMetadata(
+      const blink::Vector<uint8_t>& source_hash,
+      mojo_base::BigBuffer data) override {
+    // Shared Storage does not use a code cache when
+    // UsePersistentCacheForCodeCache is enabled.
+    NOTREACHED();
+  }
+
   void FetchCachedCode(mojom::CodeCacheType cache_type,
                        const KURL& url,
                        FetchCachedCodeCallback callback) override {
@@ -396,6 +406,7 @@ std::unique_ptr<GlobalScopeCreationParams> MakeTestGlobalScopeCreationParams() {
       /*response_content_security_policies=*/
       Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
       /*referrer_policy=*/network::mojom::ReferrerPolicy::kDefault,
+      /*document_policy=*/DocumentPolicy::DocumentPolicyBundle{},
       /*starter_origin=*/nullptr,
       /*starter_secure_context=*/false,
       /*starter_https_state=*/HttpsState::kNone,
@@ -568,8 +579,7 @@ class SharedStorageWorkletTest : public PageTestBase {
       const std::map<std::string, std::string>* dict) {
     ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
     ScriptState::Scope scope(script_state);
-    v8::MicrotasksScope microtasksScope(script_state->GetContext(),
-                                        v8::MicrotasksScope::kRunMicrotasks);
+    V8RunMicrotasksScope microtasksScope(script_state);
 
     v8::Isolate* isolate = script_state->GetIsolate();
 
@@ -715,6 +725,15 @@ class SharedStorageWorkletCodeCacheTest : public SharedStorageWorkletTest {
     }
     SharedStorageWorkletTest::SetUp();
   }
+
+  // On Fuchsia size-optimized builds, the default V8 cache option is
+  // overridden to kNone, disabling code caching by default.
+  static constexpr size_t kExpectedCacheableMetadataCount =
+#if BUILDFLAG(IS_FUCHSIA) && defined(__OPTIMIZE_SIZE__)
+      0;
+#else
+      1;
+#endif
 };
 
 TEST_F(SharedStorageWorkletCodeCacheTest,
@@ -795,7 +814,8 @@ TEST_F(SharedStorageWorkletCodeCacheTest, DidGenerateData) {
   EXPECT_EQ(mock_code_cache_host_->clear_code_cache_entry_count(), 0u);
 
   // Code cache was generated.
-  EXPECT_EQ(mock_code_cache_host_->did_generate_cacheable_metadata_count(), 1u);
+  EXPECT_EQ(mock_code_cache_host_->did_generate_cacheable_metadata_count(),
+            1 * kExpectedCacheableMetadataCount);
 }
 
 TEST_F(SharedStorageWorkletCodeCacheTest, AddModuleTwice) {
@@ -819,7 +839,8 @@ TEST_F(SharedStorageWorkletCodeCacheTest, AddModuleTwice) {
   // The second script loading also triggered the code cache generation. This
   // implies that the code cache was still not used. This is expected, as we
   // won't store the cached code entirely for first seen URLs.
-  EXPECT_EQ(mock_code_cache_host_->did_generate_cacheable_metadata_count(), 2u);
+  EXPECT_EQ(mock_code_cache_host_->did_generate_cacheable_metadata_count(),
+            2 * kExpectedCacheableMetadataCount);
 }
 
 TEST_F(SharedStorageWorkletCodeCacheTest, AddModuleThreeTimes) {
@@ -843,7 +864,8 @@ TEST_F(SharedStorageWorkletCodeCacheTest, AddModuleThreeTimes) {
 
   // The third script loading did not trigger the code cache generation. This
   // implies that the cached code was used for the third script loading.
-  EXPECT_EQ(mock_code_cache_host_->did_generate_cacheable_metadata_count(), 2u);
+  EXPECT_EQ(mock_code_cache_host_->did_generate_cacheable_metadata_count(),
+            2 * kExpectedCacheableMetadataCount);
 }
 
 TEST_F(SharedStorageWorkletTest, WorkletTerminationDueToDisconnect) {

@@ -4,6 +4,8 @@
 
 package org.chromium.components.embedder_support.view;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+
 import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Rect;
@@ -74,7 +76,7 @@ public class ContentView extends FrameLayout
     public static final int DEFAULT_MEASURE_SPEC =
             MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED);
 
-    @Nullable private WebContents mWebContents;
+    private @Nullable WebContents mWebContents;
     private boolean mIsObscuredForAccessibility;
     private final ObserverList<OnHierarchyChangeListener> mHierarchyChangeListeners =
             new ObserverList<>();
@@ -82,11 +84,11 @@ public class ContentView extends FrameLayout
             new ObserverList<>();
     private final ObserverList<OnDragListener> mOnDragListeners = new ObserverList<>();
     private ViewEventSink mViewEventSink;
-    @Nullable private Supplier<PointerIcon> mStylusWritingIconSupplier;
+    private @Nullable Supplier<PointerIcon> mStylusWritingIconSupplier;
 
     // TODO(b/422918648): Remove this.
-    @Nullable private MotionEvent mPendingTwoFingerSwipeDownEvent;
-    @Nullable private VirtualStructureProvider mVirtualStructureProvider;
+    private @Nullable MotionEvent mPendingTwoFingerSwipeDownEvent;
+    private @Nullable VirtualStructureProvider mVirtualStructureProvider;
 
     private final ObserverList<View.OnHoverListener> mHoverListeners = new ObserverList<>();
 
@@ -101,6 +103,7 @@ public class ContentView extends FrameLayout
     private EventOffsetHandler mDragDropEventOffsetHandler;
     private boolean mDeferKeepScreenOnChanges;
     private Boolean mPendingKeepScreenOnValue;
+    private boolean mIgnoreClearFocus;
 
     /**
      * Constructs a new ContentView for the appropriate Android version.
@@ -208,6 +211,14 @@ public class ContentView extends FrameLayout
 
     public void setVirtualStructureProvider(VirtualStructureProvider virtualStructureProvider) {
         mVirtualStructureProvider = virtualStructureProvider;
+    }
+
+    /**
+     * Sets whether clear focus events should be ignored. This is useful for cases where the clear
+     * focus event is unavoidable.
+     */
+    public void setIgnoreClearFocus(boolean ignore) {
+        mIgnoreClearFocus = ignore;
     }
 
     @Override
@@ -377,13 +388,18 @@ public class ContentView extends FrameLayout
     public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
         // Calls may come while/after WebContents is destroyed. See https://crbug.com/821750#c8.
         if (!hasValidWebContents()) return null;
-        return ImeAdapter.fromWebContents(mWebContents).onCreateInputConnection(outAttrs);
+
+        ImeAdapter adapter = assertNonNull(ImeAdapter.fromWebContents(mWebContents));
+
+        // Gracefully handle a null adapter in non-debug builds.
+        return adapter == null ? null : adapter.onCreateInputConnection(outAttrs);
     }
 
     @Override
     public boolean onCheckIsTextEditor() {
         if (!hasValidWebContents()) return false;
-        return ImeAdapter.fromWebContents(mWebContents).onCheckIsTextEditor();
+        ImeAdapter adapter = ImeAdapter.fromWebContents(mWebContents);
+        return adapter != null && adapter.onCheckIsTextEditor();
     }
 
     @Override
@@ -401,6 +417,12 @@ public class ContentView extends FrameLayout
     }
 
     @Override
+    public void clearFocus() {
+        if (mIgnoreClearFocus) return;
+        super.clearFocus();
+    }
+
+    @Override
     public void onWindowFocusChanged(boolean hasWindowFocus) {
         super.onWindowFocusChanged(hasWindowFocus);
         if (hasValidWebContents()) {
@@ -411,7 +433,10 @@ public class ContentView extends FrameLayout
     @Override
     public boolean onKeyPreIme(int keyCode, KeyEvent event) {
         if (hasValidWebContents()) {
-            ImeAdapter.fromWebContents(mWebContents).onKeyPreIme(keyCode, event);
+            ImeAdapter adapter = ImeAdapter.fromWebContents(mWebContents);
+            if (adapter != null) {
+                adapter.onKeyPreIme(keyCode, event);
+            }
         }
         return super.onKeyPreIme(keyCode, event);
     }
@@ -451,8 +476,7 @@ public class ContentView extends FrameLayout
                 && Build.VERSION.SDK_INT <= 38
                 && DeviceInfo.isDesktop()) {
             if (MotionEventUtils.isTrackpadEvent(event)
-                    && event.getClassification() == MotionEvent.CLASSIFICATION_TWO_FINGER_SWIPE
-                    && forwarder != null) {
+                    && event.getClassification() == MotionEvent.CLASSIFICATION_TWO_FINGER_SWIPE) {
                 if (mPendingTwoFingerSwipeDownEvent != null) {
                     MotionEvent lastEvent = mPendingTwoFingerSwipeDownEvent;
                     mPendingTwoFingerSwipeDownEvent = null;
@@ -539,8 +563,7 @@ public class ContentView extends FrameLayout
         return super.onResolvePointerIcon(event, pointerIndex);
     }
 
-    @Nullable
-    private EventForwarder getEventForwarder() {
+    private @Nullable EventForwarder getEventForwarder() {
         return webContentsAttached() ? mWebContents.getEventForwarder() : null;
     }
 

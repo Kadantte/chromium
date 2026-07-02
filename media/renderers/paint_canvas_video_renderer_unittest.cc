@@ -30,14 +30,16 @@
 #include "components/viz/test/test_gpu_service_holder.h"
 #include "components/viz/test/test_in_process_context_provider.h"
 #include "gpu/GLES2/gl2extchromium.h"
+#include "gpu/command_buffer/client/client_shared_image.h"
 #include "gpu/command_buffer/client/gles2_interface_stub.h"
 #include "gpu/command_buffer/common/capabilities.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "gpu/config/gpu_feature_info.h"
+#include "media/base/format_utils.h"
 #include "media/base/timestamp_constants.h"
 #include "media/base/video_frame.h"
 #include "media/base/video_util.h"
-#include "media/renderers/shared_image_video_frame_test_utils.h"
+#include "media/renderers/video_frame_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/fp16/src/include/fp16.h"
 #include "third_party/libyuv/include/libyuv/convert.h"
@@ -187,91 +189,6 @@ static SkBitmap AllocBitmap(int width,
       SkImageInfo::Make(width, height, color_type, kPremul_SkAlphaType));
   bitmap.eraseColor(0);
   return bitmap;
-}
-
-static scoped_refptr<VideoFrame> CreateCroppedFrame() {
-  scoped_refptr<VideoFrame> cropped_frame = VideoFrame::CreateFrame(
-      PIXEL_FORMAT_I420, gfx::Size(16, 16), gfx::Rect(6, 6, 8, 6),
-      gfx::Size(8, 6), base::Milliseconds(4));
-  // Make sure the cropped video frame's aspect ratio matches the output device.
-  // Update cropped_frame_'s crop dimensions if this is not the case.
-  EXPECT_EQ(cropped_frame->visible_rect().width() * kHeight,
-            cropped_frame->visible_rect().height() * kWidth);
-
-  // Fill in the cropped frame's entire data with colors:
-  //
-  //   Bl Bl Bl Bl Bl Bl Bl Bl R  R  R  R  R  R  R  R
-  //   Bl Bl Bl Bl Bl Bl Bl Bl R  R  R  R  R  R  R  R
-  //   Bl Bl Bl Bl Bl Bl Bl Bl R  R  R  R  R  R  R  R
-  //   Bl Bl Bl Bl Bl Bl Bl Bl R  R  R  R  R  R  R  R
-  //   Bl Bl Bl Bl Bl Bl Bl Bl R  R  R  R  R  R  R  R
-  //   Bl Bl Bl Bl Bl Bl Bl Bl R  R  R  R  R  R  R  R
-  //   Bl Bl Bl Bl Bl Bl Bl Bl R  R  R  R  R  R  R  R
-  //   Bl Bl Bl Bl Bl Bl Bl Bl R  R  R  R  R  R  R  R
-  //   G  G  G  G  G  G  G  G  B  B  B  B  B  B  B  B
-  //   G  G  G  G  G  G  G  G  B  B  B  B  B  B  B  B
-  //   G  G  G  G  G  G  G  G  B  B  B  B  B  B  B  B
-  //   G  G  G  G  G  G  G  G  B  B  B  B  B  B  B  B
-  //   G  G  G  G  G  G  G  G  B  B  B  B  B  B  B  B
-  //   G  G  G  G  G  G  G  G  B  B  B  B  B  B  B  B
-  //   G  G  G  G  G  G  G  G  B  B  B  B  B  B  B  B
-  //   G  G  G  G  G  G  G  G  B  B  B  B  B  B  B  B
-  //
-  // The visible crop of the frame (as set by its visible_rect_) has contents:
-  //
-  //   Bl Bl R  R  R  R  R  R
-  //   Bl Bl R  R  R  R  R  R
-  //   G  G  B  B  B  B  B  B
-  //   G  G  B  B  B  B  B  B
-  //   G  G  B  B  B  B  B  B
-  //   G  G  B  B  B  B  B  B
-  //
-  // Each color region in the cropped frame is on a 2x2 block granularity, to
-  // avoid sharing UV samples between regions.
-
-  static const uint8_t cropped_y_plane[] = {
-      0,   0,   0,   0,   0,   0,   0,   0,   76, 76, 76, 76, 76, 76, 76, 76,
-      0,   0,   0,   0,   0,   0,   0,   0,   76, 76, 76, 76, 76, 76, 76, 76,
-      0,   0,   0,   0,   0,   0,   0,   0,   76, 76, 76, 76, 76, 76, 76, 76,
-      0,   0,   0,   0,   0,   0,   0,   0,   76, 76, 76, 76, 76, 76, 76, 76,
-      0,   0,   0,   0,   0,   0,   0,   0,   76, 76, 76, 76, 76, 76, 76, 76,
-      0,   0,   0,   0,   0,   0,   0,   0,   76, 76, 76, 76, 76, 76, 76, 76,
-      0,   0,   0,   0,   0,   0,   0,   0,   76, 76, 76, 76, 76, 76, 76, 76,
-      0,   0,   0,   0,   0,   0,   0,   0,   76, 76, 76, 76, 76, 76, 76, 76,
-      149, 149, 149, 149, 149, 149, 149, 149, 29, 29, 29, 29, 29, 29, 29, 29,
-      149, 149, 149, 149, 149, 149, 149, 149, 29, 29, 29, 29, 29, 29, 29, 29,
-      149, 149, 149, 149, 149, 149, 149, 149, 29, 29, 29, 29, 29, 29, 29, 29,
-      149, 149, 149, 149, 149, 149, 149, 149, 29, 29, 29, 29, 29, 29, 29, 29,
-      149, 149, 149, 149, 149, 149, 149, 149, 29, 29, 29, 29, 29, 29, 29, 29,
-      149, 149, 149, 149, 149, 149, 149, 149, 29, 29, 29, 29, 29, 29, 29, 29,
-      149, 149, 149, 149, 149, 149, 149, 149, 29, 29, 29, 29, 29, 29, 29, 29,
-      149, 149, 149, 149, 149, 149, 149, 149, 29, 29, 29, 29, 29, 29, 29, 29,
-  };
-
-  static const uint8_t cropped_u_plane[] = {
-      128, 128, 128, 128, 84,  84,  84,  84,  128, 128, 128, 128, 84,
-      84,  84,  84,  128, 128, 128, 128, 84,  84,  84,  84,  128, 128,
-      128, 128, 84,  84,  84,  84,  43,  43,  43,  43,  255, 255, 255,
-      255, 43,  43,  43,  43,  255, 255, 255, 255, 43,  43,  43,  43,
-      255, 255, 255, 255, 43,  43,  43,  43,  255, 255, 255, 255,
-  };
-  static const uint8_t cropped_v_plane[] = {
-      128, 128, 128, 128, 255, 255, 255, 255, 128, 128, 128, 128, 255,
-      255, 255, 255, 128, 128, 128, 128, 255, 255, 255, 255, 128, 128,
-      128, 128, 255, 255, 255, 255, 21,  21,  21,  21,  107, 107, 107,
-      107, 21,  21,  21,  21,  107, 107, 107, 107, 21,  21,  21,  21,
-      107, 107, 107, 107, 21,  21,  21,  21,  107, 107, 107, 107,
-  };
-
-  libyuv::I420Copy(cropped_y_plane, 16, cropped_u_plane, 8, cropped_v_plane, 8,
-                   cropped_frame->writable_data(VideoFrame::Plane::kY),
-                   cropped_frame->stride(VideoFrame::Plane::kY),
-                   cropped_frame->writable_data(VideoFrame::Plane::kU),
-                   cropped_frame->stride(VideoFrame::Plane::kU),
-                   cropped_frame->writable_data(VideoFrame::Plane::kV),
-                   cropped_frame->stride(VideoFrame::Plane::kV), 16, 16);
-
-  return cropped_frame;
 }
 
 static scoped_refptr<VideoFrame> CreateRGBA16TestFrame(
@@ -1160,6 +1077,8 @@ class PaintCanvasVideoRendererWithGLTest : public testing::Test {
 
   void TearDown() override {
     renderer_.ResetCache();
+    rgb_shared_image_cache_.reset();
+    yuv_shared_image_cache_.reset();
     destination_context_.reset();
     raster_context_.reset();
     media_context_.reset();
@@ -1168,8 +1087,22 @@ class PaintCanvasVideoRendererWithGLTest : public testing::Test {
     gl::GLSurfaceTestSupport::ShutdownGL(display_);
   }
 
-  // Uses CopyVideoFrameTexturesToGLTexture to copy |frame| into a GL texture,
-  // reads back its contents, and runs |check_pixels| to validate it.
+  VideoFrameSharedImageCache* GetRGBSharedImageCache() {
+    if (!rgb_shared_image_cache_) {
+      rgb_shared_image_cache_ = std::make_unique<VideoFrameSharedImageCache>();
+    }
+    return rgb_shared_image_cache_.get();
+  }
+
+  VideoFrameSharedImageCache* GetYUVSharedImageCache() {
+    if (!yuv_shared_image_cache_) {
+      yuv_shared_image_cache_ = std::make_unique<VideoFrameSharedImageCache>();
+    }
+    return yuv_shared_image_cache_.get();
+  }
+
+  // Copies |frame| into a GL texture, reads back its contents, and runs
+  // |check_pixels| to validate it.
   template <class CheckPixels>
   void CopyVideoFrameTexturesAndCheckPixels(scoped_refptr<VideoFrame> frame,
                                             CheckPixels check_pixels) {
@@ -1178,14 +1111,27 @@ class PaintCanvasVideoRendererWithGLTest : public testing::Test {
     GLenum target = GL_TEXTURE_2D;
     GLuint texture = 0;
     destination_gl->GenTextures(1, &texture);
-    destination_gl->BindTexture(target, texture);
-
-    renderer_.CopyVideoFrameTexturesToGLTexture(
-        media_context_.get(), destination_gl, frame, target, texture, GL_RGBA,
-        GL_RGBA, GL_UNSIGNED_BYTE, 0, kUnpremul_SkAlphaType,
-        kTopLeft_GrSurfaceOrigin);
 
     gfx::Size expected_size = frame->visible_rect().size();
+
+    const auto shared_image = frame->shared_image();
+    CHECK(destination_gl->CanCopySharedImageDirectlyToGLTexture(
+        media::IsOpaque(frame->format()), shared_image.get(), target, GL_RGBA,
+        GL_UNSIGNED_BYTE, 0, kUnpremul_SkAlphaType));
+    destination_gl->BindTexture(target, texture);
+    destination_gl->TexImage2D(target, 0, GL_RGBA, expected_size.width(),
+                               expected_size.height(), 0, GL_RGBA,
+                               GL_UNSIGNED_BYTE, nullptr);
+    base::OnceCallback<gpu::SyncToken()> sync_callback =
+        destination_gl->CopySharedImageDirectlyToGLTexture(
+            frame->visible_rect(), shared_image.get(),
+            frame->acquire_sync_token(), media::IsOpaque(frame->format()),
+            target, texture, GL_RGBA, GL_RGBA, GL_UNSIGNED_BYTE, 0,
+            kUnpremul_SkAlphaType, kTopLeft_GrSurfaceOrigin);
+
+    media::PaintCanvasVideoRenderer::SynchronizeVideoFrameRead(
+        std::move(frame), destination_gl,
+        destination_context_->ContextSupport(), std::move(sync_callback));
 
     base::HeapArray<uint8_t> pixels =
         ReadbackTexture(destination_gl, texture, expected_size);
@@ -1327,6 +1273,8 @@ class PaintCanvasVideoRendererWithGLTest : public testing::Test {
   scoped_refptr<viz::TestInProcessContextProvider> destination_context_;
 
   PaintCanvasVideoRenderer renderer_;
+  std::unique_ptr<VideoFrameSharedImageCache> rgb_shared_image_cache_;
+  std::unique_ptr<VideoFrameSharedImageCache> yuv_shared_image_cache_;
   scoped_refptr<VideoFrame> cropped_frame_;
   base::test::TaskEnvironment task_environment_;
   raw_ptr<gl::GLDisplay> display_ = nullptr;
@@ -1340,8 +1288,9 @@ TEST_F(PaintCanvasVideoRendererWithGLTest, CopyVideoFrameYUVDataToGLTexture) {
   destination_gl->GenTextures(1, &texture);
   destination_gl->BindTexture(target, texture);
 
-  renderer_.CopyVideoFrameYUVDataToGLTexture(
-      media_context_.get(), destination_gl, cropped_frame(), target, texture,
+  PaintCanvasVideoRenderer::CopyVideoFrameYUVDataToGLTexture(
+      media_context_.get(), destination_gl, cropped_frame(),
+      GetRGBSharedImageCache(), GetYUVSharedImageCache(), target, texture,
       GL_RGBA, GL_RGBA, GL_UNSIGNED_BYTE, 0, kUnpremul_SkAlphaType,
       kTopLeft_GrSurfaceOrigin);
 
@@ -1372,8 +1321,9 @@ TEST_F(PaintCanvasVideoRendererWithGLTest,
   destination_gl->GenTextures(1, &texture);
   destination_gl->BindTexture(target, texture);
 
-  renderer_.CopyVideoFrameYUVDataToGLTexture(
-      media_context_.get(), destination_gl, cropped_frame(), target, texture,
+  PaintCanvasVideoRenderer::CopyVideoFrameYUVDataToGLTexture(
+      media_context_.get(), destination_gl, cropped_frame(),
+      GetRGBSharedImageCache(), GetYUVSharedImageCache(), target, texture,
       GL_RGBA, GL_RGBA, GL_UNSIGNED_BYTE, 0, kUnpremul_SkAlphaType,
       kBottomLeft_GrSurfaceOrigin);
 
@@ -1435,6 +1385,13 @@ TEST_F(PaintCanvasVideoRendererWithGLTest, PaintRGBA) {
   run_loop.Run();
 }
 
+// This test cannot take the direct-copy codepath on
+// android-desktop-x64-rel-15-tests, which causes it to fail there. Disable it
+// temporarily on Android.
+// TODO(crbug.com/343011436): Move these tests to be on
+// WebGLRenderingContextBase, where they can use the two-copy path and be
+// re-enabled on Android.
+#if !BUILDFLAG(IS_ANDROID)
 // Checks that we correctly copy an I420 shared image VideoFrame when using
 // CopyVideoFrameYUVDataToGLTexture, including correct cropping.
 TEST_F(PaintCanvasVideoRendererWithGLTest,
@@ -1447,6 +1404,7 @@ TEST_F(PaintCanvasVideoRendererWithGLTest,
   frame.reset();
   run_loop.Run();
 }
+#endif
 
 // Checks that we correctly paint a I420 shared image VideoFrame, including
 // correct cropping.
@@ -1473,6 +1431,13 @@ TEST_F(PaintCanvasVideoRendererWithGLTest, PaintI420NotSubset) {
   run_loop.Run();
 }
 
+// This test cannot take the direct-copy codepath on
+// android-desktop-x64-rel-15-tests, which causes it to fail there. Disable it
+// temporarily on Android.
+// TODO(crbug.com/343011436): Move these tests to be on
+// WebGLRenderingContextBase, where they can use the two-copy path and be
+// re-enabled on Android.
+#if !BUILDFLAG(IS_ANDROID)
 // Checks that we correctly copy a NV12 shared image VideoFrame when using
 // CopyVideoFrameYUVDataToGLTexture, including correct cropping.
 TEST_F(PaintCanvasVideoRendererWithGLTest,
@@ -1489,6 +1454,7 @@ TEST_F(PaintCanvasVideoRendererWithGLTest,
   frame.reset();
   run_loop.Run();
 }
+#endif
 
 // Checks that we correctly paint a NV12 shared image VideoFrame, including
 // correct cropping.

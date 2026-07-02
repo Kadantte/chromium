@@ -11,13 +11,19 @@ export interface MenuStateItem<T> {
   selected?: boolean;  // Whether this item is currently selected.
   icon?: string;   // An optional icon that is displayed next to the title.
   style?: string;  // An optional string for styling each item.
-  header?: MenuHeader;  // Optional header that should go above this item.
-  eventName?: string;  // Optional event name for this item if needed per-item.
+  // Needed when the aria label should be different from the title
+  ariaLabel?: string;
 }
 
-interface MenuHeader {
+export interface MenuHeader {
   title: string;
   separator: boolean;
+}
+
+export interface MenuGroup<T> {
+  header: MenuHeader;
+  items: Array<MenuStateItem<T>>;
+  eventName: string;
 }
 
 // Defines the contract for any menu that appears in the Toolbar.
@@ -31,7 +37,7 @@ export interface ToolbarMenu {
 // descriptive.
 // Returns the index of the item in menuArray that contains the given data.
 export function getIndexOfSetting(
-    menuArray: Array<MenuStateItem<any>>, dataToFind: any): number {
+    menuArray: Array<MenuStateItem<unknown>>, dataToFind: unknown): number {
   return menuArray.findIndex((item) => (item.data === dataToFind));
 }
 
@@ -39,7 +45,7 @@ export function getIndexOfSetting(
 // the given data does not exist in the menuArray anymore, returns the first
 // index.
 export function getIndexOrDefault(
-    menuArray: Array<MenuStateItem<any>>, data: any): number {
+    menuArray: Array<MenuStateItem<unknown>>, data: unknown): number {
   const index = getIndexOfSetting(menuArray, data);
 
   if (index < 0 && menuArray.length > 0) {

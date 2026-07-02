@@ -29,6 +29,7 @@ class SequencedTaskRunner;
 namespace net {
 
 class NetworkCostChangeNotifierWin;
+class SystemDnsConfigChangeNotifier;
 
 // NetworkChangeNotifierWin uses a SequenceChecker, as all its internal
 // notification code must be called on the sequence it is created and destroyed
@@ -61,6 +62,12 @@ class NET_EXPORT_PRIVATE NetworkChangeNotifierWin
   }
 
  protected:
+  // Constructor for tests that provides a custom SystemDnsConfigChangeNotifier
+  // to avoid using the process-wide singleton (which creates a
+  // PooledSequencedTaskRunner that becomes stale across TaskEnvironments).
+  explicit NetworkChangeNotifierWin(
+      SystemDnsConfigChangeNotifier* dns_config_notifier);
+
   // For unit tests only.
   bool is_watching() const { return is_watching_; }
   void set_is_watching(bool is_watching) { is_watching_ = is_watching; }
@@ -148,6 +155,13 @@ class NET_EXPORT_PRIVATE NetworkChangeNotifierWin
 
   // Number of times WatchForAddressChange has failed in a row.
   int sequential_failures_ = 0;
+
+  // Whether the initial connection type has been computed asynchronously.
+  // The constructor defers this computation to WatchForAddressChange() to
+  // avoid a synchronous cross-process call that blocks startup. Until the
+  // async computation completes, GetCurrentConnectionType() returns
+  // CONNECTION_UNKNOWN.
+  bool initial_connection_type_initialized_ = false;
 
   scoped_refptr<base::SequencedTaskRunner> blocking_task_runner_;
 

@@ -16,8 +16,8 @@ import type {ShowAtConfigPrefs} from '../content/read_anything_types.js';
 import {ToolbarEvent} from '../content/read_anything_types.js';
 import {openMenu} from '../shared/common.js';
 
+import {getCss} from './action_menu.css.js';
 import type {MenuStateItem} from './menu_util.js';
-import {getCss} from './simple_action_menu.css.js';
 import {getHtml} from './simple_action_menu.html.js';
 
 export interface SimpleActionMenuElement {
@@ -57,7 +57,7 @@ export class SimpleActionMenuElement extends SimpleActionMenuElementBase {
   }
 
   accessor currentSelectedIndex: number = 0;
-  accessor menuItems: Array<MenuStateItem<any>> = [];
+  accessor menuItems: Array<MenuStateItem<unknown>> = [];
   accessor nonModal: boolean = false;
   accessor closeOnClick: boolean = true;
 
@@ -66,7 +66,9 @@ export class SimpleActionMenuElement extends SimpleActionMenuElementBase {
   accessor label: string = '';
 
   open(anchor: HTMLElement, showAtConfig?: ShowAtConfigPrefs) {
-    openMenu(this.$.lazyMenu.get(), anchor, showAtConfig);
+    openMenu(
+        this.$.lazyMenu.get(), anchor, showAtConfig, /* onShow= */ undefined,
+        this.nonModal);
   }
 
   close() {
@@ -79,32 +81,22 @@ export class SimpleActionMenuElement extends SimpleActionMenuElementBase {
         Number.parseInt(currentTarget.dataset['index']!);
     const menuItem = this.menuItems[this.currentSelectedIndex];
     assert(menuItem);
-    const eventName = menuItem.eventName || this.eventName;
-    this.fire(eventName, {data: menuItem.data});
+    this.fire(this.eventName, {data: menuItem.data});
     if (this.closeOnClick) {
       this.$.lazyMenu.get().close();
     }
   }
 
-  protected isItemSelected_(index: number, item: MenuStateItem<any>): boolean {
-    // Only use currentSelectedIndex if item.selected is undefined.
-    return item.selected ?? (index === this.currentSelectedIndex);
+  protected isItemSelected_(index: number): boolean {
+    return index === this.currentSelectedIndex;
   }
 
-  protected doesItemHaveIcon_(item: MenuStateItem<any>): boolean {
+  protected doesItemHaveIcon_(item: MenuStateItem<unknown>): boolean {
     return item.icon !== undefined;
   }
 
-  protected itemIcon_(item: MenuStateItem<any>): string {
+  protected itemIcon_(item: MenuStateItem<unknown>): string {
     return item.icon === undefined ? '' : item.icon;
-  }
-
-  protected doesItemHaveHeader_(item: MenuStateItem<any>): boolean {
-    return chrome.readingMode.isLineFocusEnabled && !!item.header;
-  }
-
-  protected doesItemHaveHeaderSeparator_(item: MenuStateItem<any>): boolean {
-    return chrome.readingMode.isLineFocusEnabled && !!item.header?.separator;
   }
 }
 

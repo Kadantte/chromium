@@ -41,7 +41,6 @@
 #include "chrome/browser/extensions/api/tab_groups/tab_groups_event_router.h"
 #include "chrome/browser/extensions/api/tab_groups/tab_groups_event_router_factory.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_sync_service_initialized_observer.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -212,7 +211,7 @@ IN_PROC_BROWSER_TEST_F(TabGroupsApiBrowserTest,
   // Create a new window that doesn't support groups. App windows don't allow
   // tab groups.
   Browser* browser2 = CreateBrowserForApp("some app", profile());
-  BrowserList::SetLastActive(browser2);
+  ui_test_utils::DeprecatedFakeActivateBrowser(browser2);
 
   ASSERT_FALSE(browser2->tab_strip_model()->SupportsTabGroups());
 
@@ -788,7 +787,7 @@ IN_PROC_BROWSER_TEST_F(TabGroupsApiBrowserTest, IsTabStripEditable) {
   const std::string args =
       base::StringPrintf(R"([%d, {"index": %d}])", group_id, 1);
 
-  EXPECT_TRUE(ExtensionTabUtil::IsTabStripEditable());
+  EXPECT_TRUE(ExtensionTabUtil::IsTabStripEditable(*profile()));
 
   // Succeed moving group when tab strip is editable.
   {

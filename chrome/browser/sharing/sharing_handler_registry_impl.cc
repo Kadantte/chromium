@@ -4,8 +4,15 @@
 
 #include "chrome/browser/sharing/sharing_handler_registry_impl.h"
 
+#include "base/feature_list.h"
 #include "build/build_config.h"
+#include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/sharing/glic_experimental_triggering/glic_experimental_triggering_message_handler.h"
+#include "chrome/browser/sharing/one_time_tokens/one_time_token_sharing_handler.h"
 #include "chrome/browser/sharing/optimization_guide/optimization_guide_message_handler.h"
+#include "chrome/common/chrome_features.h"
+#include "components/one_time_tokens/core/browser/gmail_otp_backend.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/sharing_message/ack_message_handler.h"
 #include "components/sharing_message/ping_message_handler.h"
@@ -30,7 +37,8 @@ SharingHandlerRegistryImpl::SharingHandlerRegistryImpl(
     SharingDeviceRegistration* sharing_device_registration,
     SharingMessageSender* message_sender,
     SharingDeviceSource* device_source,
-    content::SmsFetcher* sms_fetcher) {
+    content::SmsFetcher* sms_fetcher,
+    one_time_tokens::GmailOtpBackend* gmail_otp_backend) {
   AddSharingHandler(std::make_unique<PingMessageHandler>(),
                     {components_sharing_message::SharingMessage::kPingMessage});
 
@@ -80,6 +88,25 @@ SharingHandlerRegistryImpl::SharingHandlerRegistryImpl(
   }
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
         // BUILDFLAG(IS_CHROMEOS)
+#if !BUILDFLAG(IS_ANDROID)
+  if (sharing_device_registration
+          ->IsOneTimeTokenBackendNotificationSupported()) {
+    AddSharingHandler(
+        std::make_unique<OneTimeTokenSharingHandler>(gmail_otp_backend),
+        {components_sharing_message::SharingMessage::
+             kOneTimeTokenBackendNotification});
+  }
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+  if (base::FeatureList::IsEnabled(features::kGlicExperimentalTriggering) &&
+      glic::GlicKeyedServiceFactory::GetGlicKeyedService(profile,
+                                                         /*create=*/true)) {
+    AddSharingHandler(
+        std::make_unique<GlicExperimentalTriggeringMessageHandler>(
+            profile, message_sender),
+        {components_sharing_message::SharingMessage::
+             kGlicExperimentalTriggering});
+  }
 }
 
 SharingHandlerRegistryImpl::~SharingHandlerRegistryImpl() = default;
@@ -87,12 +114,14 @@ SharingHandlerRegistryImpl::~SharingHandlerRegistryImpl() = default;
 SharingMessageHandler* SharingHandlerRegistryImpl::GetSharingHandler(
     components_sharing_message::SharingMessage::PayloadCase payload_case) {
   auto it = handler_map_.find(payload_case);
-  if (it != handler_map_.end())
+  if (it != handler_map_.end()) {
     return it->second;
+  }
 
   auto extra_it = extra_handler_map_.find(payload_case);
-  if (extra_it != extra_handler_map_.end())
+  if (extra_it != extra_handler_map_.end()) {
     return extra_it->second.get();
+  }
 
   return nullptr;
 }

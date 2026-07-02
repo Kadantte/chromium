@@ -8,6 +8,7 @@
 #include "base/base_export.h"
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
+#include "build/build_config.h"
 
 namespace base::features {
 
@@ -54,22 +55,36 @@ BASE_EXPORT BASE_DECLARE_FEATURE(kPostGetMyMemoryStateToBackground);
 BASE_EXPORT BASE_DECLARE_FEATURE(kRebindingChildServiceConnectionController);
 BASE_EXPORT BASE_DECLARE_FEATURE(kRebindServiceBatchApi);
 BASE_EXPORT BASE_DECLARE_FEATURE(kUseSharedRebindServiceConnection);
+BASE_EXPORT BASE_DECLARE_FEATURE(kVirtualKeyboardGeometryAndInsetFixes);
 
 BASE_EXPORT BASE_DECLARE_FEATURE(kBackgroundThreadPoolFieldTrial);
+BASE_EXPORT BASE_DECLARE_FEATURE(kShutdownPreNativeThreadPoolAfterStartup);
 BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(int,
                                        kBackgroundThreadPoolFieldTrialConfig);
 
 BASE_EXPORT BASE_DECLARE_FEATURE(kLibraryPrefetcherMadvise);
 BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(size_t, kLibraryPrefetcherMadviseLength);
 BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kLibraryPrefetcherMadviseFallback);
-
-#endif
+BASE_EXPORT BASE_DECLARE_FEATURE(kLibraryPrefetcherOnlyOrderedText);
+#endif  // BUILDFLAG(IS_ANDROID)
 
 BASE_EXPORT BASE_DECLARE_FEATURE(kUseTerminationStatusMemoryExhaustion);
 
 #if BUILDFLAG(IS_WIN)
 BASE_EXPORT BASE_DECLARE_FEATURE(kUserBlockingAboveNormalPriority);
+BASE_EXPORT BASE_DECLARE_FEATURE(kRetryCreateFileMappingOnCommitLimit);
+
+BASE_EXPORT BASE_DECLARE_FEATURE(kPreventReparsePointTraversal);
 #endif
+
+#if BUILDFLAG(IS_POSIX)
+BASE_EXPORT BASE_DECLARE_FEATURE(kBaseLockTrySpin);
+#if defined(ARCH_CPU_X86_FAMILY)
+BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(int, kSpinCountX86);
+#elif defined(ARCH_CPU_ARM_FAMILY)
+BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(int, kSpinCountArm);
+#endif  // defined(ARCH_CPU_X86_FAMILY)
+#endif  // BUILDFLAG(IS_POSIX)
 
 // Whether the ReducePPMs feature is enabled. Unlike
 // `FeatureList::IsEnabled(base::features::kReducePPMs)`, this can be called

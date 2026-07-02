@@ -16,8 +16,10 @@ export function getHtml(this: UserEducationInternalsCardElement) {
   <p ?hidden="${!this.showDescription_()}">
     ${this.promo.displayDescription}
   </p>
-  <p><b>Type:</b> ${this.promo.type}</p>
-  <p><b>Platforms: </b>${this.formatPlatforms_()}</p>
+  <p ?hidden="${!this.showType_()}"><b>Type:</b> ${this.promo.type}</p>
+  <p ?hidden="${!this.showPlatforms_()}">
+    <b>Platforms: </b>${this.formatPlatforms_()}
+  </p>
   <p ?hidden="${!this.showRequiredFeatures_()}">
     <b>Required features: </b>${this.formatRequiredFeatures_()}
   </p>
@@ -31,7 +33,7 @@ export function getHtml(this: UserEducationInternalsCardElement) {
     <li ?hidden="${!this.showFollowedBy_()}">
       Followed by
       <a href="#${this.getFollowedByAnchor_()}"
-        @click="${this.scrollToFollowedBy_}">
+        @click="${this.onScrollToFollowedByClick_}">
         ${this.promo.followedByInternalName}
       </a>
     </li>
@@ -44,13 +46,13 @@ export function getHtml(this: UserEducationInternalsCardElement) {
   <div id="data" ?hidden="${!this.dataExpanded_}">
     ${this.promo.data.map(item => html`
       <p><b>${item.name}</b> ${item.value}</p>`)}
-    <cr-button id="clear" @click="${this.clearData_}">
+    <cr-button id="clear" @click="${this.onClearDataClick_}">
       Clear Data
     </cr-button>
   </div>
 </div>
 <cr-button class="action-button" ?hidden="${!this.showAction}" id="launch"
-    @click="${this.launchPromo_}">
+    @click="${this.onLaunchPromoClick_}">
   Launch
 </cr-button>
 `;

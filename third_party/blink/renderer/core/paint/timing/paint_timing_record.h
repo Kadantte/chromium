@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <optional>
+#include <type_traits>
 
 #include "base/time/time.h"
 #include "third_party/blink/public/platform/web_url_request.h"
@@ -70,22 +71,24 @@ class CORE_EXPORT PaintTimingRecord
   }
 
   // Returns whether or not the corresponding image or text was removed from the
-  // DOM after the record was created and before getting paint timing. Used to
-  // ensure we get paint timing for such records without reporting them as LCP
-  // candidates.
-  bool WasImageOrTextRemovedWhilePending() const {
-    return was_image_or_text_removed_while_pending_;
-  }
-  void OnImageOrTextRemovedWhilePending() {
-    was_image_or_text_removed_while_pending_ = true;
+  // DOM after the record was created. Used to ensure we get paint timing for
+  // such records without reporting them as LCP candidates.
+  bool WasNodeRemoved() const;
+
+  // Returns true if this record's effective size is larger than `other`'s
+  // effective size (null records are considered to have no size) and false
+  // otherwise. See also
+  // https://www.w3.org/TR/largest-contentful-paint/#sec-effective-visual-size.
+  bool IsEffectiveSizeLargerThan(PaintTimingRecord* other) const {
+    return RecordedSize() > (other ? other->RecordedSize() : 0u);
   }
 
  private:
   const WeakMember<Node> node_;
+  const WeakMember<LayoutObject> layout_object_;
   const uint64_t recorded_size_;
   const gfx::RectF root_visual_rect_;
   uint32_t frame_index_ = 0;
-  bool was_image_or_text_removed_while_pending_ = false;
   base::TimeTicks paint_time_;
   DOMPaintTimingInfo paint_timing_info_;
   Member<SoftNavigationContext> soft_navigation_context_;
@@ -189,6 +192,12 @@ struct DowncastTraits<ImageRecord> {
     return record.IsImageRecord();
   }
 };
+
+// Concept for generic algorithms that act on a collection of
+// `PaintTimingRecord`s.
+template <typename T>
+concept IsDerivedFromPaintTimingRecord =
+    std::derived_from<T, PaintTimingRecord>;
 
 }  // namespace blink
 

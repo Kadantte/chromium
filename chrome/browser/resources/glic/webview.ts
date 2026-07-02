@@ -4,17 +4,25 @@
 
 import {EventTracker} from '//resources/js/event_tracker.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
-import {GlicRequestHeaderInjector} from '/shared/glic_request_headers.js';
-import {createWebView, isFullWebView} from '/shared/web_view_type.js';
-import type {WebViewType} from '/shared/web_view_type.js';
+// <if expr="not enable_extensions_core">
+import {OriginCheckParams} from '/shared/guest_view/request_throttlers.js';
+// </if>
 import type {ChromeEvent} from '/tools/typescript/definitions/chrome_event.js';
+// <if expr="not is_android">
+import {getInstance as getAnnouncerInstance} from 'chrome://resources/cr_elements/cr_a11y_announcer/cr_a11y_announcer.js';
 
-import type {BrowserProxyImpl} from './browser_proxy.js';
+// </if>
+
+import type {BrowserProxy} from './browser_proxy.js';
+import {ZoomAction} from './glic.mojom-webui.js';
 import type {Subscriber} from './glic_api/glic_api.js';
 import {DetailedWebClientState, GlicApiCommunicator, GlicApiHost, WebClientState} from './glic_api_impl/host/glic_api_host.js';
 import type {ApiHostEmbedder} from './glic_api_impl/host/glic_api_host.js';
 import {ObservableValue} from './observable.js';
 import type {ObservableValueReadOnly} from './observable.js';
+import {GlicRequestHeaderInjector} from './shared/glic_request_headers.js';
+import {isFullWebView} from './shared/web_view_type.js';
+import type {WebViewType} from './shared/web_view_type.js';
 import {OneShotTimer} from './timer.js';
 
 // LINT.IfChange(WebviewExitReason)
@@ -117,10 +125,12 @@ type ChromeEventFunctionType<T> =
 export class WebviewController {
   webview: WebViewType;
   private host?: GlicApiHost;
+  private dormant = false;
   private communicator?: GlicApiCommunicator;
   private hostSubscriber?: Subscriber;
   private onDestroy: Array<() => void> = [];
   private eventTracker = new EventTracker();
+  private hasPendingCrossDocumentNavigation = false;
   private webClientState =
       ObservableValue.withValue(WebClientState.UNINITIALIZED);
   private oneMinuteTimer = new OneShotTimer(1000 * 60);
@@ -128,19 +138,19 @@ export class WebviewController {
 
   constructor(
       private readonly container: HTMLElement,
-      private browserProxy: BrowserProxyImpl,
+      private browserProxy: BrowserProxy,
       private delegate: WebviewDelegate,
       private hostEmbedder: ApiHostEmbedder,
       private persistentState: WebviewPersistentState,
   ) {
-    this.webview = createWebView();
+    this.webview = document.createElement('webview');
+
+    this.glicRequestHeaderInjector = new GlicRequestHeaderInjector(
+        this.webview, loadTimeData.getString('chromeVersion'),
+        loadTimeData.getString('chromeChannel'),
+        loadTimeData.getString('glicHeaderRequestTypes'));
 
     if (isFullWebView(this.webview)) {
-      this.glicRequestHeaderInjector = new GlicRequestHeaderInjector(
-          this.webview, loadTimeData.getString('chromeVersion'),
-          loadTimeData.getString('chromeChannel'),
-          loadTimeData.getString('glicHeaderRequestTypes'));
-
       // Intercept all main frame requests, and block them if they are not
       // allowed origins.
       const onBeforeRequest = this.onBeforeRequest.bind(this);
@@ -157,6 +167,13 @@ export class WebviewController {
           this.webview.request.onBeforeRequest.removeListener(onBeforeRequest);
         }
       });
+    } else {
+      // <if expr="not enable_extensions_core">
+      const allowedOriginsParams = getAllowedOriginsParams();
+      if (allowedOriginsParams !== null) {
+        this.webview.allowedOriginsParams = allowedOriginsParams;
+      }
+      // </if>
     }
 
     this.webview.id = 'guestFrame';
@@ -174,13 +191,30 @@ export class WebviewController {
         this.webview, 'permissionrequest', this.onPermissionRequest.bind(this));
     this.eventTracker.add(
         this.webview, 'unresponsive', this.onUnresponsive.bind(this));
-    this.eventTracker.add(this.webview, 'exit', this.onExit.bind(this) as any);
+    this.eventTracker.add(this.webview, 'exit', this.onExit.bind(this));
+    // <if expr="not is_android">
+    if (isFullWebView(this.webview)) {
+      this.eventTracker.add(
+          this.webview, 'zoomchange', (e: {newZoomFactor: number}) => {
+            const percentage = Math.round(e.newZoomFactor * 100);
+            const message =
+                loadTimeData.getStringF('zoomLabel', percentage + '%');
+            getAnnouncerInstance().announce(message);
+            this.browserProxy.pageHandler.onZoomLevelChange(e.newZoomFactor);
+            this.host?.onZoomLevelChanged(e.newZoomFactor);
+          });
+    }
+    // </if>
+    this.eventTracker.add(
+        this.webview, 'loadstart', this.onLoadStart.bind(this));
+    this.eventTracker.add(
+        this.webview, 'loadabort', this.onLoadAbort.bind(this));
 
     this.webview.src = this.persistentState.useLoadUrl();
 
     this.oneMinuteTimer.start(() => {
       if (this.host) {
-        chrome.metricsPrivate.recordEnumerationValue(
+        chrome.histograms.recordEnumerationValue(
             'Glic.Host.WebClientState.AtOneMinute',
             this.host.getDetailedWebClientState(),
             DetailedWebClientState.MAX_VALUE + 1);
@@ -192,18 +226,17 @@ export class WebviewController {
     return this.webClientState;
   }
 
+  focus(): void {
+    this.webview.focus();
+  }
+
   destroy() {
     if (this.glicRequestHeaderInjector !== undefined) {
       this.glicRequestHeaderInjector.destroy();
       this.glicRequestHeaderInjector = undefined;
     }
     this.oneMinuteTimer.reset();
-    if (this.host) {
-      chrome.metricsPrivate.recordEnumerationValue(
-          'Glic.Host.WebClientState.OnDestroy',
-          this.host.getDetailedWebClientState(),
-          DetailedWebClientState.MAX_VALUE + 1);
-    }
+    this.reportOnDestroy();
     this.destroyHost(
         this.webClientState.getCurrentValue() === WebClientState.ERROR ?
             WebClientState.ERROR :
@@ -214,7 +247,28 @@ export class WebviewController {
     this.webview.remove();
   }
 
-  private destroyHost(webClientState: WebClientState) {
+  // Destroys the host and prevents the host from being recreated. This results
+  // in a webview which effectively cannot communicate with Chrome. Useful for
+  // debugging.
+  setDormant(): void {
+    if (this.dormant) {
+      return;
+    }
+    this.dormant = true;
+    this.reportOnDestroy();
+    this.destroyHost();
+  }
+
+  private reportOnDestroy(): void {
+    if (this.host) {
+      chrome.histograms.recordEnumerationValue(
+          'Glic.Host.WebClientState.OnDestroy',
+          this.host.getDetailedWebClientState(),
+          DetailedWebClientState.MAX_VALUE + 1);
+    }
+  }
+
+  private destroyHost(webClientState?: WebClientState) {
     if (this.hostSubscriber) {
       this.hostSubscriber.unsubscribe();
       this.hostSubscriber = undefined;
@@ -227,7 +281,48 @@ export class WebviewController {
       this.communicator.destroy();
       this.communicator = undefined;
     }
-    this.webClientState.assignAndSignal(webClientState);
+    if (webClientState !== undefined) {
+      this.webClientState.assignAndSignal(webClientState);
+    }
+  }
+
+  zoom(zoomAction: ZoomAction) {
+    // `WebViewType` is a union of `chrome.webviewTag.WebView` and
+    // `SlimWebviewElement`. Only full webviews support zoom.
+    // TODO(crbug.com/500052160): Support zoom for slim webviews.
+    if (!isFullWebView(this.webview)) {
+      return;
+    }
+
+    const webview = this.webview;
+
+    if (zoomAction === ZoomAction.kReset) {
+      webview.setZoom(1.0);
+      return;
+    }
+
+    // Any changes to the range of supported zoom factors must be mirrored in
+    // GlicPageHandler.OnZoomLevelChange.
+    const zoomFactors = [
+      1.0,
+      1.1,
+      1.25,
+      1.5,
+      1.75,
+      2.0,
+    ];
+
+    webview.getZoom((currentZoom: number) => {
+      // Find the closest standard zoom level to move to given the current zoom
+      // level and zoom action.
+      const newFactor = zoomAction === ZoomAction.kZoomIn ?
+          zoomFactors.find(f => f - currentZoom >= 0.01) :
+          zoomFactors.findLast(f => currentZoom - f >= 0.01);
+
+      if (newFactor !== undefined) {
+        webview.setZoom(newFactor);
+      }
+    });
   }
 
   waitingOnPanelWillOpen(): boolean {
@@ -236,26 +331,47 @@ export class WebviewController {
 
   onLoadTimeOut(): void {
     if (this.host) {
-      chrome.metricsPrivate.recordEnumerationValue(
+      chrome.histograms.recordEnumerationValue(
           'Glic.Host.WebClientState.OnLoadTimeOut',
           this.host.getDetailedWebClientState(),
           DetailedWebClientState.MAX_VALUE + 1);
     }
   }
 
-  private onLoadCommit(e: any): void {
+  private onLoadStart(e: chrome.webviewTag.LoadStartEvent): void {
+    // This event is only called for document navigations, not for fragment
+    // navigations.
+    if (e.isTopLevel) {
+      this.hasPendingCrossDocumentNavigation = true;
+    }
+  }
+
+  private onLoadAbort(e: chrome.webviewTag.LoadAbortEvent): void {
+    if (e.isTopLevel) {
+      this.hasPendingCrossDocumentNavigation = false;
+    }
+  }
+
+  private onLoadCommit(e: chrome.webviewTag.LoadCommitEvent): void {
     this.loadCommit(e.url, e.isTopLevel);
   }
 
   private onLoadStop(): void {
-    this.webview.focus();
+    // Focus the webview only if it is visible. When it is not visible, the
+    // focus will fail to focus the client page (document.hasFocus() is false).
+    // GlicAppController.showPanel() will make a separate call to focus the
+    // webview when the panel is shown.
+    if (this.webview.checkVisibility()) {
+      this.webview.focus();
+    }
   }
 
-  private onNewWindow(e: Event): void {
-    this.onNewWindowEvent(e as chrome.webviewTag.NewWindowEvent);
+  private onNewWindow(e: chrome.webviewTag.NewWindowEvent): void {
+    this.onNewWindowEvent(e);
   }
 
-  private async onPermissionRequest(e: any): Promise<void> {
+  private async onPermissionRequest(
+      e: chrome.webviewTag.PermissionRequestEvent): Promise<void> {
     e.preventDefault();
     if (!this.host) {
       e.request.deny();
@@ -289,26 +405,37 @@ export class WebviewController {
     this.delegate.webviewUnresponsive();
   }
 
-  private onExit: ChromeEventFunctionType<typeof chrome.webviewTag.exit> =
-      (event) => {
-        chrome.metricsPrivate.recordEnumerationValue(
-            'Glic.Session.WebClientCrash.ExitReason',
-            webviewExitReasonStringToEnum(event.reason),
-            Object.keys(WEBVIEW_EXIT_REASON_MAP).length);
-        if (event.reason !== 'normal') {
-          this.destroyHost(WebClientState.ERROR);
-          chrome.metricsPrivate.recordUserAction('GlicSessionWebClientCrash');
-          console.warn(`webview exit. processID: ${event.processID}, reason: ${
-              event.reason}`);
-        }
-      };
+  private onExit(event: chrome.webviewTag.ExitEvent): void {
+    chrome.histograms.recordEnumerationValue(
+        'Glic.Session.WebClientCrash.ExitReason',
+        webviewExitReasonStringToEnum(event.reason),
+        Object.keys(WEBVIEW_EXIT_REASON_MAP).length);
+    if (event.reason !== 'normal') {
+      this.destroyHost(WebClientState.ERROR);
+      chrome.histograms.recordUserAction('GlicSessionWebClientCrash');
+      console.warn(`webview exit. processId: ${event.processId}, reason: ${
+          event.reason}`);
+    }
+  }
 
   private loadCommit(url: string, isTopLevel: boolean) {
     if (!isTopLevel) {
       return;
     }
+
+    const isCrossDocumentNavigation = this.hasPendingCrossDocumentNavigation;
+    this.hasPendingCrossDocumentNavigation = false;
+
+    if (!isCrossDocumentNavigation) {
+      return;
+    }
+
+    if (this.dormant) {
+      return;
+    }
+
     if (this.host) {
-      chrome.metricsPrivate.recordEnumerationValue(
+      chrome.histograms.recordEnumerationValue(
           'Glic.Host.WebClientState.OnCommit',
           this.host.getDetailedWebClientState(),
           DetailedWebClientState.MAX_VALUE + 1);
@@ -318,10 +445,11 @@ export class WebviewController {
 
     this.destroyHost(WebClientState.UNINITIALIZED);
 
-    const origin = new URL(url).origin;
-    if (this.webview.contentWindow && origin !== 'null') {
+    const urlObj = URL.parse(url);
+    if (urlObj && this.webview.contentWindow &&
+        urlMatchesApiAllowedOrigin(urlObj)) {
       this.communicator =
-          new GlicApiCommunicator(origin, this.webview.contentWindow);
+          new GlicApiCommunicator(urlObj.origin, this.webview.contentWindow);
       this.host = new GlicApiHost(
           this.browserProxy, this.communicator, this.hostEmbedder);
       this.hostSubscriber = this.host.getWebClientState().subscribe(state => {
@@ -331,6 +459,7 @@ export class WebviewController {
         this.webClientState.assignAndSignal(state);
       });
     }
+
     this.browserProxy.pageHandler.webviewCommitted(url);
 
     if (!this.host) {
@@ -338,25 +467,25 @@ export class WebviewController {
       return;
     }
 
-    // TODO(https://crbug.com/388328847): Remove when login issues are
-    // resolved.
     if (url.startsWith('https://login.corp.google.com/') ||
         url.startsWith('https://accounts.google.com/') ||
         url.startsWith('https://accounts.googlers.com/') ||
         url.startsWith('https://gaiastaging.corp.google.com/')) {
       this.delegate.webviewPageCommit('login');
-    } else if (new URL(url).pathname.startsWith('/sorry/')) {
-      this.delegate.webviewPageCommit('guestError');
-    } else {
-      if (wasResponsive) {
-        this.persistentState.onCommitAfterConnect(url);
-      }
+      return;
+    }
 
-      // This forces the page to reload after navigation.
-      // TODO(b/439718538): revisit overall logic, this may be buggy.
-      if (loadTimeData.getBoolean('reloadAfterNavigation')) {
-        this.delegate.webviewPageCommit('regular');
-      }
+    if (urlObj?.pathname.startsWith('/sorry/')) {
+      this.delegate.webviewPageCommit('guestError');
+      return;
+    }
+
+    if (wasResponsive) {
+      this.persistentState.onCommitAfterConnect(url);
+    }
+
+    if (loadTimeData.getBoolean('reloadAfterNavigation')) {
+      this.delegate.webviewPageCommit('regular');
     }
   }
 
@@ -406,7 +535,7 @@ export class WebviewController {
               return {cancel: true};
             }
 
-            return {cancel: !urlMatchesAllowedOrigin(details.url)};
+            return {cancel: !urlMatchesAllowedOrigin(new URL(details.url))};
           };
 }
 
@@ -432,20 +561,55 @@ export function matcherForOrigin(originPattern: string): URLPattern|null {
   }
 }
 
-export function urlMatchesAllowedOrigin(url: string) {
-  // For development.
+// <if expr="not enable_extensions_core">
+function getAllowedOriginsParams(): OriginCheckParams|null {
   if (loadTimeData.getBoolean('devMode')) {
-    return true;
+    return null;
   }
+  const allowedOrigins: string[] =
+      [new URL(loadTimeData.getString('glicGuestURL')).origin];
+  allowedOrigins.push(...loadTimeData.getString('glicAllowedOrigins')
+                          .split(' ')
+                          .map(origin => origin.trim()));
+  allowedOrigins.push(...loadTimeData.getString('glicApiAllowedOrigins')
+                          .split(' ')
+                          .map(origin => origin.trim()));
+  return new OriginCheckParams([ResourceType.MAIN_FRAME], allowedOrigins);
+}
+// </if>
 
-  // A URL is allowed if it either matches glicGuestURL's origin, or it matches
-  // any of the approved origins.
-  const defaultUrl = new URL(loadTimeData.getString('glicGuestURL'));
-  if (matcherForOrigin(defaultUrl.origin)?.test(url)) {
+export function urlMatchesAllowedOrigin(url: URL) {
+  if (urlMatchesApiAllowedOrigin(url)) {
     return true;
   }
 
   return loadTimeData.getString('glicAllowedOrigins')
       .split(' ')
       .some(origin => matcherForOrigin(origin.trim())?.test(url));
+}
+
+export function urlMatchesApiAllowedOrigin(url: URL): boolean {
+  if (url.origin === 'null') {
+    return false;
+  }
+
+  // For development.
+  if (loadTimeData.getBoolean('devMode')) {
+    return true;
+  }
+
+  // A URL is allowed to have API access if it either matches glicGuestURL's
+  // origin, or it matches any of the explicit API allowed origins.
+  const defaultUrl = new URL(loadTimeData.getString('glicGuestURL'));
+  if (matcherForOrigin(defaultUrl.origin)?.test(url)) {
+    return true;
+  }
+
+  const apiAllowedOrigins = loadTimeData.getString('glicApiAllowedOrigins');
+  if (!apiAllowedOrigins) {
+    return false;
+  }
+
+  return apiAllowedOrigins.split(' ').some(
+      origin => matcherForOrigin(origin.trim())?.test(url));
 }

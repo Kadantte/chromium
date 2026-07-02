@@ -28,8 +28,8 @@
 #include "cc/metrics/frame_sequence_tracker.h"
 #include "cc/paint/element_id.h"
 #include "cc/trees/layer_tree_host.h"
-#include "cc/trees/layer_tree_host_client.h"
-#include "cc/trees/layer_tree_host_single_thread_client.h"
+#include "cc/trees/layer_tree_host_delegate.h"
+#include "cc/trees/layer_tree_host_single_thread_delegate.h"
 #include "cc/trees/paint_holding_reason.h"
 #include "cc/trees/property_tree.h"
 #include "components/viz/common/frame_sinks/begin_frame_args.h"
@@ -152,11 +152,12 @@ class COMPOSITOR_EXPORT ExternalBeginFrameControllerClientFactory {
 // displayable form of pixels comprising a single widget's contents. It draws an
 // appropriately transformed texture for each transformed view in the widget's
 // view hierarchy.
-class COMPOSITOR_EXPORT Compositor : public base::PowerSuspendObserver,
-                                     public cc::LayerTreeHostClient,
-                                     public cc::LayerTreeHostSingleThreadClient,
-                                     public viz::HostFrameSinkClient,
-                                     public CompositorMetricsTrackerHost {
+class COMPOSITOR_EXPORT Compositor
+    : public base::PowerSuspendObserver,
+      public cc::LayerTreeHostDelegate,
+      public cc::LayerTreeHostSingleThreadDelegate,
+      public viz::HostFrameSinkClient,
+      public CompositorMetricsTrackerHost {
  public:
   Compositor(const viz::FrameSinkId& frame_sink_id,
              ui::ContextFactory* context_factory,
@@ -229,17 +230,6 @@ class COMPOSITOR_EXPORT Compositor : public base::PowerSuspendObserver,
   // Schedule redraw and append damage_rect to the damage region calculated
   // from changes to layer properties.
   void ScheduleRedrawRect(const gfx::Rect& damage_rect);
-
-#if BUILDFLAG(IS_WIN)
-  // Until this is called with |should| true then both DisableSwapUntilResize()
-  // and ReenableSwap() do nothing.
-  void SetShouldDisableSwapUntilResize(bool should);
-
-  // Attempts to immediately swap a frame with the current size if possible,
-  // then disables swapping on this surface until it is resized.
-  void DisableSwapUntilResize();
-  void ReenableSwap();
-#endif
 
   // Sets the compositor's device scale factor and size.
   void SetScaleAndSize(float scale,
@@ -396,14 +386,11 @@ class COMPOSITOR_EXPORT Compositor : public base::PowerSuspendObserver,
   GetScopedEventMetricsMonitor(
       cc::EventsMetricsManager::ScopedMonitor::DoneCallback done_callback);
 
-  // LayerTreeHostClient implementation.
+  // LayerTreeHostDelegate implementation.
   void WillBeginMainFrame() override {}
   void DidBeginMainFrame() override;
   void OnDeferMainFrameUpdatesChanged(bool) override {}
-  void OnDeferCommitsChanged(
-      bool,
-      cc::PaintHoldingReason,
-      std::optional<cc::PaintHoldingCommitTrigger>) override {}
+  void OnDeferCommitsChanged(bool, cc::PaintHoldingReason) override {}
   void OnCommitRequested() override {}
   void WillUpdateLayers() override {}
   void DidUpdateLayers() override;
@@ -414,6 +401,8 @@ class COMPOSITOR_EXPORT Compositor : public base::PowerSuspendObserver,
   void ApplyViewportChanges(const cc::ApplyViewportChangesArgs& args) override {
   }
   void UpdateCompositorScrollState(
+      const cc::CompositorCommitData& commit_data) override {}
+  void UpdateAnimatedImageState(
       const cc::CompositorCommitData& commit_data) override {}
   void RequestNewLayerTreeFrameSink() override;
   void DidInitializeLayerTreeFrameSink() override {}
@@ -441,7 +430,7 @@ class COMPOSITOR_EXPORT Compositor : public base::PowerSuspendObserver,
       base::TimeDelta first_scroll_delay,
       base::TimeTicks first_scroll_timestamp) override {}
 
-  // cc::LayerTreeHostSingleThreadClient implementation.
+  // cc::LayerTreeHostSingleThreadDelegate implementation.
   void DidSubmitCompositorFrame() override;
   void DidLoseLayerTreeFrameSink() override {}
   void FrameIntervalUpdated(base::TimeDelta interval) override;
@@ -634,14 +623,14 @@ class COMPOSITOR_EXPORT Compositor : public base::PowerSuspendObserver,
   // The root of the Layer tree drawn by this compositor.
   raw_ptr<Layer> root_layer_ = nullptr;
 
-  base::ObserverList<CompositorObserver, true>::Unchecked observer_list_;
-
-  // TODO(crbug.com/40562847): Allow skipping reentrancy check for
-  // `Check()` and change to kDisallowReentrancy.
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
   base::ObserverList<
-      CompositorAnimationObserver,
-      /*check_empty=*/false,
+      CompositorObserver,
+      /*check_empty=*/true,
       base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>::Unchecked
+      observer_list_;
+
+  base::ObserverList<CompositorAnimationObserver>::Unchecked
       animation_observer_list_;
 
   gfx::AcceleratedWidget widget_ = gfx::kNullAcceleratedWidget;
@@ -699,13 +688,6 @@ class COMPOSITOR_EXPORT Compositor : public base::PowerSuspendObserver,
   CompositorLockManager lock_manager_;
 
   std::unique_ptr<ScrollInputHandler> scroll_input_handler_;
-
-#if BUILDFLAG(IS_WIN)
-  bool should_disable_swap_until_resize_ = false;
-#endif
-
-  // Set in DisableSwapUntilResize and reset when a resize happens.
-  bool disabled_swap_until_resize_ = false;
 
   bool animations_are_enabled_ = true;
 

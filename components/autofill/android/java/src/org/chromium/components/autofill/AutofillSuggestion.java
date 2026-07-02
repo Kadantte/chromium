@@ -10,14 +10,15 @@ import androidx.annotation.VisibleForTesting;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.ui.DropdownItemBase;
 import org.chromium.url.GURL;
 
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 
 /** A container representing a single entry in an Autofill UI (e.g. keyboard accessory). */
 @NullMarked
-public class AutofillSuggestion extends DropdownItemBase {
+public class AutofillSuggestion {
     private final @Nullable String mLabel;
     private final @Nullable String mSecondaryLabel;
     private final String mSublabel;
@@ -27,12 +28,15 @@ public class AutofillSuggestion extends DropdownItemBase {
     private final @SuggestionType int mSuggestionType;
     private final boolean mIsDeletable;
     private final boolean mApplyDeactivatedStyle;
+    private final boolean mIsLoading;
     private final @Nullable String mFeatureForIph;
     private final @Nullable String mIphDescriptionText;
     private final @Nullable GURL mCustomIconUrl;
     private final @Nullable Payload mPayload;
+    private final List<AutofillSuggestion> mChildren;
 
-    public sealed interface Payload permits AutofillProfilePayload, PaymentsPayload {}
+    public sealed interface Payload
+            permits AutofillAiPayload, AutofillProfilePayload, PaymentsPayload {}
 
     /**
      * Constructs a Autofill suggestion container. Use the {@link AutofillSuggestion.Builder}
@@ -46,10 +50,14 @@ public class AutofillSuggestion extends DropdownItemBase {
      * @param suggestionType The type of suggestion.
      * @param isDeletable Whether the item can be deleted by the user.
      * @param applyDeactivatedStyle Whether to apply deactivated style to the suggestion.
+     * @param isLoading Whether the suggestion is in a loading state.
      * @param featureForIph The IPH feature for the autofill suggestion. If present, it'll be
      *     attempted to be shown in the keyboard accessory.
      * @param customIconUrl The {@link GURL} for the custom icon, if any.
+     * @param showLoadingOnAcceptance Whether accepting this suggestion should show a loading UI
+     *     (e.g., if it requires a fetch from the server).
      * @param payload Additional data passed with the suggestion.
+     * @param children The list of children suggestions.
      */
     @VisibleForTesting
     public AutofillSuggestion(
@@ -62,10 +70,12 @@ public class AutofillSuggestion extends DropdownItemBase {
             @SuggestionType int suggestionType,
             boolean isDeletable,
             boolean applyDeactivatedStyle,
+            boolean isLoading,
             @Nullable String featureForIph,
             @Nullable String iphDescriptionText,
             @Nullable GURL customIconUrl,
-            @Nullable Payload payload) {
+            @Nullable Payload payload,
+            List<AutofillSuggestion> children) {
         mLabel = label;
         mSecondaryLabel = secondaryLabel;
         mSublabel = sublabel;
@@ -75,46 +85,34 @@ public class AutofillSuggestion extends DropdownItemBase {
         mSuggestionType = suggestionType;
         mIsDeletable = isDeletable;
         mApplyDeactivatedStyle = applyDeactivatedStyle;
+        mIsLoading = isLoading;
         mFeatureForIph = featureForIph;
         mIphDescriptionText = iphDescriptionText;
         mCustomIconUrl = customIconUrl;
         mPayload = payload;
+        mChildren = children;
     }
 
-    @Override
     public @Nullable String getLabel() {
         return mLabel;
     }
 
-    @Override
     public @Nullable String getSecondaryLabel() {
         return mSecondaryLabel;
     }
 
-    @Override
     public String getSublabel() {
         return mSublabel;
     }
 
-    @Override
     public @Nullable String getSecondarySublabel() {
         return mSecondarySublabel;
     }
 
-    @Override
     public int getIconId() {
         return mIconId;
     }
 
-    @Override
-    public int getLabelFontColorResId() {
-        if (mSuggestionType == SuggestionType.INSECURE_CONTEXT_PAYMENT_DISABLED_MESSAGE) {
-            return R.color.insecure_context_payment_disabled_message_text;
-        }
-        return super.getLabelFontColorResId();
-    }
-
-    @Override
     public @Nullable GURL getCustomIconUrl() {
         return mCustomIconUrl;
     }
@@ -136,6 +134,10 @@ public class AutofillSuggestion extends DropdownItemBase {
         return mApplyDeactivatedStyle;
     }
 
+    public boolean isLoading() {
+        return mIsLoading;
+    }
+
     public @Nullable String getFeatureForIph() {
         return mFeatureForIph;
     }
@@ -146,6 +148,22 @@ public class AutofillSuggestion extends DropdownItemBase {
 
     public @Nullable String getVoiceOver() {
         return mVoiceOver;
+    }
+
+    /**
+     * Returns whether accepting this suggestion should show a loading UI (e.g., if it requires a
+     * fetch from the server).
+     */
+    public boolean showLoadingOnAcceptance() {
+        AutofillAiPayload aiPayload = getAutofillAiPayload();
+        return aiPayload != null && aiPayload.requiresServerFetch();
+    }
+
+    public @Nullable AutofillAiPayload getAutofillAiPayload() {
+        if (mPayload instanceof AutofillAiPayload) {
+            return (AutofillAiPayload) mPayload;
+        }
+        return null;
     }
 
     public @Nullable AutofillProfilePayload getAutofillProfilePayload() {
@@ -160,6 +178,10 @@ public class AutofillSuggestion extends DropdownItemBase {
             return (PaymentsPayload) mPayload;
         }
         return null;
+    }
+
+    public List<AutofillSuggestion> getChildren() {
+        return mChildren;
     }
 
     @Override
@@ -178,10 +200,12 @@ public class AutofillSuggestion extends DropdownItemBase {
                 && this.mSuggestionType == other.mSuggestionType
                 && this.mIsDeletable == other.mIsDeletable
                 && this.mApplyDeactivatedStyle == other.mApplyDeactivatedStyle
+                && this.mIsLoading == other.mIsLoading
                 && Objects.equals(this.mFeatureForIph, other.mFeatureForIph)
                 && Objects.equals(this.mIphDescriptionText, other.mIphDescriptionText)
                 && Objects.equals(this.mCustomIconUrl, other.mCustomIconUrl)
-                && Objects.equals(this.mPayload, other.mPayload);
+                && Objects.equals(this.mPayload, other.mPayload)
+                && Objects.equals(this.mChildren, other.mChildren);
     }
 
     @Override
@@ -195,10 +219,12 @@ public class AutofillSuggestion extends DropdownItemBase {
                 this.mSuggestionType,
                 this.mIsDeletable,
                 this.mApplyDeactivatedStyle,
+                this.mIsLoading,
                 this.mFeatureForIph,
                 this.mIphDescriptionText,
                 this.mCustomIconUrl,
-                this.mPayload);
+                this.mPayload,
+                this.mChildren);
     }
 
     /** Builder for the {@link AutofillSuggestion}. */
@@ -207,6 +233,7 @@ public class AutofillSuggestion extends DropdownItemBase {
         private @Nullable GURL mCustomIconUrl;
         private boolean mIsDeletable;
         private boolean mApplyDeactivatedStyle;
+        private boolean mIsLoading;
         private @Nullable String mFeatureForIph;
         private @Nullable String mIphDescriptionText;
         private @Nullable String mLabel;
@@ -216,6 +243,7 @@ public class AutofillSuggestion extends DropdownItemBase {
         private @Nullable String mVoiceOver;
         private int mSuggestionType;
         private @Nullable Payload mPayload;
+        private List<AutofillSuggestion> mChildren = Collections.emptyList();
 
         public Builder setIconId(int iconId) {
             this.mIconId = iconId;
@@ -234,6 +262,11 @@ public class AutofillSuggestion extends DropdownItemBase {
 
         public Builder setApplyDeactivatedStyle(boolean applyDeactivatedStyle) {
             this.mApplyDeactivatedStyle = applyDeactivatedStyle;
+            return this;
+        }
+
+        public Builder setIsLoading(boolean isLoading) {
+            this.mIsLoading = isLoading;
             return this;
         }
 
@@ -282,6 +315,11 @@ public class AutofillSuggestion extends DropdownItemBase {
             return this;
         }
 
+        public Builder setChildren(List<AutofillSuggestion> children) {
+            this.mChildren = children;
+            return this;
+        }
+
         public AutofillSuggestion build() {
             assert mSuggestionType == SuggestionType.SEPARATOR || !TextUtils.isEmpty(mLabel)
                     : "Only separators may have an empty label.";
@@ -297,10 +335,12 @@ public class AutofillSuggestion extends DropdownItemBase {
                     mSuggestionType,
                     mIsDeletable,
                     mApplyDeactivatedStyle,
+                    mIsLoading,
                     mFeatureForIph,
                     mIphDescriptionText,
                     mCustomIconUrl,
-                    mPayload);
+                    mPayload,
+                    mChildren);
         }
     }
 }

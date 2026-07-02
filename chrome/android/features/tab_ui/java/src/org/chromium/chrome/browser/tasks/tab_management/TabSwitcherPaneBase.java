@@ -22,7 +22,6 @@ import android.view.View;
 
 import androidx.annotation.ColorInt;
 import androidx.annotation.VisibleForTesting;
-import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -46,7 +45,6 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.compositor.CompositorViewHolder;
 import org.chromium.chrome.browser.hub.FadeHubLayoutAnimationFactory;
-import org.chromium.chrome.browser.hub.FullButtonData;
 import org.chromium.chrome.browser.hub.HubContainerView;
 import org.chromium.chrome.browser.hub.HubLayoutAnimationListener;
 import org.chromium.chrome.browser.hub.HubLayoutAnimatorProvider;
@@ -61,11 +59,14 @@ import org.chromium.chrome.browser.hub.ShrinkExpandHubLayoutAnimationFactory;
 import org.chromium.chrome.browser.hub.TabListHubLayoutAnimationFactory;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab_ui.RecyclerViewPosition;
+import org.chromium.chrome.browser.tab_ui.TabListMode;
 import org.chromium.chrome.browser.tab_ui.TabSwitcher;
 import org.chromium.chrome.browser.tab_ui.TabSwitcherCustomViewManager;
-import org.chromium.chrome.browser.tasks.tab_management.TabListCoordinator.TabListMode;
 import org.chromium.chrome.browser.toolbar.ToolbarPositionController;
+import org.chromium.chrome.browser.ui.actions.button.FullButtonData;
+import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
+import org.chromium.chrome.browser.ui.theme.ChromeSemanticColorUtils;
 import org.chromium.chrome.browser.user_education.UserEducationHelper;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.styles.ChromeColors;
@@ -90,6 +91,8 @@ public abstract class TabSwitcherPaneBase extends PaneBase
 
     private static boolean sShowIphForTesting;
 
+    private final MonotonicObservableSupplier<FullButtonData> mEmptyActionButtonDataSupplier =
+            ObservableSuppliers.alwaysNull();
     protected final SettableMonotonicObservableSupplier<FullButtonData> mNewTabButtonDataSupplier =
             ObservableSuppliers.createMonotonic();
 
@@ -171,7 +174,7 @@ public abstract class TabSwitcherPaneBase extends PaneBase
             TabGroupCreationUiDelegate tabGroupCreationUiDelegate,
             NonNullObservableSupplier<Boolean> xrSpaceModeObservableSupplier) {
         super(paneId, context, onToolbarAlphaChange);
-        mMenuButtonVisible = true;
+        mMenuButtonVisible = shouldShowMenuButton(context);
         mFactory = factory;
         mIsIncognito = isIncognito;
         mIsVisibleSupplier.addSyncObserverAndPostIfNonNull(mVisibilityObserver);
@@ -273,6 +276,10 @@ public abstract class TabSwitcherPaneBase extends PaneBase
 
     @Override
     public MonotonicObservableSupplier<FullButtonData> getActionButtonDataSupplier() {
+        if (BottomBarConfigUtils.isBottomBarEnabled(mContext)
+                && BottomBarConfigUtils.shouldShowOnGts()) {
+            return mEmptyActionButtonDataSupplier;
+        }
         return mNewTabButtonDataSupplier;
     }
 
@@ -317,7 +324,8 @@ public abstract class TabSwitcherPaneBase extends PaneBase
                 animationDataSupplier,
                 backgroundColor,
                 HUB_LAYOUT_SHRINK_EXPAND_DURATION_MS,
-                mOnToolbarAlphaChange);
+                mOnToolbarAlphaChange,
+                mIsIncognito);
     }
 
     @Override
@@ -338,7 +346,8 @@ public abstract class TabSwitcherPaneBase extends PaneBase
                 animationDataSupplier,
                 backgroundColor,
                 HUB_LAYOUT_SHRINK_EXPAND_DURATION_MS,
-                mOnToolbarAlphaChange);
+                mOnToolbarAlphaChange,
+                mIsIncognito);
     }
 
     @Override
@@ -356,8 +365,7 @@ public abstract class TabSwitcherPaneBase extends PaneBase
             return ChromeColors.getPrimaryBackgroundColor(mRootView.getContext(), mIsIncognito);
         } else {
             // TODO(crbug.com/40948541): Consider not getting the color from home surface.
-            return ContextCompat.getColor(
-                    mRootView.getContext(), R.color.home_surface_background_color);
+            return ChromeSemanticColorUtils.getHomeSurfaceBackgroundColor(mRootView.getContext());
         }
     }
 
@@ -394,7 +402,8 @@ public abstract class TabSwitcherPaneBase extends PaneBase
         @Nullable TabSwitcherPaneCoordinator coordinator = getTabSwitcherPaneCoordinator();
         assert coordinator != null;
 
-        Resources res = hubContainerView.getContext().getResources();
+        Context context = hubContainerView.getContext();
+        Resources res = context.getResources();
         int thumbnailRadiusTop =
                 res.getDimensionPixelSize(R.dimen.tab_grid_card_thumbnail_corner_radius_top);
         int thumbnailRadiusBottom =
@@ -432,8 +441,12 @@ public abstract class TabSwitcherPaneBase extends PaneBase
                     RectF viewportRectf = new RectF();
                     viewHolder.getVisibleViewport(viewportRectf);
                     viewportRectf.round(viewportRect);
-                    if (!isTopToolbar) {
-                        // TODO(crubug.com/390714662): This is a temporary fix and should be removed
+                    // When the bottom bar is enabled, we have an animation to fake the bottom
+                    // controls stack translating in and out. This animation no longer requires
+                    // adjustments to the viewport as the bottom controls portion is now covered
+                    // during the animation.
+                    if (!isTopToolbar && !BottomBarConfigUtils.isBottomBarEnabled(context)) {
+                        // TODO(crbug.com/390714662): This is a temporary fix and should be removed
                         // once the fade-in and fade-out behavior of the bottom toolbar is
                         // implemented.
                         // When the bottom toolbar is visible, the tab's view must extend all the
@@ -469,7 +482,8 @@ public abstract class TabSwitcherPaneBase extends PaneBase
                         Log.d(TAG, "Geometry not ready using fallback animation.");
                         useFallbackAnimation = true;
                     }
-                    // Ignore left offset and just ensure the width is correct. See crbug/1502437.
+                    // Ignore left offset and just ensure the width is correct. See
+                    // crbug.com/40942799.
                     initialRect.offset(-initialLeftOffset, -initialTopOffset);
                     finalRect.offset(-finalLeftOffset, -finalTopOffset);
                     animationDataSupplier.set(
@@ -490,8 +504,8 @@ public abstract class TabSwitcherPaneBase extends PaneBase
 
     @Override
     public @BackPressResult int handleBackPress() {
-        @Nullable
-        TabSwitcherPaneCoordinator coordinator = mTabSwitcherPaneCoordinatorSupplier.get();
+        @Nullable TabSwitcherPaneCoordinator coordinator =
+                mTabSwitcherPaneCoordinatorSupplier.get();
         if (coordinator == null) return BackPressResult.FAILURE;
         return coordinator.handleBackPress();
     }
@@ -529,8 +543,8 @@ public abstract class TabSwitcherPaneBase extends PaneBase
     /** Returns the number of elements in the tab switcher's tab list model. */
     @Override
     public int getTabSwitcherTabListModelSize() {
-        @Nullable
-        TabSwitcherPaneCoordinator coordinator = mTabSwitcherPaneCoordinatorSupplier.get();
+        @Nullable TabSwitcherPaneCoordinator coordinator =
+                mTabSwitcherPaneCoordinatorSupplier.get();
         if (coordinator == null) return 0;
         return coordinator.getTabSwitcherTabListModelSize();
     }
@@ -538,8 +552,8 @@ public abstract class TabSwitcherPaneBase extends PaneBase
     /** Set the tab switcher's RecyclerViewPosition. */
     @Override
     public void setTabSwitcherRecyclerViewPosition(RecyclerViewPosition position) {
-        @Nullable
-        TabSwitcherPaneCoordinator coordinator = mTabSwitcherPaneCoordinatorSupplier.get();
+        @Nullable TabSwitcherPaneCoordinator coordinator =
+                mTabSwitcherPaneCoordinatorSupplier.get();
         if (coordinator == null) return;
         coordinator.setTabSwitcherRecyclerViewPosition(position);
     }
@@ -547,8 +561,8 @@ public abstract class TabSwitcherPaneBase extends PaneBase
     /** Show the Quick Delete animation on the tab list . */
     @Override
     public void showQuickDeleteAnimation(Runnable onAnimationEnd, List<Tab> tabs) {
-        @Nullable
-        TabSwitcherPaneCoordinator coordinator = mTabSwitcherPaneCoordinatorSupplier.get();
+        @Nullable TabSwitcherPaneCoordinator coordinator =
+                mTabSwitcherPaneCoordinatorSupplier.get();
         if (coordinator == null || getTabListMode() != TabListMode.GRID) {
             onAnimationEnd.run();
             return;
@@ -558,8 +572,8 @@ public abstract class TabSwitcherPaneBase extends PaneBase
 
     @Override
     public boolean requestOpenTabGroupDialog(int tabId) {
-        @Nullable
-        TabSwitcherPaneCoordinator coordinator = mTabSwitcherPaneCoordinatorSupplier.get();
+        @Nullable TabSwitcherPaneCoordinator coordinator =
+                mTabSwitcherPaneCoordinatorSupplier.get();
         if (coordinator != null) {
             coordinator.requestOpenTabGroupDialog(tabId);
             return true;
@@ -736,6 +750,14 @@ public abstract class TabSwitcherPaneBase extends PaneBase
 
     void destroyCoordinatorForTesting() {
         mDestroyCoordinatorRunnable.run();
+    }
+
+    private static boolean shouldShowMenuButton(Context context) {
+        // If the bottom bar is enabled and the app menu button is included in the bottom bar, then
+        // we should not show the menu button in the toolbar.
+        return !(BottomBarConfigUtils.isBottomBarEnabled(context)
+                && BottomBarConfigUtils.shouldShowOnGts()
+                && BottomBarConfigUtils.shouldIncludeAppMenuButton());
     }
 
     static void setShowIphForTesting(boolean showIphForTesting) {

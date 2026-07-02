@@ -172,9 +172,7 @@ class CONTENT_EXPORT ServiceWorkerMainResourceLoader
 
   // network::mojom::URLLoader:
   void FollowRedirect(
-      const std::vector<std::string>& removed_headers,
-      const net::HttpRequestHeaders& modified_headers,
-      const net::HttpRequestHeaders& modified_cors_exempt_headers,
+      network::HttpRequestHeadersUpdateParams headers_update_params,
       const std::optional<GURL>& new_url) override;
   void SetPriority(net::RequestPriority priority,
                    int32_t intra_priority_value) override;
@@ -184,8 +182,18 @@ class CONTENT_EXPORT ServiceWorkerMainResourceLoader
   void SetCommitResponsibility(FetchResponseFrom fetch_response_from) override;
 
   void OnConnectionClosed();
-  void InvalidateAndDeleteIfNeeded();
-  void DeleteIfNeeded();
+
+  // Invalidates the loader's internal state (e.g. invalidates weak pointers,
+  // resets receivers and dispatchers) and completes the request with
+  // net::ERR_ABORTED if it's not yet completed. This should only be called when
+  // we are ready to clean up (i.e. ShouldDelayDeletion() is false) and the
+  // Mojo receiver is still bound.
+  void Invalidate();
+
+  // Evaluates the current state of the loader and triggers invalidation and/or
+  // self-deletion if the conditions are met. This is the centralized manager
+  // for the loader's lifecycle.
+  void CheckLifecycle();
 
   network::mojom::ServiceWorkerStatus ConvertToServiceWorkerStatus(
       blink::EmbeddedWorkerStatus embedded_status,
@@ -332,7 +340,14 @@ class CONTENT_EXPORT ServiceWorkerMainResourceLoader
       initial_service_worker_status_;
   const bool is_browser_startup_completed_;
   const std::string frame_tree_node_type_;
+  // Set to true when DetachedFromRequest() is called, indicating that the
+  // navigation request handler (e.g. ServiceWorkerControlleeRequestHandler)
+  // has released this loader wrapper and no longer needs it.
   bool is_detached_ = false;
+  // Set to true when the Mojo connection to the client (URLLoaderClient) is
+  // closed. Used to defer invalidation/deletion if ShouldDelayDeletion() is
+  // true.
+  bool connection_closed_ = false;
 
   scoped_refptr<network::SharedURLLoaderFactory>
       race_network_request_url_loader_factory_;

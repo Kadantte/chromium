@@ -20,6 +20,7 @@ source_set("infobar") {
     "//chrome/common:buildflags",
     "//components/infobars/content",
     "//content/public/browser",
+    "//ui/base/unowned_user_data",
   ]
   deps = [
     "//chrome/app:branded_strings",
@@ -61,6 +62,7 @@ source_set("unit_tests") {
     "//chrome/browser/ui:ui_features",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/tabs:test_support",
+    "//chrome/browser/ui/views:layout_provider",
     "//chrome/common:constants",
     "//chrome/test:test_support",
     "//components/infobars/content",

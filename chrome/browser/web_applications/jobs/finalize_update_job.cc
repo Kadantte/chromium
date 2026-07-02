@@ -8,13 +8,19 @@
 
 #include "base/functional/bind.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/time/clock.h"
 #include "chrome/browser/web_applications/jobs/finalize_install_job.h"
+#include "chrome/browser/web_applications/locks/lock.h"
+#include "chrome/browser/web_applications/os_integration/os_integration_manager.h"
 #include "chrome/browser/web_applications/scope_extension_info.h"
 #include "chrome/browser/web_applications/web_app.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
+#include "chrome/browser/web_applications/web_app_icon_generator.h"
 #include "chrome/browser/web_applications/web_app_icon_manager.h"
+#include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/browser/web_applications/web_app_install_manager.h"
 #include "chrome/browser/web_applications/web_app_install_utils.h"
+#include "chrome/browser/web_applications/web_app_management_type.h"
 #include "chrome/browser/web_applications/web_app_origin_association_manager.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
@@ -22,35 +28,52 @@
 #include "chrome/browser/web_applications/web_app_scope.h"
 #include "chrome/browser/web_applications/web_app_sync_bridge.h"
 #include "chrome/browser/web_applications/web_app_translation_manager.h"
+#include "chrome/browser/web_applications/web_app_ui_manager.h"
+#include "chrome/browser/web_applications/web_app_utils.h"
+#include "components/sync/base/time.h"
 #include "components/webapps/browser/install_result_code.h"
+#include "components/webapps/browser/web_app_url_config.h"
 #include "components/webapps/common/web_app_id.h"
 #include "components/webapps/isolated_web_apps/types/iwa_version.h"
 #include "content/public/browser/browser_thread.h"
 
 namespace web_app {
 
-FinalizeUpdateJob::FinalizeUpdateJob(WebAppProvider& provider,
+FinalizeUpdateJob::FinalizeUpdateJob(Lock* lock,
+                                     WithAppResources* lock_with_app_resources,
+                                     WebAppProvider& provider,
                                      const WebAppInstallInfo& web_app_info)
-    : provider_(provider),
+    : lock_(lock),
+      lock_with_app_resources_(lock_with_app_resources),
+      provider_(provider),
       web_app_info_(web_app_info.Clone()),
-      app_id_(
-          GenerateAppIdFromManifestId(web_app_info_.manifest_id(),
-                                      web_app_info_.parent_app_manifest_id)) {}
+      app_id_(GenerateAppIdFromManifestId(web_app_info_.manifest_id())) {}
 
 FinalizeUpdateJob::~FinalizeUpdateJob() = default;
 
 void FinalizeUpdateJob::Start(InstallFinalizedCallback callback) {
   callback_ = std::move(callback);
+
   webapps::ManifestId manifest_id = web_app_info_.manifest_id();
-  const WebApp* existing_web_app =
-      provider_->registrar_unsafe().GetAppById(app_id_);
+  const WebApp* existing_web_app = registrar().GetAppById(app_id_);
 
   if (!existing_web_app ||
       existing_web_app->is_from_sync_and_pending_installation() ||
       app_id_ != existing_web_app->app_id()) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(callback_), webapps::AppId(),
-                                  webapps::InstallResultCode::kWebAppDisabled));
+        FROM_HERE,
+        base::BindOnce(&FinalizeUpdateJob::RunCallbackAndResetLock,
+                       weak_ptr_factory_.GetWeakPtr(), webapps::AppId(),
+                       webapps::InstallResultCode::kWebAppDisabled));
+    return;
+  }
+
+  if (SubAppScopeOverlapWithParentOrSibling(existing_web_app)) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&FinalizeUpdateJob::RunCallbackAndResetLock,
+                       weak_ptr_factory_.GetWeakPtr(), webapps::AppId(),
+                       webapps::InstallResultCode::kNotValidManifestForWebApp));
     return;
   }
 
@@ -71,33 +94,33 @@ void FinalizeUpdateJob::Start(InstallFinalizedCallback callback) {
   if (needs_migration_validation) {
     origin_associations.migration_sources = web_app_info_.migration_sources;
   }
-  provider_->origin_association_manager().GetWebAppOriginAssociations(
-      manifest_id, std::move(origin_associations),
+  origin_association_manager().GetWebAppOriginAssociations(
+      manifest_id.value(), std::move(origin_associations),
       base::BindOnce(&FinalizeUpdateJob::OnOriginAssociationValidatedForUpdate,
                      weak_ptr_factory_.GetWeakPtr()));
 }
 
 void FinalizeUpdateJob::OnOriginAssociationValidatedForUpdate(
     OriginAssociations validated_origin_associations) {
-  const WebApp* existing_web_app =
-      provider_->registrar_unsafe().GetAppById(app_id_);
+  const WebApp* existing_web_app = registrar().GetAppById(app_id_);
 
   if (!existing_web_app ||
       existing_web_app->is_from_sync_and_pending_installation() ||
       app_id_ != existing_web_app->app_id()) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(callback_), webapps::AppId(),
-                                  webapps::InstallResultCode::kWebAppDisabled));
+        FROM_HERE,
+        base::BindOnce(&FinalizeUpdateJob::RunCallbackAndResetLock,
+                       weak_ptr_factory_.GetWeakPtr(), webapps::AppId(),
+                       webapps::InstallResultCode::kWebAppDisabled));
     return;
   }
 
   std::optional<WebAppScope> old_scope = existing_web_app->GetScope();
 
-  CommitCallback commit_callback =
-      base::BindOnce(&FinalizeUpdateJob::OnDatabaseCommitCompletedForUpdate,
-                     weak_ptr_factory_.GetWeakPtr(),
-                     provider_->registrar_unsafe().GetAppShortName(app_id_),
-                     GetFileHandlerUpdateAction(), std::move(old_scope));
+  CommitCallback commit_callback = base::BindOnce(
+      &FinalizeUpdateJob::OnDatabaseCommitCompletedForUpdate,
+      weak_ptr_factory_.GetWeakPtr(), registrar().GetAppShortName(app_id_),
+      GetFileHandlerUpdateAction(), std::move(old_scope));
 
   auto web_app = std::make_unique<WebApp>(*existing_web_app);
   if (web_app->isolation_data().has_value()) {
@@ -127,6 +150,35 @@ void FinalizeUpdateJob::OnOriginAssociationValidatedForUpdate(
   web_app->SetValidatedMigrationSources(
       validated_origin_associations.migration_sources);
 
+  // When testing, the database state is compared with the in-memory registry,
+  // and because proto time has less granularity, this comparison fails unless
+  // we pre-downgrade to proto time and back before saving in our database.
+  const base::Time now_time = syncer::ProtoTimeToTime(
+      syncer::TimeToProtoTime(provider_->clock().Now()));
+  web_app->SetOriginAssociationLastValidationCheckTime(now_time);
+
+  // Filter out shortcuts that are not in the scope or extended scope.
+  // Note: This must be called after the scope and validated scope extensions
+  // are set.
+  std::vector<WebAppShortcutsMenuItemInfo> valid_shortcuts;
+  std::vector<IconBitmaps> valid_shortcut_icon_bitmaps;
+  WebAppScope effective_scope = web_app->GetScope();
+  for (size_t i = 0; i < web_app_info_.shortcuts_menu_item_infos.size(); ++i) {
+    const auto& shortcut = web_app_info_.shortcuts_menu_item_infos[i];
+    if (effective_scope.IsInScope(shortcut.url)) {
+      valid_shortcuts.push_back(shortcut);
+      if (i < web_app_info_.shortcuts_menu_icon_bitmaps.size()) {
+        valid_shortcut_icon_bitmaps.push_back(
+            std::move(web_app_info_.shortcuts_menu_icon_bitmaps[i]));
+      }
+    }
+  }
+  web_app_info_.shortcuts_menu_item_infos = std::move(valid_shortcuts);
+  web_app_info_.shortcuts_menu_icon_bitmaps =
+      std::move(valid_shortcut_icon_bitmaps);
+  CHECK_EQ(web_app_info_.shortcuts_menu_item_infos.size(),
+           web_app_info_.shortcuts_menu_icon_bitmaps.size());
+
   // Prepare copy-on-write to update existing app.
   // This is not reached unless the data obtained from the manifest
   // update process is valid, so an invariant of the system is that
@@ -143,14 +195,14 @@ void FinalizeUpdateJob::OnDatabaseCommitCompletedForUpdate(
     bool success) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   if (!success) {
-    std::move(callback_).Run(webapps::AppId(),
-                             webapps::InstallResultCode::kWriteDataFailed);
+    RunCallbackAndResetLock(webapps::AppId(),
+                            webapps::InstallResultCode::kWriteDataFailed);
     return;
   }
 
-  const WebApp* web_app = provider_->registrar_unsafe().GetAppById(app_id_);
+  const WebApp* web_app = registrar().GetAppById(app_id_);
   if (old_scope.has_value() && old_scope.value() != web_app->GetScope()) {
-    provider_->registrar_unsafe().NotifyWebAppEffectiveScopeChanged(app_id_);
+    registrar().NotifyWebAppEffectiveScopeChanged(app_id_);
   }
 
   // OS integration should always be enabled on ChromeOS for manifest updates.
@@ -159,7 +211,7 @@ void FinalizeUpdateJob::OnDatabaseCommitCompletedForUpdate(
   // If the app being updated was installed by default and not also manually
   // installed by the user or an enterprise policy, disable os integration.
   should_skip_os_integration_on_manifest_update =
-      provider_->registrar_unsafe().GetInstallState(app_id_) ==
+      registrar().GetInstallState(app_id_) ==
       proto::InstallState::INSTALLED_WITHOUT_OS_INTEGRATION;
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
@@ -168,30 +220,30 @@ void FinalizeUpdateJob::OnDatabaseCommitCompletedForUpdate(
     return;
   }
 
-  provider_->os_integration_manager().Synchronize(
+  os_integration_manager().Synchronize(
       app_id_, base::BindOnce(&FinalizeUpdateJob::OnUpdateHooksFinished,
                               weak_ptr_factory_.GetWeakPtr()));
 }
 
 void FinalizeUpdateJob::OnUpdateHooksFinished() {
-  provider_->install_manager().NotifyWebAppManifestUpdated(app_id_);
-  std::move(callback_).Run(
-      app_id_, webapps::InstallResultCode::kSuccessAlreadyInstalled);
+  install_manager().NotifyWebAppManifestUpdated(app_id_);
+  RunCallbackAndResetLock(app_id_,
+                          webapps::InstallResultCode::kSuccessAlreadyInstalled);
 }
 
 FileHandlerUpdateAction FinalizeUpdateJob::GetFileHandlerUpdateAction() {
   // TODO(crbug.com/411632946): Add test case: Update file handler in
   // manifest for an already installed app + override user choice by
   // adding the app to file handlers policy.
-  if (provider_->registrar_unsafe().GetAppFileHandlerUserApprovalState(
-          app_id_) == ApiApprovalState::kDisallowed) {
+  if (registrar().GetAppFileHandlerUserApprovalState(app_id_) ==
+      ApiApprovalState::kDisallowed) {
     return FileHandlerUpdateAction::kNoUpdate;
   }
 
   // TODO(crbug.com/40176713): Consider trying to re-use the comparison
   // results from the ManifestUpdateDataFetchCommand.
   const apps::FileHandlers* old_handlers =
-      provider_->registrar_unsafe().GetAppFileHandlers(app_id_);
+      registrar().GetAppFileHandlers(app_id_);
   DCHECK(old_handlers);
   if (*old_handlers == web_app_info_.file_handlers) {
     return FileHandlerUpdateAction::kNoUpdate;
@@ -205,14 +257,17 @@ void FinalizeUpdateJob::UpdateIsolationDataAndResetPendingUpdateInfo(
     const IsolatedWebAppStorageLocation& location,
     const IwaVersion& version,
     const std::optional<GURL>& iwa_update_manifest_url,
-    std::optional<IsolatedWebAppIntegrityBlockData> integrity_block_data) {
+    std::optional<IntegrityBlockData> integrity_block_data) {
   IsolationData::Builder builder(location, version);
 
   if (web_app->isolation_data()) {
     builder.PersistFieldsForUpdate(*web_app->isolation_data());
   }
 
-  if (iwa_update_manifest_url) {
+  // Dev-mode apps must not set the update manifest URL from the parsed
+  // manifest. For dev-mode from-manifest installations, the URL is already
+  // set during installation.
+  if (iwa_update_manifest_url && !location.dev_mode()) {
     builder.SetUpdateManifestUrl(*iwa_update_manifest_url);
   }
 
@@ -227,7 +282,7 @@ void FinalizeUpdateJob::SetWebAppManifestFieldsAndWriteData(
     std::unique_ptr<WebApp> web_app,
     CommitCallback commit_callback,
     bool skip_icon_writes_on_download_failure) {
-  const auto& registrar = provider_->registrar_unsafe();
+  const auto& registrar = this->registrar();
   const WebApp* existing_app = registrar.GetAppById(app_id_);
 
   SetWebAppManifestFields(web_app_info_, *web_app,
@@ -258,7 +313,7 @@ void FinalizeUpdateJob::SetWebAppManifestFieldsAndWriteData(
     IconsMap other_icon_bitmaps = web_app_info_.other_icon_bitmaps;
     IconBitmaps trusted_icon_bitmaps = web_app_info_.trusted_icon_bitmaps;
 
-    provider_->icon_manager().WriteData(
+    icon_manager().WriteData(
         app_id_, std::move(icon_bitmaps), std::move(trusted_icon_bitmaps),
         std::move(shortcuts_menu_icon_bitmaps), std::move(other_icon_bitmaps),
         std::move(on_icon_write_complete_callback));
@@ -276,8 +331,8 @@ void FinalizeUpdateJob::WriteTranslations(
     std::move(commit_callback).Run(success);
     return;
   }
-  provider_->translation_manager().WriteTranslations(
-      app_id, translations, std::move(commit_callback));
+  translation_manager().WriteTranslations(app_id, translations,
+                                          std::move(commit_callback));
 }
 
 void FinalizeUpdateJob::CommitToSyncBridge(std::unique_ptr<WebApp> web_app,
@@ -290,7 +345,7 @@ void FinalizeUpdateJob::CommitToSyncBridge(std::unique_ptr<WebApp> web_app,
   }
 
   ScopedRegistryUpdate update =
-      provider_->sync_bridge_unsafe().BeginUpdate(std::move(commit_callback));
+      sync_bridge().BeginUpdate(std::move(commit_callback));
 
   WebApp* app_to_override = update->UpdateApp(app_id_);
   if (app_to_override) {
@@ -298,6 +353,110 @@ void FinalizeUpdateJob::CommitToSyncBridge(std::unique_ptr<WebApp> web_app,
   } else {
     update->CreateApp(std::move(web_app));
   }
+}
+
+bool FinalizeUpdateJob::SubAppScopeOverlapWithParentOrSibling(
+    const WebApp* existing_web_app) {
+  const WebApp* parent_app =
+      existing_web_app->parent_app_id()
+          ? registrar().GetAppById(*existing_web_app->parent_app_id())
+          : nullptr;
+  if (!parent_app) {
+    return false;
+  }
+
+  auto parent_scope = parent_app->GetScope();
+  if (IsInScope(parent_scope.scope(), web_app_info_.scope)) {
+    return true;
+  }
+
+  auto scopes_overlap = [&](const GURL& other_scope) {
+    return IsInScope(web_app_info_.scope, other_scope) ||
+           IsInScope(other_scope, web_app_info_.scope);
+  };
+
+  for (const webapps::AppId& installed_id :
+       registrar().GetAllSubAppIds(parent_app->app_id())) {
+    if (installed_id == existing_web_app->app_id()) {
+      continue;
+    }
+    if (scopes_overlap(registrar().GetAppScope(installed_id))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+WebAppRegistrar& FinalizeUpdateJob::registrar() const {
+  if (lock_with_app_resources_) {
+    return lock_with_app_resources_->registrar();
+  }
+  return provider_->registrar_unsafe();
+}
+
+WebAppSyncBridge& FinalizeUpdateJob::sync_bridge() const {
+  if (lock_with_app_resources_) {
+    return lock_with_app_resources_->sync_bridge();
+  }
+  return provider_->sync_bridge_unsafe();
+}
+
+// TODO(crbug.com/259703817): This method is temporary, this should be removed
+// once refactoring is complete and the job is solely dependent on the lock for
+// these resources.
+WebAppInstallManager& FinalizeUpdateJob::install_manager() const {
+  if (lock_with_app_resources_) {
+    return lock_with_app_resources_->install_manager();
+  }
+  return provider_->install_manager();
+}
+
+// TODO(crbug.com/259703817): This method is temporary, this should be removed
+// once refactoring is complete and the job is solely dependent on the lock for
+// these resources.
+WebAppIconManager& FinalizeUpdateJob::icon_manager() const {
+  if (lock_with_app_resources_) {
+    return lock_with_app_resources_->icon_manager();
+  }
+  return provider_->icon_manager();
+}
+
+// TODO(crbug.com/259703817): This method is temporary, this should be removed
+// once refactoring is complete and the job is solely dependent on the lock for
+// these resources.
+WebAppTranslationManager& FinalizeUpdateJob::translation_manager() const {
+  if (lock_with_app_resources_) {
+    return lock_with_app_resources_->translation_manager();
+  }
+  return provider_->translation_manager();
+}
+
+// TODO(crbug.com/259703817): This method is temporary, this should be removed
+// once refactoring is complete and the job is solely dependent on the lock for
+// these resources.
+OsIntegrationManager& FinalizeUpdateJob::os_integration_manager() const {
+  if (lock_with_app_resources_) {
+    return lock_with_app_resources_->os_integration_manager();
+  }
+  return provider_->os_integration_manager();
+}
+
+// TODO(crbug.com/259703817): This method is temporary, this should be removed
+// once refactoring is complete and the job is solely dependent on the lock for
+// these resources.
+WebAppOriginAssociationManager& FinalizeUpdateJob::origin_association_manager()
+    const {
+  if (lock_) {
+    return lock_->origin_association_manager();
+  }
+  return provider_->origin_association_manager();
+}
+
+void FinalizeUpdateJob::RunCallbackAndResetLock(
+    webapps::AppId app_id,
+    webapps::InstallResultCode code) {
+  lock_with_app_resources_ = nullptr;
+  std::move(callback_).Run(std::move(app_id), code);
 }
 
 }  // namespace web_app

@@ -12,7 +12,6 @@
 #include "components/content_settings/browser/page_specific_content_settings.h"
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/page_info/page_info.h"
-#include "components/permissions/permission_uma_util.h"
 #include "components/safe_browsing/buildflags.h"
 #include "components/safe_browsing/core/browser/password_protection/metrics_util.h"
 #include "components/security_state/core/security_state.h"
@@ -83,6 +82,8 @@ class PageInfoDelegate {
   CreateCookieControlsController() = 0;
 
   virtual bool IsIsolatedWebApp() = 0;
+  virtual bool IsSubApp() = 0;
+  virtual bool HasSubApps() = 0;
   virtual void ShowSiteSettings(const GURL& site_url) = 0;
   virtual void ShowCookiesSettings() = 0;
   virtual void ShowAllSitesSettingsFilteredByRwsOwner(
@@ -136,6 +137,7 @@ class PageInfoDelegate {
 #endif
   virtual bool IsHttpsFirstModeEnabled() = 0;
   virtual bool IsIncognitoProfile() = 0;
+
 #if BUILDFLAG(IS_CHROMEOS)
   virtual bool ShouldSyncCookiesForUrl(const GURL& url) = 0;
 #endif

@@ -39,7 +39,7 @@ enum AcMatchClassificationStyle {
 const ENTITY_MATCH_TYPE: string = 'search-suggest-entity';
 
 // Represents the initial selection when a match is created or reset.
-const defaultSelection: OmniboxPopupSelection = {
+export const kDefaultSelection: OmniboxPopupSelection = {
   line: -1,
   state: SelectionLineState.kNormal,
   actionIndex: 0,
@@ -57,7 +57,7 @@ export interface SearchboxMatchElement {
     description: HTMLElement,
     remove: HTMLElement,
     separator: HTMLElement,
-    'focus-indicator': HTMLElement,
+    focusIndicator: HTMLElement,
   };
 }
 
@@ -144,6 +144,11 @@ export class SearchboxMatchElement extends CrLitElement {
       // Private properties
       //========================================================================
 
+      isContextualSuggestion_: {
+        type: Boolean,
+        reflect: true,
+      },
+
       isTopChromeSearchbox_: {
         type: Boolean,
         reflect: true,
@@ -187,11 +192,12 @@ export class SearchboxMatchElement extends CrLitElement {
   accessor isEntitySuggestion: boolean = false;
   accessor isRichSuggestion: boolean = false;
   accessor match: AutocompleteMatch = createAutocompleteMatch();
-  accessor selection: OmniboxPopupSelection = defaultSelection;
+  accessor selection: OmniboxPopupSelection = kDefaultSelection;
   accessor matchIndex: number = -1;
   accessor sideType: SideType = SideType.kDefaultPrimary;
   accessor showThumbnail: boolean = false;
   accessor showEllipsis: boolean = false;
+  private accessor isContextualSuggestion_: boolean = false;
   private accessor isTopChromeSearchbox_: boolean =
       loadTimeData.getBoolean('isTopChromeSearchbox');
   private accessor isLensSearchbox_: boolean =
@@ -227,12 +233,13 @@ export class SearchboxMatchElement extends CrLitElement {
       this.hasAction = this.computeHasAction_();
       this.hasKeyword = this.computeHasKeyword_();
       this.hasImage = this.computeHasImage_();
+      this.isContextualSuggestion_ = this.computeIsContextualSuggestion_();
       this.isEntitySuggestion = this.computeIsEntitySuggestion_();
       this.isRichSuggestion = this.computeIsRichSuggestion_();
       this.removeButtonAriaLabel_ = this.computeRemoveButtonAriaLabel_();
       this.separatorText_ = this.computeSeparatorText_();
       this.tailSuggestPrefix_ = this.computeTailSuggestPrefix_();
-      this.selection = defaultSelection;
+      this.selection = kDefaultSelection;
     }
 
     const changedPrivateProperties =
@@ -247,6 +254,7 @@ export class SearchboxMatchElement extends CrLitElement {
 
   override firstUpdated() {
     this.addEventListener('click', (event) => this.onMatchClick_(event));
+    this.addEventListener('auxclick', (event) => this.onMatchClick_(event));
     this.addEventListener('focusin', () => this.onMatchFocusin_());
     this.addEventListener('mousedown', () => this.onMatchMouseDown_());
   }
@@ -255,7 +263,7 @@ export class SearchboxMatchElement extends CrLitElement {
   // Event handlers
   //============================================================================
 
-  protected onActivateKeyword_(e: ActionEvent) {
+  protected onKeywordExecuteAction_(e: ActionEvent) {
     // Keyboard activation isn't possible because when the keyword chip is
     // focused, focus is redirected to the omnibox view.
     const event = e.detail.event as PointerEvent;
@@ -289,7 +297,7 @@ export class SearchboxMatchElement extends CrLitElement {
     this.pageHandler_.openAutocompleteMatch(
         this.matchIndex, this.match.destinationUrl,
         /* are_matches_showing */ true, e.button || 0, e.altKey, e.ctrlKey,
-        e.metaKey, e.shiftKey);
+        e.metaKey, e.shiftKey, /*via_keyboard=*/ false);
 
     // Duplicates the logic in `ui::DispositionFromClick()`.
     const backgroundTab = (e.metaKey || e.ctrlKey) && e.shiftKey;
@@ -323,7 +331,7 @@ export class SearchboxMatchElement extends CrLitElement {
         this.matchIndex, this.match.destinationUrl);
   }
 
-  protected onRemoveButtonMouseDown_(e: Event) {
+  protected onRemoveButtonMousedown_(e: Event) {
     e.preventDefault();  // Prevents default browser action (focus).
   }
 
@@ -397,6 +405,10 @@ export class SearchboxMatchElement extends CrLitElement {
 
   private computeHasImage_(): boolean {
     return this.match && !!this.match.imageUrl;
+  }
+
+  private computeIsContextualSuggestion_(): boolean {
+    return this.match.isContextualSuggestion;
   }
 
   private computeIsEntitySuggestion_(): boolean {

@@ -126,8 +126,6 @@ class PageLoadMetricsObserver : public PageLoadMetricsObserverInterface {
   ObservePolicy OnStart(content::NavigationHandle* navigation_handle,
                         const GURL& currently_committed_url,
                         bool started_in_foreground) override;
-  ObservePolicy OnPreviewStart(content::NavigationHandle* navigation_handle,
-                               const GURL& currently_committed_url) override;
   ObservePolicy OnNavigationHandleTimingUpdated(
       content::NavigationHandle* navigation_handle) override;
   ObservePolicy OnRedirect(
@@ -153,7 +151,8 @@ class PageLoadMetricsObserver : public PageLoadMetricsObserverInterface {
   ObservePolicy ShouldObserveScheme(const GURL& url) const override;
   void OnTimingUpdate(content::RenderFrameHost* subframe_rfh,
                       const mojom::PageLoadTiming& timing) override {}
-  void OnSoftNavigationUpdated(const mojom::SoftNavigationMetrics&) override {}
+  void OnSoftNavigation() override {}
+  void OnSoftNavigationLargestContentfulPaint(uint64_t num_soft_lcps) override {}
   void OnEventTimingUpdate(
       content::RenderFrameHost* subframe_rfh,
       const std::vector<mojom::EventTimingPtr>& event_timings) override {}
@@ -210,17 +209,13 @@ class PageLoadMetricsObserver : public PageLoadMetricsObserverInterface {
   void OnFeaturesUsageObserved(
       content::RenderFrameHost* rfh,
       const std::vector<blink::UseCounterFeature>& features) override {}
-  void SetUpSharedMemoryForDroppedFrames(
-      const base::ReadOnlySharedMemoryRegion& dropped_frames_memory) override {}
   void OnResourceDataUseObserved(
       content::RenderFrameHost* rfh,
       const std::vector<mojom::ResourceDataUpdatePtr>& resources) override {}
   void MediaStartedPlaying(
       const content::WebContentsObserver::MediaPlayerInfo& video_type,
       content::RenderFrameHost* render_frame_host) override {}
-  void OnMainFrameIntersectionRectChanged(
-      content::RenderFrameHost* rfh,
-      const gfx::Rect& main_frame_intersection_rect) override {}
+  void OnMainFrameRectChanged(const gfx::Rect& main_frame_rect) override {}
   void OnMainFrameViewportRectChanged(
       const gfx::Rect& main_frame_viewport_rect) override {}
   void OnMainFrameAdRectsChanged(
@@ -264,7 +259,6 @@ class PageLoadMetricsObserver : public PageLoadMetricsObserverInterface {
   void OnPrefetchLikely() override {}
   void DidActivatePrerenderedPage(
       content::NavigationHandle* navigation_handle) override {}
-  void DidActivatePreviewedPage(base::TimeTicks activation_time) override {}
   void OnSharedStorageWorkletHostCreated() override {}
   void OnSharedStorageSelectURLCalled() override {}
   void OnCustomUserTimingMarkObserved(

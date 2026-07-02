@@ -17,6 +17,7 @@
 #include "chrome/browser/enterprise/connectors/test/fake_files_request_handler.h"
 #include "components/enterprise/common/proto/connectors.pb.h"
 #include "components/enterprise/connectors/core/cloud_content_scanning/binary_upload_request.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/deep_scanning_utils.h"
 
 namespace enterprise_connectors::test {
 
@@ -71,11 +72,12 @@ FakeContentAnalysisDelegate::FakeContentAnalysisDelegate(
     std::string dm_token,
     content::WebContents* web_contents,
     Data data,
-    CompletionCallback callback)
+    CompletionCallback callback,
+    DeepScanAccessPoint access_point)
     : ContentAnalysisDelegate(web_contents,
                               std::move(data),
                               std::move(callback),
-                              DeepScanAccessPoint::UPLOAD),
+                              access_point),
       delete_closure_(delete_closure),
       status_callback_(status_callback),
       dm_token_(std::move(dm_token)) {}
@@ -121,10 +123,11 @@ std::unique_ptr<ContentAnalysisDelegate> FakeContentAnalysisDelegate::Create(
     std::string dm_token,
     content::WebContents* web_contents,
     Data data,
-    CompletionCallback callback) {
+    CompletionCallback callback,
+    DeepScanAccessPoint access_point) {
   auto ret = std::make_unique<FakeContentAnalysisDelegate>(
       delete_closure, status_callback, std::move(dm_token), web_contents,
-      std::move(data), std::move(callback));
+      std::move(data), std::move(callback), access_point);
   FilesRequestHandler::SetFactoryForTesting(base::BindRepeating(
       &FakeFilesRequestHandler::Create,
       base::BindRepeating(
@@ -241,6 +244,7 @@ void FakeContentAnalysisDelegate::Response(
 
   switch (request->analysis_connector()) {
     case AnalysisConnector::BULK_DATA_ENTRY:
+    case AnalysisConnector::DATA_COPIED:
       if (is_image_request) {
         ImageRequestCallback(CalculateRequestHandlerResult(
             GetDataForTesting().settings, result_, response));

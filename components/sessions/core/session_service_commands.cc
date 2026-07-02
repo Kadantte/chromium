@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include <map>
+#include <memory>
 #include <set>
 #include <tuple>
 #include <utility>
@@ -31,9 +32,9 @@ namespace {
 
 std::string SplitTabLayoutToString(split_tabs::SplitTabLayout split_layout) {
   switch (split_layout) {
-    case split_tabs::SplitTabLayout::kVertical:
+    case split_tabs::SplitTabLayout::kSideBySide:
       return "Vertical";
-    case split_tabs::SplitTabLayout::kHorizontal:
+    case split_tabs::SplitTabLayout::kStacked:
       return "Horizontal";
   }
   NOTREACHED();
@@ -42,11 +43,11 @@ std::string SplitTabLayoutToString(split_tabs::SplitTabLayout split_layout) {
 split_tabs::SplitTabLayout SplitTabLayoutFromString(
     std::string split_tab_layout_string) {
   if (split_tab_layout_string == "Horizontal") {
-    return split_tabs::SplitTabLayout::kHorizontal;
+    return split_tabs::SplitTabLayout::kStacked;
   }
 
   // By default make the split vertical if input is bad from the pickle.
-  return split_tabs::SplitTabLayout::kVertical;
+  return split_tabs::SplitTabLayout::kSideBySide;
 }
 
 }  // namespace
@@ -286,28 +287,24 @@ using SplitIdToSessionSplitTab =
 // Returns the window in windows with the specified id. If a window does
 // not exist, one is created.
 SessionWindow* GetWindow(SessionID window_id, IdToSessionWindow* windows) {
-  auto i = windows->find(window_id);
-  if (i == windows->end()) {
-    SessionWindow* window = new SessionWindow();
-    window->window_id = window_id;
-    (*windows)[window_id] = base::WrapUnique(window);
-    return window;
+  auto [it, inserted] = windows->try_emplace(window_id);
+  if (inserted) {
+    it->second = std::make_unique<SessionWindow>();
+    it->second->window_id = window_id;
   }
-  return i->second.get();
+  return it->second.get();
 }
 
 // Returns the tab with the specified id in tabs. If a tab does not exist,
 // it is created.
 SessionTab* GetTab(SessionID tab_id, IdToSessionTab* tabs) {
   DCHECK(tabs);
-  auto i = tabs->find(tab_id);
-  if (i == tabs->end()) {
-    SessionTab* tab = new SessionTab();
-    tab->tab_id = tab_id;
-    (*tabs)[tab_id] = base::WrapUnique(tab);
-    return tab;
+  auto [it, inserted] = tabs->try_emplace(tab_id);
+  if (inserted) {
+    it->second = std::make_unique<SessionTab>();
+    it->second->tab_id = tab_id;
   }
-  return i->second.get();
+  return it->second.get();
 }
 
 SessionTabGroup* GetTabGroup(tab_groups::TabGroupId group_id,
@@ -542,7 +539,7 @@ void CreateTabsAndWindows(
     switch (command->id()) {
       case kCommandSetTabWindow: {
         SessionID::id_type payload[2];
-        if (!command->GetPayload(payload, sizeof(payload))) {
+        if (!command->GetContents(payload, sizeof(payload))) {
           DVLOG(1) << "Failed reading command " << command->id();
           return;
         }
@@ -556,7 +553,7 @@ void CreateTabsAndWindows(
       // |kCommandSetWindowBounds3|.
       case kCommandSetWindowBounds2: {
         WindowBoundsPayload2 payload;
-        if (!command->GetPayload(&payload, sizeof(payload))) {
+        if (!command->GetContents(&payload, sizeof(payload))) {
           DVLOG(1) << "Failed reading command " << command->id();
           return;
         }
@@ -571,7 +568,7 @@ void CreateTabsAndWindows(
 
       case kCommandSetWindowBounds3: {
         WindowBoundsPayload3 payload;
-        if (!command->GetPayload(&payload, sizeof(payload))) {
+        if (!command->GetContents(&payload, sizeof(payload))) {
           DVLOG(1) << "Failed reading command " << command->id();
           return;
         }
@@ -585,7 +582,7 @@ void CreateTabsAndWindows(
 
       case kCommandSetTabIndexInWindow: {
         TabIndexInWindowPayload payload;
-        if (!command->GetPayload(&payload, sizeof(payload))) {
+        if (!command->GetContents(&payload, sizeof(payload))) {
           DVLOG(1) << "Failed reading command " << command->id();
           return;
         }
@@ -597,7 +594,7 @@ void CreateTabsAndWindows(
       case kCommandTabClosed:
       case kCommandWindowClosed: {
         ClosedPayload payload;
-        if (!command->GetPayload(&payload, sizeof(payload))) {
+        if (!command->GetContents(&payload, sizeof(payload))) {
           DVLOG(1) << "Failed reading command " << command->id();
           return;
         }
@@ -613,7 +610,7 @@ void CreateTabsAndWindows(
 
       case kCommandTabNavigationPathPrunedFromBack: {
         TabNavigationPathPrunedFromBackPayload payload;
-        if (!command->GetPayload(&payload, sizeof(payload))) {
+        if (!command->GetContents(&payload, sizeof(payload))) {
           DVLOG(1) << "Failed reading command " << command->id();
           return;
         }
@@ -628,8 +625,8 @@ void CreateTabsAndWindows(
 
       case kCommandTabNavigationPathPrunedFromFront: {
         TabNavigationPathPrunedFromFrontPayload prune_front_payload;
-        if (!command->GetPayload(&prune_front_payload,
-                                 sizeof(prune_front_payload)) ||
+        if (!command->GetContents(&prune_front_payload,
+                                  sizeof(prune_front_payload)) ||
             prune_front_payload.index <= 0) {
           DVLOG(1) << "Failed reading command " << command->id();
           return;
@@ -646,7 +643,7 @@ void CreateTabsAndWindows(
 
       case kCommandTabNavigationPathPruned: {
         TabNavigationPathPrunedPayload payload;
-        if (!command->GetPayload(&payload, sizeof(payload)) ||
+        if (!command->GetContents(&payload, sizeof(payload)) ||
             payload.index < 0 || payload.count <= 0) {
           DVLOG(1) << "Failed reading command " << command->id();
           return;
@@ -679,7 +676,7 @@ void CreateTabsAndWindows(
 
       case kCommandSetSelectedNavigationIndex: {
         SelectedNavigationIndexPayload payload;
-        if (!command->GetPayload(&payload, sizeof(payload))) {
+        if (!command->GetContents(&payload, sizeof(payload))) {
           DVLOG(1) << "Failed reading command " << command->id();
           return;
         }
@@ -690,7 +687,7 @@ void CreateTabsAndWindows(
 
       case kCommandSetSelectedTabInIndex: {
         SelectedTabInIndexPayload payload;
-        if (!command->GetPayload(&payload, sizeof(payload))) {
+        if (!command->GetContents(&payload, sizeof(payload))) {
           DVLOG(1) << "Failed reading command " << command->id();
           return;
         }
@@ -701,7 +698,7 @@ void CreateTabsAndWindows(
 
       case kCommandSetWindowType: {
         WindowTypePayload payload;
-        if (!command->GetPayload(&payload, sizeof(payload))) {
+        if (!command->GetContents(&payload, sizeof(payload))) {
           DVLOG(1) << "Failed reading command " << command->id();
           return;
         }
@@ -714,7 +711,7 @@ void CreateTabsAndWindows(
 
       case kCommandSetTabGroup: {
         TabGroupPayload payload;
-        if (!command->GetPayload(&payload, sizeof(payload))) {
+        if (!command->GetContents(&payload, sizeof(payload))) {
           DVLOG(1) << "Failed reading command " << command->id();
           return;
         }
@@ -731,7 +728,7 @@ void CreateTabsAndWindows(
 
       case kCommandSetSplitTab: {
         SplitTabPayload payload;
-        if (!command->GetPayload(&payload, sizeof(payload))) {
+        if (!command->GetContents(&payload, sizeof(payload))) {
           DVLOG(1) << "Failed reading command " << command->id();
           return;
         }
@@ -747,7 +744,7 @@ void CreateTabsAndWindows(
       }
 
       case kCommandSetTabGroupMetadata2: {
-        base::PickleIterator iter = command->PayloadAsPickle();
+        base::PickleIterator iter = command->ContentsAsPickle();
 
         std::optional<base::Token> group_token = ReadTokenFromPickle(&iter);
         if (!group_token.has_value())
@@ -796,7 +793,7 @@ void CreateTabsAndWindows(
       }
 
       case kCommandSetSplitTabData: {
-        base::PickleIterator iter = command->PayloadAsPickle();
+        base::PickleIterator iter = command->ContentsAsPickle();
         std::optional<base::Token> split_token = ReadTokenFromPickle(&iter);
         if (!split_token.has_value()) {
           return;
@@ -823,7 +820,7 @@ void CreateTabsAndWindows(
 
       case kCommandSetPinnedState: {
         PinnedStatePayload payload;
-        if (!command->GetPayload(&payload, sizeof(payload))) {
+        if (!command->GetContents(&payload, sizeof(payload))) {
           DVLOG(1) << "Failed reading command " << command->id();
           return;
         }
@@ -890,7 +887,7 @@ void CreateTabsAndWindows(
       }
 
       case kCommandSessionStorageAssociated: {
-        base::PickleIterator iter = command->PayloadAsPickle();
+        base::PickleIterator iter = command->ContentsAsPickle();
         SessionID::id_type command_tab_id;
         std::string session_storage_persistent_id;
         if (!iter.ReadInt(&command_tab_id) ||
@@ -904,7 +901,7 @@ void CreateTabsAndWindows(
 
       case kCommandSetActiveWindow: {
         ActiveWindowPayload payload;
-        if (!command->GetPayload(&payload, sizeof(payload))) {
+        if (!command->GetContents(&payload, sizeof(payload))) {
           DVLOG(1) << "Failed reading command " << command->id();
           return;
         }
@@ -914,7 +911,7 @@ void CreateTabsAndWindows(
 
       case kCommandLastActiveTime: {
         LastActiveTimePayload payload;
-        if (!command->GetPayload(&payload, sizeof(payload))) {
+        if (!command->GetContents(&payload, sizeof(payload))) {
           DVLOG(1) << "Failed reading command " << command->id();
           return;
         }
@@ -926,7 +923,7 @@ void CreateTabsAndWindows(
       }
 
       case kCommandSetWindowWorkspace2: {
-        base::PickleIterator it = command->PayloadAsPickle();
+        base::PickleIterator it = command->ContentsAsPickle();
         SessionID::id_type window_id = -1;
         std::string workspace;
          if (!it.ReadInt(&window_id) || !it.ReadString(&workspace)) {
@@ -940,7 +937,7 @@ void CreateTabsAndWindows(
 
       case kCommandSetWindowVisibleOnAllWorkspaces: {
         VisibleOnAllWorkspacesPayload payload;
-        if (!command->GetPayload(&payload, sizeof(payload))) {
+        if (!command->GetContents(&payload, sizeof(payload))) {
           DVLOG(1) << "Failed reading command " << command->id();
           return;
         }
@@ -950,7 +947,7 @@ void CreateTabsAndWindows(
       }
 
       case kCommandSetTabGuid: {
-        base::PickleIterator it = command->PayloadAsPickle();
+        base::PickleIterator it = command->ContentsAsPickle();
         SessionID::id_type tab_id = -1;
         std::string guid;
         if (!it.ReadInt(&tab_id) || !it.ReadString(&guid) ||
@@ -963,7 +960,7 @@ void CreateTabsAndWindows(
       }
 
       case kCommandSetTabData: {
-        base::PickleIterator it = command->PayloadAsPickle();
+        base::PickleIterator it = command->ContentsAsPickle();
         SessionID::id_type tab_id = -1;
         int size = 0;
         if (!it.ReadInt(&tab_id) || !it.ReadInt(&size)) {
@@ -1353,7 +1350,7 @@ bool ReplacePendingCommand(CommandStorageManager* command_storage_manager,
     SessionCommand* existing_command = i->get();
     if ((*command)->id() == kCommandUpdateTabNavigation &&
         existing_command->id() == kCommandUpdateTabNavigation) {
-      base::PickleIterator iterator = (*command)->PayloadAsPickle();
+      base::PickleIterator iterator = (*command)->ContentsAsPickle();
       SessionID::id_type command_tab_id;
       int command_nav_index;
       if (!iterator.ReadInt(&command_tab_id) ||
@@ -1366,7 +1363,7 @@ bool ReplacePendingCommand(CommandStorageManager* command_storage_manager,
         // Creating a pickle like this means the Pickle references the data from
         // the command. Make sure we delete the pickle before the command, else
         // the pickle references deleted memory.
-        iterator = existing_command->PayloadAsPickle();
+        iterator = existing_command->ContentsAsPickle();
         if (!iterator.ReadInt(&existing_tab_id) ||
             !iterator.ReadInt(&existing_nav_index)) {
           return false;

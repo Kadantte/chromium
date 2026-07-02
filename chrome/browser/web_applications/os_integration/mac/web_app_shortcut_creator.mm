@@ -22,6 +22,7 @@
 #include "base/apple/foundation_util.h"
 #include "base/check.h"
 #include "base/check_is_test.h"
+#include "base/base_switches.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -39,6 +40,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
 #include "base/version_info/version_info.h"
+#include "build/buildflag.h"
 #include "chrome/browser/shortcuts/platform_util_mac.h"
 #include "chrome/browser/web_applications/mojom/web_app_shortcut_copier.mojom.h"
 #include "chrome/browser/web_applications/os_integration/mac/bundle_info_plist.h"
@@ -46,10 +48,13 @@
 #include "chrome/browser/web_applications/os_integration/mac/icon_utils.h"
 #include "chrome/browser/web_applications/os_integration/mac/web_app_auto_login_util.h"
 #include "chrome/browser/web_applications/os_integration/mac/web_app_shortcut_mac.h"
+#include "base/memory/shared_memory_switch.h"
 #include "chrome/browser/web_applications/os_integration/os_integration_test_override.h"
 #import "chrome/common/mac/app_mode_common.h"
 #include "components/variations/active_field_trials.h"
+#include "components/variations/variations_switches.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/common/content_descriptors.h"
 #include "content/public/common/content_switches.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/sync_call_restrictions.h"
@@ -258,7 +263,7 @@ bool AddPathToRPath(const base::FilePath& executable_path,
 #endif
 
 // Returns a reference to the static UpdateShortcuts lock.
-// See https://crbug.com/1090548 for more info.
+// See https://crbug.com/40133807 for more info.
 base::Lock& GetUpdateShortcutsLock() {
   static base::NoDestructor<base::Lock> lock;
   return *lock;
@@ -295,7 +300,10 @@ bool CopyStagingBundleToDestination(bool use_ad_hoc_signing_for_web_app_shims,
   channel.PrepareToPassRemoteEndpoint(&options, &command_line);
 
   // Ensure that the helper tool sees the same feature state as the browser.
-  variations::PopulateLaunchOptionsWithVariationsInfo(&command_line, &options);
+  base::shared_memory::SharedMemorySwitch shared_memory_switch(
+      switches::kFieldTrialHandle, 'fldt', kFieldTrialDescriptor);
+  variations::PopulateLaunchOptionsWithVariationsInfo(
+      &shared_memory_switch, &command_line, &options);
 
   base::Process copier_process = base::LaunchProcess(command_line, options);
   if (!copier_process.IsValid()) {
@@ -572,7 +580,7 @@ bool WebAppShortcutCreator::UpdateShortcuts(
   // UpdateShortcuts call at a time will run at once past here.  Not
   // protecting against that can result in multiple CreateShortcutsAt()
   // calls deleting and creating the app shim folder at once.
-  // See https://crbug.com/1090548 for more info.
+  // See https://crbug.com/40133807 for more info.
   base::AutoLock auto_lock(GetUpdateShortcutsLock());
 
   // Get the list of paths to (re)create by bundle id (wherever it was moved
@@ -611,7 +619,7 @@ void WebAppShortcutCreator::RevealAppShimInFinder(
       app_path);
   // Perform the call to NSWorkspace on the UI thread. Calling it on the IO
   // thread appears to cause crashes.
-  // https://crbug.com/1067367
+  // https://crbug.com/40124995
   content::GetUIThreadTaskRunner({})->PostTask(FROM_HERE, std::move(closure));
 }
 
@@ -760,7 +768,7 @@ void WebAppShortcutCreator::CreateShortcutsAt(
   // we must guarantee that no more than one CreateShortcutsAt() call will
   // ever run at a time.  We have an UpdateShortcuts lock for this purpose,
   // so check that lock has been acquired on this thread before proceeding.
-  // See https://crbug.com/1090548 for more info.
+  // See https://crbug.com/40133807 for more info.
   GetUpdateShortcutsLock().AssertAcquired();
 
   base::ScopedTempDir scoped_temp_dir;
@@ -1002,7 +1010,7 @@ bool WebAppShortcutCreator::UpdatePlist(const base::FilePath& app_path) const {
   // changes, instead of relying on localization, then this will need to change
   // to use GetShortcutBaseName, most likely only for non-legacy-apps
   // (in other words, revert to what the code looked like before on these
-  // lines). See also crbug.com/1021804.
+  // lines). See also crbug.com/40657267.
   base::FilePath app_name = app_path.BaseName().RemoveFinalExtension();
   plist[base::apple::CFToNSPtrCast(kCFBundleNameKey)] =
       base::apple::FilePathToNSString(app_name);

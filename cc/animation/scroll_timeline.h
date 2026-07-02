@@ -146,10 +146,6 @@ class CC_ANIMATION_EXPORT ScrollTimeline : public AnimationTimeline {
   bool IsScrollTimeline() const override;
   bool IsLinkedToScroller(ElementId scroller) const override;
 
- protected:
-  ~ScrollTimeline() override;
-
- private:
   const std::optional<ElementId>& active_id() const {
     return active_id_.Read(*this);
   }
@@ -158,8 +154,6 @@ class CC_ANIMATION_EXPORT ScrollTimeline : public AnimationTimeline {
     return pending_id_.Read(*this);
   }
 
-  const ScrollDirection& direction() const { return direction_.Read(*this); }
-
   const std::optional<ScrollOffsets>& active_offsets() const {
     return active_offsets_.Read(*this);
   }
@@ -167,6 +161,12 @@ class CC_ANIMATION_EXPORT ScrollTimeline : public AnimationTimeline {
   const std::optional<ScrollOffsets>& pending_offsets() const {
     return pending_offsets_.Read(*this);
   }
+
+ protected:
+  ~ScrollTimeline() override;
+
+ private:
+  const ScrollDirection& direction() const { return direction_.Read(*this); }
 
   // The scroller which this ScrollTimeline is based on. The same underlying
   // scroll source may have different ids in the pending and active tree (see
@@ -182,6 +182,11 @@ class CC_ANIMATION_EXPORT ScrollTimeline : public AnimationTimeline {
 
   ProtectedSequenceForbidden<std::optional<ScrollOffsets>> active_offsets_;
   ProtectedSequenceWritable<std::optional<ScrollOffsets>> pending_offsets_;
+
+  // Current time from the last active-tree tick, used to detect an unchanged
+  // scroll offset between frames (so an idle page avoids redundant ticks).
+  // Reset on (re)activation and property push, as the scroller may change.
+  ProtectedSequenceForbidden<std::optional<base::TimeTicks>> last_tick_time_;
 };
 
 inline ScrollTimeline* ToScrollTimeline(AnimationTimeline* timeline) {

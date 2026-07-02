@@ -6,14 +6,17 @@
 
 #include <math.h>
 
+#include <numbers>
 #include <vector>
 
 #include "cc/slim/layer.h"
 #include "cc/slim/nine_patch_layer.h"
+#include "cc/slim/solid_color_layer.h"
 #include "chrome/browser/android/compositor/decoration_tab_title.h"
 #include "chrome/browser/android/compositor/layer_title_cache.h"
 #include "ui/android/resources/nine_patch_resource.h"
 #include "ui/base/l10n/l10n_util_android.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 
 namespace android {
 
@@ -21,6 +24,15 @@ namespace android {
 scoped_refptr<TabHandleLayer> TabHandleLayer::Create(
     LayerTitleCache* layer_title_cache) {
   return base::WrapRefCounted(new TabHandleLayer(layer_title_cache));
+}
+
+// static
+void TabHandleLayer::SetConstants(float tab_underline_thickness,
+                                  float tab_underline_corner_radius,
+                                  float tab_underline_bottom_margin) {
+  tab_underline_thickness_ = tab_underline_thickness;
+  tab_underline_corner_radius_ = tab_underline_corner_radius;
+  tab_underline_bottom_margin_ = tab_underline_bottom_margin;
 }
 
 void TabHandleLayer::SetProperties(
@@ -44,6 +56,9 @@ void TabHandleLayer::SetProperties(
     float media_indicator_internal_padding,
     float title_to_media_indicator_spacing,
     float media_indicator_opacity,
+    ui::Resource* tab_indicator_overlay_resource,
+    float target_rotation,
+    float tab_indicator_overlay_width,
     float toolbar_width,
     float x,
     float y,
@@ -65,7 +80,13 @@ void TabHandleLayer::SetProperties(
     int keyboard_focus_ring_offset,
     int stroke_width,
     float folio_foot_length,
-    float width_to_hide_tab_title) {
+    float width_to_hide_tab_title,
+    float pinned_icon_offset_x,
+    float underline_opacity,
+    float underline_shimmer_offset,
+    SkColor underline_start_color,
+    SkColor underline_end_color,
+    int underline_width_threshold) {
   if (foreground != foreground_ || opacity != opacity_ ||
       is_pinned != is_pinned_) {
     foreground_ = foreground;
@@ -109,7 +130,7 @@ void TabHandleLayer::SetProperties(
   }
 
   if (title_layer) {
-    unsigned expected_children = 5;
+    unsigned expected_children = 6;
     title_layer_ = title_layer->layer();
     if (tab_->children().size() < expected_children) {
       tab_->AddChild(title_layer_);
@@ -119,6 +140,7 @@ void TabHandleLayer::SetProperties(
                          title_layer_);
     }
     title_layer->SetUIResourceIds();
+    title_layer->SetIconOffsetX(pinned_icon_offset_x);
   } else if (title_layer_.get()) {
     title_layer_->RemoveFromParent();
     title_layer_ = nullptr;
@@ -211,6 +233,28 @@ void TabHandleLayer::SetProperties(
     media_indicator_layer_->SetOpacity(media_indicator_opacity);
   } else {
     media_indicator_layer_->SetIsDrawable(false);
+  }
+
+  if (should_show_media_indicator && tab_indicator_overlay_resource) {
+    tab_indicator_overlay_layer_->SetIsDrawable(true);
+    tab_indicator_overlay_layer_->SetUIResourceId(
+        tab_indicator_overlay_resource->ui_resource()->id());
+    float overlay_size = tab_indicator_overlay_width;
+    tab_indicator_overlay_layer_->SetBounds(
+        gfx::Size(overlay_size, overlay_size));
+    tab_indicator_overlay_layer_->SetOpacity(media_indicator_opacity);
+
+    // Apply spinning animation.
+    tab_indicator_overlay_layer_->SetTransformOrigin(
+        gfx::PointF(overlay_size / 2, overlay_size / 2));
+    float diff = target_rotation - tab_indicator_overlay_rotation_;
+    tab_indicator_overlay_rotation_ = target_rotation;
+    if (diff != 0) {
+      transform_->RotateAboutZAxis(diff);
+    }
+    tab_indicator_overlay_layer_->SetTransform(*transform_.get());
+  } else {
+    tab_indicator_overlay_layer_->SetIsDrawable(false);
   }
 
   if (title_layer) {
@@ -338,6 +382,70 @@ void TabHandleLayer::SetProperties(
                               media_indicator_size) /
                              2);
     media_indicator_layer_->SetPosition(gfx::PointF(media_x, media_y));
+    float overlay_size = tab_indicator_overlay_width;
+    float overlay_x = media_x + (media_indicator_size - overlay_size) / 2;
+    float overlay_y = media_y + (media_indicator_size - overlay_size) / 2;
+    tab_indicator_overlay_layer_->SetPosition(
+        gfx::PointF(overlay_x, overlay_y));
+  }
+
+  if (underline_opacity > 0.f) {
+    float underline_width = width - padding_left - padding_right;
+
+    underline_start_layer_->SetIsDrawable(true);
+    underline_start_layer_->SetOpacity(underline_opacity);
+    underline_start_layer_->SetBackgroundColor(
+        SkColor4f::FromColor(underline_start_color));
+    underline_start_layer_->SetBounds(gfx::Size(
+        std::round(underline_width), std::round(tab_underline_thickness_)));
+    underline_start_layer_->SetPosition(gfx::PointF(
+        padding_left,
+        height - tab_underline_thickness_ - tab_underline_bottom_margin_));
+    underline_start_layer_->SetRoundedCorner(
+        gfx::RoundedCornersF(tab_underline_corner_radius_));
+
+    if (underline_width < underline_width_threshold) {
+      underline_end_layer_->SetIsDrawable(false);
+      underline_start_layer_->SetGradientMask(gfx::LinearGradient());
+    } else {
+      underline_end_layer_->SetIsDrawable(true);
+      underline_end_layer_->SetOpacity(underline_opacity);
+      underline_end_layer_->SetBackgroundColor(
+          SkColor4f::FromColor(underline_end_color));
+      underline_end_layer_->SetBounds(gfx::Size(
+          std::round(underline_width), std::round(tab_underline_thickness_)));
+      underline_end_layer_->SetPosition(gfx::PointF(
+          padding_left,
+          height - tab_underline_thickness_ - tab_underline_bottom_margin_));
+      underline_end_layer_->SetRoundedCorner(
+          gfx::RoundedCornersF(tab_underline_corner_radius_));
+
+      // Use a 3-point gradient mask to create a moving wave/shimmer effect
+      // across the underline.
+      gfx::LinearGradient gradient;
+      gradient.AddStep(
+          0.f, static_cast<uint8_t>(
+                   255 * (0.5f +
+                          0.5f * cos(std::numbers::pi_v<float> *
+                                     (0.f - 2.f * underline_shimmer_offset)))));
+      gradient.AddStep(
+          0.5f,
+          static_cast<uint8_t>(
+              255 *
+              (0.5f + 0.5f * cos(std::numbers::pi_v<float> *
+                                 (0.5f - 2.f * underline_shimmer_offset)))));
+      gradient.AddStep(
+          1.f, static_cast<uint8_t>(
+                   255 * (0.5f +
+                          0.5f * cos(std::numbers::pi_v<float> *
+                                     (1.f - 2.f * underline_shimmer_offset)))));
+      // TODO(crbug.com/509585777): Do we need to reverse this for RTL?
+      gradient.set_angle(0);
+      underline_start_layer_->SetGradientMask(gradient);
+    }
+  } else {
+    underline_end_layer_->SetIsDrawable(false);
+    underline_start_layer_->SetIsDrawable(false);
   }
 
   if (is_keyboard_focused) {
@@ -397,16 +505,20 @@ TabHandleLayer::TabHandleLayer(LayerTitleCache* layer_title_cache)
       start_divider_(cc::slim::UIResourceLayer::Create()),
       end_divider_(cc::slim::UIResourceLayer::Create()),
       media_indicator_layer_(cc::slim::UIResourceLayer::Create()),
+      tab_indicator_overlay_layer_(cc::slim::UIResourceLayer::Create()),
       decoration_tab_(cc::slim::NinePatchLayer::Create()),
       tab_outline_(cc::slim::NinePatchLayer::Create()),
+      underline_end_layer_(cc::slim::SolidColorLayer::Create()),
+      underline_start_layer_(cc::slim::SolidColorLayer::Create()),
       keyboard_focus_ring_(cc::slim::NinePatchLayer::Create()),
-      foreground_(false) {
+      transform_(new gfx::Transform()) {
   decoration_tab_->SetIsDrawable(true);
 
   tab_->AddChild(decoration_tab_);
   tab_->AddChild(tab_outline_);
   tab_->AddChild(close_button_hover_highlight_);
   tab_->AddChild(media_indicator_layer_);
+  tab_->AddChild(tab_indicator_overlay_layer_);
   close_button_hover_highlight_->AddChild(close_button_);
 
   decoration_tab_->SetPosition(gfx::PointF(0, 0));
@@ -418,6 +530,8 @@ TabHandleLayer::TabHandleLayer(LayerTitleCache* layer_title_cache)
   layer_->AddChild(start_divider_);
   layer_->AddChild(end_divider_);
   layer_->AddChild(close_keyboard_focus_ring_);
+  layer_->AddChild(underline_end_layer_);
+  layer_->AddChild(underline_start_layer_);
   layer_->AddChild(keyboard_focus_ring_);
 }
 

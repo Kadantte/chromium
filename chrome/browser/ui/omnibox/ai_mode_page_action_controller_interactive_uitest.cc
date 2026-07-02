@@ -43,14 +43,7 @@ std::unique_ptr<KeyedService> BuildMockAimServiceEligibilityServiceInstance(
       std::make_unique<MockAimEligibilityService>(
           CHECK_DEREF(profile->GetPrefs()), /*template_url_service=*/nullptr,
           /*url_loader_factory=*/nullptr, /*identity_manager=*/nullptr,
-          /*is_off_the_record=*/false);
-
-  EXPECT_CALL(*mock_aim_eligibility_service, IsServerEligibilityEnabled())
-      .WillRepeatedly(testing::Return(true));
-  EXPECT_CALL(*mock_aim_eligibility_service, IsAimEligible())
-      .WillRepeatedly(testing::Return(true));
-  EXPECT_CALL(*mock_aim_eligibility_service, IsAimLocallyEligible())
-      .WillRepeatedly(testing::Return(true));
+          AimEligibilityService::Configuration{});
 
   return std::move(mock_aim_eligibility_service);
 }
@@ -97,19 +90,20 @@ class AiModePageActionControllerInteractiveUiTest
                                       },
                                   },
                               },
-                              {omnibox::kWebUIOmniboxPopup, {}},
+                              {omnibox::internal::kWebUIOmniboxPopup, {}},
                               {omnibox::internal::kWebUIOmniboxAimPopup, {}}},
-        /*disabled_features*/ {kHideAimEntrypointOnUserInput});
+        /*disabled_features*/ {kHideAimEntrypointOnUserInput,
+                               kHideAimEntrypointForUrlSuggestions});
   }
 
   InteractiveTestApi::MultiStep OpenTabWithPageUrlAndFocusOmnibox(
       bool is_ntp = false) {
-    const std::string url =
-        is_ntp ? chrome::kChromeUINewTabPageURL : kTestPageUrl;
+    const GURL url =
+        is_ntp ? chrome::ChromeUINewTabPageURLAsGURL() : GURL(kTestPageUrl);
 
     return Steps(
         InteractiveBrowserWindowTestApi::InstrumentTab(kTabId),
-        InteractiveBrowserWindowTestApi::NavigateWebContents(kTabId, GURL(url)),
+        InteractiveBrowserWindowTestApi::NavigateWebContents(kTabId, url),
         InteractiveBrowserWindowTestApi::WaitForWebContentsReady(kTabId),
         ui::test::InteractiveTestApi::FocusElement(kOmniboxElementId));
   }
@@ -221,7 +215,7 @@ class AiModePageActionControllerHideEntryPointOnEditInteractiveUiTest
                                       },
                                   },
                               },
-                              {omnibox::kWebUIOmniboxPopup, {}},
+                              {omnibox::internal::kWebUIOmniboxPopup, {}},
                               {omnibox::internal::kWebUIOmniboxAimPopup, {}}},
         /*disabled_features*/ {});
   }
@@ -244,4 +238,83 @@ IN_PROC_BROWSER_TEST_F(
                   CheckChipVisible(/*visible=*/true));
 }
 
+class AiModePageActionControllerHideEntryPointForUrlInteractiveUiTest
+    : public AiModePageActionControllerInteractiveUiTest {
+ protected:
+  void InitializeFeatures() override {
+    features_.InitWithFeaturesAndParameters(
+        /*enabled_features*/ {{kHideAimEntrypointForUrlSuggestions, {}},
+                              {
+                                  features::kPageActionsMigration,
+                                  {
+                                      {
+                                          features::kPageActionsMigrationAiMode
+                                              .name,
+                                          "true",
+                                      },
+                                  },
+                              },
+                              {omnibox::internal::kWebUIOmniboxPopup, {}},
+                              {omnibox::internal::kWebUIOmniboxAimPopup, {}}},
+        /*disabled_features*/ {});
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(
+    AiModePageActionControllerHideEntryPointForUrlInteractiveUiTest,
+    HidesOnUrlSuggestion) {
+  RunTestSequence(OpenTabWithPageUrlAndFocusOmnibox(/*is_ntp=*/true),
+                  CheckChipVisible(true),
+                  // Type a URL.
+                  EnterText(kOmniboxElementId, u"https://google.com"),
+                  CheckChipVisible(false));
+}
+
+class AiModePageActionControllerDynamicAiModeButtonInteractiveUiTest
+    : public AiModePageActionControllerInteractiveUiTest {
+ protected:
+  void InitializeFeatures() override {
+    features_.InitWithFeaturesAndParameters(
+        /*enabled_features*/ {{kWebUIOmniboxDynamicAiModeButton, {}},
+                              {
+                                  features::kPageActionsMigration,
+                                  {
+                                      {
+                                          features::kPageActionsMigrationAiMode
+                                              .name,
+                                          "true",
+                                      },
+                                  },
+                              },
+                              {omnibox::internal::kWebUIOmniboxPopup, {}},
+                              {omnibox::internal::kWebUIOmniboxAimPopup, {}}},
+        /*disabled_features*/ {});
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(
+    AiModePageActionControllerDynamicAiModeButtonInteractiveUiTest,
+    HidesOnWebPageFocus) {
+  RunTestSequence(OpenTabWithPageUrlAndFocusOmnibox(/*is_ntp=*/false),
+                  CheckChipVisible(/*visible=*/false));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    AiModePageActionControllerDynamicAiModeButtonInteractiveUiTest,
+    ShowsOnNtpFocus) {
+  RunTestSequence(OpenTabWithPageUrlAndFocusOmnibox(/*is_ntp=*/true),
+                  CheckChipVisible(/*visible=*/true));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    AiModePageActionControllerDynamicAiModeButtonInteractiveUiTest,
+    HidesOnUrlSuggestion) {
+  RunTestSequence(OpenTabWithPageUrlAndFocusOmnibox(/*is_ntp=*/true),
+                  CheckChipVisible(true),
+                  // Type a URL.
+                  EnterText(kOmniboxElementId, u"https://google.com"),
+                  CheckChipVisible(false));
+}
+
 }  // namespace omnibox
+

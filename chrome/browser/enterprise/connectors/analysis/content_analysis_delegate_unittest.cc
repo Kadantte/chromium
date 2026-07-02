@@ -41,6 +41,7 @@
 #include "components/enterprise/connectors/core/analysis_settings.h"
 #include "components/enterprise/connectors/core/cloud_content_scanning/binary_upload_service.h"
 #include "components/enterprise/connectors/core/cloud_content_scanning/common.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/deep_scanning_utils.h"
 #include "components/enterprise/connectors/core/features.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/prefs/testing_pref_service.h"
@@ -54,15 +55,6 @@
 #include "content/public/test/test_utils.h"
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-#include "base/values.h"
-#include "chrome/browser/extensions/extension_service.h"  // nogncheck
-#include "chrome/browser/extensions/test_extension_system.h"
-#include "extensions/browser/extension_registrar.h"
-#include "extensions/common/extension.h"
-#include "extensions/common/extension_builder.h"
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
 #if BUILDFLAG(ENTERPRISE_LOCAL_CONTENT_ANALYSIS)
 #include "chrome/browser/enterprise/connectors/test/fake_content_analysis_sdk_manager.h"  // nogncheck
@@ -174,15 +166,13 @@ class BaseTest : public testing::Test {
         /*disabled_features=*/{});
   }
 
-  void ScanUpload(content::WebContents* web_contents,
-                  ContentAnalysisDelegate::Data data,
-                  ContentAnalysisDelegate::CompletionCallback callback) {
-    // The access point is only used for metrics and choosing the dialog text if
-    // one is shown, so its value doesn't affect the tests in this file and can
-    // always be the same.
-    ContentAnalysisDelegate::CreateForWebContents(web_contents, std::move(data),
-                                                  std::move(callback),
-                                                  DeepScanAccessPoint::UPLOAD);
+  void ScanUpload(
+      content::WebContents* web_contents,
+      ContentAnalysisDelegate::Data data,
+      ContentAnalysisDelegate::CompletionCallback callback,
+      DeepScanAccessPoint access_point = DeepScanAccessPoint::UPLOAD) {
+    ContentAnalysisDelegate::CreateForWebContents(
+        web_contents, std::move(data), std::move(callback), access_point);
   }
 
   void CreateFilesForTest(
@@ -631,7 +621,7 @@ class ContentAnalysisDelegateAuditOnlyTest : public BaseTest {
   std::map<base::FilePath, ContentAnalysisResponse> failures_;
 
   // DLP response to ovewrite in the callback if present.
-  std::optional<ContentAnalysisResponse> dlp_response_ = std::nullopt;
+  std::optional<ContentAnalysisResponse> dlp_response_;
 
 #if BUILDFLAG(ENTERPRISE_LOCAL_CONTENT_ANALYSIS)
   // This installs a fake SDK manager that creates fake SDK clients when
@@ -694,10 +684,40 @@ TEST_F(ContentAnalysisDelegateAuditOnlyTest, StringDataAndReportSuccess) {
   EXPECT_EQ(1,
             test::FakeContentAnalysisDelegate::GetTotalAnalysisRequestsCount());
 
-  // FakeContentAnalysisDelegate is always constructed with UPLOAD; just
-  // verify a success histogram is recorded.
+  // FakeContentAnalysisDelegate is constructed with UPLOAD by default here;
+  // just verify a success histogram is recorded.
   histogram_tester_.ExpectTotalCount(
       "Enterprise.ContentAnalysis.Upload.Success.Duration", 1);
+  EXPECT_TRUE(called);
+}
+
+TEST_F(ContentAnalysisDelegateAuditOnlyTest, StringDataAndReportSuccess_Actor) {
+  base::HistogramTester histogram_tester_;
+
+  GURL url(kTestUrl);
+  ContentAnalysisDelegate::Data data;
+  ASSERT_TRUE(ContentAnalysisDelegate::IsEnabled(profile(), url, &data,
+                                                 BULK_DATA_ENTRY));
+
+  data.text.emplace_back(large_text());
+
+  bool called = false;
+  ScanUpload(
+      contents(), std::move(data),
+      base::BindOnce(
+          [](bool* called, const ContentAnalysisDelegate::Data& data,
+             ContentAnalysisDelegate::Result& result) { *called = true; },
+          &called),
+      enterprise_connectors::DeepScanAccessPoint::ACTOR);
+  RunUntilDone();
+  EXPECT_EQ(1,
+            test::FakeContentAnalysisDelegate::GetTotalAnalysisRequestsCount());
+
+  histogram_tester_.ExpectTotalCount(
+      "Enterprise.OnBulkDataEntry.Actor.DataSize", 1);
+  histogram_tester_.ExpectTotalCount("Enterprise.OnBulkDataEntry.DataSize", 1);
+  histogram_tester_.ExpectTotalCount(
+      "Enterprise.ContentAnalysis.Actor.Success.Duration", 1);
   EXPECT_TRUE(called);
 }
 

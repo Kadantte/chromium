@@ -32,10 +32,6 @@ std::optional<cx_diag::RoutineFinishedDetailUnion> ConvertRoutineDetailUnionPtr(
     case crosapi::TelemetryDiagnosticRoutineDetail::Tag::kMemory:
       detail.memory = ConvertPtr(std::move(input->get_memory()));
       return detail;
-    case crosapi::TelemetryDiagnosticRoutineDetail::Tag::kVolumeButton:
-      // This member type in the union is kept only for backward compatibility.
-      // There is no such a field in the web IDL definition.
-      return std::nullopt;
     case crosapi::TelemetryDiagnosticRoutineDetail::Tag::kFan:
       detail.fan = ConvertPtr(std::move(input->get_fan()));
       return detail;
@@ -180,16 +176,6 @@ cx_diag::LegacyMemoryRoutineFinishedInfo UncheckedConvertPtr(
   return result;
 }
 
-cx_diag::LegacyVolumeButtonRoutineFinishedInfo UncheckedConvertPtr(
-    crosapi::TelemetryDiagnosticVolumeButtonRoutineDetailPtr input,
-    base::Uuid uuid,
-    bool has_passed) {
-  cx_diag::LegacyVolumeButtonRoutineFinishedInfo result;
-  result.uuid = uuid.AsLowercaseString();
-  result.has_passed = has_passed;
-  return result;
-}
-
 cx_diag::LegacyFanRoutineFinishedInfo UncheckedConvertPtr(
     crosapi::TelemetryDiagnosticFanRoutineDetailPtr input,
     base::Uuid uuid,
@@ -266,18 +252,18 @@ cx_diag::RoutineFinishedInfo UncheckedConvertPtr(
 }  // namespace unchecked
 
 cx_diag::ExceptionReason Convert(
-    crosapi::TelemetryExtensionException::Reason input) {
+    ash::cros_healthd::mojom::Exception::Reason input) {
   switch (input) {
-    case crosapi::TelemetryExtensionException::Reason::kUnmappedEnumField:
+    case ash::cros_healthd::mojom::Exception::Reason::kUnmappedEnumField:
       return cx_diag::ExceptionReason::kUnknown;
-    case crosapi::TelemetryExtensionException::Reason::
+    case ash::cros_healthd::mojom::Exception::Reason::
         kMojoDisconnectWithoutReason:
       return cx_diag::ExceptionReason::kUnknown;
-    case crosapi::TelemetryExtensionException::Reason::kUnexpected:
+    case ash::cros_healthd::mojom::Exception::Reason::kUnexpected:
       return cx_diag::ExceptionReason::kUnexpected;
-    case crosapi::TelemetryExtensionException::Reason::kUnsupported:
+    case ash::cros_healthd::mojom::Exception::Reason::kUnsupported:
       return cx_diag::ExceptionReason::kUnsupported;
-    case crosapi::TelemetryExtensionException::Reason::kCameraFrontendNotOpened:
+    case ash::cros_healthd::mojom::Exception::Reason::kCameraFrontendNotOpened:
       return cx_diag::ExceptionReason::kCameraFrontendNotOpened;
   }
   NOTREACHED();

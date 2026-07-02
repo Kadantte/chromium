@@ -645,6 +645,41 @@ TEST_F(ScrollViewTest, AccessibleProperties) {
   EXPECT_EQ(data.role, ax::mojom::Role::kScrollView);
 }
 
+TEST_F(ScrollViewTest, ContentOverflowing) {
+  View* contents = InstallContents();
+  const gfx::Size viewport_size =
+      ScrollViewTestApi(scroll_view_.get()).contents_viewport()->size();
+
+  // Disable scrollbars to avoid conflicts with content view size.
+  scroll_view_->SetHorizontalScrollBarMode(
+      ScrollView::ScrollBarMode::kDisabled);
+  scroll_view_->SetVerticalScrollBarMode(ScrollView::ScrollBarMode::kDisabled);
+
+  EXPECT_FALSE(scroll_view_->IsHorizontalContentOverflowing());
+  EXPECT_FALSE(scroll_view_->IsVerticalContentOverflowing());
+
+  // Size the contents such that vertical scrollbar is needed.
+  contents->SetBoundsRect(
+      gfx::Rect(viewport_size.width(), viewport_size.height() + 100));
+  InvalidateAndRunScheduledLayoutOnScrollView();
+  EXPECT_FALSE(scroll_view_->IsHorizontalContentOverflowing());
+  EXPECT_TRUE(scroll_view_->IsVerticalContentOverflowing());
+
+  // Size the contents such that horizontal scrollbar is needed.
+  contents->SetBoundsRect(
+      gfx::Rect(viewport_size.width() + 100, viewport_size.height()));
+  InvalidateAndRunScheduledLayoutOnScrollView();
+  EXPECT_TRUE(scroll_view_->IsHorizontalContentOverflowing());
+  EXPECT_FALSE(scroll_view_->IsVerticalContentOverflowing());
+
+  // Size the contents such that both scrollbars are needed.
+  contents->SetBoundsRect(
+      gfx::Rect(viewport_size.width() + 100, viewport_size.height() + 100));
+  InvalidateAndRunScheduledLayoutOnScrollView();
+  EXPECT_TRUE(scroll_view_->IsHorizontalContentOverflowing());
+  EXPECT_TRUE(scroll_view_->IsVerticalContentOverflowing());
+}
+
 // Verifies the scrollbars are added as necessary.
 // If on Mac, test the non-overlay scrollbars.
 TEST_F(ScrollViewTest, ScrollBars) {
@@ -1643,6 +1678,26 @@ TEST_F(ScrollViewTest,
 
   EXPECT_EQ(test_api.contents_viewport()->layer()->rounded_corner_radii(),
             corner_radii);
+}
+
+TEST_F(ScrollViewTest, ScrollSynchronization) {
+  ScrollView scroll_view(ScrollView::ScrollWithLayers::kEnabled);
+  auto contents = std::make_unique<FixedView>();
+  contents->SetPreferredSize(gfx::Size(100, 200));
+  scroll_view.SetContents(std::move(contents));
+  scroll_view.SetBoundsRect(gfx::Rect(0, 0, 100, 100));
+  views::test::RunScheduledLayout(&scroll_view);
+
+  ASSERT_TRUE(scroll_view.contents()->layer());
+  EXPECT_FALSE(scroll_view.contents()->layer()->main_side_scrolling_enabled());
+
+  {
+    auto synchronizer = scroll_view.EnableScrollSynchronization();
+    EXPECT_TRUE(
+        scroll_view.contents()->layer()->main_side_scrolling_enabled());
+  }
+
+  EXPECT_FALSE(scroll_view.contents()->layer()->main_side_scrolling_enabled());
 }
 
 #if BUILDFLAG(IS_MAC)

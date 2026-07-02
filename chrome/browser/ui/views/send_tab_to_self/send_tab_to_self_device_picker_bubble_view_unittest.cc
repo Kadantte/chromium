@@ -5,13 +5,13 @@
 #include "chrome/browser/ui/views/send_tab_to_self/send_tab_to_self_device_picker_bubble_view.h"
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
 #include "base/test/simple_test_clock.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/views/send_tab_to_self/send_tab_to_self_bubble_controller.h"
-#include "chrome/browser/ui/views/send_tab_to_self/send_tab_to_self_bubble_device_button.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/views/chrome_views_test_base.h"
 #include "components/send_tab_to_self/target_device_info.h"
@@ -21,6 +21,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/image/image_unittest_util.h"
+#include "ui/views/test/button_test_api.h"
 
 namespace send_tab_to_self {
 
@@ -36,12 +37,12 @@ class SendTabToSelfBubbleControllerMock : public SendTabToSelfBubbleController {
   std::vector<TargetDeviceInfo> GetValidDevices() override {
     base::SimpleTestClock clock;
     return {
-        {"Device_1", "Device_1", "device_guid_1",
-         syncer::DeviceInfo::FormFactor::kDesktop, clock.Now() - base::Days(0)},
-        {"Device_2", "Device_2", "device_guid_2",
-         syncer::DeviceInfo::FormFactor::kDesktop, clock.Now() - base::Days(1)},
-        {"Device_3", "Device_3", "device_guid_3",
-         syncer::DeviceInfo::FormFactor::kPhone, clock.Now() - base::Days(5)}};
+        {"Device_1", "device_guid_1", syncer::DeviceInfo::FormFactor::kDesktop,
+         clock.Now() - base::Days(0)},
+        {"Device_2", "device_guid_2", syncer::DeviceInfo::FormFactor::kDesktop,
+         clock.Now() - base::Days(1)},
+        {"Device_3", "device_guid_3", syncer::DeviceInfo::FormFactor::kPhone,
+         clock.Now() - base::Days(5)}};
   }
 
   AccountInfo GetSharingAccountInfo() override {
@@ -53,7 +54,8 @@ class SendTabToSelfBubbleControllerMock : public SendTabToSelfBubbleController {
 
   MOCK_METHOD(void,
               OnDeviceSelected,
-              (const std::string& target_device_guid),
+              (const std::string& target_device_guid,
+               std::string_view device_name),
               (override));
 };
 
@@ -66,7 +68,7 @@ class SendTabToSelfDevicePickerBubbleViewTest : public ChromeViewsTestBase {
 
     // Create an anchor for the bubble.
     anchor_widget_ =
-        CreateTestWidget(views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
+        CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET,
                          views::Widget::InitParams::TYPE_WINDOW);
 
     web_contents_ =
@@ -77,7 +79,8 @@ class SendTabToSelfDevicePickerBubbleViewTest : public ChromeViewsTestBase {
                                base::WrapUnique(controller_.get()));
 
     bubble_ = new SendTabToSelfDevicePickerBubbleView(
-        anchor_widget_->GetContentsView(), web_contents_.get());
+        views::BubbleAnchor(anchor_widget_->GetContentsView()),
+        web_contents_.get());
     views::BubbleDialogDelegateView::CreateBubble(bubble_);
   }
 
@@ -113,11 +116,14 @@ TEST_F(SendTabToSelfDevicePickerBubbleViewTest,
 }
 
 TEST_F(SendTabToSelfDevicePickerBubbleViewTest, ButtonPressed) {
-  EXPECT_CALL(*controller_, OnDeviceSelected("device_guid_3"));
+  EXPECT_CALL(*controller_, OnDeviceSelected("device_guid_3", "Device_3"));
   const views::View* button_container = bubble_->GetButtonContainerForTesting();
   ASSERT_EQ(3U, button_container->children().size());
-  bubble_->DeviceButtonPressed(static_cast<SendTabToSelfBubbleDeviceButton*>(
-      button_container->children()[2]));
+
+  // Simulate a click on the third device button.
+  views::test::ButtonTestApi(
+      static_cast<views::Button*>(button_container->children()[2]))
+      .NotifyDefaultMouseClick();
 }
 
 }  // namespace send_tab_to_self

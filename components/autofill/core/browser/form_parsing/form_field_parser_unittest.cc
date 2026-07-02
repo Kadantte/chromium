@@ -177,18 +177,6 @@ TEST_F(FormFieldParserTest, ParseFormFieldsEnforceMinFillableFields) {
   EXPECT_EQ(0, ParseFormFields());
 }
 
-// Test that the parseable label is used when the feature is enabled.
-TEST_F(FormFieldParserTest, TestParseableLabels) {
-  AddTextFormFieldData("", "not a parseable label", UNKNOWN_TYPE);
-  FormFieldData& field = fields_.back();
-  ParsingContext context(fields_, GeoIpCountryCode(""), LanguageCode(""),
-                         GetActivePatternFile().value(), /*active_features=*/{},
-                         /*log_manager=*/nullptr);
-  context.label_overrides[field.global_id()] = u"First Name";
-  EXPECT_TRUE(FormFieldParserTestApi::Match(context, field, u"First Name",
-                                            {MatchAttribute::kLabel}));
-}
-
 // Tests that `ParseSingleFields` is called as part of `ParseFormFields`.
 TEST_F(FormFieldParserTest, ParseSingleFieldsInsideParseFormField) {
   AddTextFormFieldData("", "Phone", PHONE_HOME_CITY_AND_NUMBER);
@@ -243,8 +231,6 @@ TEST_F(FormFieldParserTest, ParseFormFields_SmallFormRequirementIgnored) {
 
 // Tests that loyalty cards are parsed as part of `ParseFormFields`.
 TEST_F(FormFieldParserTest, ParseFormFieldsFieldsLoyaltyCard) {
-  base::test::ScopedFeatureList scoped_feature_list_{
-      features::kAutofillEnableLoyaltyCardsFilling};
   AddTextFormFieldData("", "Email", EMAIL_ADDRESS);
   AddTextFormFieldData("", "Frequent Flyer", LOYALTY_MEMBERSHIP_ID);
 
@@ -257,12 +243,6 @@ TEST_F(FormFieldParserTest, ParseFormFieldsFieldsLoyaltyCard) {
 // LOYALTY_MEMBERSHIP_ID is allowlisted to be produced by the field
 // classification even if the form does not have >= 3 recognized field types.
 TEST_F(FormFieldParserTest, ParseStandaloneLoyaltyCardFields) {
-  base::test::ScopedFeatureList scoped_feature_list_;
-  scoped_feature_list_.InitWithFeatures(
-      {features::kAutofillEnableLoyaltyCardsFilling,
-       features::kAutofillEnableEmailOrLoyaltyCardsFilling},
-      {});
-
   // Parse single field loyalty card.
   AddTextFormFieldData("", "frequent-flyer", LOYALTY_MEMBERSHIP_ID);
   EXPECT_EQ(1, ParseStandaloneLoyaltyCardFields());
@@ -279,11 +259,6 @@ TEST_F(FormFieldParserTest, ParseStandaloneLoyaltyCardFields) {
 // Tests that email or loyalty cards fields are parsed as
 // `EMAIL_OR_LOYALTY_MEMBERSHIP_ID`.
 TEST_F(FormFieldParserTest, ParseFormFieldsFieldsEmailOrLoyaltyCard) {
-  base::test::ScopedFeatureList scoped_feature_list_;
-  scoped_feature_list_.InitWithFeatures(
-      {features::kAutofillEnableLoyaltyCardsFilling,
-       features::kAutofillEnableEmailOrLoyaltyCardsFilling},
-      {});
   AddTextFormFieldData("", "Email Or Loyalty Card",
                        EMAIL_OR_LOYALTY_MEMBERSHIP_ID);
   AddTextFormFieldData("", "Password", UNKNOWN_TYPE);
@@ -291,6 +266,35 @@ TEST_F(FormFieldParserTest, ParseFormFieldsFieldsEmailOrLoyaltyCard) {
   // `ParseFormFields` should detect the email or loyalty card field.
   EXPECT_EQ(1, ParseFormFields());
   TestClassificationExpectations();
+}
+
+// Tests that OTP fields are parsed as part of `ParseFormFields` if the feature
+// flag is enabled.
+TEST_F(FormFieldParserTest, ParseFormFieldsOtpWithFeatureFlag) {
+  AddTextFormFieldData("", "Email", EMAIL_ADDRESS);
+  AddTextFormFieldData("", "OTP", ONE_TIME_CODE);
+
+  {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitAndEnableFeature(
+        features::kAutofillEnableOneTimeCodeHeuristics);
+    // Both fields should be detected.
+    EXPECT_EQ(2, ParseFormFields());
+    TestClassificationExpectations();
+  }
+  ClearFieldsAndExpectations();
+
+  AddTextFormFieldData("", "Email", EMAIL_ADDRESS);
+  // We expect it NOT to be parsed when the feature is disabled.
+  AddTextFormFieldData("", "OTP", UNKNOWN_TYPE);
+  {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitAndDisableFeature(
+        features::kAutofillEnableOneTimeCodeHeuristics);
+    // Only the email field should be detected.
+    EXPECT_EQ(1, ParseFormFields());
+    TestClassificationExpectations();
+  }
 }
 
 // Test that `ParseStandaloneCvcField` parses standalone CVC fields.
@@ -418,6 +422,12 @@ TEST_F(FormFieldParserTest, ParseFormRequires3DistinctFieldTypes) {
 }
 
 TEST_F(FormFieldParserTest, ParseStandaloneZipDisabledForUS) {
+  // TODO(crbug.com/501037715): When cleaning up this flag, remove this test
+  // and rename the ParseStandaloneZipEnabledForBR test to make it clear that
+  // the behavior is not country specific.
+  base::test::ScopedFeatureList features;
+  features.InitAndDisableFeature(
+      features::kAutofillSupportStandaloneZipCodeGlobally);
   AddTextFormFieldData("zip", "ZIP", ADDRESS_HOME_ZIP);
   EXPECT_EQ(0, ParseFormFields(GeoIpCountryCode("US")));
 }

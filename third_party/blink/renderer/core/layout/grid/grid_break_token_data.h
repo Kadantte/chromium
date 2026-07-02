@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_LAYOUT_GRID_GRID_BREAK_TOKEN_DATA_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_LAYOUT_GRID_GRID_BREAK_TOKEN_DATA_H_
 
+#include "base/check.h"
 #include "third_party/blink/renderer/core/layout/break_token_algorithm_data.h"
 #include "third_party/blink/renderer/core/layout/gap/gap_geometry.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
@@ -29,8 +30,8 @@ struct GridItemPlacementData {
 
 struct GridBreakTokenData final : BreakTokenAlgorithmData {
   GridBreakTokenData(
-      GridItems&& grid_items,
-      GridLayoutSubtree grid_layout_subtree,
+      GridItems* grid_items,
+      const GridLayoutSubtree* grid_layout_subtree,
       LayoutUnit intrinsic_block_size,
       LayoutUnit offset_in_stitched_container,
       const Vector<GridItemPlacementData>& grid_items_placement_data,
@@ -43,8 +44,8 @@ struct GridBreakTokenData final : BreakTokenAlgorithmData {
       LayoutUnit cumulative_gap_offset_adjustment,
       wtf_size_t first_unprocessed_row_gap_idx)
       : BreakTokenAlgorithmData(kGridData),
-        grid_items(std::move(grid_items)),
-        grid_layout_subtree(std::move(grid_layout_subtree)),
+        grid_items(grid_items),
+        grid_layout_subtree(grid_layout_subtree),
         intrinsic_block_size(intrinsic_block_size),
         offset_in_stitched_container(offset_in_stitched_container),
         grid_items_placement_data(grid_items_placement_data),
@@ -60,13 +61,23 @@ struct GridBreakTokenData final : BreakTokenAlgorithmData {
 
   void Trace(Visitor* visitor) const override {
     visitor->Trace(grid_items);
+    visitor->Trace(grid_layout_subtree);
     visitor->Trace(oof_children);
     visitor->Trace(full_gap_geometry);
     BreakTokenAlgorithmData::Trace(visitor);
   }
 
-  GridItems grid_items;
-  GridLayoutSubtree grid_layout_subtree;
+  wtf_size_t GetTotalRowGapCount() const override {
+    CHECK(full_gap_geometry);
+    return full_gap_geometry->GetMainGaps().size();
+  }
+
+  wtf_size_t GetFirstUnprocessedRowGapIndex() const override {
+    return first_unprocessed_row_gap_idx;
+  }
+
+  Member<GridItems> grid_items;
+  Member<const GridLayoutSubtree> grid_layout_subtree;
   LayoutUnit intrinsic_block_size;
 
   // This is similar to |BreakTokenAlgorithmData::consumed_block_size|, however

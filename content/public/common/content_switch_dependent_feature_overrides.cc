@@ -31,6 +31,12 @@ GetSwitchDependentFeatureOverrides(const base::CommandLine& command_line) {
   } override_info[] = {
       // Overrides for --enable-experimental-web-platform-features.
       {switches::kEnableExperimentalWebPlatformFeatures,
+       std::cref(blink::features::kHTMLProcessingInstruction),
+       base::FeatureList::OVERRIDE_ENABLE_FEATURE},
+      {switches::kEnableExperimentalWebPlatformFeatures,
+       std::cref(blink::features::kJavaScriptImportText),
+       base::FeatureList::OVERRIDE_ENABLE_FEATURE},
+      {switches::kEnableExperimentalWebPlatformFeatures,
        std::cref(net::features::kCookieSameSiteConsidersRedirectChain),
        base::FeatureList::OVERRIDE_ENABLE_FEATURE},
       {switches::kEnableExperimentalWebPlatformFeatures,
@@ -62,6 +68,9 @@ GetSwitchDependentFeatureOverrides(const base::CommandLine& command_line) {
        base::FeatureList::OVERRIDE_ENABLE_FEATURE},
       {switches::kEnableExperimentalWebPlatformFeatures,
        std::cref(net::features::kHstsTopLevelNavigationsOnly),
+       base::FeatureList::OVERRIDE_ENABLE_FEATURE},
+      {switches::kEnableExperimentalWebPlatformFeatures,
+       std::cref(blink::features::kResponsiveIframes),
        base::FeatureList::OVERRIDE_ENABLE_FEATURE},
 
       // Overrides for --enable-experimental-cookie-features.

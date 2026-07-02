@@ -26,6 +26,7 @@
 #include "content/browser/renderer_host/media/video_capture_device_launch_observer.h"
 #include "content/browser/renderer_host/media/video_capture_provider.h"
 #include "content/common/content_export.h"
+#include "content/public/browser/desktop_capture.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/screenlock_observer.h"
 #include "media/base/video_facing.h"
@@ -236,9 +237,19 @@ class CONTENT_EXPORT VideoCaptureManager
       base::OnceCallback<void(DesktopMediaID::Id)> created_callback,
       base::OnceCallback<void(webrtc::DesktopCapturer::Source)> picker_callback,
       base::OnceCallback<void()> cancel_callback,
-      base::OnceCallback<void()> error_callback);
+      base::OnceCallback<void()> error_callback,
+      base::OnceCallback<void(DesktopMediaID::Id)> stop_audio_callback =
+          base::DoNothing());
 
   void CloseNativeScreenCapturePicker(DesktopMediaID device_id);
+
+#if BUILDFLAG(IS_MAC)
+  void GetApplicationAudioCaptureId(
+      DesktopMediaID::Id session_id,
+      base::OnceCallback<void(
+          const std::optional<desktop_capture::ApplicationAudioCaptureId>&)>
+          callback);
+#endif
 
   VideoCaptureProvider& video_capture_provider() {
     return *video_capture_provider_.get();
@@ -368,8 +379,7 @@ class CONTENT_EXPORT VideoCaptureManager
   const std::unique_ptr<VideoCaptureProvider> video_capture_provider_;
   base::RepeatingCallback<void(const std::string&)> emit_log_message_cb_;
 
-  base::ObserverList<media::VideoCaptureObserver>::UncheckedAndDanglingUntriaged
-      capture_observers_;
+  base::ObserverList<media::VideoCaptureObserver> capture_observers_;
 
   // Local cache of the enumerated DeviceInfos. GetDeviceSupportedFormats() will
   // use this list if the device is not started, otherwise it will retrieve the
@@ -387,6 +397,13 @@ class CONTENT_EXPORT VideoCaptureManager
 
   SetDesktopCaptureWindowIdCallback
       set_desktop_capture_window_id_callback_for_testing_;
+
+  // Stores the session IDs of display capture streams in the order they were
+  // started. Used for testing purposes.
+  // TODO(crbug.com/485200165): Remove this once testing is completed and the
+  // bug is fixed.
+  std::vector<base::UnguessableToken> display_capture_session_ids_;
+  base::WeakPtrFactory<VideoCaptureManager> weak_factory_{this};
 };
 
 }  // namespace content

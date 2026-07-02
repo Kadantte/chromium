@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/startup_metric_utils/browser/startup_metric_utils.h"
 
 #include <stddef.h>
@@ -19,6 +14,7 @@
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/dcheck_is_on.h"
 #include "base/location.h"
 #include "base/metrics/histogram_functions.h"
@@ -33,6 +29,7 @@
 #include <windows.h>
 #include <winternl.h>
 
+#include "base/byte_size.h"
 #include "base/win/windows_handle_util.h"
 
 namespace {
@@ -137,6 +134,8 @@ void EmitHistogramWithTemperature(void (*histogram_function)(std::string_view,
 
 namespace startup_metric_utils {
 
+BrowserStartupMetricRecorder::BrowserStartupMetricRecorder() = default;
+
 void BrowserStartupMetricRecorder::EmitHistogramWithTemperatureAndTraceEvent(
     void (*histogram_function)(std::string_view, base::TimeDelta),
     const char* histogram_basename,
@@ -145,6 +144,31 @@ void BrowserStartupMetricRecorder::EmitHistogramWithTemperatureAndTraceEvent(
   EmitHistogramWithTemperature(histogram_function, histogram_basename,
                                end_ticks - begin_ticks);
   GetCommon().EmitTraceEvent(histogram_basename, begin_ticks, end_ticks);
+}
+
+void BrowserStartupMetricRecorder::EmitBrowserWindowDisplayHistogram() {
+  if (is_browser_window_display_metric_emitted_) {
+    return;
+  }
+
+  // The metric requires the message loop to have started so that the startup
+  // temperature evaluation has run.
+  if (browser_window_display_ticks_.is_null() ||
+      message_loop_start_ticks_.is_null()) {
+    return;
+  }
+
+  // Skip logging if the main window startup was interrupted, e.g., by
+  // --silent-launch, profile picker, or bad flags prompt.
+  if (!ShouldLogStartupHistogram()) {
+    return;
+  }
+
+  is_browser_window_display_metric_emitted_ = true;
+
+  EmitHistogramWithTemperatureAndTraceEvent(
+      &base::UmaHistogramLongTimes, "Startup.BrowserWindowDisplay",
+      GetCommon().application_start_ticks_, browser_window_display_ticks_);
 }
 
 BrowserStartupMetricRecorder& GetBrowser() {
@@ -170,10 +194,9 @@ BrowserStartupMetricRecorder::GetHardFaultCountForCurrentProcess() {
   // processes on the entire system, and this can change between calls. Retry
   // a small handful of times growing the buffer along the way.
   // NOTE: The actual required size depends entirely on the number of
-  // processes
-  //       and threads running on the system. The initial guess suffices for
-  //       ~100s of processes and ~1000s of threads.
-  std::vector<uint8_t> buffer(32 * 1024);
+  // processes and threads running on the system. The initial guess suffices for
+  // ~100s of processes and ~1000s of threads.
+  std::vector<uint8_t> buffer(base::KiBU(32).InBytes());
   constexpr int kMaxNumBufferResize = 2;
   int num_buffer_resize = 0;
   for (;;) {
@@ -192,16 +215,23 @@ BrowserStartupMetricRecorder::GetHardFaultCountForCurrentProcess() {
     if (return_length > buffer.size()) {
       // Abort if a large size is required for the buffer. It is undesirable
       // to fill a large buffer just to record histograms.
-      constexpr ULONG kMaxLength = 512 * 1024;
+#if defined(_WIN64)
+      constexpr ULONG kMaxLength =
+          base::MiBU(2).InBytes();  // 2 MB for 64-bit systems
+#else
+      constexpr ULONG kMaxLength =
+          base::KiBU(512).InBytes();  // 512 KB for 32-bit systems
+#endif
       if (return_length >= kMaxLength) {
         return std::nullopt;
       }
 
       // Resize the buffer and retry, if the buffer hasn't already been
-      // resized too many times.
+      // resized too many times. Use double the return length to have padding
+      // for new threads spawned in the meantime.
       if (num_buffer_resize < kMaxNumBufferResize) {
         ++num_buffer_resize;
-        buffer.resize(return_length);
+        buffer.resize(std::min(return_length * 2, kMaxLength));
         continue;
       }
     }
@@ -220,7 +250,8 @@ BrowserStartupMetricRecorder::GetHardFaultCountForCurrentProcess() {
   while (index < buffer.size()) {
     DCHECK_LE(index + sizeof(SYSTEM_PROCESS_INFORMATION_EX), buffer.size());
     SYSTEM_PROCESS_INFORMATION_EX* proc_info =
-        reinterpret_cast<SYSTEM_PROCESS_INFORMATION_EX*>(buffer.data() + index);
+        UNSAFE_TODO(reinterpret_cast<SYSTEM_PROCESS_INFORMATION_EX*>(
+            buffer.data() + index));
     if (base::win::HandleToUint32(proc_info->UniqueProcessId) == proc_id) {
       return proc_info->HardFaultCount;
     }
@@ -247,6 +278,10 @@ void BrowserStartupMetricRecorder::ResetSessionForTesting() {
   is_privacy_sandbox_attestations_component_ready_recorded_ = false;
   is_privacy_sandbox_attestations_first_check_recorded_ = false;
   is_first_run_ = false;
+  is_browser_window_display_metric_emitted_ = false;
+  did_record_startup_fcp_ = false;
+  did_record_startup_lcp_ = false;
+  startup_fcp_navigation_start_ = base::TimeTicks();
 }
 
 bool BrowserStartupMetricRecorder::WasMainWindowStartupInterrupted() const {
@@ -301,11 +336,7 @@ void BrowserStartupMetricRecorder::RecordBrowserMainMessageLoopStart(
   GetCommon().AddStartupEventsForTelemetry();
 
   // Record values stored prior to startup temperature evaluation.
-  if (ShouldLogStartupHistogram() && !browser_window_display_ticks_.is_null()) {
-    EmitHistogramWithTemperatureAndTraceEvent(
-        &base::UmaHistogramLongTimes, "Startup.BrowserWindowDisplay",
-        GetCommon().application_start_ticks_, browser_window_display_ticks_);
-  }
+  EmitBrowserWindowDisplayHistogram();
 
   // Process creation to application start. See comment above
   // RecordApplicationStart().
@@ -352,6 +383,7 @@ void BrowserStartupMetricRecorder::RecordBrowserWindowDisplay(
     base::TimeTicks ticks) {
   DCHECK(!ticks.is_null());
 
+  // Return if it has already been recorded.
   if (!browser_window_display_ticks_.is_null()) {
     return;
   }
@@ -364,6 +396,8 @@ void BrowserStartupMetricRecorder::RecordBrowserWindowDisplay(
   // these cases, the value will not be recorded, which is the desired behavior
   // for a non-conventional launch.
   browser_window_display_ticks_ = ticks;
+
+  EmitBrowserWindowDisplayHistogram();
 }
 
 void BrowserStartupMetricRecorder::RecordBrowserWindowFirstPaintTicks(
@@ -396,6 +430,75 @@ void BrowserStartupMetricRecorder::RecordFirstWebContentsNonEmptyPaint(
       &base::UmaHistogramLongTimes100,
       "Startup.BrowserMessageLoopStart.To.NonEmptyPaint2",
       now - message_loop_start_ticks_);
+}
+
+void BrowserStartupMetricRecorder::
+    RecordFirstWebContentsNonEmptyPaintForOsLaunch(base::TimeTicks now) {
+  const base::TimeTicks web_contents_start_ticks = GetWebContentsStartTicks();
+  DCHECK(!web_contents_start_ticks.is_null());
+  GetCommon().AssertFirstCallInSession(FROM_HERE);
+
+  if (!ShouldLogStartupHistogram()) {
+    return;
+  }
+
+  base::UmaHistogramLongTimes100(
+      "Startup.FirstWebContents.NonEmptyPaint3.AutoLaunchByOs",
+      now - web_contents_start_ticks);
+}
+
+void BrowserStartupMetricRecorder::RecordFirstWebContentsFirstContentfulPaint(
+    base::TimeTicks navigation_start,
+    base::TimeTicks fcp_ticks) {
+  if (did_record_startup_fcp_) {
+    return;
+  }
+
+  const base::TimeTicks web_contents_start_ticks = GetWebContentsStartTicks();
+  if (web_contents_start_ticks.is_null()) {
+    return;
+  }
+
+  if (!ShouldLogStartupHistogram()) {
+    return;
+  }
+
+  did_record_startup_fcp_ = true;
+  startup_fcp_navigation_start_ = navigation_start;
+
+  EmitHistogramWithTemperatureAndTraceEvent(
+      &base::UmaHistogramLongTimes100,
+      "Startup.FirstWebContents.FirstContentfulPaint", web_contents_start_ticks,
+      fcp_ticks);
+}
+
+void BrowserStartupMetricRecorder::RecordFirstWebContentsLargestContentfulPaint(
+    base::TimeTicks navigation_start,
+    base::TimeTicks lcp_ticks) {
+  // Only record LCP if FCP was already recorded for the same page load.
+  if (!did_record_startup_fcp_ || did_record_startup_lcp_) {
+    return;
+  }
+
+  if (navigation_start != startup_fcp_navigation_start_) {
+    return;
+  }
+
+  const base::TimeTicks web_contents_start_ticks = GetWebContentsStartTicks();
+  if (web_contents_start_ticks.is_null()) {
+    return;
+  }
+
+  if (!ShouldLogStartupHistogram()) {
+    return;
+  }
+
+  did_record_startup_lcp_ = true;
+
+  EmitHistogramWithTemperatureAndTraceEvent(
+      &base::UmaHistogramLongTimes100,
+      "Startup.FirstWebContents.LargestContentfulPaint",
+      web_contents_start_ticks, lcp_ticks);
 }
 
 void BrowserStartupMetricRecorder::RecordFirstWebContentsMainNavigationStart(

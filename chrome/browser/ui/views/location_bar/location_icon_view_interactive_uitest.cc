@@ -49,16 +49,16 @@ class LocationIconViewTest : public InProcessBrowserTest {
 
 #if BUILDFLAG(IS_MAC)
   void EnterFullscreenMode() {
-    bool initial_fullscreen = browser()->window()->IsFullscreen();
+    bool initial_fullscreen = browser()->GetWindow()->IsFullscreen();
     EXPECT_FALSE(initial_fullscreen);
 
     auto* fullscreen_controller =
-        browser()->GetExclusiveAccessManager()->fullscreen_controller();
+        ExclusiveAccessManager::From(browser())->fullscreen_controller();
     fullscreen_controller->ToggleBrowserFullscreenMode(/*user_initiated=*/true);
 
     // Wait for fullscreen transition.
     ASSERT_TRUE(base::test::RunUntil([&]() -> bool {
-      return browser()->window()->IsFullscreen();
+      return browser()->GetWindow()->IsFullscreen();
     })) << "Failed to enter fullscreen mode";
   }
 
@@ -66,7 +66,8 @@ class LocationIconViewTest : public InProcessBrowserTest {
     LocationBarView* location_bar = GetLocationBarView();
     ASSERT_TRUE(location_bar) << "Failed to get LocationBarView";
 
-    location_bar->FocusLocation(/*is_user_initiated=*/true);
+    location_bar->FocusLocation(/*is_user_initiated=*/true,
+                                /*clear_focus_if_failed=*/false);
 
     // Wait for focus to be set.
     ASSERT_TRUE(base::test::RunUntil([&]() -> bool {
@@ -75,16 +76,16 @@ class LocationIconViewTest : public InProcessBrowserTest {
   }
 
   void ExitFullscreenMode() {
-    bool initial_fullscreen = browser()->window()->IsFullscreen();
+    bool initial_fullscreen = browser()->GetWindow()->IsFullscreen();
     EXPECT_TRUE(initial_fullscreen);
 
     auto* fullscreen_controller =
-        browser()->GetExclusiveAccessManager()->fullscreen_controller();
+        ExclusiveAccessManager::From(browser())->fullscreen_controller();
     fullscreen_controller->ToggleBrowserFullscreenMode(/*user_initiated=*/true);
 
     // Wait for fullscreen exit.
     ASSERT_TRUE(base::test::RunUntil([&]() -> bool {
-      return !browser()->window()->IsFullscreen();
+      return !browser()->GetWindow()->IsFullscreen();
     })) << "Failed to exit fullscreen mode";
   }
 #endif  // BUILDFLAG(IS_MAC)
@@ -153,7 +154,7 @@ IN_PROC_BROWSER_TEST_F(LocationIconViewTest,
   ExitFullscreenMode();
 
   // Expect no crash and fullscreen to be exited.
-  EXPECT_FALSE(browser()->window()->IsFullscreen());
+  EXPECT_FALSE(browser()->GetWindow()->IsFullscreen());
 }
 #endif  // BUILDFLAG(IS_MAC)
 

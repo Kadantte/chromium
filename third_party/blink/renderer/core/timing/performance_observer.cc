@@ -89,6 +89,10 @@ PerformanceEntryType PerformanceObserver::supportedEntryTypeMask(
   if (RuntimeEnabledFeatures::ContainerTimingEnabled(execution_context)) {
     mask |= PerformanceEntry::kContainer;
   }
+  if (RuntimeEnabledFeatures::ScrollPerformanceTimingEnabled(
+          execution_context)) {
+    mask |= PerformanceEntry::kScroll;
+  }
   return mask;
 }
 
@@ -149,6 +153,9 @@ Vector<AtomicString> PerformanceObserver::supportedEntryTypes(
   }
   if (mask & PerformanceEntry::kResource) {
     supportedEntryTypes.push_back(performance_entry_names::kResource);
+  }
+  if (mask & PerformanceEntry::kScroll) {
+    supportedEntryTypes.push_back(performance_entry_names::kScroll);
   }
   if (mask & PerformanceEntry::kSoftNavigation) {
     supportedEntryTypes.push_back(performance_entry_names::kSoftNavigation);
@@ -275,7 +282,7 @@ void PerformanceObserver::observe(ScriptState* script_state,
     if (observer_init->buffered()) {
       // Append all entries of this type to the current performance_entries_
       // to be returned on the next callback.
-      performance_entries_.AppendVector(performance_->getBufferedEntriesByType(
+      performance_entries_.append_range(performance_->getBufferedEntriesByType(
           AtomicString(observer_init->type())));
       std::sort(performance_entries_.begin(), performance_entries_.end(),
                 PerformanceEntry::StartTimeCompareLessThan);

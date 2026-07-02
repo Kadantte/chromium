@@ -23,6 +23,7 @@
 #include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "base/uuid.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_i18n_api.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile_test_api.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
@@ -302,7 +303,7 @@ TEST_F(WebDataServiceAutofillTest, ProfileRemove) {
 // Tests that if a profile is hidden in autofill, it is removed from the local
 // database.
 TEST_F(WebDataServiceAutofillTest, ProfileHideInAutofill) {
-  AutofillProfile profile = autofill::test::GetFullProfile();
+  AutofillProfile profile = test::GetFullProfile();
   test_api(profile).set_record_type(AutofillProfile::RecordType::kAccount);
 
   // Add a profile.

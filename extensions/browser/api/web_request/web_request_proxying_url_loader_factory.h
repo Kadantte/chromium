@@ -23,7 +23,7 @@
 #include "extensions/browser/api/web_request/web_request_api.h"
 #include "extensions/browser/api/web_request/web_request_info.h"
 #include "extensions/buildflags/buildflags.h"
-#include "ipc/constants.mojom.h"
+#include "ipc/constants.mojom-forward.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -35,6 +35,7 @@
 #include "net/ssl/ssl_info.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
+#include "services/network/public/cpp/http_request_headers_update_params.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
@@ -105,9 +106,7 @@ class WebRequestProxyingURLLoaderFactory
 
     // network::mojom::URLLoader:
     void FollowRedirect(
-        const std::vector<std::string>& removed_headers,
-        const net::HttpRequestHeaders& modified_headers,
-        const net::HttpRequestHeaders& modified_cors_exempt_headers,
+        network::HttpRequestHeadersUpdateParams headers_update_params,
         const std::optional<GURL>& new_url) override;
     void SetPriority(net::RequestPriority priority,
                      int32_t intra_priority_value) override;
@@ -136,7 +135,8 @@ class WebRequestProxyingURLLoaderFactory
         mojo::PendingReceiver<network::mojom::TrustedHeaderClient> receiver);
 
     // network::mojom::TrustedHeaderClient:
-    void OnBeforeSendHeaders(const net::HttpRequestHeaders& headers,
+    void OnBeforeSendHeaders(const GURL& request_url,
+                             const net::HttpRequestHeaders& headers,
                              OnBeforeSendHeadersCallback callback) override;
     void OnHeadersReceived(const std::string& headers,
                            const net::IPEndPoint& endpoint,
@@ -280,9 +280,7 @@ class WebRequestProxyingURLLoaderFactory
       FollowRedirectParams(const FollowRedirectParams&) = delete;
       FollowRedirectParams& operator=(const FollowRedirectParams&) = delete;
       ~FollowRedirectParams();
-      std::vector<std::string> removed_headers;
-      net::HttpRequestHeaders modified_headers;
-      net::HttpRequestHeaders modified_cors_exempt_headers;
+      network::HttpRequestHeadersUpdateParams headers_update_params;
       std::optional<GURL> new_url;
     };
     std::unique_ptr<FollowRedirectParams> pending_follow_redirect_params_;

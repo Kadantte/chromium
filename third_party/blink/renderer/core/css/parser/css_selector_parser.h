@@ -18,6 +18,7 @@
 
 namespace blink {
 
+class ActiveNavigationCondition;
 class CSSParserContext;
 class CSSParserTokenStream;
 class CSSParserObserver;
@@ -104,6 +105,9 @@ class CORE_EXPORT CSSSelectorParser {
       const StyleRule* parent_rule_for_nesting,
       StyleSheetContents*,
       HeapVector<CSSSelector>&);
+
+  static ActiveNavigationCondition* ParseActiveNavigationCondition(
+      CSSParserTokenStream&);
 
  private:
   enum ResultFlag {
@@ -331,7 +335,8 @@ class CORE_EXPORT CSSSelectorParser {
       DCHECK_GE(vector_.size(), initial_size_);
       // SAFETY: Performance sensitive. Depends upon the invariant
       // that initial_size_ is always in range.
-      return UNSAFE_BUFFERS({vector_.begin() + initial_size_, vector_.end()});
+      return UNSAFE_BUFFERS(
+          {base::unchecked, vector_.begin() + initial_size_, vector_.end()});
     }
 
     // Make sure the added elements are left on the vector after

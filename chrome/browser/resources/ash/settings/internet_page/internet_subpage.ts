@@ -419,7 +419,7 @@ export class SettingsInternetSubpageElement extends
       if (this.shouldShowCellularNetworkList_() && this.isDeviceInhibited_()) {
         this.showSpinner = false;
       } else {
-        this.showSpinner = !!this.deviceState.scanning;
+        this.showSpinner = this.deviceState.scanning;
       }
     }
 
@@ -811,12 +811,12 @@ export class SettingsInternetSubpageElement extends
     }
 
     if (state.type === NetworkType.kCellular) {
-      return !!this.globalPolicy.allowOnlyPolicyCellularNetworks;
+      return this.globalPolicy.allowOnlyPolicyCellularNetworks;
     }
 
-    return !!this.globalPolicy.allowOnlyPolicyWifiNetworksToConnect ||
-        (!!this.globalPolicy.allowOnlyPolicyWifiNetworksToConnectIfAvailable &&
-         !!this.deviceState && !!this.deviceState.managedNetworkAvailable) ||
+    return this.globalPolicy.allowOnlyPolicyWifiNetworksToConnect ||
+        (this.globalPolicy.allowOnlyPolicyWifiNetworksToConnectIfAvailable &&
+         !!this.deviceState && this.deviceState.managedNetworkAvailable) ||
         (!!this.globalPolicy.blockedHexSsids &&
          this.globalPolicy.blockedHexSsids.includes(
              state.typeState.wifi!.hexSsid));
@@ -911,8 +911,8 @@ export class SettingsInternetSubpageElement extends
     // display a message stating that scanning is in progress. If a scan has
     // already completed and there are still no networks present, this implies
     // that there has been sufficient time to find a network, so display a
-    // messages stating that there are no networks. See https://crbug.com/974169
-    // for more details.
+    // messages stating that there are no networks. See
+    // https://crbug.com/41464934 for more details.
     return this.hasCompletedScanSinceLastEnabled_ ?
         this.i18n('internetNoNetworks') :
         this.i18n('networkScanningLabel');

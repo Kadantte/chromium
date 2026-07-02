@@ -22,8 +22,10 @@
 
 #include "third_party/blink/renderer/core/xml/xslt_processor.h"
 
+#include "base/command_line.h"
 #include "base/notreached.h"
 #include "third_party/blink/public/common/features_generated.h"
+#include "third_party/blink/public/common/switches.h"
 #include "third_party/blink/renderer/core/dom/document_encoding_data.h"
 #include "third_party/blink/renderer/core/dom/document_fragment.h"
 #include "third_party/blink/renderer/core/dom/document_init.h"
@@ -73,9 +75,18 @@ void AddXSLTConsoleWarning(Document& document, const String& message) {
 }
 }  // namespace
 
+bool XSLTProcessor::IsXSLTEnabled(const ExecutionContext* context) {
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          blink::switches::kXSLTEnabledPolicy)) {
+    return base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+               blink::switches::kXSLTEnabledPolicy) == "true";
+  }
+  return RuntimeEnabledFeatures::XSLTEnabled(context);
+}
+
 void XSLTProcessor::ReportXSLTDisabled(Document& document,
                                        ExceptionState* exception_state) {
-  CHECK(!RuntimeEnabledFeatures::XSLTEnabled());
+  CHECK(!IsXSLTEnabled(document.GetExecutionContext()));
   if (RuntimeEnabledFeatures::XSLTSpecialTrialEnabled()) {
     // Special trial run of XSLT removal (pre-stable channels, via Finch).
     AddXSLTConsoleWarning(
@@ -108,7 +119,7 @@ XSLTProcessor::XSLTProcessor(PassKey,
                              WebFeature feature,
                              ExceptionState& exception_state)
     : document_(&document) {
-  if (!RuntimeEnabledFeatures::XSLTEnabled()) {
+  if (!IsXSLTEnabled(document.GetExecutionContext())) {
     // Ordinarily we will not get here, since in this case the runtime enabled
     // feature will be disabled, which removes the XSLTProcessor from IDL.
     // However, there are corner cases, such as that Finch has disabled XSLT
@@ -139,7 +150,7 @@ Document* XSLTProcessor::CreateDocumentFromSource(
   if (!source_node->GetExecutionContext())
     return nullptr;
 
-  KURL url = NullURL();
+  KURL url = NullUrl();
   Document* owner_document = &source_node->GetDocument();
   if (owner_document == source_node)
     url = owner_document->Url();

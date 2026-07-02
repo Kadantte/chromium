@@ -11,8 +11,9 @@
 #include "chrome/browser/profiles/profile_window.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/toasts/toast_controller.h"
 #include "components/pref_registry/pref_registry_syncable.h"
@@ -64,9 +65,9 @@ bool MaybeMigrateUser(Profile* profile) {
   return true;
 }
 
-bool MaybeShowToast(Browser* browser) {
+bool MaybeShowToast(BrowserWindowInterface* browser) {
   ToastController* const toast_controller =
-      browser->browser_window_features()->toast_controller();
+      browser->GetFeatures().toast_controller();
   if (!toast_controller) {
     return false;
   }
@@ -129,7 +130,9 @@ bool DiceMigrationService::ForceMigrateUserIfEligible() {
 
   // Trigger the timer to show the toast.
   auto show_toast = [](Profile* profile) {
-    Browser* browser = chrome::FindBrowserWithProfile(profile);
+    BrowserWindowInterface* browser =
+        ProfileBrowserCollection::GetForProfile(profile)
+            ->GetLastActiveBrowser();
     base::UmaHistogramBoolean(
         kForcedSigninBrowserInstanceAvailableAfterTimerHistogram, browser);
     if (browser) {
@@ -140,7 +143,9 @@ bool DiceMigrationService::ForceMigrateUserIfEligible() {
       // toast.
       // This object deletes itself when done.
       new profiles::BrowserAddedForProfileObserver(
-          profile, base::BindOnce(base::IgnoreResult(&MaybeShowToast)));
+          profile, base::BindOnce([](Browser* b) {
+            MaybeShowToast(b);
+          }));
     }
   };
   CHECK(!toast_trigger_timer_.IsRunning());

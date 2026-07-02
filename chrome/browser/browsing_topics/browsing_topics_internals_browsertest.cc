@@ -353,6 +353,7 @@ class BrowsingTopicsDisabledInternalsBrowserTest
             network::features::kBrowsingTopics,
             blink::features::kBrowsingTopicsParameters,
             features::kPrivacySandboxAdsAPIsOverride,
+            privacy_sandbox::kPrivacySandboxAdPrivacyUxDeprecation,
         });
   }
 
@@ -367,7 +368,6 @@ IN_PROC_BROWSER_TEST_F(BrowsingTopicsDisabledInternalsBrowserTest,
 
   EXPECT_EQ(GetFeaturesAndParametersTabContent(), R"(BrowsingTopics: disabled
 PrivacySandboxAdsAPIsOverride: disabled
-OverridePrivacySandboxSettingsLocalTesting: disabled
 BrowsingTopicsBypassIPIsPubliclyRoutableCheck: disabled
 BrowsingTopicsDocumentAPI: enabled
 Configuration version: 2
@@ -432,7 +432,8 @@ class BrowsingTopicsInternalsBrowserTest
          {features::kPrivacySandboxAdsAPIsOverride, {}},
          {privacy_sandbox::kPrivacySandboxSettings4,
           {{"consent-required", "true"}}}},
-        /*disabled_features=*/{});
+        /*disabled_features=*/{
+            privacy_sandbox::kPrivacySandboxAdPrivacyUxDeprecation});
   }
 
   // BrowserTestBase::SetUpInProcessBrowserTestFixture
@@ -466,7 +467,6 @@ IN_PROC_BROWSER_TEST_F(BrowsingTopicsInternalsBrowserTest, FeaturesEnabled) {
 
   EXPECT_EQ(GetFeaturesAndParametersTabContent(), R"(BrowsingTopics: enabled
 PrivacySandboxAdsAPIsOverride: enabled
-OverridePrivacySandboxSettingsLocalTesting: disabled
 BrowsingTopicsBypassIPIsPubliclyRoutableCheck: disabled
 BrowsingTopicsDocumentAPI: enabled
 Configuration version: 2
@@ -803,9 +803,7 @@ IN_PROC_BROWSER_TEST_F(BrowsingTopicsInternalsBrowserTest,
   auto* privacy_sandbox_service =
       PrivacySandboxServiceFactory::GetForProfile(browser()->profile());
 
-  privacy_sandbox_service->PromptActionOccurred(
-      PrivacySandboxService::PromptAction::kConsentAccepted,
-      PrivacySandboxService::SurfaceType::kDesktop);
+  privacy_sandbox_service->TopicsToggleChanged(true);
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), GURL(kBrowsingTopicsInternalsConsentInfoUrl)));
@@ -813,7 +811,7 @@ IN_PROC_BROWSER_TEST_F(BrowsingTopicsInternalsBrowserTest,
   auto consent_string = GetConsentInfoTabContent();
   auto expected_string = BuildExpectedConsentInfoString(
       IDS_PRIVACY_SANDBOX_TOPICS_CONSENT_ACTIVE,
-      IDS_PRIVACY_SANDBOX_TOPICS_CONSENT_UPDATE_SOURCE_CONFIRMATION);
+      IDS_PRIVACY_SANDBOX_TOPICS_CONSENT_UPDATE_SOURCE_SETTINGS);
 
   EXPECT_EQ(expected_string, consent_string);
 }

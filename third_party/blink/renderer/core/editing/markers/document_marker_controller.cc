@@ -31,6 +31,7 @@
 #include <algorithm>
 
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
+#include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/frame_request_callback_collection.h"
 #include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/dom/node_traversal.h"
@@ -47,6 +48,8 @@
 #include "third_party/blink/renderer/core/editing/markers/glic_marker_list_impl.h"
 #include "third_party/blink/renderer/core/editing/markers/grammar_marker.h"
 #include "third_party/blink/renderer/core/editing/markers/grammar_marker_list_impl.h"
+#include "third_party/blink/renderer/core/editing/markers/preview_stylus_gesture_marker.h"
+#include "third_party/blink/renderer/core/editing/markers/preview_stylus_gesture_marker_list_impl.h"
 #include "third_party/blink/renderer/core/editing/markers/sorted_document_marker_list_editor.h"
 #include "third_party/blink/renderer/core/editing/markers/spelling_marker.h"
 #include "third_party/blink/renderer/core/editing/markers/spelling_marker_list_impl.h"
@@ -92,6 +95,8 @@ DocumentMarker::MarkerTypeIndex MarkerTypeToMarkerIndex(
       return DocumentMarker::kCustomHighlightMarkerIndex;
     case DocumentMarker::kGlic:
       return DocumentMarker::kGlicMarkerIndex;
+    case DocumentMarker::kPreviewStylusGesture:
+      return DocumentMarker::kPreviewStylusGestureMarkerIndex;
   }
 
   NOTREACHED();
@@ -117,6 +122,8 @@ DocumentMarkerList* CreateListForType(DocumentMarker::MarkerType type) {
       return MakeGarbageCollected<CustomHighlightMarkerListImpl>();
     case DocumentMarker::kGlic:
       return MakeGarbageCollected<GlicMarkerListImpl>();
+    case DocumentMarker::kPreviewStylusGesture:
+      return MakeGarbageCollected<PreviewStylusGestureMarkerListImpl>();
   }
 
   NOTREACHED();
@@ -287,6 +294,17 @@ void DocumentMarkerController::AddCompositionMarker(
                     });
 }
 
+void DocumentMarkerController::AddPreviewStylusGestureMarker(
+    const EphemeralRange& range,
+    Color background_color) {
+  DCHECK(!document_->NeedsLayoutTreeUpdate());
+  AddMarkerInternal(range,
+                    [background_color](int start_offset, int end_offset) {
+                      return MakeGarbageCollected<PreviewStylusGestureMarker>(
+                          start_offset, end_offset, background_color);
+                    });
+}
+
 void DocumentMarkerController::AddActiveSuggestionMarker(
     const EphemeralRange& range,
     Color underline_color,
@@ -325,13 +343,25 @@ void DocumentMarkerController::AddTextFragmentMarker(
 void DocumentMarkerController::AddCustomHighlightMarker(
     const EphemeralRange& range,
     const String& highlight_name,
-    const Member<Highlight> highlight) {
+    const Member<Highlight> highlight,
+    base::FunctionRef<void(const Element&)>* on_element_node) {
   DCHECK(!document_->NeedsLayoutTreeUpdate());
+  // When the caller wants to observe non-Text nodes the range crosses (e.g.
+  // to track replaced elements like <img>), emit an object replacement
+  // character for each replaced element so this single TextIterator pass
+  // surfaces them.
+  const TextIteratorBehavior behavior =
+      on_element_node ? TextIteratorBehavior::Builder()
+                            .SetEmitsObjectReplacementCharacter(true)
+                            .Build()
+                      : TextIteratorBehavior();
   AddMarkerInternal(
-      range, [highlight_name, highlight](int start_offset, int end_offset) {
+      range,
+      [highlight_name, highlight](int start_offset, int end_offset) {
         return MakeGarbageCollected<CustomHighlightMarker>(
             start_offset, end_offset, highlight_name, highlight);
-      });
+      },
+      behavior, on_element_node);
 }
 
 void DocumentMarkerController::AddGlicMarker(const EphemeralRange& range) {
@@ -381,7 +411,8 @@ void DocumentMarkerController::RemoveMarkersInRange(
 void DocumentMarkerController::AddMarkerInternal(
     const EphemeralRange& range,
     base::FunctionRef<DocumentMarker*(int, int)> create_marker_from_offsets,
-    const TextIteratorBehavior& iterator_behavior) {
+    const TextIteratorBehavior& iterator_behavior,
+    base::FunctionRef<void(const Element&)>* on_element_node) {
   DocumentMarkerGroup* new_marker_group =
       MakeGarbageCollected<DocumentMarkerGroup>();
   for (TextIterator marked_text(range.StartPosition(), range.EndPosition(),
@@ -406,6 +437,17 @@ void DocumentMarkerController::AddMarkerInternal(
     // newlines)
     const auto* text_node = DynamicTo<Text>(marked_text.CurrentContainer());
     if (!text_node) {
+      // With object replacement characters enabled, the iterator surfaces
+      // replaced elements here: the current container is the parent (so it is
+      // not a Text), while GetNode() resolves to the child at the current
+      // offset (the replaced element itself, e.g. an <img>). Report that
+      // element so callers (e.g. the highlight registry) can track replaced
+      // elements covered by the range without a second tree walk.
+      if (on_element_node) {
+        if (const auto* element = DynamicTo<Element>(marked_text.GetNode())) {
+          (*on_element_node)(*element);
+        }
+      }
       continue;
     }
 
@@ -853,7 +895,7 @@ DocumentMarkerVector DocumentMarkerController::MarkersFor(
       continue;
     }
 
-    result.AppendVector(list->GetMarkers());
+    result.append_range(list->GetMarkers());
   }
 
   std::sort(result.begin(), result.end(),
@@ -883,7 +925,7 @@ DocumentMarkerVector DocumentMarkerController::Markers() const {
     }
     for (const auto& node_markers : *marker_map) {
       DocumentMarkerList* list = node_markers.value;
-      result.AppendVector(list->GetMarkers());
+      result.append_range(list->GetMarkers());
     }
   }
   std::sort(result.begin(), result.end(),
@@ -938,7 +980,7 @@ DocumentMarkerVector DocumentMarkerController::ComputeMarkersToPaint(
   if (suggestion_markers.empty()) {
     // If there are no suggestion markers, we can return early as a minor
     // performance optimization.
-    markers_to_paint.AppendVector(MarkersFor(
+    markers_to_paint.append_range(MarkersFor(
         text, DocumentMarker::MarkerTypes::AllBut(
                   DocumentMarker::MarkerTypes(DocumentMarker::kSuggestion |
                                               DocumentMarker::kCustomHighlight))
@@ -948,8 +990,9 @@ DocumentMarkerVector DocumentMarkerController::ComputeMarkersToPaint(
 
   const DocumentMarkerVector& markers_overridden_by_suggestion_markers =
       MarkersFor(text,
-                 DocumentMarker::MarkerTypes(DocumentMarker::kComposition |
-                                             DocumentMarker::kSpelling)
+                 DocumentMarker::MarkerTypes(
+                     DocumentMarker::kComposition | DocumentMarker::kSpelling |
+                     DocumentMarker::kPreviewStylusGesture)
                      .Subtract(excluded_highlight_pseudos));
 
   Vector<unsigned> suggestion_starts;
@@ -997,14 +1040,15 @@ DocumentMarkerVector DocumentMarkerController::ComputeMarkersToPaint(
     markers_to_paint.push_back(marker);
   }
 
-  markers_to_paint.AppendVector(suggestion_markers);
+  markers_to_paint.append_range(suggestion_markers);
 
-  markers_to_paint.AppendVector(MarkersFor(
+  markers_to_paint.append_range(MarkersFor(
       text,
       DocumentMarker::MarkerTypes::AllBut(
           DocumentMarker::MarkerTypes(
               DocumentMarker::kComposition | DocumentMarker::kSpelling |
-              DocumentMarker::kSuggestion | DocumentMarker::kCustomHighlight))
+              DocumentMarker::kSuggestion | DocumentMarker::kCustomHighlight |
+              DocumentMarker::kPreviewStylusGesture))
           .Subtract(excluded_highlight_pseudos)));
 
   return markers_to_paint;
@@ -1039,7 +1083,7 @@ Vector<gfx::Rect> DocumentMarkerController::LayoutRectsForTextMatchMarkers() {
     if (!list) {
       continue;
     }
-    result.AppendVector(To<TextMatchMarkerListImpl>(list)->LayoutRects(node));
+    result.append_range(To<TextMatchMarkerListImpl>(list)->LayoutRects(node));
   }
 
   return result;

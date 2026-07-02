@@ -11,14 +11,11 @@
 #include "base/strings/escape.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
+#include "components/download/public/common/download_item.h"
 #include "components/enterprise/connectors/core/connectors_prefs.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "ui/gfx/range/range.h"
-
-#if BUILDFLAG(USE_BLINK)
-#include "components/download/public/common/download_item.h"  // nogncheck
-#endif  // BUILDFLAG(USE_BLINK)
 
 namespace enterprise_connectors {
 
@@ -49,6 +46,10 @@ inline constexpr auto kUmaEnumToStringMap =
          kBrowserCrashUmaMetricName},
         {EnterpriseReportingEventType::kExtensionTelemetryEvent,
          kExtensionTelemetryUmaMetricName},
+        {EnterpriseReportingEventType::kSaasUsageReportEvent,
+         kSaasUsageUmaMetricName},
+        {EnterpriseReportingEventType::kBrowserLaunchEvent,
+         kBrowserLaunchUmaMetricName},
     });
 
 inline constexpr auto kEventCaseToUmaEnumMap =
@@ -76,6 +77,10 @@ inline constexpr auto kEventCaseToUmaEnumMap =
          EnterpriseReportingEventType::kBrowserCrashEvent},
         {EventCase::kExtensionTelemetryEvent,
          EnterpriseReportingEventType::kExtensionTelemetryEvent},
+        {EventCase::kSaasUsageReportEvent,
+         EnterpriseReportingEventType::kSaasUsageReportEvent},
+        {EventCase::kBrowserLaunchEvent,
+         EnterpriseReportingEventType::kBrowserLaunchEvent},
     });
 
 ContentAnalysisAcknowledgement::FinalAction RuleActionToAckAction(
@@ -118,6 +123,8 @@ const char* AnalysisConnectorPref(AnalysisConnector connector) {
 #if BUILDFLAG(IS_CHROMEOS)
       return kOnFileTransferPref;
 #endif
+    case AnalysisConnector::DATA_COPIED:
+      return kOnTextCopiedPref;
     case AnalysisConnector::ANALYSIS_CONNECTOR_UNSPECIFIED:
       NOTREACHED() << "Using unspecified analysis connector";
   }
@@ -137,6 +144,8 @@ const char* AnalysisConnectorScopePref(AnalysisConnector connector) {
 #if BUILDFLAG(IS_CHROMEOS)
       return kOnFileTransferScopePref;
 #endif
+    case AnalysisConnector::DATA_COPIED:
+      return kOnTextCopiedScopePref;
     case AnalysisConnector::ANALYSIS_CONNECTOR_UNSPECIFIED:
       NOTREACHED() << "Using unspecified analysis connector";
   }
@@ -316,7 +325,6 @@ CreateSampleCustomRuleMessage(const std::u16string& msg,
   return custom_message;
 }
 
-#if BUILDFLAG(USE_BLINK)
 std::optional<ContentAnalysisResponse::Result::TriggeredRule::CustomRuleMessage>
 GetDownloadsCustomRuleMessage(const download::DownloadItem* download_item,
                               download::DownloadDangerType danger_type) {
@@ -353,7 +361,6 @@ GetDownloadsCustomRuleMessage(const download::DownloadItem* download_item,
   }
   return std::nullopt;
 }
-#endif  // BUILDFLAG(USE_BLINK)
 
 bool ContainsMalwareVerdict(const ContentAnalysisResponse& response) {
   return std::ranges::any_of(response.results(), [](const auto& result) {
@@ -415,6 +422,8 @@ std::string EventResultToString(EventResult result) {
       return "EVENT_RESULT_BYPASSED";
     case EventResult::FORCED_SAVE_TO_CLOUD:
       return "EVENT_RESULT_FORCED_SAVE_TO_CLOUD";
+    case EventResult::CANCELLED:
+      return "EVENT_RESULT_CANCELLED";
   }
   NOTREACHED();
 }
@@ -445,6 +454,7 @@ std::string GetFailedUploadDurationUmaMetricName(
              : base::StrCat({kUnknownUmaMetricName, "UploadFailure.Duration"});
 }
 
+// LINT.IfChange(EnterpriseConnector)
 std::string DeepScanAccessPointToString(DeepScanAccessPoint access_point) {
   switch (access_point) {
     case DeepScanAccessPoint::DOWNLOAD:
@@ -459,9 +469,14 @@ std::string DeepScanAccessPointToString(DeepScanAccessPoint access_point) {
       return "Print";
     case DeepScanAccessPoint::FILE_TRANSFER:
       return "FileTransfer";
+    case DeepScanAccessPoint::ACTOR:
+      return "Actor";
+    case DeepScanAccessPoint::COPY:
+      return "Copy";
   }
   NOTREACHED();
 }
+// LINT.ThenChange(//tools/metrics/histograms/metadata/safe_browsing/histograms.xml:EnterpriseConnector)
 
 std::string FinalContentAnalysisResultToString(
     FinalContentAnalysisResult result) {
@@ -480,6 +495,8 @@ std::string FinalContentAnalysisResultToString(
       return "Success";
     case FinalContentAnalysisResult::FORCE_SAVE_TO_CLOUD:
       return "ForceSaveToCloud";
+    case FinalContentAnalysisResult::CANCELLED:
+      return "Cancelled";
   }
   NOTREACHED();
 }

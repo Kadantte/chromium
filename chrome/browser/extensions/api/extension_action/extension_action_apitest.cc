@@ -224,6 +224,40 @@ void FlushStateStore(Profile* profile) {
 
 }  // namespace
 
+// Test that the histogram for determining maximum badge text lengths counts
+// the length of the badge text in each successful call.
+// TODO(crbug.com/491158086, crbug.com/492555224): Remove this histogram test.
+IN_PROC_BROWSER_TEST_F(ExtensionApiTest, ActionSetBadgeTextLengthHistogram) {
+  base::HistogramTester histogram;
+
+  // Run extension which modifies the badge text a few times.
+  EXPECT_TRUE(RunExtensionTest("extension_action/badge_text")) << message_;
+
+  // Check that every setting of badge text is counted exactly once.
+  histogram.ExpectTotalCount("Extensions.Action.SetBadgeTextLength",
+                             /*expected_count=*/4);
+
+  // Check number of samples in each affected bucket and two empty buckets.
+  histogram.ExpectBucketCount("Extensions.Action.SetBadgeTextLength",
+                              /*sample=*/0,
+                              /*expected_count=*/1);
+  histogram.ExpectBucketCount("Extensions.Action.SetBadgeTextLength",
+                              /*sample=*/1,
+                              /*expected_count=*/1);
+  histogram.ExpectBucketCount("Extensions.Action.SetBadgeTextLength",
+                              /*sample=*/2,
+                              /*expected_count=*/0);
+  histogram.ExpectBucketCount("Extensions.Action.SetBadgeTextLength",
+                              /*sample=*/3,
+                              /*expected_count=*/1);
+  histogram.ExpectBucketCount("Extensions.Action.SetBadgeTextLength",
+                              /*sample=*/4,
+                              /*expected_count=*/0);
+  histogram.ExpectBucketCount("Extensions.Action.SetBadgeTextLength",
+                              /*sample=*/150,
+                              /*expected_count=*/1);
+}
+
 // A class that allows for cross-origin navigations with embedded test server.
 class ExtensionActionAPITest : public ExtensionApiTest {
  protected:
@@ -233,6 +267,32 @@ class ExtensionActionAPITest : public ExtensionApiTest {
     ASSERT_TRUE(StartEmbeddedTestServer());
   }
 };
+
+// Test that the histogram for determining maximum title lengths counts
+// the length of the title in each successful call.
+// TODO(crbug.com/492555224): Remove this histogram test.
+IN_PROC_BROWSER_TEST_F(ExtensionApiTest, ActionSetTitleLengthHistogram) {
+  base::HistogramTester histogram;
+
+  // Run extension which modifies the badge text a few times.
+  EXPECT_TRUE(RunExtensionTest("extension_action/title")) << message_;
+
+  // Check that rejected calls do not increment the counts.
+  histogram.ExpectTotalCount("Extensions.Action.SetTitleLength",
+                             /*expected_count=*/4);
+
+  // Check number of samples in each affected bucket and one empty bucket.
+  histogram.ExpectBucketCount("Extensions.Action.SetTitleLength",
+                              /*sample=*/0, /*expected_count=*/1);
+  histogram.ExpectBucketCount("Extensions.Action.SetTitleLength",
+                              /*sample=*/1, /*expected_count=*/1);
+  histogram.ExpectBucketCount("Extensions.Action.SetTitleLength",
+                              /*sample=*/2, /*expected_count=*/0);
+  histogram.ExpectBucketCount("Extensions.Action.SetTitleLength",
+                              /*sample=*/60, /*expected_count=*/1);
+  histogram.ExpectBucketCount("Extensions.Action.SetTitleLength",
+                              /*sample=*/150, /*expected_count=*/1);
+}
 
 #if !BUILDFLAG(IS_ANDROID)
 // Alias these for readability, when a test only exercises one type of action.
@@ -415,7 +475,7 @@ IN_PROC_BROWSER_TEST_P(MultiActionAPITest,
 }
 
 // Tests that tooltips of an extension action icon can be specified using UTF8.
-// See http://crbug.com/25349.
+// See http://crbug.com/41020882.
 IN_PROC_BROWSER_TEST_P(MultiActionAPITest, TitleLocalization) {
   TestExtensionDir test_dir;
   constexpr char kManifestTemplate[] =
@@ -466,6 +526,7 @@ IN_PROC_BROWSER_TEST_P(MultiActionAPITest, OnClickedDispatching) {
            chrome.test.assertTrue(!!tab);
            chrome.test.assertTrue(tab.id > 0);
            chrome.test.assertTrue(tab.index > -1);
+           chrome.test.assertTrue(chrome.test.isProcessingUserGesture());
            chrome.test.notifyPass();
          });)";
 
@@ -816,7 +877,7 @@ IN_PROC_BROWSER_TEST_P(ActionAndBrowserActionAPITest, ValuesArePersisted) {
   EXPECT_EQ(expected_badge_text,
             action->GetExplicitlySetBadgeText(ExtensionAction::kDefaultTabId));
 
-  // Due to https://crbug.com/1110156, action values with defaults specified in
+  // Due to https://crbug.com/40708464, action values with defaults specified in
   // the manifest - like popup and title - aren't persisted, even for browser
   // actions.
   EXPECT_EQ(extension->GetResourceURL("default_popup.html"),
@@ -969,7 +1030,7 @@ IN_PROC_BROWSER_TEST_P(MultiActionAPICanvasTest, DISABLED_DynamicSetIcon) {
 
 // Tests calling setIcon() from JS with hooks that might cause issues with our
 // custom bindings.
-// Regression test for https://crbug.com/1087948.
+// Regression test for https://crbug.com/40695168.
 IN_PROC_BROWSER_TEST_P(MultiActionAPITest, SetIconWithJavascriptHooks) {
   constexpr char kManifestTemplate[] =
       R"({
@@ -1031,7 +1092,7 @@ IN_PROC_BROWSER_TEST_P(MultiActionAPITest, SetIconWithJavascriptHooks) {
 }
 
 // Tests calling setIcon() from JS with `self` defined at the top-level.
-// Regression test for https://crbug.com/1087948.
+// Regression test for https://crbug.com/40695168.
 IN_PROC_BROWSER_TEST_P(MultiActionAPITest, SetIconWithSelfDefined) {
   // TODO(devlin): Pull code to load an extension like this into a helper
   // function.
@@ -1077,7 +1138,7 @@ IN_PROC_BROWSER_TEST_P(MultiActionAPITest, SetIconWithSelfDefined) {
   // Try setting the icon. This should succeed. Previously, the custom bindings
   // for the setIcon code looked at the 'self' variable, but this could be
   // overridden by the extension.
-  // See also https://crbug.com/1087948.
+  // See also https://crbug.com/40695168.
   constexpr char kSetIconScript[] =
       "setIcon({tabId: %d, path: 'blue_icon.png'});";
   RunTestAndWaitForSuccess(web_contents,
@@ -1144,8 +1205,8 @@ IN_PROC_BROWSER_TEST_P(MultiActionAPITest, SetIconInTabWithInvalidPath) {
 }
 
 // Tests calling setIcon() in the service worker with an invalid icon paths
-// specified. Regression test for https://crbug.com/1262029. Regression test for
-// https://crbug.com/1372518.
+// specified. Regression test for https://crbug.com/40799229. Regression test
+// for https://crbug.com/40871095.
 IN_PROC_BROWSER_TEST_F(ExtensionActionAPITest, SetIconInWorkerWithInvalidPath) {
   constexpr char kManifestTemplate[] =
       R"({
@@ -1795,7 +1856,8 @@ IN_PROC_BROWSER_TEST_F(ActionAPITest, OnUserSettingsChanged) {
          })";
   constexpr char kWorker[] =
       R"(chrome.action.onUserSettingsChanged.addListener(change => {
-           chrome.test.sendMessage(JSON.stringify(change));
+           const userGesture = chrome.test.isProcessingUserGesture();
+           chrome.test.sendMessage(JSON.stringify({change, userGesture}));
          });)";
 
   TestExtensionDir test_dir;
@@ -1818,10 +1880,10 @@ IN_PROC_BROWSER_TEST_F(ActionAPITest, OnUserSettingsChanged) {
     return listener.message();
   };
 
-  EXPECT_EQ(R"({"isOnToolbar":true})",
+  EXPECT_EQ(R"({"change":{"isOnToolbar":true},"userGesture":false})",
             change_visibility_and_get_response(/*pinned_state=*/true));
 
-  EXPECT_EQ(R"({"isOnToolbar":false})",
+  EXPECT_EQ(R"({"change":{"isOnToolbar":false},"userGesture":false})",
             change_visibility_and_get_response(/*pinned_state=*/false));
 }
 

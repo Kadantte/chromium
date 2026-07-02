@@ -21,6 +21,7 @@
 #include "base/scoped_observation.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/current_thread.h"
@@ -30,6 +31,7 @@
 #include "base/test/test_mock_time_task_runner.h"
 #include "base/test/with_feature_override.h"
 #include "base/time/time.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/apps/platform_apps/shortcut_manager.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
@@ -64,7 +66,6 @@
 #include "chrome/browser/ui/webui/signin/login_ui_service.h"
 #include "chrome/browser/ui/webui/signin/login_ui_service_factory.h"
 #include "chrome/browser/ui/webui/signin/login_ui_test_utils.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
@@ -122,6 +123,8 @@
 #include "url/gurl.h"
 
 #if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+#include "components/signin/public/identity_manager/access_token_fetcher.h"
+#include "components/signin/public/identity_manager/access_token_info.h"
 #include "crypto/scoped_fake_unexportable_key_provider.h"
 #endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 
@@ -157,7 +160,6 @@ const char kOAuth2TokenExchangeURL[] = "/oauth2/v4/token";
 const char kOAuth2TokenRevokeURL[] = "/o/oauth2/revoke";
 const char kSecondaryEmail[] = "secondary_email@example.com";
 const char kSigninURL[] = "/signin";
-const char kSigninWithOutageInDiceURL[] = "/signin/outage";
 const char kSyncDuringOAuthOutageURL[] = "/sync/outage";
 const char kSignoutURL[] = "/signout";
 const char kAddAccountURL[] = "/AddSession";
@@ -210,7 +212,7 @@ void AddCanShowHistorySyncOptInsWithoutMinorModeCapability(
   // present minor-safe screen; but the sync button is present on the screen
   // for the duration of that load (just invisible and not clickable), which
   // is difficult to be expressed in those tests without examining CSS.
-  AccountCapabilitiesTestMutator mutator(&account_info.capabilities);
+  AccountCapabilitiesTestMutator mutator(&account_info);
   mutator.set_can_show_history_sync_opt_ins_without_minor_mode_restrictions(
       true);
   signin::UpdateAccountInfoForAccount(identity_manager, account_info);
@@ -230,7 +232,6 @@ std::unique_ptr<HttpResponse> HandleSigninURL(
     const HttpRequest& request) {
   if (!net::test_server::ShouldHandle(request, kSigninURL) &&
       !net::test_server::ShouldHandle(request, kChromeSyncEndpointURL) &&
-      !net::test_server::ShouldHandle(request, kSigninWithOutageInDiceURL) &&
       !net::test_server::ShouldHandle(request, kAddAccountURL)) {
     return nullptr;
   }
@@ -248,23 +249,24 @@ std::unique_ptr<HttpResponse> HandleSigninURL(
   // Add the SIGNIN dice header.
   std::unique_ptr<BasicHttpResponse> http_response(new BasicHttpResponse);
   if (header_value != kNoDiceRequestHeader) {
-    if (net::test_server::ShouldHandle(request, kSigninWithOutageInDiceURL)) {
-      http_response->AddCustomHeader(
-          kDiceResponseHeader,
-          base::StringPrintf(
-              "action=SIGNIN,authuser=1,id=%s,email=%s,"
-              "no_authorization_code=true",
-              signin::GetTestGaiaIdForEmail(main_email).ToString().c_str(),
-              main_email.c_str()));
+    GURL url = request.GetURL();
+    std::string_view query = url.query();
+    bool is_outage = (query.find("outage=true") != std::string::npos);
+
+    std::string header_value_to_add;
+    if (is_outage) {
+      header_value_to_add = base::StringPrintf(
+          "action=SIGNIN,authuser=1,id=%s,email=%s,no_authorization_code=true",
+          signin::GetTestGaiaIdForEmail(main_email).ToString().c_str(),
+          main_email.c_str());
     } else {
-      http_response->AddCustomHeader(
-          kDiceResponseHeader,
-          base::StringPrintf(
-              "action=SIGNIN,authuser=1,id=%s,email=%s,authorization_code=%s,"
-              "eligible_for_token_binding=ES256 RS256",
-              signin::GetTestGaiaIdForEmail(main_email).ToString().c_str(),
-              main_email.c_str(), kAuthorizationCode));
+      header_value_to_add = base::StringPrintf(
+          "action=SIGNIN,authuser=1,id=%s,email=%s,authorization_code=%s,"
+          "eligible_for_token_binding=ES256 RS256",
+          signin::GetTestGaiaIdForEmail(main_email).ToString().c_str(),
+          main_email.c_str(), kAuthorizationCode);
     }
+    http_response->AddCustomHeader(kDiceResponseHeader, header_value_to_add);
   }
 
   // When hitting the Chrome Sync endpoint, redirect to kEnableSyncURL, which
@@ -771,7 +773,7 @@ class DiceBrowserTest : public InProcessBrowserTest,
                        .SetAvatarUrl("https://example.com")
                        .Build();
     // Fill in the required account capabilities for the sign in intercept.
-    AccountCapabilitiesTestMutator mutator(&account_info.capabilities);
+    AccountCapabilitiesTestMutator mutator(&account_info);
     mutator.set_is_subject_to_parental_controls(false);
     mutator.set_is_subject_to_enterprise_features(false);
     mutator.set_is_subject_to_account_level_enterprise_policies(false);
@@ -868,6 +870,173 @@ IN_PROC_BROWSER_TEST_F(DiceBrowserTestWithBoundSessionCredentialsEnabled,
   EXPECT_TRUE(GetIdentityManager()->HasAccountWithBoundRefreshToken(
       GetMainAccountID()));
 }
+
+class DiceBrowserTestWithTokenBindingUpgrade : public DiceBrowserTest {
+ public:
+  DiceBrowserTestWithTokenBindingUpgrade() {
+    const std::string test_name =
+        testing::UnitTest::GetInstance()->current_test_info()->name();
+    if (base::StartsWith(test_name, "PRE_PRE_")) {
+      // We need to run the first step of the test with disabled token binding.
+      feature_list_.InitWithFeatures(
+          {}, {switches::kEnableChromeRefreshTokenBindingUpgrade,
+               switches::kEnableChromeRefreshTokenBinding});
+    } else {
+      feature_list_.InitWithFeatures(
+          {switches::kEnableChromeRefreshTokenBindingUpgrade,
+           switches::kEnableChromeRefreshTokenBinding},
+          {});
+    }
+
+    https_server_.RegisterDefaultHandler(base::BindRepeating(
+        &DiceBrowserTestWithTokenBindingUpgrade::HandleIssueToken,
+        base::Unretained(this)));
+    https_server_.RegisterDefaultHandler(base::BindRepeating(
+        &DiceBrowserTestWithTokenBindingUpgrade::HandleUpgradeToken,
+        base::Unretained(this)));
+  }
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    DiceBrowserTest::SetUpCommandLine(command_line);
+    // TODO(crbug.com/525502425): Revisit this. The base class `DiceBrowserTest`
+    // should ideally have a default handler for issuetoken requests so that
+    // setting this switch globally in the base class doesn't break other tests
+    // that trigger background token fetches.
+    command_line->AppendSwitchASCII(switches::kOAuthAccountManagerUrl,
+                                    https_server_.base_url().spec());
+  }
+
+  std::unique_ptr<HttpResponse> HandleIssueToken(const HttpRequest& request) {
+    if (request.relative_url != "/v1/issuetoken") {
+      return nullptr;
+    }
+
+    auto response = std::make_unique<BasicHttpResponse>();
+    response->set_code(net::HTTP_OK);
+    response->set_content_type("application/json");
+
+    auto response_dict = base::DictValue()
+                             .Set("issueAdvice", "auto")
+                             .Set("token", "test_access_token")
+                             .Set("expiresIn", "3600")
+                             .Set("grantedScopes", "email");
+
+    if (request.content.find("check_bound_token_upgrade_eligibility=true") !=
+        std::string::npos) {
+      response_dict.Set(
+          "boundTokenUpgradeInfo",
+          base::DictValue()
+              .Set("challenge", "test_upgrade_challenge")
+              .Set("supportedAlgorithms",
+                   base::ListValue().Append("ES256").Append("RS256")));
+    }
+
+    response->set_content(*base::WriteJson(response_dict));
+    return response;
+  }
+
+  std::unique_ptr<HttpResponse> HandleUpgradeToken(const HttpRequest& request) {
+    if (request.relative_url != "/v1/upgradetoken") {
+      return nullptr;
+    }
+
+    auto response = std::make_unique<BasicHttpResponse>();
+    response->set_code(net::HTTP_OK);
+
+    if (upgrade_token_loop_closure_) {
+      std::move(upgrade_token_loop_closure_).Run();
+    }
+    return response;
+  }
+
+  void WaitForTokenBindingKeyReady() {
+    base::RunLoop run_loop;
+    // `GenerateBindingKeyRegistrationToken()` triggers generation of a binding
+    // key which is going to be reused for the upgrade flow. Completion of this
+    // callback ensures that we're ready for the upgrade flow.
+    bool success = GetIdentityManager()->GenerateBindingKeyRegistrationToken(
+        {crypto::SignatureVerifier::ECDSA_SHA256}, "dummy_auth_code",
+        base::IgnoreArgs<
+            std::optional<signin::BindingKeyRegistrationTokenResult>>(
+            run_loop.QuitClosure()));
+    ASSERT_TRUE(success);
+    run_loop.Run();
+  }
+
+ protected:
+  // This needs to be a consumer with a scope that is not requested
+  // automatically after sign-in.
+  static constexpr signin::OAuthConsumerId kTestConsumerId =
+      signin::OAuthConsumerId::kExtensionsIdentityAPI;
+
+  base::test::ScopedFeatureList feature_list_;
+  crypto::ScopedFakeUnexportableKeyProvider scoped_key_provider_;
+
+  base::OnceClosure upgrade_token_loop_closure_;
+};
+
+IN_PROC_BROWSER_TEST_F(DiceBrowserTestWithTokenBindingUpgrade,
+                       PRE_PRE_DiceSigninWithUpgradeBinding) {
+  ASSERT_FALSE(
+      base::FeatureList::IsEnabled(switches::kEnableChromeRefreshTokenBinding));
+
+  // Sign-in to Chrome with an unbound LST.
+  ASSERT_NO_FATAL_FAILURE(SetupSignedInAccounts());
+  ASSERT_TRUE(
+      GetIdentityManager()->HasAccountWithRefreshToken(GetMainAccountID()));
+  ASSERT_FALSE(GetIdentityManager()->HasAccountWithBoundRefreshToken(
+      GetMainAccountID()));
+}
+
+IN_PROC_BROWSER_TEST_F(DiceBrowserTestWithTokenBindingUpgrade,
+                       PRE_DiceSigninWithUpgradeBinding) {
+  ASSERT_TRUE(
+      base::FeatureList::IsEnabled(switches::kEnableChromeRefreshTokenBinding));
+  ASSERT_TRUE(base::FeatureList::IsEnabled(
+      switches::kEnableChromeRefreshTokenBindingUpgrade));
+
+  // 1. Make sure that we are still signed in with unbound LST.
+  ASSERT_TRUE(
+      GetIdentityManager()->HasAccountWithRefreshToken(GetMainAccountID()));
+  ASSERT_FALSE(GetIdentityManager()->HasAccountWithBoundRefreshToken(
+      GetMainAccountID()));
+
+  // 2. Wait for the background key generation task to finish.
+  WaitForTokenBindingKeyReady();
+
+  base::RunLoop upgrade_token_loop;
+  upgrade_token_loop_closure_ = upgrade_token_loop.QuitClosure();
+
+  // 3. Trigger an IssueToken flow.
+  base::test::TestFuture<GoogleServiceAuthError, signin::AccessTokenInfo>
+      future;
+  std::unique_ptr<signin::AccessTokenFetcher> fetcher =
+      GetIdentityManager()->CreateAccessTokenFetcherForAccount(
+          GetMainAccountID(), kTestConsumerId, future.GetCallback(),
+          signin::AccessTokenFetcher::Mode::kImmediate);
+
+  EXPECT_EQ(future.Get<GoogleServiceAuthError>(),
+            GoogleServiceAuthError::AuthErrorNone());
+
+  // Wait for the upgrade token request to be sent and completed.
+  upgrade_token_loop.Run();
+
+  // Verify that a new binding key is saved in memory.
+  EXPECT_TRUE(GetIdentityManager()->HasAccountWithBoundRefreshToken(
+      GetMainAccountID()));
+  EXPECT_FALSE(GetIdentityManager()->GetWrappedBindingKey().empty());
+}
+
+IN_PROC_BROWSER_TEST_F(DiceBrowserTestWithTokenBindingUpgrade,
+                       DiceSigninWithUpgradeBinding) {
+  ASSERT_TRUE(
+      base::FeatureList::IsEnabled(switches::kEnableChromeRefreshTokenBinding));
+
+  // Verify that the token loaded from the database is still bound.
+  EXPECT_TRUE(GetIdentityManager()->HasAccountWithBoundRefreshToken(
+      GetMainAccountID()));
+  EXPECT_FALSE(GetIdentityManager()->GetWrappedBindingKey().empty());
+}
 #endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 
 // Checks that the account reconcilor is blocked when where was OAuth
@@ -878,7 +1047,7 @@ IN_PROC_BROWSER_TEST_F(DiceBrowserTest, SupportOAuthOutageInDice) {
   scoped_refptr<base::TestMockTimeTaskRunner> task_runner =
       new base::TestMockTimeTaskRunner();
   dice_response_handler->SetTaskRunner(task_runner);
-  NavigateToURL(kSigninWithOutageInDiceURL);
+  NavigateToURL(base::StrCat({kSigninURL, "?outage=true"}));
   // Check that the Dice request header was sent.
   std::string client_id = GaiaUrls::GetInstance()->oauth2_chrome_client_id();
   EXPECT_EQ(base::StringPrintf("version=%s,client_id=%s,device_id=%s,"
@@ -910,7 +1079,7 @@ IN_PROC_BROWSER_TEST_F(DiceBrowserTest,
   scoped_refptr<base::TestMockTimeTaskRunner> task_runner =
       new base::TestMockTimeTaskRunner();
   dice_response_handler->SetTaskRunner(task_runner);
-  NavigateToURL(kSigninWithOutageInDiceURL);
+  NavigateToURL(base::StrCat({kSigninURL, "?outage=true"}));
   // Check that the Dice request header was sent.
   std::string client_id = GaiaUrls::GetInstance()->oauth2_chrome_client_id();
   EXPECT_EQ(base::StringPrintf("version=%s,client_id=%s,device_id=%s,"
@@ -1110,7 +1279,7 @@ IN_PROC_BROWSER_TEST_F(DiceBrowserTest, TurnOffDice_SignedOut) {
 
 // Tests that turning off Dice via preferences works when signed in.
 //
-// Regression test for crbug/1254325
+// Regression test for crbug.com/40794285
 IN_PROC_BROWSER_TEST_F(DiceBrowserTest, PRE_TurnOffDice_SignedIn) {
   ASSERT_NO_FATAL_FAILURE(SetupSignedInAccounts());
 
@@ -1202,8 +1371,8 @@ IN_PROC_BROWSER_TEST_F(DiceBrowserTest, SignInAfterToken) {
             // Some test flags (e.g. ForceWebRequestProxyForTest) can change
             // whether the reported NTP URL is chrome://newtab or
             // chrome://new-tab-page.
-            if (url == GURL(chrome::kChromeUINewTabPageURL) ||
-                url == GURL(chrome::kChromeUINewTabURL)) {
+            if (url == chrome::ChromeUINewTabPageURLAsGURL() ||
+                url == chrome::ChromeUINewTabURLAsGURL()) {
               ntp_run_loop.Quit();
             }
           }));
@@ -1225,8 +1394,7 @@ IN_PROC_BROWSER_TEST_F(DiceBrowserTest, SignInAfterToken) {
   // when `syncer::kReplaceSyncPromosWithSignInPromos` is disabled, because
   // otherwise it is a sign-in flow without involving the Sync confirmation
   // dialog.
-  if (!base::FeatureList::IsEnabled(
-          syncer::kReplaceSyncPromosWithSignInPromos)) {
+  if (!syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
     EXPECT_TRUE(login_ui_test_utils::ConfirmSyncConfirmationDialog(browser()));
   }
 
@@ -1255,7 +1423,7 @@ IN_PROC_BROWSER_TEST_F(DiceBrowserTest, SignInAfterToken) {
 
 // Tests that the account is signed in if the ENABLE_SYNC response is received
 // before the refresh token, and the Sync/history sync opt-in is offered.
-// https://crbug.com/1082858
+// https://crbug.com/40692152
 IN_PROC_BROWSER_TEST_F(DiceBrowserTest, ProfileSignInBeforeToken) {
   base::HistogramTester histogram_tester;
   EXPECT_EQ(0, reconcilor_started_count_);
@@ -1280,7 +1448,7 @@ IN_PROC_BROWSER_TEST_F(DiceBrowserTest, ProfileSignInBeforeToken) {
   SendRefreshTokenResponse();
 
   ui_test_utils::UrlLoadObserver ntp_url_observer(
-      (GURL(chrome::kChromeUINewTabURL)));
+      (chrome::ChromeUINewTabURLAsGURL()));
 
   EXPECT_EQ(1, reconcilor_blocked_count_);
   WaitForReconcilorUnblockedCount(1);
@@ -1309,8 +1477,7 @@ IN_PROC_BROWSER_TEST_F(DiceBrowserTest, ProfileSignInBeforeToken) {
   // when `syncer::kReplaceSyncPromosWithSignInPromos` is disabled, because
   // otherwise it is a sign-in flow without involving the Sync confirmation
   // dialog.
-  if (base::FeatureList::IsEnabled(
-          syncer::kReplaceSyncPromosWithSignInPromos)) {
+  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
     EXPECT_EQ(signin::ConsentLevel::kSignin,
               signin::GetPrimaryAccountConsentLevel(GetIdentityManager()));
   } else {
@@ -1336,8 +1503,11 @@ class DiceBrowserTestWithoutReplaceSyncPromosWithSignInPromos
     : public DiceBrowserTest {
  public:
   DiceBrowserTestWithoutReplaceSyncPromosWithSignInPromos() {
-    feature_list_.InitAndDisableFeature(
-        syncer::kReplaceSyncPromosWithSignInPromos);
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{
+            syncer::kReplaceSyncPromosWithSignInPromos,
+            syncer::kReplaceSyncPromosWithSigninPromosNewSignin});
   }
 
  private:
@@ -1346,7 +1516,7 @@ class DiceBrowserTestWithoutReplaceSyncPromosWithSignInPromos
 
 // Verifies that Chrome doesn't crash on browser window close when the sync
 // confirmation dialog is waiting for its size.
-// Regression test for https://crbug.com/1304055.
+// Regression test for https://crbug.com/40826319.
 IN_PROC_BROWSER_TEST_F(DiceBrowserTestWithoutReplaceSyncPromosWithSignInPromos,
                        CloseBrowserWhileInitializingSyncConfirmation) {
   content::TestNavigationObserver sync_confirmation_url_observer(
@@ -1695,9 +1865,6 @@ IN_PROC_BROWSER_TEST_F(DiceBrowserTestWithExplicitSignin,
                        SigninWithChoiceRemembered_Signin) {
   base::HistogramTester histogram_tester;
 
-  PrefService* prefs = browser()->profile()->GetPrefs();
-  ASSERT_FALSE(prefs->GetBoolean(prefs::kExplicitBrowserSignin));
-
   // Simulates a previous choice done with Always sign in.
   SetChromeSigninChoice(ChromeSigninUserChoice::kSignin);
 
@@ -1706,11 +1873,14 @@ IN_PROC_BROWSER_TEST_F(DiceBrowserTestWithExplicitSignin,
   EXPECT_TRUE(
       GetIdentityManager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
   histogram_tester.ExpectUniqueSample(
+      "Signin.SignIn.Offered",
+      signin_metrics::AccessPoint::kSigninChoiceRemembered, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Signin.SignIn.Started",
+      signin_metrics::AccessPoint::kSigninChoiceRemembered, 1);
+  histogram_tester.ExpectUniqueSample(
       "Signin.SignIn.Completed",
       signin_metrics::AccessPoint::kSigninChoiceRemembered, 1);
-  // Should still count as an explicit sign in since the choice was explicit
-  // set.
-  EXPECT_TRUE(prefs->GetBoolean(prefs::kExplicitBrowserSignin));
 }
 
 class DiceBrowserTestWithExplicitSigninReplaceSyncPromosWithSignInPromos
@@ -1825,9 +1995,6 @@ class DiceBrowserTestWithAutoAcceptFlag
 IN_PROC_BROWSER_TEST_F(DiceBrowserTestWithAutoAcceptFlag, AutoSignin) {
   base::HistogramTester histogram_tester;
 
-  PrefService* prefs = browser()->profile()->GetPrefs();
-  ASSERT_FALSE(prefs->GetBoolean(prefs::kExplicitBrowserSignin));
-
   SimulateWebSigninMainAccount();
 
   EXPECT_TRUE(
@@ -1835,9 +2002,6 @@ IN_PROC_BROWSER_TEST_F(DiceBrowserTestWithAutoAcceptFlag, AutoSignin) {
   histogram_tester.ExpectUniqueSample(
       "Signin.SignIn.Completed",
       signin_metrics::AccessPoint::kSigninChoiceRemembered, 1);
-  // Should still count as an explicit sign in since the choice was explicit
-  // set.
-  EXPECT_TRUE(prefs->GetBoolean(prefs::kExplicitBrowserSignin));
 
   // Expect that metrics related to the browser signin stage are not recorded
   // for the web sigin case.
@@ -1986,7 +2150,7 @@ class DiceManageAccountBrowserTest : public DiceBrowserTest {
   void SetUp() override {
 #if BUILDFLAG(IS_WIN)
     // Shortcut deletion delays tests shutdown on Win-7 and results in time out.
-    // See crbug.com/1073451.
+    // See crbug.com/40686320.
     AppShortcutManager::SuppressShortcutsForTesting();
 #endif
     DiceBrowserTest::SetUp();

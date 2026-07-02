@@ -11,7 +11,6 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/notreached.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/performance_controls/performance_controls_metrics.h"
 #include "chrome/browser/ui/performance_controls/performance_intervention_bubble_delegate.h"
 #include "chrome/browser/ui/performance_controls/performance_intervention_bubble_observer.h"
@@ -48,7 +47,6 @@ DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PerformanceInterventionBubble,
 
 // static
 views::BubbleDialogModelHost* PerformanceInterventionBubble::CreateBubble(
-    Browser* browser,
     PerformanceInterventionButton* anchor_view,
     PerformanceInterventionButtonController* button_controller) {
   auto tab_list_model_unique =
@@ -58,7 +56,7 @@ views::BubbleDialogModelHost* PerformanceInterventionBubble::CreateBubble(
   RecordSuggestedTabShownCount(tab_list_model->count());
   auto bubble_delegate =
       std::make_unique<PerformanceInterventionBubbleDelegate>(
-          browser, std::move(tab_list_model_unique), button_controller);
+          std::move(tab_list_model_unique), button_controller);
 
   const DialogStrings strings = GetStrings(tab_list_model->count());
   PerformanceInterventionBubbleDelegate* const delegate = bubble_delegate.get();
@@ -100,8 +98,9 @@ views::BubbleDialogModelHost* PerformanceInterventionBubble::CreateBubble(
       std::move(dialog_model), anchor_view, views::BubbleBorder::TOP_RIGHT);
   auto* const bubble = bubble_unique.get();
 
-  views::Widget* widget =
-      views::BubbleDialogDelegate::CreateBubble(std::move(bubble_unique));
+  views::Widget* widget = views::BubbleDialogDelegate::CreateBubbleDeprecated(
+      std::move(bubble_unique),
+      views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET);
   widget->widget_delegate()->SetEnableArrowKeyTraversal(true);
   widget->Show();
   button_controller->OnBubbleShown();

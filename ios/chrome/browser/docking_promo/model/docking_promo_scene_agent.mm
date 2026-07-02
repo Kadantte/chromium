@@ -9,6 +9,7 @@
 #import "components/feature_engagement/public/event_constants.h"
 #import "components/feature_engagement/public/tracker.h"
 #import "ios/chrome/app/profile/profile_state.h"
+#import "ios/chrome/browser/docking_promo/model/utils.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/promos_manager/model/constants.h"
 #import "ios/chrome/browser/promos_manager/model/promos_manager.h"
@@ -40,37 +41,14 @@
   }
 
   if (level == SceneActivationLevelForegroundActive) {
-    ProfileIOS* profile = sceneState.profileState.profile;
-    feature_engagement::Tracker* tracker =
-        feature_engagement::TrackerFactory::GetForProfile(profile);
+    IOSDockingPromoEligibility eligibility =
+        DockingPromoEligibility(sceneState.profileState.profile);
 
-    if (!tracker) {
-      return;
-    }
-
-    unsigned int chromeOpenedCount = 0;
-    std::vector<std::pair<feature_engagement::EventConfig, int>> events =
-        tracker->ListEvents(
-            feature_engagement::kIPHiOSDockingPromoEligibilityFeature);
-
-    for (const auto& event : events) {
-      if (event.first.name == feature_engagement::events::kChromeOpened) {
-        chromeOpenedCount++;
-      }
-    }
-
-    //  Low engaged users (L7 days active <=1)
-    BOOL isLowEngagementUser = chromeOpenedCount <= 1;
-
-    // TODO(crbug.com/479220063): use a new kChromeOpenedFromIcon event and
-    // use it to check if no app icon launches in last 7 days.
-    BOOL hasNoRecentIconLaunches = false;
-
-    if (isLowEngagementUser || hasNoRecentIconLaunches) {
+    if (eligibility == IOSDockingPromoEligibility::kIneligible) {
+      _promosManager->DeregisterPromo(promos_manager::Promo::DockingPromo);
+    } else {
       _promosManager->RegisterPromoForContinuousDisplay(
           promos_manager::Promo::DockingPromo);
-    } else {
-      _promosManager->DeregisterPromo(promos_manager::Promo::DockingPromo);
     }
   }
 }

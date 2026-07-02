@@ -149,6 +149,8 @@ IN_PROC_BROWSER_TEST_P(AutofillAiImportDataControllerImplTest,
     GTEST_SKIP() << "BubbleManager doesn't get informed of the tab changes";
   }
 
+  SetNewEntitiesOptions(
+      {.record_type = EntityInstance::RecordType::kServerWallet});
   ShowUi("SaveNewEntity");
 
   ASSERT_TRUE(controller()->IsShowingBubble());
@@ -197,12 +199,14 @@ IN_PROC_BROWSER_TEST_P(AutofillAiImportDataControllerImplTest,
   ShowUi("SaveNewEntity");
   ASSERT_TRUE(controller()->IsShowingBubble());
 
-  base::test::TestFuture<AutofillClient::AutofillAiBubbleResult>
+  base::test::TestFuture<AutofillClient::AutofillAiBubbleResult,
+                         std::optional<EntityInstance>,
+                         const AutofillClient::EntityImportUIContext&>
       prompt_result_future;
   controller()->ShowPrompt(test::GetPassportEntityInstance(), std::nullopt,
                            /*close_on_accept=*/true,
                            prompt_result_future.GetCallback());
-  EXPECT_EQ(prompt_result_future.Get(),
+  EXPECT_EQ(std::get<0>(prompt_result_future.Get()),
             AutofillClient::AutofillAiBubbleResult::kUnknown);
 }
 

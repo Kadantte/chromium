@@ -7,6 +7,7 @@
 #include <optional>
 
 #include "base/command_line.h"
+#include "base/containers/fixed_flat_map.h"
 #include "base/containers/span.h"
 #include "base/containers/to_vector.h"
 #include "base/logging.h"
@@ -20,14 +21,19 @@
 #include "net/cert/root_store_proto_lite/root_store.pb.h"
 #include "net/cert/x509_certificate.h"
 #include "net/cert/x509_util.h"
+#include "third_party/boringssl/src/include/openssl/bytestring.h"
+#include "third_party/boringssl/src/include/openssl/mem.h"
 #include "third_party/boringssl/src/include/openssl/pool.h"
 #include "third_party/boringssl/src/pki/cert_errors.h"
 #include "third_party/boringssl/src/pki/parsed_certificate.h"
+#include "third_party/boringssl/src/pki/path_builder.h"
 
 namespace net {
 
 namespace {
 #include "net/data/ssl/chrome_root_store/chrome-root-store-inc.cc"
+#include "net/data/ssl/chrome_root_store/signer-set-inc.cc"
+
 }  // namespace
 
 ChromeRootCertConstraints::ChromeRootCertConstraints() = default;
@@ -36,19 +42,31 @@ ChromeRootCertConstraints::ChromeRootCertConstraints(
     std::optional<base::Time> sct_all_after,
     std::optional<base::Version> min_version,
     std::optional<base::Version> max_version_exclusive,
-    std::vector<std::string> permitted_dns_names)
+    std::vector<std::string> permitted_dns_names,
+    std::optional<uint64_t> index_not_after,
+    std::optional<uint64_t> index_after,
+    std::optional<base::Time> validity_starts_not_after,
+    std::optional<base::Time> validity_starts_after)
     : sct_not_after(sct_not_after),
       sct_all_after(sct_all_after),
       min_version(std::move(min_version)),
       max_version_exclusive(std::move(max_version_exclusive)),
-      permitted_dns_names(std::move(permitted_dns_names)) {}
+      permitted_dns_names(std::move(permitted_dns_names)),
+      index_not_after(index_not_after),
+      index_after(index_after),
+      validity_starts_not_after(validity_starts_not_after),
+      validity_starts_after(validity_starts_after) {}
 
 ChromeRootCertConstraints::ChromeRootCertConstraints(
     const StaticChromeRootCertConstraints& constraints)
     : sct_not_after(constraints.sct_not_after),
       sct_all_after(constraints.sct_all_after),
       min_version(constraints.min_version),
-      max_version_exclusive(constraints.max_version_exclusive) {
+      max_version_exclusive(constraints.max_version_exclusive),
+      index_not_after(constraints.index_not_after),
+      index_after(constraints.index_after),
+      validity_starts_not_after(constraints.validity_starts_not_after),
+      validity_starts_after(constraints.validity_starts_after) {
   for (std::string_view name : constraints.permitted_dns_names) {
     permitted_dns_names.emplace_back(name);
   }
@@ -73,21 +91,23 @@ ChromeRootCertConstraints& ChromeRootCertConstraints::operator=(
 ChromeRootStoreData::Anchor::Anchor(
     std::shared_ptr<const bssl::ParsedCertificate> certificate,
     std::vector<ChromeRootCertConstraints> constraints)
-    : ChromeRootStoreData::Anchor::Anchor(
-          certificate,
-          constraints,
-          /*enforce_anchor_expiry=*/false,
-          /*enforce_anchor_constraints=*/false) {}
+    : ChromeRootStoreData::Anchor::Anchor(certificate,
+                                          constraints,
+                                          /*enforce_anchor_expiry=*/false,
+                                          /*enforce_anchor_constraints=*/false,
+                                          /*crs_root_id=*/std::nullopt) {}
 
 ChromeRootStoreData::Anchor::Anchor(
     std::shared_ptr<const bssl::ParsedCertificate> certificate,
     std::vector<ChromeRootCertConstraints> constraints,
     bool enforce_anchor_expiry,
-    bool enforce_anchor_constraints)
+    bool enforce_anchor_constraints,
+    std::optional<int32_t> crs_root_id)
     : certificate(std::move(certificate)),
       constraints(std::move(constraints)),
       enforce_anchor_expiry(enforce_anchor_expiry),
-      enforce_anchor_constraints(enforce_anchor_constraints) {}
+      enforce_anchor_constraints(enforce_anchor_constraints),
+      crs_root_id(crs_root_id) {}
 ChromeRootStoreData::Anchor::~Anchor() = default;
 
 ChromeRootStoreData::Anchor::Anchor(const Anchor& other) = default;
@@ -99,8 +119,11 @@ ChromeRootStoreData::Anchor& ChromeRootStoreData::Anchor::operator=(
 
 ChromeRootStoreData::MtcAnchor::MtcAnchor(
     std::vector<uint8_t> log_id,
-    std::vector<ChromeRootCertConstraints> constraints)
-    : log_id(std::move(log_id)), constraints(std::move(constraints)) {}
+    std::vector<ChromeRootCertConstraints> constraints,
+    std::optional<int32_t> crs_root_id)
+    : log_id(std::move(log_id)),
+      constraints(std::move(constraints)),
+      crs_root_id(crs_root_id) {}
 ChromeRootStoreData::MtcAnchor::~MtcAnchor() = default;
 
 ChromeRootStoreData::MtcAnchor::MtcAnchor(const MtcAnchor& other) = default;
@@ -156,7 +179,24 @@ std::optional<std::vector<ChromeRootCertConstraints>> CreateConstraints(
                             base::Seconds(constraint.sct_all_after_sec()))
             : std::nullopt,
         min_version, max_version_exclusive,
-        base::ToVector(constraint.permitted_dns_names()));
+        base::ToVector(constraint.permitted_dns_names()),
+        constraint.has_index_not_after()
+            ? std::optional(constraint.index_not_after())
+            : std::nullopt,
+        constraint.has_index_after() ? std::optional(constraint.index_after())
+                                     : std::nullopt,
+        constraint.has_validity_starts_not_after_sec()
+            ? std::optional(
+                  base::Time::UnixEpoch() +
+                  base::Seconds(constraint.validity_starts_not_after_sec()))
+            : std::nullopt,
+        constraint.has_validity_starts_after_sec()
+            ? std::optional(
+                  base::Time::UnixEpoch() +
+                  base::Seconds(constraint.validity_starts_after_sec()))
+            : std::nullopt
+
+    );
   }
 
   return constraints;
@@ -183,9 +223,11 @@ std::optional<ChromeRootStoreData::Anchor> CreateChromeRootStoreDataAnchor(
     return std::nullopt;
   }
 
-  return ChromeRootStoreData::Anchor(std::move(parsed), *std::move(constraints),
-                                     anchor.enforce_anchor_expiry(),
-                                     anchor.enforce_anchor_constraints());
+  return ChromeRootStoreData::Anchor(
+      std::move(parsed), *std::move(constraints),
+      anchor.enforce_anchor_expiry(), anchor.enforce_anchor_constraints(),
+      anchor.has_crs_root_id() ? std::make_optional(anchor.crs_root_id())
+                               : std::nullopt);
 }
 
 std::optional<ChromeRootStoreData::MtcAnchor>
@@ -204,7 +246,10 @@ CreateChromeRootStoreDataMtcAnchor(
 
   return ChromeRootStoreData::MtcAnchor(
       base::ToVector(base::as_byte_span(mtc_anchor.log_id())),
-      *std::move(constraints));
+      *std::move(constraints),
+      mtc_anchor.has_crs_root_id()
+          ? std::make_optional(mtc_anchor.crs_root_id())
+          : std::nullopt);
 }
 
 }  // namespace
@@ -269,10 +314,15 @@ ChromeRootStoreData::CreateFromRootStoreProto(
 }
 
 ChromeRootStoreData ChromeRootStoreData::CreateFromCompiledRootStore() {
-  return ChromeRootStoreData(kChromeRootCertList, kEutlRootCertList,
-                             kChromeTrustedMtcAnchorList,
-                             /*certs_are_static=*/true,
-                             /*version=*/CompiledChromeRootStoreVersion());
+  ChromeRootStoreData root_store_data(
+      kChromeRootCertList, kEutlRootCertList, kChromeTrustedMtcAnchorList,
+      /*certs_are_static=*/true,
+      /*version=*/CompiledChromeRootStoreVersion());
+  if (base::FeatureList::IsEnabled(features::kVerifyMTCs)) {
+    root_store_data.signer_set_ =
+        ChromeRootStoreSignerSet::CreateFromCompiled();
+  }
+  return root_store_data;
 }
 
 ChromeRootStoreData ChromeRootStoreData::CreateForTesting(
@@ -321,7 +371,8 @@ ChromeRootStoreData::ChromeRootStoreData(
     }
     trust_anchors_.emplace_back(std::move(parsed), std::move(cert_constraints),
                                 cert_info.enforce_anchor_expiry,
-                                cert_info.enforce_anchor_constraints);
+                                cert_info.enforce_anchor_constraints,
+                                cert_info.crs_root_id);
   }
 
   for (const auto& cert_bytes : eutl_certs) {
@@ -335,6 +386,10 @@ ChromeRootStoreData::ChromeRootStoreData(
     auto parsed = bssl::ParsedCertificate::Create(
         std::move(cert), x509_util::DefaultParseCertificateOptions(), &errors);
     CHECK(parsed);
+    // crs_root_id is not populated for eutl certs, since it isn't quite the
+    // same thing. If we want to add an eutl usage histogram, we'd need to
+    // consider if we want to use crs_root_id for that anyway, or add an
+    // alternate id for eutl certs.
     eutl_certs_.emplace_back(std::move(parsed),
                              std::vector<ChromeRootCertConstraints>());
   }
@@ -346,10 +401,23 @@ ChromeRootStoreData::ChromeRootStoreData(
         cert_constraints.emplace_back(constraint);
       }
       mtc_trust_anchors_.emplace_back(base::ToVector(mtc_anchor_info.log_id),
-                                      std::move(cert_constraints));
+                                      std::move(cert_constraints),
+                                      mtc_anchor_info.crs_root_id);
     }
   }
 }
+
+TrustStoreChrome::AnchorExtraData::AnchorExtraData() = default;
+TrustStoreChrome::AnchorExtraData::~AnchorExtraData() = default;
+
+TrustStoreChrome::AnchorExtraData::AnchorExtraData(
+    const TrustStoreChrome::AnchorExtraData& other) = default;
+TrustStoreChrome::AnchorExtraData::AnchorExtraData(
+    TrustStoreChrome::AnchorExtraData&& other) = default;
+TrustStoreChrome::AnchorExtraData& TrustStoreChrome::AnchorExtraData::operator=(
+    const TrustStoreChrome::AnchorExtraData& other) = default;
+TrustStoreChrome::AnchorExtraData& TrustStoreChrome::AnchorExtraData::operator=(
+    TrustStoreChrome::AnchorExtraData&& other) = default;
 
 TrustStoreChrome::MtcAnchorExtraData::MtcAnchorExtraData() = default;
 TrustStoreChrome::MtcAnchorExtraData::~MtcAnchorExtraData() = default;
@@ -384,15 +452,14 @@ TrustStoreChrome::TrustStoreChrome(
     const ChromeRootStoreMtcMetadata* mtc_metadata,
     ConstraintOverrideMap override_constraints)
     : override_constraints_(std::move(override_constraints)) {
-  std::vector<
-      std::pair<std::string_view, std::vector<ChromeRootCertConstraints>>>
-      constraints;
 
   for (const auto& anchor : root_store_data.trust_anchors()) {
-    if (!anchor.constraints.empty()) {
-      constraints.emplace_back(
-          base::as_string_view(anchor.certificate->der_cert()),
-          anchor.constraints);
+    if (anchor.crs_root_id || !anchor.constraints.empty()) {
+      TrustStoreChrome::AnchorExtraData trust_store_anchor_data;
+      trust_store_anchor_data.crs_root_id = anchor.crs_root_id;
+      trust_store_anchor_data.constraints = anchor.constraints;
+      anchor_extra_data_[base::as_string_view(anchor.certificate->der_cert())] =
+          std::move(trust_store_anchor_data);
     }
 
     // If the anchor is configured to enforce expiry and/or X.509 constraints,
@@ -425,24 +492,14 @@ TrustStoreChrome::TrustStoreChrome(
         const ChromeRootStoreMtcMetadata::MtcAnchorData& mtc_anchor_data =
             it->second;
 
-        if (!mtc_anchor.constraints.empty()) {
-          // TODO(crbug.com/452986180): MTC anchor constraints aren't handled
-          // yet. Ignore any MTC anchors that have constraints until they are
-          // implemented, which ensures that if any old versions of chrome
-          // still happen to be running and receive a component update with an
-          // MTC anchor that has constraints, it will fail-safe.
-          continue;
-        }
-
         auto bssl_mtc_anchor = std::make_shared<const bssl::MTCAnchor>(
             mtc_anchor.log_id, mtc_anchor_data.trusted_subtrees);
         CHECK(trust_store_.AddMTCTrustAnchor(std::move(bssl_mtc_anchor)));
 
-        if (!mtc_anchor.constraints.empty() ||
+        if (mtc_anchor.crs_root_id || !mtc_anchor.constraints.empty() ||
             !mtc_anchor_data.revoked_indices.empty()) {
           TrustStoreChrome::MtcAnchorExtraData trust_store_anchor_data;
-          // TODO(crbug.com/452986180): enforce MTC anchor constraints in the
-          // verifier.
+          trust_store_anchor_data.crs_root_id = mtc_anchor.crs_root_id;
           trust_store_anchor_data.constraints = mtc_anchor.constraints;
           trust_store_anchor_data.revoked_indices =
               mtc_anchor_data.revoked_indices;
@@ -454,7 +511,6 @@ TrustStoreChrome::TrustStoreChrome(
     mtc_metadata_update_time_ = mtc_metadata->update_time();
   }
 
-  constraints_ = base::flat_map(std::move(constraints));
   version_ = root_store_data.version();
 }
 
@@ -575,8 +631,54 @@ bool TrustStoreChrome::ContainsMTCAnchor(const bssl::MTCAnchor* anchor) const {
   return trust_store_.ContainsMTCAnchor(anchor);
 }
 
+std::optional<int32_t> TrustStoreChrome::GetCrsRootIdForMTC(
+    const bssl::MTCAnchor* mtc_anchor) const {
+  const MtcAnchorExtraData* anchor_data =
+      GetMTCAnchorData(mtc_anchor->log_id());
+  if (!anchor_data) {
+    return {};
+  }
+
+  return anchor_data->crs_root_id;
+}
+
+std::optional<int32_t> TrustStoreChrome::GetCrsRootIdForClassicalCert(
+    const bssl::ParsedCertificate* cert) const {
+  const AnchorExtraData* anchor_data = GetAnchorData(cert);
+  if (!anchor_data) {
+    return {};
+  }
+
+  return anchor_data->crs_root_id;
+}
+
+std::optional<int32_t> TrustStoreChrome::GetCrsRootIdForCert(
+    const bssl::CertPathBuilderResultPath* path) const {
+  if (std::shared_ptr<const bssl::MTCAnchor> mtc_anchor =
+          path->trust_anchor.MTCAnchor();
+      mtc_anchor) {
+    return GetCrsRootIdForMTC(mtc_anchor.get());
+  } else {
+    return GetCrsRootIdForClassicalCert(path->certs.back().get());
+  }
+}
+
 base::span<const ChromeRootCertConstraints>
-TrustStoreChrome::GetConstraintsForCert(
+TrustStoreChrome::GetConstraintsForMTC(
+    const bssl::MTCAnchor* mtc_anchor) const {
+  const MtcAnchorExtraData* anchor_data =
+      GetMTCAnchorData(mtc_anchor->log_id());
+  if (!anchor_data) {
+    return {};
+  }
+
+  // TODO(crbug.com/452986180): support constraint overrides for MTC anchors.
+
+  return anchor_data->constraints;
+}
+
+base::span<const ChromeRootCertConstraints>
+TrustStoreChrome::GetConstraintsForClassicalCert(
     const bssl::ParsedCertificate* cert) const {
   if (!override_constraints_.empty()) {
     const std::array<uint8_t, crypto::kSHA256Length> cert_hash =
@@ -587,11 +689,32 @@ TrustStoreChrome::GetConstraintsForCert(
     }
   }
 
-  auto it = constraints_.find(base::as_string_view(cert->der_cert()));
-  if (it != constraints_.end()) {
-    return it->second;
+  const AnchorExtraData* anchor_data = GetAnchorData(cert);
+  if (anchor_data) {
+    return anchor_data->constraints;
   }
   return {};
+}
+
+base::span<const ChromeRootCertConstraints>
+TrustStoreChrome::GetConstraintsForCert(
+    const bssl::CertPathBuilderResultPath* path) const {
+  if (std::shared_ptr<const bssl::MTCAnchor> mtc_anchor =
+          path->trust_anchor.MTCAnchor();
+      mtc_anchor) {
+    return GetConstraintsForMTC(mtc_anchor.get());
+  } else {
+    return GetConstraintsForClassicalCert(path->certs.back().get());
+  }
+}
+
+const TrustStoreChrome::AnchorExtraData* TrustStoreChrome::GetAnchorData(
+    const bssl::ParsedCertificate* cert) const {
+  auto it = anchor_extra_data_.find(base::as_string_view(cert->der_cert()));
+  if (it == anchor_extra_data_.end()) {
+    return nullptr;
+  }
+  return &it->second;
 }
 
 const TrustStoreChrome::MtcAnchorExtraData* TrustStoreChrome::GetMTCAnchorData(
@@ -654,6 +777,10 @@ int64_t CompiledChromeRootStoreVersion() {
   return kRootStoreVersion;
 }
 
+int64_t CompiledSignerSetTimestampSeconds() {
+  return kSignerSetCompiledTimestampSeconds;
+}
+
 namespace {
 
 std::optional<ChromeRootStoreMtcMetadata::MtcAnchorData> CreateMtcAnchorData(
@@ -712,6 +839,122 @@ std::optional<ChromeRootStoreMtcMetadata::MtcAnchorData> CreateMtcAnchorData(
   return mtc_anchor_data;
 }
 
+base::Time ProtoTimestampToTime(const chrome_root_store::Timestamp& timestamp) {
+  return base::Time::UnixEpoch() + base::Seconds(timestamp.seconds()) +
+         base::Nanoseconds(timestamp.nanos());
+}
+
+base::TimeDelta ProtoDurationToTimeDelta(
+    const chrome_root_store::Duration& duration) {
+  return base::Seconds(duration.seconds()) +
+         base::Nanoseconds(duration.nanos());
+}
+
+std::optional<std::vector<uint8_t>> RelativeOidBytesFromText(
+    std::string_view oid_text) {
+  bssl::ScopedCBB cbb;
+  if (!CBB_init(cbb.get(), 32) ||
+      !CBB_add_asn1_relative_oid_from_text(cbb.get(), oid_text.data(),
+                                           oid_text.size()) ||
+      !CBB_flush(cbb.get())) {
+    return std::nullopt;
+  }
+  // SAFETY: CBB_len is guaranteed to return the proper size for CBB_data.
+  return base::ToVector(
+      UNSAFE_BUFFERS(base::span(CBB_data(cbb.get()), CBB_len(cbb.get()))));
+}
+
+bool ParseSigner(const chrome_root_store::Signer& signer_proto,
+                 std::vector<Signer>& out_signers) {
+  Signer signer;
+  signer.friendly_name = signer_proto.friendly_name();
+
+  std::optional<std::vector<uint8_t>> oid_bytes =
+      RelativeOidBytesFromText(signer_proto.base_id());
+  if (!oid_bytes.has_value()) {
+    return false;
+  }
+  signer.base_id = std::move(*oid_bytes);
+
+  for (const auto& state : signer_proto.state_history()) {
+    if (!state.has_state_start()) {
+      return false;
+    }
+    signer.state_history.emplace_back(
+        state.state(), ProtoTimestampToTime(state.state_start()));
+  }
+
+  for (const auto& op : signer_proto.operator_history()) {
+    if (!op.has_operator_start()) {
+      return false;
+    }
+    signer.operator_history.emplace_back(
+        std::string(op.name()), ProtoTimestampToTime(op.operator_start()));
+  }
+
+  signer.type = signer_proto.type();
+  signer.realm = signer_proto.realm();
+
+  if (signer_proto.has_max_cert_lifetime()) {
+    signer.max_cert_lifetime =
+        ProtoDurationToTimeDelta(signer_proto.max_cert_lifetime());
+  }
+
+  std::optional<std::vector<ChromeRootCertConstraints>> constraints =
+      CreateConstraints(signer_proto.constraints());
+  if (!constraints) {
+    return false;
+  }
+  signer.constraints = std::move(*constraints);
+
+  if (signer_proto.has_crs_root_id()) {
+    signer.crs_root_id = signer_proto.crs_root_id();
+  }
+  signer.min_log_number = signer_proto.min_log_number();
+  signer.signature_algorithm = signer_proto.signature_algorithm();
+
+  // For component updates, key bytes may be included directly in the proto.
+  // We parse them into a bssl::UniquePtr<CRYPTO_BUFFER>.
+  // We check if the key matches any compiled-in key from kSignerKeys (defined
+  // in signer-set-inc.cc). If it matches, we use the compiled-in span
+  // directly without copying. Otherwise, we store a copy in owned_keys_ and
+  // reference it.
+  if (!signer_proto.key().empty()) {
+    auto sha256_hash =
+        crypto::SHA256Hash(base::as_byte_span(signer_proto.key()));
+    auto it = kSignerKeys.find(base::span<const uint8_t>(sha256_hash));
+    if (it != kSignerKeys.end()) {
+      // This is safe since this is a key that's compiled in and static.
+      signer.key =
+          x509_util::CreateCryptoBufferFromStaticDataUnsafe(it->second);
+    } else {
+      signer.key =
+          x509_util::CreateCryptoBuffer(base::as_byte_span(signer_proto.key()));
+    }
+  } else {
+    // For the compiled-in list, the proto in signer-set-inc.cc does not
+    // include key bytes, only key_sha256 hashes. Here we look up those hashes
+    // in the separate array of key spans (kSignerKeys) and assign the span.
+    std::array<uint8_t, crypto::kSHA256Length> sha256_hash;
+    if (!base::HexStringToSpan(signer_proto.key_sha256(), sha256_hash)) {
+      LOG(ERROR) << "Failed to decode key_sha256 hex: "
+                 << signer_proto.key_sha256();
+      return false;
+    }
+    auto it = kSignerKeys.find(base::span<const uint8_t>(sha256_hash));
+    if (it == kSignerKeys.end()) {
+      LOG(ERROR) << "Could not find key for key_sha256: "
+                 << signer_proto.key_sha256();
+      return false;
+    }
+    // This is safe since this is a key that's compiled in and static.
+    signer.key = x509_util::CreateCryptoBufferFromStaticDataUnsafe(it->second);
+  }
+
+  out_signers.push_back(std::move(signer));
+  return true;
+}
+
 }  // namespace
 
 ChromeRootStoreMtcMetadata::MtcAnchorData::MtcAnchorData() = default;
@@ -763,6 +1006,113 @@ ChromeRootStoreMtcMetadata::CreateFromMtcMetadataProto(
   }
 
   return mtc_metadata;
+}
+
+SignerStateChange::SignerStateChange() = default;
+SignerStateChange::SignerStateChange(chrome_root_store::SignerState state,
+                                     base::Time state_start)
+    : state(state), state_start(state_start) {}
+SignerStateChange::~SignerStateChange() = default;
+SignerStateChange::SignerStateChange(const SignerStateChange& other) = default;
+SignerStateChange::SignerStateChange(SignerStateChange&& other) = default;
+SignerStateChange& SignerStateChange::operator=(
+    const SignerStateChange& other) = default;
+SignerStateChange& SignerStateChange::operator=(SignerStateChange&& other) =
+    default;
+
+SignerOperatorChange::SignerOperatorChange() = default;
+SignerOperatorChange::SignerOperatorChange(std::string name,
+                                           base::Time operator_start)
+    : name(std::move(name)), operator_start(operator_start) {}
+SignerOperatorChange::~SignerOperatorChange() = default;
+SignerOperatorChange::SignerOperatorChange(const SignerOperatorChange& other) =
+    default;
+SignerOperatorChange::SignerOperatorChange(SignerOperatorChange&& other) =
+    default;
+SignerOperatorChange& SignerOperatorChange::operator=(
+    const SignerOperatorChange& other) = default;
+SignerOperatorChange& SignerOperatorChange::operator=(
+    SignerOperatorChange&& other) = default;
+
+SignerOperator::SignerOperator() = default;
+SignerOperator::SignerOperator(std::string name, std::vector<std::string> email)
+    : name(std::move(name)), email(std::move(email)) {}
+SignerOperator::~SignerOperator() = default;
+SignerOperator::SignerOperator(const SignerOperator& other) = default;
+SignerOperator::SignerOperator(SignerOperator&& other) = default;
+SignerOperator& SignerOperator::operator=(const SignerOperator& other) =
+    default;
+SignerOperator& SignerOperator::operator=(SignerOperator&& other) = default;
+
+Signer::Signer() = default;
+Signer::~Signer() = default;
+Signer::Signer(const Signer& other) = default;
+Signer::Signer(Signer&& other) = default;
+Signer& Signer::operator=(const Signer& other) = default;
+Signer& Signer::operator=(Signer&& other) = default;
+
+ChromeRootStoreSignerSet::ChromeRootStoreSignerSet() = default;
+ChromeRootStoreSignerSet::~ChromeRootStoreSignerSet() = default;
+ChromeRootStoreSignerSet::ChromeRootStoreSignerSet(
+    const ChromeRootStoreSignerSet& other) = default;
+ChromeRootStoreSignerSet::ChromeRootStoreSignerSet(
+    ChromeRootStoreSignerSet&& other) = default;
+ChromeRootStoreSignerSet& ChromeRootStoreSignerSet::operator=(
+    const ChromeRootStoreSignerSet& other) = default;
+ChromeRootStoreSignerSet& ChromeRootStoreSignerSet::operator=(
+    ChromeRootStoreSignerSet&& other) = default;
+
+// static
+std::optional<ChromeRootStoreSignerSet>
+ChromeRootStoreSignerSet::CreateFromProto(
+    const chrome_root_store::SignerSet& proto) {
+  ChromeRootStoreSignerSet signer_set;
+
+  base::Time timestamp;
+  if (proto.has_timestamp()) {
+    timestamp = ProtoTimestampToTime(proto.timestamp());
+  } else {
+    timestamp = base::Time::Min();
+  }
+  signer_set.timestamp_ = timestamp;
+  signer_set.version_ = proto.version();
+
+  for (const auto& op : proto.operators()) {
+    std::vector<std::string> emails;
+    for (const auto& email : op.email()) {
+      emails.emplace_back(email);
+    }
+    signer_set.operators_.emplace_back(std::string(op.name()),
+                                       std::move(emails));
+  }
+
+  for (const auto& issuer : proto.issuers()) {
+    if (!ParseSigner(issuer, signer_set.issuers_)) {
+      return std::nullopt;
+    }
+  }
+
+  for (const auto& mirror : proto.mirrors()) {
+    if (!ParseSigner(mirror, signer_set.mirrors_)) {
+      return std::nullopt;
+    }
+  }
+
+  return signer_set;
+}
+
+// static
+ChromeRootStoreSignerSet ChromeRootStoreSignerSet::CreateFromCompiled() {
+  chrome_root_store::SignerSet proto;
+  CHECK(proto.ParseFromArray(kSignerSetProto.data(), kSignerSetProto.size()));
+
+  // The compiled-in proto only contains key_sha256 hashes. When CreateFromProto
+  // runs below, it automatically accesses the separate array of key spans
+  // (kSignerKeys from signer-set-inc.cc) to populate the key spans for each
+  // signer.
+  std::optional<ChromeRootStoreSignerSet> signer_set = CreateFromProto(proto);
+  CHECK(signer_set.has_value());
+  return std::move(*signer_set);
 }
 
 }  // namespace net

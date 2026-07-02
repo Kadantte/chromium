@@ -529,8 +529,8 @@ public class RecentTabsRowAdapter extends BaseExpandableListAdapter {
      * page.
      */
     class RecentlyClosedTabsGroup extends Group {
-        @StringRes static final int ID_OPEN_IN_NEW_TAB = R.string.contextmenu_open_in_new_tab;
-        @StringRes static final int ID_REMOVE_ALL = R.string.remove_all;
+        static final @StringRes int ID_OPEN_IN_NEW_TAB = R.string.contextmenu_open_in_new_tab;
+        static final @StringRes int ID_REMOVE_ALL = R.string.remove_all;
         private @Nullable RecentlyClosedEntry mLongPressedRow;
 
         @Override
@@ -942,7 +942,7 @@ public class RecentTabsRowAdapter extends BaseExpandableListAdapter {
         Drawable image =
                 UiUtils.getTintedDrawable(
                         mActivity,
-                        R.drawable.ic_features_24dp,
+                        R.drawable.ic_grid_view_24dp,
                         R.color.default_icon_color_tint_list);
         viewHolder.imageView.setImageDrawable(image);
     }

@@ -12,6 +12,8 @@
 
 namespace blink {
 
+class PhysicalBoxFragment;
+
 class CORE_EXPORT LayoutGrid : public LayoutBlock {
  public:
   explicit LayoutGrid(Element* element);
@@ -70,13 +72,20 @@ class CORE_EXPORT LayoutGrid : public LayoutBlock {
 
   const GridLayoutData* LayoutData() const;
 
+  wtf_size_t StitchedRowGapIndex(const PhysicalBoxFragment& fragment,
+                                 wtf_size_t gap_index) const override;
+
+  void Trace(Visitor* visitor) const override {
+    LayoutBlock::Trace(visitor);
+    visitor->Trace(cached_subgrid_min_max_sizes_);
+  }
+
  private:
   bool IsLayoutGrid() const final {
     NOT_DESTROYED();
     return true;
   }
 
-  void UpdateAfterLayout() override;
   void MarkGridDirty();
 
   void AddChild(LayoutObject* new_child, LayoutObject* before_child) override;
@@ -86,7 +95,7 @@ class CORE_EXPORT LayoutGrid : public LayoutBlock {
                       const StyleChangeContext&) override;
 
   std::optional<GridPlacementData> cached_placement_data_;
-  std::optional<const SubgridMinMaxSizesCache> cached_subgrid_min_max_sizes_;
+  Member<const SubgridMinMaxSizesCache> cached_subgrid_min_max_sizes_;
 };
 
 // wtf/casting.h helper.

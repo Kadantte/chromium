@@ -11,6 +11,7 @@
 #include "base/functional/bind.h"
 #include "base/json/json_writer.h"
 #include "base/memory/raw_ptr.h"
+#include "base/no_destructor.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/types/optional_util.h"
@@ -46,6 +47,7 @@
 #include "ui/base/clipboard/clipboard_buffer.h"
 #include "ui/base/clipboard/clipboard_data.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
+#include "ui/base/clipboard/test/clipboard_test_util.h"
 #include "ui/base/data_transfer_policy/data_transfer_endpoint.h"
 #include "ui/events/keycodes/keyboard_codes_posix.h"
 #include "ui/events/test/event_generator.h"
@@ -70,10 +72,15 @@ constexpr char kExampleUrl[] = "https://example.com";
 
 constexpr char kRuleName1[] = "rule #1";
 constexpr char kRuleId1[] = "testid1";
-const DlpRulesManager::RuleMetadata kRuleMetadata1(kRuleName1, kRuleId1);
 
 constexpr char kRuleName2[] = "rule #2";
 constexpr char kRuleId2[] = "testid2";
+
+const DlpRulesManager::RuleMetadata& GetRuleMetadata1() {
+  static const base::NoDestructor<DlpRulesManager::RuleMetadata> val(kRuleName1,
+                                                                     kRuleId1);
+  return *val;
+}
 
 class FakeClipboardNotifier : public DlpClipboardNotifier {
  public:
@@ -255,7 +262,7 @@ class DataTransferDlpBrowserTest : public InProcessBrowserTest {
     widget_ = std::make_unique<views::Widget>();
 
     views::Widget::InitParams params(
-        views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
+        views::Widget::InitParams::CLIENT_OWNS_WIDGET,
         views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
     widget_->Init(std::move(params));
     textfield_ = widget_->SetContentsView(std::make_unique<views::Textfield>());
@@ -311,9 +318,9 @@ IN_PROC_BROWSER_TEST_F(DataTransferDlpBrowserTest, EmptyPolicy) {
   SetClipboardText(kClipboardText116, nullptr);
 
   ui::DataTransferEndpoint data_dst((GURL("https://google.com")));
-  std::u16string result;
-  ui::Clipboard::GetForCurrentThread()->ReadText(
-      ui::ClipboardBuffer::kCopyPaste, &data_dst, &result);
+  std::u16string result = ui::clipboard_test_util::ReadText(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      &data_dst);
   EXPECT_EQ(kClipboardText116, result);
 }
 
@@ -339,15 +346,15 @@ IN_PROC_BROWSER_TEST_F(DataTransferDlpBrowserTest, BlockDestination) {
       std::make_unique<ui::DataTransferEndpoint>((GURL(kMailUrl))));
 
   ui::DataTransferEndpoint data_dst1((GURL(kMailUrl)));
-  std::u16string result1;
-  ui::Clipboard::GetForCurrentThread()->ReadText(
-      ui::ClipboardBuffer::kCopyPaste, &data_dst1, &result1);
+  std::u16string result1 = ui::clipboard_test_util::ReadText(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      &data_dst1);
   EXPECT_EQ(kClipboardText116, result1);
 
   ui::DataTransferEndpoint data_dst2((GURL(kDocsUrl)));
-  std::u16string result2;
-  ui::Clipboard::GetForCurrentThread()->ReadText(
-      ui::ClipboardBuffer::kCopyPaste, &data_dst2, &result2);
+  std::u16string result2 = ui::clipboard_test_util::ReadText(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      &data_dst2);
   EXPECT_EQ(kClipboardText116, result2);
 
   base::RunLoop run_loop;
@@ -357,9 +364,9 @@ IN_PROC_BROWSER_TEST_F(DataTransferDlpBrowserTest, BlockDestination) {
                            kRuleId1, DlpRulesManager::Level::kBlock),
       run_loop);
   ui::DataTransferEndpoint data_dst3((GURL(kExampleUrl)));
-  std::u16string result3;
-  ui::Clipboard::GetForCurrentThread()->ReadText(
-      ui::ClipboardBuffer::kCopyPaste, &data_dst3, &result3);
+  std::u16string result3 = ui::clipboard_test_util::ReadText(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      &data_dst3);
   EXPECT_EQ(std::u16string(), result3);
   ASSERT_TRUE(dlp_controller_->ObserveWidget());
   run_loop.Run();
@@ -369,9 +376,9 @@ IN_PROC_BROWSER_TEST_F(DataTransferDlpBrowserTest, BlockDestination) {
       std::make_unique<ui::DataTransferEndpoint>((GURL(kExampleUrl))));
 
   ui::DataTransferEndpoint data_dst4((GURL(kMailUrl)));
-  std::u16string result4;
-  ui::Clipboard::GetForCurrentThread()->ReadText(
-      ui::ClipboardBuffer::kCopyPaste, &data_dst1, &result4);
+  std::u16string result4 = ui::clipboard_test_util::ReadText(
+      ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+      &data_dst1);
   EXPECT_EQ(kClipboardText116, result4);
 
   FlushMessageLoop();
@@ -426,10 +433,10 @@ IN_PROC_BROWSER_TEST_F(DataTransferDlpBrowserTest, WarnDestination) {
     ui::DataTransferEndpoint default_endpoint(ui::EndpointType::kDefault);
     auto data_src =
         std::make_unique<ui::DataTransferEndpoint>((GURL(kMailUrl)));
-    auto reporting_cb =
-        base::BindOnce(&FakeDlpController::ReportWarningProceededEvent,
-                       base::Unretained(dlp_controller_.get()), data_src.get(),
-                       &default_endpoint, kMailUrl, "*", kRuleMetadata1, true);
+    auto reporting_cb = base::BindOnce(
+        &FakeDlpController::ReportWarningProceededEvent,
+        base::Unretained(dlp_controller_.get()), data_src.get(),
+        &default_endpoint, kMailUrl, "*", GetRuleMetadata1(), true);
     auto data = std::make_unique<ui::ClipboardData>();
     data->set_text(base::UTF16ToUTF8(std::u16string(kClipboardText116)));
     helper_.ProceedPressed(std::move(data), default_endpoint,
@@ -464,9 +471,9 @@ IN_PROC_BROWSER_TEST_F(DataTransferDlpBrowserTest, WarnDestination) {
 
   // Initiate a paste on nullptr data_dst.
   {
-    std::u16string result;
-    ui::Clipboard::GetForCurrentThread()->ReadText(
-        ui::ClipboardBuffer::kCopyPaste, nullptr, &result);
+    std::u16string result = ui::clipboard_test_util::ReadText(
+        ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+        nullptr);
     EXPECT_TRUE(!widget || widget->IsClosed());
 
     EXPECT_EQ(std::u16string(), result);
@@ -766,7 +773,7 @@ IN_PROC_BROWSER_TEST_F(DataTransferDlpBlinkBrowserTest, ShouldProceedWarn) {
   }
 }
 
-// Test case for crbug.com/1213143
+// Test case for crbug.com/40768586
 IN_PROC_BROWSER_TEST_F(DataTransferDlpBlinkBrowserTest, Reporting) {
   base::HistogramTester histogram_tester;
 

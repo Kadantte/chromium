@@ -31,6 +31,7 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/scheduler/scripted_idle_task_controller.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cancellable_task.h"
 
 namespace blink {
@@ -125,7 +126,7 @@ void IdleSpellCheckController::RespondToChangedSelection() {
   // For more see:
   // https://explainers-by-googlers.github.io/user-dictionary-leaks/
   const Element* focused_element = GetDocument().FocusedElement();
-  if (focused_element && !focused_element->WasLastFocusFromUserGesture() &&
+  if ((!focused_element || !focused_element->WasLastFocusFromUserGesture()) &&
       !base::FeatureList::IsEnabled(
           features::kUnrestrictSpellingAndGrammarForTesting)) {
     Deactivate();
@@ -266,7 +267,7 @@ bool IdleSpellCheckController::NeedsHotModeCheckingUnderCurrentSelection()
   // already fully checked the current element.
   DCHECK(needs_invocation_for_changed_selection_);
   const Position& position =
-      GetWindow().GetFrame()->Selection().GetSelectionInDOMTree().Focus();
+      GetWindow().GetFrame()->Selection().GetSelectionInDomTree().Focus();
   const auto* element = DynamicTo<Element>(HighestEditableRoot(position));
   if (!element || !element->isConnected())
     return false;
@@ -283,7 +284,7 @@ void IdleSpellCheckController::HotModeInvocation(IdleDeadline* deadline) {
 
   if (NeedsHotModeCheckingUnderCurrentSelection()) {
     requester.CheckSpellingAt(
-        GetWindow().GetFrame()->Selection().GetSelectionInDOMTree().Focus());
+        GetWindow().GetFrame()->Selection().GetSelectionInDomTree().Focus());
   }
 
   const uint64_t watermark = last_processed_undo_step_sequence_;
@@ -322,7 +323,7 @@ void IdleSpellCheckController::Invoke(IdleDeadline* deadline) {
   if (RuntimeEnabledFeatures::
           CheckForCanonicalPositionInIdleSpellCheckEnabled()) {
     Position selection_focus =
-        GetWindow().GetFrame()->Selection().GetSelectionInDOMTree().Focus();
+        GetWindow().GetFrame()->Selection().GetSelectionInDomTree().Focus();
     if (selection_focus) {
       GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
       if (CanonicalPositionOf(EphemeralRange(selection_focus).StartPosition())

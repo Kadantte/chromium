@@ -188,7 +188,7 @@ void ApplyStyleCommand::UpdateStartEnd(const EphemeralRange& range) {
   GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
   const bool was_base_first =
       StartingSelection().IsAnchorFirst() || !SelectionIsDirectional();
-  SelectionInDOMTree::Builder builder;
+  SelectionInDomTree::Builder builder;
   if (was_base_first)
     builder.SetAsForwardSelection(range);
   else
@@ -197,6 +197,10 @@ void ApplyStyleCommand::UpdateStartEnd(const EphemeralRange& range) {
       CreateVisibleSelection(builder.Build());
   SetEndingSelection(
       SelectionForUndoStep::From(visible_selection.AsSelection()));
+  if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+    SetEndingDomSelection(
+        SelectionForUndoStep::From(visible_selection.AsSelection()));
+  }
   start_ = range.StartPosition();
   end_ = range.EndPosition();
 }
@@ -325,7 +329,7 @@ void ApplyStyleCommand::ApplyBlockStyle(EditingStyle* style,
           block = new_block;
       }
       if (auto* html_element = DynamicTo<HTMLElement>(block)) {
-        RemoveCSSStyle(style, html_element, editing_state);
+        RemoveCssStyle(style, html_element, editing_state);
         if (editing_state->IsAborted())
           return;
         if (!remove_only_)
@@ -1202,8 +1206,9 @@ bool ApplyStyleCommand::RemoveInlineStyleFromElement(
 
   // If the node was converted to a span, the span may still contain relevant
   // styles which must be removed (e.g. <b style='font-weight: bold'>)
-  if (RemoveCSSStyle(style, element, editing_state, mode, extracted_style))
+  if (RemoveCssStyle(style, element, editing_state, mode, extracted_style)) {
     removed = true;
+  }
   if (editing_state->IsAborted())
     return false;
 
@@ -1268,7 +1273,7 @@ bool ApplyStyleCommand::RemoveImplicitlyStyledElement(
   return true;
 }
 
-bool ApplyStyleCommand::RemoveCSSStyle(EditingStyle* style,
+bool ApplyStyleCommand::RemoveCssStyle(EditingStyle* style,
                                        HTMLElement* element,
                                        EditingState* editing_state,
                                        InlineStyleRemovalMode mode,
@@ -1287,7 +1292,7 @@ bool ApplyStyleCommand::RemoveCSSStyle(EditingStyle* style,
   // FIXME: We should use a mass-removal function here but we don't have an
   // undoable one yet.
   for (const auto& property : properties)
-    RemoveCSSProperty(element, property);
+    RemoveCssProperty(element, property);
 
   if (IsSpanWithoutAttributesOrUnstyledStyleSpan(element))
     RemoveNodePreservingChildren(element, editing_state);

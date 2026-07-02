@@ -4,9 +4,6 @@
 
 package org.chromium.base;
 
-import static android.content.Context.UI_MODE_SERVICE;
-
-import android.app.UiModeManager;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
@@ -44,10 +41,12 @@ public final class DeviceInfo {
 
     private static @Nullable String sGmsVersionCodeForTesting;
     private static @Nullable Boolean sIsAutomotiveForTesting;
+    private static @Nullable Boolean sIsTVForTesting;
     private static boolean sInitialized;
     private static @Nullable Boolean sIsXrForTesting;
     private static @Nullable Boolean sIsRetailDemoModeForTesting;
     private static @Nullable Boolean sIsDesktopForTesting;
+    private static @Nullable Boolean sIsFoldableForTesting;
     private final IDeviceInfo mIDeviceInfo;
     private @Nullable Boolean mIsRetailDemoMode;
     private @Nullable ApplicationInfo mGmsAppInfo;
@@ -79,7 +78,9 @@ public final class DeviceInfo {
                         /* gmsVersionCode= */ info.gmsVersionCode,
                         /* isTV= */ info.isTv,
                         /* isAutomotive= */ info.isAutomotive,
-                        /* isFoldable= */ info.isFoldable,
+                        /* isFoldable= */ (sIsFoldableForTesting != null)
+                                ? sIsFoldableForTesting
+                                : info.isFoldable,
                         /* isDesktop= */ info.isDesktop,
                         /* vulkanDeqpLevel= */ info.vulkanDeqpLevel,
                         /* isXr= */ (sIsXrForTesting != null) ? sIsXrForTesting : info.isXr,
@@ -117,6 +118,14 @@ public final class DeviceInfo {
         }
     }
 
+    public static void setIsTVForTesting(boolean isTV) {
+        sIsTVForTesting = isTV;
+        ResettersForTesting.register(() -> sIsTVForTesting = null);
+        if (sIsNativeLoaded) {
+            sendToNative(getInstance().mIDeviceInfo);
+        }
+    }
+
     public static boolean isTV() {
         return getInstance().mIDeviceInfo.isTv;
     }
@@ -125,8 +134,24 @@ public final class DeviceInfo {
         return getInstance().mIDeviceInfo.isAutomotive;
     }
 
+    /**
+     * Checks whether the current device is a foldable device.
+     *
+     * <p><b>Limitation:</b> This implementation relies entirely on the presence of the {@code
+     * PackageManager.FEATURE_SENSOR_HINGE_ANGLE} system feature to identify foldables. Because this
+     * feature was officially introduced in Android 11 (API level 30), early foldable devices that
+     * launched on Android 9 or 10 (such as the original Samsung Galaxy Fold, Z Fold2, and Z Flip)
+     * use proprietary implementations instead of the standard AOSP hinge sensor feature.
+     * Consequently, this method will incorrectly return {@code false} for those specific legacy
+     * devices.
+     *
+     * @return {@code true} if the device is recognized by the OS as having a hinge angle sensor,
+     *     {@code false} otherwise (including on legacy Samsung foldables).
+     */
     public static boolean isFoldable() {
-        return getInstance().mIDeviceInfo.isFoldable;
+        return (sIsFoldableForTesting != null)
+                ? sIsFoldableForTesting
+                : getInstance().mIDeviceInfo.isFoldable;
     }
 
     public static boolean isDesktop() {
@@ -191,12 +216,35 @@ public final class DeviceInfo {
         ResettersForTesting.register(() -> sIsRetailDemoModeForTesting = null);
     }
 
+    @CalledByNativeForTesting
     public static void setIsDesktopForTesting(boolean isDesktop) {
         sIsDesktopForTesting = isDesktop;
         ResettersForTesting.register(() -> sIsDesktopForTesting = null);
         if (sIsNativeLoaded) {
             sendToNative(getInstance().mIDeviceInfo);
         }
+    }
+
+    @CalledByNativeForTesting
+    public static void resetIsDesktopForTesting() {
+        sIsDesktopForTesting = null;
+        if (sIsNativeLoaded) {
+            sendToNative(getInstance().mIDeviceInfo);
+        }
+    }
+
+    @CalledByNativeForTesting
+    public static void setIsFoldableForTesting(boolean value) {
+        sIsFoldableForTesting = value;
+        ResettersForTesting.register(() -> sIsFoldableForTesting = null);
+        if (sIsNativeLoaded) {
+            sendToNative(getInstance().mIDeviceInfo);
+        }
+    }
+
+    @CalledByNativeForTesting
+    public static void resetIsFoldableForTesting() {
+        sIsFoldableForTesting = null;
     }
 
     private static DeviceInfo getInstance() {
@@ -268,11 +316,12 @@ public final class DeviceInfo {
         Context appContext = ContextUtils.getApplicationContext();
         PackageManager pm = appContext.getPackageManager();
         // See https://developer.android.com/training/tv/start/hardware.html#runtime-check.
-        UiModeManager uiModeManager = (UiModeManager) appContext.getSystemService(UI_MODE_SERVICE);
+        int uiMode = appContext.getResources().getConfiguration().uiMode;
         mIDeviceInfo.isTv =
-                uiModeManager != null
-                        && uiModeManager.getCurrentModeType()
-                                == Configuration.UI_MODE_TYPE_TELEVISION;
+                (uiMode & Configuration.UI_MODE_TYPE_MASK) == Configuration.UI_MODE_TYPE_TELEVISION;
+        if (sIsTVForTesting != null) {
+            mIDeviceInfo.isTv = sIsTVForTesting;
+        }
 
         boolean isAutomotive;
         try {
@@ -304,6 +353,9 @@ public final class DeviceInfo {
                 !mIDeviceInfo.isDesktop
                         && Build.VERSION.SDK_INT >= VERSION_CODES.R
                         && pm.hasSystemFeature(PackageManager.FEATURE_SENSOR_HINGE_ANGLE);
+        if (sIsFoldableForTesting != null) {
+            mIDeviceInfo.isFoldable = sIsFoldableForTesting;
+        }
 
         int vulkanLevel = 0;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -323,6 +375,9 @@ public final class DeviceInfo {
                 getDeviceWidthInDp() >= LARGE_DISPLAY_MIN_SCREEN_WIDTH_600_DP;
 
         mIDeviceInfo.isXr = pm.hasSystemFeature("android.software.xr.api.openxr");
+        if (sIsXrForTesting != null) {
+            mIDeviceInfo.isXr = sIsXrForTesting;
+        }
     }
 
     @NativeMethods

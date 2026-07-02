@@ -63,6 +63,8 @@ using JniAudioDevice = media::AudioManagerAndroid::JniAudioDevice;
 using JniDelegate = media::AudioManagerAndroid::JniDelegate;
 
 namespace media {
+
+using Error = AudioInputStream::AudioInputCallback::Error;
 namespace {
 
 ACTION_P4(CheckCountAndPostQuitTask, count, limit, task_runner, quit_closure) {
@@ -218,7 +220,7 @@ class MockAudioInputCallback : public AudioInputStream::AudioInputCallback {
                     base::TimeTicks capture_time,
                     double volume,
                     const AudioGlitchInfo& glitch_info));
-  MOCK_METHOD0(OnError, void());
+  MOCK_METHOD1(OnError, void(Error));
 };
 
 // Implements AudioInputStream::AudioInputCallback and writes the recorded
@@ -242,8 +244,9 @@ class FileAudioSink : public AudioInputStream::AudioInputCallback {
     EXPECT_TRUE(
         base::PathService::Get(base::DIR_SRC_TEST_DATA_ROOT, &file_path));
     file_path = file_path.AppendASCII(file_name.c_str());
-    binary_file_ = base::OpenFile(file_path, "wb");
-    DLOG_IF(ERROR, !binary_file_) << "Failed to open binary PCM data file.";
+    binary_file_path_ = file_path;
+    // Create and truncate the file.
+    EXPECT_TRUE(base::WriteFile(binary_file_path_, base::span<uint8_t>()));
     DVLOG(0) << "Writing to file: " << file_path.value().c_str();
   }
 
@@ -260,12 +263,10 @@ class FileAudioSink : public AudioInputStream::AudioInputCallback {
       }
 
       // Write recorded data chunk to the file and prepare for next chunk.
-      // TODO(henrika): use file_util:: instead.
-      UNSAFE_TODO(fwrite(chunk.data(), 1, chunk.size(), binary_file_));
+      EXPECT_TRUE(base::AppendToFile(binary_file_path_, chunk));
       buffer_->Seek(chunk.size());
       bytes_written += chunk.size();
     }
-    base::CloseFile(binary_file_);
   }
 
   // AudioInputStream::AudioInputCallback implementation.
@@ -285,13 +286,13 @@ class FileAudioSink : public AudioInputStream::AudioInputCallback {
     }
   }
 
-  void OnError() override {}
+  void OnError(Error error_code) override {}
 
  private:
   raw_ptr<base::WaitableEvent> event_;
   AudioParameters params_;
   std::unique_ptr<media::SeekableBuffer> buffer_;
-  raw_ptr<FILE> binary_file_;
+  base::FilePath binary_file_path_;
 };
 
 // Implements AudioInputCallback and AudioSourceCallback to support full
@@ -317,7 +318,7 @@ class FullDuplexAudioSinkSource
   ~FullDuplexAudioSinkSource() override {}
 
   // AudioInputStream::AudioInputCallback implementation
-  void OnError() override {}
+  void OnError(Error error_code) override {}
   void OnData(const AudioBus* src,
               base::TimeTicks capture_time,
               double volume,
@@ -754,7 +755,7 @@ class AudioAndroidInputTest : public AudioAndroidOutputTest {
             &count, num_callbacks,
             base::SingleThreadTaskRunner::GetCurrentDefault(),
             run_loop.QuitWhenIdleClosure()));
-    EXPECT_CALL(sink, OnError()).Times(0);
+    EXPECT_CALL(sink, OnError(_)).Times(0);
 
     OpenAndStartAudioInputStreamOnAudioThread(&sink);
 
@@ -1289,7 +1290,7 @@ TEST_F(AudioAndroidOutputTest, OpenAndCloseOutputStreamWithDevice) {
 // explicitly being stopped.
 TEST_P(AudioAndroidInputTest, OpenStartAndCloseInputStream) {
   NiceMock<MockAudioInputCallback> callback;
-  EXPECT_CALL(callback, OnError()).Times(0);
+  EXPECT_CALL(callback, OnError(_)).Times(0);
 
   AudioParameters params = GetDefaultInputStreamParametersOnAudioThread();
   MakeAudioInputStreamOnAudioThread(params);

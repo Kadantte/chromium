@@ -10,7 +10,6 @@
 #include "base/command_line.h"
 #include "base/containers/to_vector.h"
 #include "base/feature_list.h"
-#include "base/feature_list_buildflags.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/test/task_environment.h"
@@ -340,7 +339,7 @@ TEST_F(
 TEST_F(FeatureAccessCheckerTest, MantaAccountCapabilitiesCheckPass) {
   AccountInfo account = identity_test_environment_.MakePrimaryAccountAvailable(
       "someone@gmail.com", signin::ConsentLevel::kSignin);
-  AccountCapabilitiesTestMutator mutator(&account.capabilities);
+  AccountCapabilitiesTestMutator mutator(&account);
   mutator.set_can_use_manta_service(true);
   signin::UpdateAccountInfoForAccount(
       identity_test_environment_.identity_manager(), account);
@@ -360,7 +359,7 @@ TEST_F(FeatureAccessCheckerTest, MantaAccountCapabilitiesCheckPass) {
 TEST_F(FeatureAccessCheckerTest, MantaAccountCapabilitiesCheckFailIfFalse) {
   AccountInfo account = identity_test_environment_.MakePrimaryAccountAvailable(
       "someone@gmail.com", signin::ConsentLevel::kSignin);
-  AccountCapabilitiesTestMutator mutator(&account.capabilities);
+  AccountCapabilitiesTestMutator mutator(&account);
   mutator.set_can_use_manta_service(false);
   FeatureAccessConfig config;
   config.capability_callback =
@@ -395,7 +394,7 @@ TEST_F(FeatureAccessCheckerTest,
        MantaAccountCapabilitiesCheckFailIfNoIdentityService) {
   AccountInfo account = identity_test_environment_.MakePrimaryAccountAvailable(
       "someone@gmail.com", signin::ConsentLevel::kSignin);
-  AccountCapabilitiesTestMutator mutator(&account.capabilities);
+  AccountCapabilitiesTestMutator mutator(&account);
   mutator.set_can_use_manta_service(true);
   signin::UpdateAccountInfoForAccount(
       identity_test_environment_.identity_manager(), account);

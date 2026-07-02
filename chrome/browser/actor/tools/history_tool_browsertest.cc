@@ -6,12 +6,13 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/threading/platform_thread.h"
-#include "chrome/browser/actor/actor_features.h"
 #include "chrome/browser/actor/actor_test_util.h"
 #include "chrome/browser/actor/tools/tool_request.h"
 #include "chrome/browser/actor/tools/tools_test_util.h"
 #include "chrome/common/actor.mojom.h"
 #include "chrome/common/chrome_features.h"
+#include "components/actor/core/actor_features.h"
+#include "components/actor/public/mojom/actor_types.mojom.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/render_frame_host.h"
@@ -377,7 +378,9 @@ IN_PROC_BROWSER_TEST_F(ActorHistoryToolBrowserTest, HistoryTool_BackFromPOST) {
 
     // The history tool should see the navigation to the error page as an
     // error.
-    const mojom::ActionResultPtr& result = std::get<0>(fut.Get());
+    const auto& action_results = fut.Get();
+    ASSERT_EQ(action_results.size(), 1u);
+    const mojom::ActionResultPtr& result = action_results[0].result;
     EXPECT_EQ(result->code, mojom::ActionResultCode::kHistoryErrorPage);
     EXPECT_THAT(result->message, testing::HasSubstr("ERR_CACHE_MISS"));
 
@@ -444,7 +447,9 @@ IN_PROC_BROWSER_TEST_F(ActorHistoryToolBrowserTest,
 
     // The history tool should see the navigation to the error page as an
     // error.
-    const mojom::ActionResultPtr& result = std::get<0>(fut.Get());
+    const auto& action_results = fut.Get();
+    ASSERT_EQ(action_results.size(), 1u);
+    const mojom::ActionResultPtr& result = action_results[0].result;
     EXPECT_EQ(result->code, mojom::ActionResultCode::kHistoryErrorPage);
     EXPECT_THAT(result->message, testing::HasSubstr("ERR_CACHE_MISS"));
 
@@ -514,7 +519,9 @@ IN_PROC_BROWSER_TEST_F(ActorHistoryToolBrowserTest,
 
     // The history tool should see the navigation to the error page as an
     // error.
-    const mojom::ActionResultPtr& result = std::get<0>(fut.Get());
+    const auto& action_results = fut.Get();
+    ASSERT_EQ(action_results.size(), 1u);
+    const mojom::ActionResultPtr& result = action_results[0].result;
     EXPECT_EQ(result->code, mojom::ActionResultCode::kHistoryErrorPage);
     EXPECT_THAT(result->message, testing::HasSubstr("ERR_CACHE_MISS"));
 

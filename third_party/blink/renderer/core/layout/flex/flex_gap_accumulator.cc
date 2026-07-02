@@ -6,13 +6,39 @@
 
 #include "third_party/blink/renderer/core/layout/box_fragment_builder.h"
 #include "third_party/blink/renderer/core/layout/flex/flex_line.h"
+#include "third_party/blink/renderer/core/layout/gap/cross_gap.h"
 #include "third_party/blink/renderer/core/layout/gap/gap_geometry.h"
+#include "third_party/blink/renderer/core/layout/gap/main_gap.h"
 
 namespace blink {
 
+FlexGapAccumulator::FlexGapAccumulator(
+    LayoutUnit gap_between_items,
+    LayoutUnit effective_gap_between_lines,
+    wtf_size_t num_lines,
+    wtf_size_t num_flex_items,
+    bool is_column,
+    LayoutUnit border_scrollbar_padding_block_start,
+    LayoutUnit border_scrollbar_padding_inline_start)
+    : gap_between_items_(gap_between_items),
+      effective_gap_between_lines_(effective_gap_between_lines),
+      is_column_(is_column),
+      gap_geometry_(
+          MakeGarbageCollected<GapGeometry>(GapGeometry::ContainerType::kFlex)),
+      border_scrollbar_padding_block_start_(
+          border_scrollbar_padding_block_start),
+      border_scrollbar_padding_inline_start_(
+          border_scrollbar_padding_inline_start) {
+  gap_geometry_->ReserveCrossGaps(num_flex_items);
+  if (num_lines > 0) {
+    gap_geometry_->ReserveMainGaps(num_lines - 1);
+  }
+}
+
 const GapGeometry* FlexGapAccumulator::BuildGapGeometry(
     const BoxFragmentBuilder& container_builder) {
-  if (main_gaps_.empty() && cross_gaps_.empty()) {
+  if (gap_geometry_->MainGapCount() == 0 &&
+      gap_geometry_->CrossGapCount() == 0) {
     // `GapGeometry` requires at least one axis to be valid.
     return nullptr;
   }
@@ -21,28 +47,15 @@ const GapGeometry* FlexGapAccumulator::BuildGapGeometry(
     FinalizeContentMainEndForColumnFlex(container_builder);
   }
 
-  GapGeometry* gap_geometry =
-      MakeGarbageCollected<GapGeometry>(GapGeometry::ContainerType::kFlex);
-
   if (is_column_) {
     // In a column flex container, the main axis gaps become the "columns" and
     // the cross axis gaps become the "rows".
-      gap_geometry->SetInlineGapSize(gap_between_lines_);
-      gap_geometry->SetBlockGapSize(gap_between_items_);
-      gap_geometry->SetMainDirection(kForColumns);
+    gap_geometry_->SetInlineGapSize(effective_gap_between_lines_);
+    gap_geometry_->SetBlockGapSize(gap_between_items_);
+    gap_geometry_->SetMainDirection(kForColumns);
   } else {
-      gap_geometry->SetBlockGapSize(gap_between_lines_);
-      gap_geometry->SetInlineGapSize(gap_between_items_);
-  }
-
-  // TODO(crbug.com/440123087): Risky since they could in theory be used after
-  // moved. Clean up to not move members. Change members to unique_ptrs
-  if (!cross_gaps_.empty()) {
-    gap_geometry->SetCrossGaps(std::move(cross_gaps_));
-  }
-
-  if (!main_gaps_.empty()) {
-    gap_geometry->SetMainGaps(std::move(main_gaps_));
+    gap_geometry_->SetBlockGapSize(effective_gap_between_lines_);
+    gap_geometry_->SetInlineGapSize(gap_between_items_);
   }
 
   LayoutUnit content_inline_start =
@@ -54,23 +67,25 @@ const GapGeometry* FlexGapAccumulator::BuildGapGeometry(
   LayoutUnit content_block_end =
       is_column_ ? content_main_end_ : content_cross_end_;
 
-  gap_geometry->SetContentInlineOffsets(content_inline_start,
-                                        content_inline_end);
-  gap_geometry->SetContentBlockOffsets(content_block_start, content_block_end);
+  gap_geometry_->SetContentInlineOffsets(content_inline_start,
+                                         content_inline_end);
+  gap_geometry_->SetContentBlockOffsets(content_block_start, content_block_end);
 
-  return gap_geometry;
+  gap_geometry_->Finalize();
+
+  return gap_geometry_;
 }
 
-void FlexGapAccumulator::BuildGapsForCurrentItem(
-    const FlexLine& flex_line,
-    wtf_size_t flex_line_index,
-    LogicalOffset item_offset,
-    bool is_first_item,
-    bool is_last_item,
-    bool is_last_line,
-    LayoutUnit line_cross_start,
-    LayoutUnit line_cross_end,
-    LayoutUnit container_main_end) {
+void FlexGapAccumulator::BuildGapsForCurrentItem(const FlexLine& flex_line,
+                                                 wtf_size_t flex_line_index,
+                                                 LogicalOffset item_offset,
+                                                 bool is_first_item,
+                                                 bool is_last_item,
+                                                 bool is_last_line,
+                                                 LayoutUnit line_cross_start,
+                                                 LayoutUnit line_cross_end,
+                                                 LayoutUnit container_main_end,
+                                                 bool in_fragmentation) {
   if (first_flex_line_processed_index_ == kNotFound) {
     first_flex_line_processed_index_ = flex_line_index;
   }
@@ -79,8 +94,8 @@ void FlexGapAccumulator::BuildGapsForCurrentItem(
       flex_line_index - first_flex_line_processed_index_;
 
   const bool need_to_add_main_gap =
-      (main_gaps_.empty() ||
-       main_gaps_.size() - 1 < fragment_relative_line_index) &&
+      (gap_geometry_->MainGapCount() == 0 ||
+       gap_geometry_->MainGapCount() - 1 < fragment_relative_line_index) &&
       !is_last_line;
   const bool is_first_line = fragment_relative_line_index == 0;
   const bool single_line = is_first_line && is_last_line;
@@ -105,6 +120,39 @@ void FlexGapAccumulator::BuildGapsForCurrentItem(
     }
   }
 
+  // TODO(490343456): There is a bug in the flex layout
+  // algorithm that can cause the size of a line to be 0. In such cases we make
+  // sure to not create a main gap, while the underlying bug and behavior is
+  // being investigated. However, there are also legitimate cases where we can
+  // have a line of size 0.
+  //
+  // We need to make sure we populate the `cross_gap_sizes_` for all lines.
+  // In fragmentation scenarios, we may have some lines where we are not
+  // processing the first item or the last item in the flex line (e.g. the nth
+  // item in a line gets fragmented and finished in a separate fragment, but its
+  // the only item in that line that got fragmented). In such cases we simply
+  // need to populate the `cross_gap_sizes_` whenever we don't yet have an entry
+  // for that line. This suffices for all other cases as well, since in
+  // fragmentation scenarios, the flex line already has
+  // `effective_gap_between_items` computed.
+  if (in_fragmentation) {
+    if (gap_geometry_->GetFlexCrossGapSizeCount() ==
+        fragment_relative_line_index) {
+      gap_geometry_->AddFlexCrossGapSize(flex_line.effective_gap_between_items);
+    }
+  } else {
+    // For non-fragmentation scenarios, we need to wait to populate the
+    // `cross_gap_sizes_` until we see the second item in a line, by which the
+    // flex line would have the `effective_gap_between_items` computed. We need
+    // the `is_last_item` check to handle the case where we have a single item
+    // in a line.
+    if ((!is_first_item || is_last_item) &&
+        gap_geometry_->GetFlexCrossGapSizeCount() ==
+            fragment_relative_line_index) {
+      gap_geometry_->AddFlexCrossGapSize(flex_line.effective_gap_between_items);
+    }
+  }
+
   // The first item in any line doesn't have any `CrossGap` associated with
   // it, so we return early.
   if (is_first_item) {
@@ -114,7 +162,7 @@ void FlexGapAccumulator::BuildGapsForCurrentItem(
   const LayoutUnit main_offset =
       is_column_ ? item_offset.block_offset : item_offset.inline_offset;
   const LayoutUnit main_intersection_offset =
-      main_offset - (gap_between_items_ / 2);
+      main_offset - (flex_line.effective_gap_between_items / 2);
 
   PopulateCrossGapForCurrentItem(flex_line, fragment_relative_line_index,
                                  is_first_line, is_last_line, single_line,
@@ -122,35 +170,36 @@ void FlexGapAccumulator::BuildGapsForCurrentItem(
 
   if (is_last_item) {
     const LayoutUnit last_gap_offset =
-        is_column_ ? cross_gaps_.back().GetGapOffset().block_offset
-                   : cross_gaps_.back().GetGapOffset().inline_offset;
+        is_column_
+            ? gap_geometry_->GetCrossGaps().back().GetGapOffset().block_offset
+            : gap_geometry_->GetCrossGaps().back().GetGapOffset().inline_offset;
     content_main_end_ = std::max(last_gap_offset, container_main_end);
   }
 }
 
 void FlexGapAccumulator::PopulateMainGapForFirstItem(LayoutUnit cross_end) {
-  LayoutUnit gap_offset = cross_end + (gap_between_lines_ / 2);
-  main_gaps_.emplace_back(gap_offset);
+  LayoutUnit gap_offset = cross_end + (effective_gap_between_lines_ / 2);
+  gap_geometry_->AddMainGap(gap_offset);
 }
 
 void FlexGapAccumulator::HandleCrossGapRangesForCurrentItem(
     wtf_size_t flex_line_index,
     wtf_size_t cross_gap_index) {
-  if (main_gaps_.empty()) {
+  if (gap_geometry_->MainGapCount() == 0) {
     return;
   }
 
-  if (flex_line_index < main_gaps_.size()) {
-    main_gaps_[flex_line_index].IncrementRangeOfCrossGapsBefore(
-        cross_gap_index);
+  if (flex_line_index < gap_geometry_->MainGapCount()) {
+    gap_geometry_->MainGapAt(flex_line_index)
+        .IncrementRangeOfCrossGapsBefore(cross_gap_index);
   }
 
-  if (flex_line_index > 0) {
-    CHECK_LE(flex_line_index - 1, main_gaps_.size());
+  if (flex_line_index > 0 &&
+      flex_line_index - 1 < gap_geometry_->MainGapCount()) {
     // We increment the `RangeOfCrossGapsAfter` for the previous line, since
     // the CrossGaps that start at this line fall "after" the previous line.
-    main_gaps_[flex_line_index - 1].IncrementRangeOfCrossGapsAfter(
-        cross_gap_index);
+    gap_geometry_->MainGapAt(flex_line_index - 1)
+        .IncrementRangeOfCrossGapsAfter(cross_gap_index);
   }
 }
 
@@ -185,23 +234,23 @@ void FlexGapAccumulator::PopulateCrossGapForCurrentItem(
   } else if (is_last_line) {
     // If there is more than one flex line, and the current line is the last
     // line, the cross offset will be the cross axis offset of the line
-    // minus half of the gap size.
-    cross_intersection_offset -= gap_between_lines_ / 2;
+    // minus half of the effective gap size.
+    cross_intersection_offset -= effective_gap_between_lines_ / 2;
     edge_state = CrossGap::EdgeIntersectionState::kEnd;
   } else {
     // Middle line, so the cross gap will start at midpoint between the start
     // of this line and the end of the previous line.
     cross_intersection_offset =
-        flex_line.cross_axis_offset - (gap_between_lines_ / 2);
+        cross_start - (effective_gap_between_lines_ / 2);
   }
 
   LogicalOffset logical_offset(
       is_column_ ? cross_intersection_offset : main_intersection_offset,
       is_column_ ? main_intersection_offset : cross_intersection_offset);
-  CrossGap cross_gap(logical_offset, edge_state);
+  gap_geometry_->AddCrossGap(logical_offset, edge_state);
 
-  cross_gaps_.push_back(cross_gap);
-  HandleCrossGapRangesForCurrentItem(flex_line_index, cross_gaps_.size() - 1);
+  HandleCrossGapRangesForCurrentItem(flex_line_index,
+                                     gap_geometry_->CrossGapCount() - 1);
 }
 
 void FlexGapAccumulator::FinalizeContentMainEndForColumnFlex(
@@ -218,33 +267,31 @@ void FlexGapAccumulator::FinalizeContentMainEndForColumnFlex(
 
 void FlexGapAccumulator::SuppressLastMainGap(
     std::optional<LayoutUnit> new_cross_end) {
-  if (main_gaps_.empty()) {
+  if (gap_geometry_->MainGapCount() == 0) {
     return;
   }
 
+  const MainGap& last_main_gap = gap_geometry_->GetMainGaps().back();
   wtf_size_t affected_cross_gaps_start_index =
-      main_gaps_.back().HasCrossGapsBefore()
-          ? main_gaps_.back().GetCrossGapBeforeStart()
+      last_main_gap.HasCrossGapsBefore()
+          ? last_main_gap.GetCrossGapBeforeStart()
           : kNotFound;
   wtf_size_t affected_cross_gaps_end_index =
-      main_gaps_.back().HasCrossGapsBefore()
-          ? main_gaps_.back().GetCrossGapBeforeEnd()
-          : kNotFound;
+      last_main_gap.HasCrossGapsBefore() ? last_main_gap.GetCrossGapBeforeEnd()
+                                         : kNotFound;
   // Since we are removing the last `MainGap`, we must update the
   // `content_cross_end_` to be just before the last `MainGap`.
-  content_cross_end_ =
-      new_cross_end.has_value()
-          ? new_cross_end.value()
-          : main_gaps_.back().GetGapOffset() - (gap_between_lines_ / 2);
+  content_cross_end_ = new_cross_end.value_or(last_main_gap.GetGapOffset() -
+                                              effective_gap_between_lines_ / 2);
 
-  main_gaps_.pop_back();
+  gap_geometry_->RemoveLastMainGap();
 
   // Since we have removed the last `MainGap`, we must also update the edge
   // intersection state of all the `CrossGap`s associated with that main gap,
   // since now we know that they will be adjacent to the end of the container.
   for (wtf_size_t i = affected_cross_gaps_start_index;
        i != kNotFound && i <= affected_cross_gaps_end_index; ++i) {
-    CrossGap& cross_gap = cross_gaps_[i];
+    CrossGap& cross_gap = gap_geometry_->CrossGapAt(i);
     CrossGap::EdgeIntersectionState edge_state =
         cross_gap.GetEdgeIntersectionState();
     if (edge_state == CrossGap::EdgeIntersectionState::kStart) {

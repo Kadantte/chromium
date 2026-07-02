@@ -28,6 +28,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/child_process_data.h"
 #include "content/public/browser/client_hints_controller_delegate.h"
+#include "content/public/browser/immersive_playback_options.h"
 #include "content/public/browser/login_delegate.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/navigation_throttle_registry.h"
@@ -147,6 +148,7 @@ class BoundsMatchVideoSizeOverlayWindow : public VideoOverlayWindow {
   void SetHidePictureInPictureButtonVisibility(bool is_visible) override {}
   void SetMicrophoneMuted(bool muted) override {}
   void SetCameraState(bool turned_on) override {}
+  void SetMediaMuted(bool muted) override {}
   void SetToggleMicrophoneButtonVisibility(bool is_visible) override {}
   void SetToggleCameraButtonVisibility(bool is_visible) override {}
   void SetHangUpButtonVisibility(bool is_visible) override {}
@@ -157,6 +159,8 @@ class BoundsMatchVideoSizeOverlayWindow : public VideoOverlayWindow {
   void SetFaviconImages(
       const std::vector<media_session::MediaImage>& images) override {}
   void SetSurfaceId(const viz::SurfaceId& surface_id) override {}
+  void SetPlaybackControlsVisibility(bool is_visible) override {}
+  void SetImmersiveVideoOptions(const ImmersiveOptions& options) override {}
 
  private:
   gfx::Size size_;
@@ -815,10 +819,5 @@ void WebTestContentBrowserClient::
       MojoBinderAssociatedPolicy::kGrant);
 }
 
-void WebTestContentBrowserClient::RegisterMojoBinderPoliciesForPreview(
-    MojoBinderPolicyMap& policy_map) {
-  policy_map.SetAssociatedPolicy<mojom::WebTestControlHost>(
-      MojoBinderAssociatedPolicy::kGrant);
-}
 
 }  // namespace content

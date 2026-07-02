@@ -390,6 +390,7 @@ ci.thin_tester(
     targets = targets.bundle(
         targets = [
             "gpu_common_gtests_passthrough",
+            "gpu_fyi_and_optional_non_linux_gtests",
             "gpu_angle_mac_telemetry_tests",
         ],
         mixins = [
@@ -433,6 +434,7 @@ ci.thin_tester(
     targets = targets.bundle(
         targets = [
             "gpu_common_gtests_passthrough",
+            "gpu_fyi_and_optional_non_linux_gtests",
             "gpu_angle_mac_telemetry_tests",
         ],
         mixins = [
@@ -520,8 +522,8 @@ gpu.ci.mac_builder(
     ),
     targets = targets.bundle(),
     cores = None,
-    os = os.MAC_DEFAULT,
-    cpu = cpu.ARM64,
+    os = os.MAC_15,
+    cpu = cpu.X86_64,
     console_view_entry = consoles.console_view_entry(
         category = "iOS|Builder|ANGLE",
         short_name = "x64",
@@ -640,6 +642,7 @@ ci.thin_tester(
     ),
     targets = targets.bundle(
         targets = [
+            "gpu_fyi_and_optional_non_linux_gtests",
             "gpu_angle_win_intel_nvidia_telemetry_tests",
         ],
         mixins = [
@@ -681,6 +684,7 @@ ci.thin_tester(
     ),
     targets = targets.bundle(
         targets = [
+            "gpu_fyi_and_optional_non_linux_gtests",
             "gpu_angle_win_intel_nvidia_telemetry_tests",
         ],
         mixins = [

@@ -7,10 +7,7 @@
 #include <memory>
 #include <string>
 
-#include "base/callback_list.h"
-#include "base/command_line.h"
 #include "base/functional/bind.h"
-#include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -21,16 +18,15 @@
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
-#include "chrome/browser/sync/test/integration/secondary_account_helper.h"
 #include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/autofill/payments/save_card_bubble_controller_impl.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
+#include "chrome/browser/ui/page_action/page_action_observer.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -39,11 +35,10 @@
 #include "chrome/browser/ui/views/autofill/payments/save_payment_icon_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
-#include "chrome/browser/ui/views/page_action/page_action_icon_container.h"
 #include "chrome/browser/ui/views/page_action/page_action_icon_controller.h"
 #include "chrome/browser/ui/views/page_action/page_action_icon_loading_indicator_view.h"
 #include "chrome/browser/ui/views/page_action/page_action_icon_view_observer.h"
-#include "chrome/browser/ui/views/page_action/page_action_observer.h"
+#include "chrome/browser/ui/views/page_action/test_support/page_action_test_support.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -53,31 +48,22 @@
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/form_import/form_data_importer.h"
+#include "components/autofill/core/browser/form_import/payments/payments_form_data_importer.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #include "components/autofill/core/browser/foundations/test_autofill_manager_waiter.h"
 #include "components/autofill/core/browser/metrics/payments/credit_card_save_metrics.h"
 #include "components/autofill/core/browser/metrics/payments/manage_cards_prompt_metrics.h"
 #include "components/autofill/core/browser/payments/credit_card_save_manager.h"
 #include "components/autofill/core/browser/payments/payments_network_interface.h"
-#include "components/autofill/core/browser/strike_databases/payments/credit_card_save_strike_database.h"
-#include "components/autofill/core/browser/studies/autofill_experiments.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
 #include "components/autofill/core/browser/test_utils/test_autofill_clock.h"
 #include "components/autofill/core/browser/test_utils/test_event_waiter.h"
-#include "components/autofill/core/common/autofill_constants.h"
-#include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
-#include "components/keyed_service/content/browser_context_dependency_manager.h"
-#include "components/network_session_configurator/common/network_switches.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/base/signin_buildflags.h"
-#include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
-#include "components/sync/base/features.h"
 #include "components/sync/service/sync_service_impl.h"
-#include "components/sync/test/fake_server.h"
-#include "components/sync/test/fake_server_network_resources.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/test/browser_test.h"
@@ -96,11 +82,8 @@
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/combobox/combobox.h"
-#include "ui/views/controls/styled_label.h"
 #include "ui/views/controls/textfield/textfield.h"
-#include "ui/views/controls/throbber.h"
 #include "ui/views/interaction/element_tracker_views.h"
-#include "ui/views/layout/animating_layout_manager.h"
 #include "ui/views/layout/animating_layout_manager_test_util.h"
 #include "ui/views/test/ax_event_counter.h"
 #include "ui/views/test/button_test_api.h"
@@ -108,8 +91,6 @@
 #include "ui/views/test/widget_test.h"
 #include "ui/views/widget/any_widget_observer.h"
 #include "ui/views/widget/widget.h"
-#include "ui/views/window/frame_view.h"
-#include "url/url_constants.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ui/settings_window_manager_chromeos.h"
@@ -151,11 +132,11 @@ const double kFakeGeolocationLongitude = 4.56;
 // The anonymous namespace needs to end here because of `friend`ships between
 // the tests and the production code.
 
-// Params of the test indicate whether the experiment to reposition the bubble
-// ToS message is enabled, and whether page action is migrated to the new page
-// action framework.
+// Params of the test indicate whether the experiment to migrate page action to
+// the new page action framework, and whether Wallet branding V2 is enabled.
 struct SaveCardBubbleViewsBrowserTestParams {
   bool is_page_action_migration_enabled = false;
+  bool is_wallet_branding_v2_enabled = false;
 };
 
 class SaveCardBubbleViewsFullFormBrowserTest
@@ -180,17 +161,22 @@ class SaveCardBubbleViewsFullFormBrowserTest
     std::vector<base::test::FeatureRefAndParams> enabled_features = {};
     std::vector<base::test::FeatureRef> disabled_features = {};
 
-    if (is_page_action_migration_enabled) {
-      enabled_features.push_back({
-          ::features::kPageActionsMigration,
-          {{
-              ::features::kPageActionsMigrationSavePayments.name,
-              "true",
-          }},
-      });
+    enabled_features.push_back({
+        ::features::kPageActionsMigration,
+        {{
+            ::features::kPageActionsMigrationSavePayments.name,
+            is_page_action_migration_enabled ? "true" : "false",
+        }},
+    });
+    enabled_features.push_back(
+        {features::kAutofillUpstreamEnforceStrikeDelay, {}});
+    if (IsWalletBrandingV2Enabled()) {
+      enabled_features.push_back(
+          {features::kAutofillEnableWalletBrandingV2, {}});
     } else {
-      disabled_features.emplace_back(::features::kPageActionsMigration);
+      disabled_features.emplace_back(features::kAutofillEnableWalletBrandingV2);
     }
+
     feature_list_.InitWithFeaturesAndParameters(enabled_features,
                                                 disabled_features);
     CHECK_EQ(IsPageActionMigrationEnabled(), is_page_action_migration_enabled);
@@ -300,7 +286,8 @@ class SaveCardBubbleViewsFullFormBrowserTest
     return autofill_manager() ? autofill_manager()
                                     ->client()
                                     .GetFormDataImporter()
-                                    ->GetCreditCardSaveManager()
+                                    ->GetPaymentsFormDataImporter()
+                                    .GetCreditCardSaveManager()
                               : nullptr;
   }
 
@@ -416,6 +403,10 @@ class SaveCardBubbleViewsFullFormBrowserTest
 
   bool IsPageActionMigrationEnabled() {
     return IsPageActionMigrated(PageActionIconType::kSaveCard);
+  }
+
+  bool IsWalletBrandingV2Enabled() {
+    return GetParam().is_wallet_branding_v2_enabled;
   }
 
   inline views::Combobox* month_input() {
@@ -852,7 +843,9 @@ class SaveCardBubbleViewsFullFormBrowserTest
         BrowserView::GetBrowserViewForBrowser(GetBrowser(0));
     IconLabelBubbleView* icon;
     if (IsPageActionMigrationEnabled()) {
-      icon = browser_view->toolbar_button_provider()->GetPageActionView(
+      auto* provider = browser_view->toolbar_button_provider();
+      icon = page_actions::GetIconLabelBubbleViewForTesting(
+          provider->GetPageActionViewInterface(kActionShowPaymentsBubbleOrPage),
           kActionShowPaymentsBubbleOrPage);
     } else {
       icon = browser_view->toolbar_button_provider()->GetPageActionIconView(
@@ -884,7 +877,7 @@ class SaveCardBubbleViewsFullFormBrowserTest
   void HideAccountNameEmailProfile() {
     signin::IdentityManager* identity_manager =
         IdentityManagerFactory::GetForProfile(GetProfile(0));
-    autofill::test::HideAccountNameEmailProfile(
+    test::HideAccountNameEmailProfile(
         GetProfile(0)->GetPrefs(), identity_manager->FindExtendedAccountInfo(
                                        identity_manager->GetPrimaryAccountInfo(
                                            signin::ConsentLevel::kSignin)));
@@ -904,7 +897,7 @@ class SaveCardBubbleViewsFullFormBrowserTest
   bool is_icon_showing_ = false;
   bool is_bubble_showing_ = false;
 
-  std::unique_ptr<autofill::EventWaiter<DialogEvent>> event_waiter_;
+  std::unique_ptr<EventWaiter<DialogEvent>> event_waiter_;
   std::unique_ptr<views::AnyWidgetObserver> any_widget_observer_;
 
   test::AutofillBrowserTestEnvironment autofill_test_environment_;
@@ -1043,13 +1036,14 @@ IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsFullFormBrowserTest,
   EXPECT_EQ(FindViewInBubbleById(DialogViewId::CANCEL_BUTTON), nullptr);
 }
 
+// Sets up Chrome with the AutofillUpstream feature flag enabled.
 class SaveCardBubbleViewsFullFormBrowserTestWithAutofillUpstream
     : public SaveCardBubbleViewsFullFormBrowserTest {
  public:
   SaveCardBubbleViewsFullFormBrowserTestWithAutofillUpstream() = default;
 
  private:
-  base::test::ScopedFeatureList feature_list_;
+  base::test::ScopedFeatureList feature_list_{features::kAutofillUpstream};
 };
 
 IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsFullFormBrowserTest,
@@ -1120,11 +1114,17 @@ IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsFullFormBrowserTestSettings,
   // Post migration, manage cards bubble is neither visible nor clicked.
   int tab_count, manage_cards_shown_count, manage_cards_clicked_count;
   if (IsPageActionMigrationEnabled()) {
-    tab_count = 1;
+    // There are two initial tabs, the default one from
+    // InProcessBrowserTest/SyncTest and the one explicitly added in
+    // SetUpOnMainThread(). No additional tab is opened because the manage cards
+    // bubble is unreachable.
+    tab_count = 2;
     manage_cards_shown_count = 0;
     manage_cards_clicked_count = 0;
   } else {
-    tab_count = 2;
+    // In addition to the two initial tabs, a third tab is opened with the
+    // settings page by clicking the "Manage cards" button in the bubble.
+    tab_count = 3;
     manage_cards_shown_count = 1;
     manage_cards_clicked_count = 1;
   }
@@ -1143,7 +1143,7 @@ IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsFullFormBrowserTestSettings,
 // Tests the local save bubble. Ensures that the bubble behaves correctly if
 // dismissed and then immediately torn down (e.g. by closing browser window)
 // before the asynchronous close completes. Regression test for
-// https://crbug.com/842577 .
+// https://crbug.com/41388743.
 IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsFullFormBrowserTest,
                        Local_SynchronousCloseAfterAsynchronousClose) {
   FillForm();
@@ -1152,6 +1152,8 @@ IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsFullFormBrowserTest,
   SaveCardBubbleViews* bubble = GetSaveCardBubbleViews();
   EXPECT_TRUE(bubble);
   views::Widget* bubble_widget = bubble->GetWidget();
+  ASSERT_TRUE(bubble_widget);
+  views::test::WidgetVisibleWaiter(bubble_widget).Wait();
   EXPECT_TRUE(bubble_widget);
   EXPECT_TRUE(bubble_widget->IsVisible());
   bubble->Hide();
@@ -1193,56 +1195,12 @@ IN_PROC_BROWSER_TEST_P(
       autofill_metrics::LegacySaveCardPromptResult::kAccepted, 1);
 }
 
-// On Chrome OS, the test profile starts with a primary account already set, so
-// sync-the-transport tests don't apply.
-#if !BUILDFLAG(IS_CHROMEOS)
-
-// Sets up Chrome with Sync-the-transport mode enabled, with the Wallet datatype
-// as enabled type.
-class SaveCardBubbleViewsSyncTransportFullFormBrowserTest
-    : public SaveCardBubbleViewsFullFormBrowserTest {
- protected:
-  SaveCardBubbleViewsSyncTransportFullFormBrowserTest() {
-    feature_list_.InitAndEnableFeature(features::kAutofillUpstream);
-  }
-
- public:
-  SaveCardBubbleViewsSyncTransportFullFormBrowserTest(
-      const SaveCardBubbleViewsSyncTransportFullFormBrowserTest&) = delete;
-  SaveCardBubbleViewsSyncTransportFullFormBrowserTest& operator=(
-      const SaveCardBubbleViewsSyncTransportFullFormBrowserTest&) = delete;
-
- protected:
-  void SetUpInProcessBrowserTestFixture() override {
-    test_signin_client_subscription_ =
-        secondary_account_helper::SetUpSigninClient(test_url_loader_factory());
-
-    SaveCardBubbleViewsFullFormBrowserTest::SetUpInProcessBrowserTestFixture();
-  }
-
-  void SetUpForSyncTransportModeTest() {
-    // Signing in (without granting sync consent or explicitly setting up Sync)
-    // should trigger starting the Sync machinery in standalone transport mode.
-    secondary_account_helper::SignInUnconsentedAccount(
-        GetProfile(0), test_url_loader_factory(), "user1@gmail.com");
-    ASSERT_NE(syncer::SyncService::TransportState::DISABLED,
-              GetSyncService(0)->GetTransportState());
-
-    ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
-    ASSERT_EQ(syncer::SyncService::TransportState::ACTIVE,
-              GetSyncService(0)->GetTransportState());
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-  base::CallbackListSubscription test_signin_client_subscription_;
-};
-
 // Tests the implicit sync state. Ensures that the (i) info icon appears for
 // upload save offers.
-IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsSyncTransportFullFormBrowserTest,
-                       Upload_TransportMode_InfoTextIconExists) {
-  SetUpForSyncTransportModeTest();
+IN_PROC_BROWSER_TEST_P(
+    SaveCardBubbleViewsFullFormBrowserTestWithAutofillUpstream,
+    Upload_TransportMode_InfoTextIconExists) {
+  ASSERT_TRUE(SignIn());
   FillForm();
   SubmitFormAndWaitForCardUploadSaveBubble();
 
@@ -1253,9 +1211,12 @@ IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsSyncTransportFullFormBrowserTest,
 
 // Tests the implicit sync state. Ensures that the (i) info icon does not appear
 // for local save offers.
-IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsSyncTransportFullFormBrowserTest,
-                       Local_TransportMode_InfoTextIconDoesNotExist) {
-  SetUpForSyncTransportModeTest();
+IN_PROC_BROWSER_TEST_P(
+    SaveCardBubbleViewsFullFormBrowserTestWithAutofillUpstream,
+    Local_TransportMode_InfoTextIconDoesNotExist) {
+  ASSERT_TRUE(SignIn());
+  HideAccountNameEmailProfile();
+
   FillForm();
 
   // Declining upload save will fall back to local save.
@@ -1281,21 +1242,16 @@ IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsSyncTransportFullFormBrowserTest,
 // Ensures that if cardholder name is explicitly requested, it is prefilled with
 // the name from the user's Google Account.
 IN_PROC_BROWSER_TEST_P(
-    SaveCardBubbleViewsSyncTransportFullFormBrowserTest,
+    SaveCardBubbleViewsFullFormBrowserTestWithAutofillUpstream,
     Upload_TransportMode_RequestedCardholderNameTextfieldIsPrefilledWithFocusName) {
   // Signing in (without granting sync consent or explicitly setting up Sync)
   // should trigger starting the Sync machinery in standalone transport mode.
-  secondary_account_helper::SignInUnconsentedAccount(
-      GetProfile(0), test_url_loader_factory(), "user1@gmail.com");
-  SetAccountFullName("John Smith");
+  ASSERT_TRUE(SignIn());
   HideAccountNameEmailProfile();
 
-  ASSERT_NE(syncer::SyncService::TransportState::DISABLED,
-            GetSyncService(0)->GetTransportState());
-
-  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
-  ASSERT_EQ(syncer::SyncService::TransportState::ACTIVE,
-            GetSyncService(0)->GetTransportState());
+  // Set the user's full name.
+  SetAccountFullName("John Smith");
+  HideAccountNameEmailProfile();
 
   FillFormWithoutName();
   SubmitFormAndWaitForCardUploadSaveBubble();
@@ -1311,9 +1267,10 @@ IN_PROC_BROWSER_TEST_P(
 // Tests the upload save bubble. Ensures that clicking the "Save" button
 // successfully accepts the bubble and sends an UploadCardRequest RPC to
 // Google Payments.
-IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsSyncTransportFullFormBrowserTest,
-                       Upload_TransportMode_ClickingSaveAcceptsBubble) {
-  SetUpForSyncTransportModeTest();
+IN_PROC_BROWSER_TEST_P(
+    SaveCardBubbleViewsFullFormBrowserTestWithAutofillUpstream,
+    Upload_TransportMode_ClickingSaveAcceptsBubble) {
+  ASSERT_TRUE(SignIn());
   FillForm();
   SubmitFormAndWaitForCardUploadSaveBubble();
 
@@ -1329,8 +1286,6 @@ IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsSyncTransportFullFormBrowserTest,
       "Autofill.SaveCreditCardPromptResult.Upload.FirstShow",
       autofill_metrics::LegacySaveCardPromptResult::kAccepted, 1);
 }
-
-#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 // Tests the fully-syncing state. Ensures that the Butter (i) info icon does not
 // appear for fully-syncing users.
@@ -1485,8 +1440,6 @@ IN_PROC_BROWSER_TEST_P(
 IN_PROC_BROWSER_TEST_P(
     SaveCardBubbleViewsFullFormBrowserTestWithAutofillUpstream,
     Upload_RequestedCardholderNameTextfieldIsPrefilledWithFocusName) {
-  base::HistogramTester histogram_tester;
-
   // Start sync.
   ASSERT_TRUE(SetupSyncAndHideAccountNameEmailProfile());
   // Set the user's full name.
@@ -1506,8 +1459,6 @@ IN_PROC_BROWSER_TEST_P(
   views::Textfield* cardholder_name_textfield = static_cast<views::Textfield*>(
       FindViewInBubbleById(DialogViewId::CARDHOLDER_NAME_TEXTFIELD));
   EXPECT_EQ(cardholder_name_textfield->GetText(), u"John Smith");
-  histogram_tester.ExpectUniqueSample(
-      "Autofill.SaveCardCardholderNamePrefilled", true, 1);
   EXPECT_TRUE(FindViewInBubbleById(DialogViewId::CARDHOLDER_NAME_TOOLTIP));
 }
 
@@ -1517,8 +1468,6 @@ IN_PROC_BROWSER_TEST_P(
 IN_PROC_BROWSER_TEST_P(
     SaveCardBubbleViewsFullFormBrowserTestWithAutofillUpstream,
     Upload_RequestedCardholderNameTextfieldIsNotPrefilledWithFocusNameIfMissing) {
-  base::HistogramTester histogram_tester;
-
   // Start sync. SetupSyncAndHideAccountNameEmailProfile() usually seeds account
   // information, including the full name, so a workaround for that is to sign
   // in first.
@@ -1539,8 +1488,6 @@ IN_PROC_BROWSER_TEST_P(
   views::Textfield* cardholder_name_textfield = static_cast<views::Textfield*>(
       FindViewInBubbleById(DialogViewId::CARDHOLDER_NAME_TEXTFIELD));
   EXPECT_TRUE(cardholder_name_textfield->GetText().empty());
-  histogram_tester.ExpectUniqueSample(
-      "Autofill.SaveCardCardholderNamePrefilled", false, 1);
   EXPECT_FALSE(FindViewInBubbleById(DialogViewId::CARDHOLDER_NAME_TOOLTIP));
 }
 
@@ -1854,6 +1801,25 @@ IN_PROC_BROWSER_TEST_P(
       FindViewInBubbleById(DialogViewId::EXPIRATION_DATE_DROPBOX_MONTH));
 }
 
+// Tests the upload save bubble. Ensures that the bubble surfaces the correct
+// view (card label icon or expiration date) based on the Wallet branding V2
+// flag.
+IN_PROC_BROWSER_TEST_P(
+    SaveCardBubbleViewsFullFormBrowserTestWithAutofillUpstream,
+    Upload_ShouldShowCorrectViewBasedOnWalletBrandingV2Flag) {
+  SetupSyncAndHideAccountNameEmailProfile();
+  FillForm();
+  SubmitFormAndWaitForCardUploadSaveBubble();
+
+  if (IsWalletBrandingV2Enabled()) {
+    EXPECT_TRUE(FindViewInBubbleById(DialogViewId::GPAY_PILL_ICON));
+    EXPECT_FALSE(FindViewInBubbleById(DialogViewId::EXPIRATION_DATE_LABEL));
+  } else {
+    EXPECT_FALSE(FindViewInBubbleById(DialogViewId::GPAY_PILL_ICON));
+    EXPECT_TRUE(FindViewInBubbleById(DialogViewId::EXPIRATION_DATE_LABEL));
+  }
+}
+
 // Tests the upload save bubble. Ensures that if the expiration date drop down
 // box is changing, [Save] button will change status correctly.
 IN_PROC_BROWSER_TEST_P(
@@ -1901,7 +1867,7 @@ IN_PROC_BROWSER_TEST_P(
 
   // Set now to next month. Setting test_clock will not affect the dropdown to
   // be selected, so selecting the current January will always be expired.
-  autofill::TestAutofillClock test_clock;
+  TestAutofillClock test_clock;
   test_clock.SetNow(base::Time::Now());
   test_clock.Advance(base::Days(40));
   // Selecting expired date will disable [Save] button.
@@ -1995,7 +1961,7 @@ IN_PROC_BROWSER_TEST_P(
   SetupSyncAndHideAccountNameEmailProfile();
   const base::Time kJune2017 =
       base::Time::FromSecondsSinceUnixEpoch(1497552271);
-  autofill::TestAutofillClock test_clock;
+  TestAutofillClock test_clock;
   test_clock.SetNow(kJune2017);
   // Fill form with a valid month but a passed year.
   FillFormWithSpecificExpirationDate("03", "2017");
@@ -2101,30 +2067,22 @@ IN_PROC_BROWSER_TEST_P(
 // offer-to-save bubble does not appear on the fourth try. Then, ensures that no
 // strikes are added if the card already has max strikes.
 IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsFullFormBrowserTest,
-                       StrikeDatabase_Local_FullFlowTest) {
-  // Show and ignore the bubble enough times in order to accrue maximum strikes.
-  for (int i = 0; i < credit_card_save_manager()
-                          ->GetCreditCardSaveStrikeDatabase()
-                          ->GetMaxStrikesLimit();
-       ++i) {
-    FillForm();
-    SubmitFormAndWaitForCardLocalSaveBubble();
-
-    base::HistogramTester histogram_tester;
-    ResetEventWaiterForSequence({DialogEvent::STRIKE_CHANGE_COMPLETE});
-    ClickOnCancelButton();
-    ASSERT_TRUE(WaitForObservedEvent());
-
-    // Ensure that a strike was added due to the bubble being declined.
-    // The sample logged is the Nth strike added, or (i+1).
-    histogram_tester.ExpectUniqueSample(
-        "Autofill.StrikeDatabase.NthStrikeAdded.CreditCardSave",
-        /*sample=*/(i + 1), /*expected_bucket_count=*/1);
-  }
+                       StrikeDatabase_Local_BlockingBehavior) {
+  // Show and ignore the bubble in order to trigger the required delay.
+  FillForm();
+  SubmitFormAndWaitForCardLocalSaveBubble();
 
   base::HistogramTester histogram_tester;
+  ResetEventWaiterForSequence({DialogEvent::STRIKE_CHANGE_COMPLETE});
+  ClickOnCancelButton();
+  ASSERT_TRUE(WaitForObservedEvent());
 
-  // Submit the form a fourth time. Since the card now has maximum strikes (3),
+  // Ensure that a strike was added due to the bubble being declined.
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.StrikeDatabase.NthStrikeAdded.CreditCardSave",
+      /*sample=*/1, /*expected_bucket_count=*/1);
+
+  // Submit the form again. Since the card has not passed the required delay,
   // the icon should be shown but the bubble should not.
   std::list<DialogEvent> events = {DialogEvent::OFFERED_LOCAL_SAVE};
   if (!IsPageActionMigrationEnabled()) {
@@ -2156,10 +2114,6 @@ IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsFullFormBrowserTest,
     ClickOnCancelButton();
   }
 
-  // Ensure that no strike was added because the card already had max strikes.
-  histogram_tester.ExpectTotalCount(
-      "Autofill.StrikeDatabase.NthStrikeAdded.CreditCardSave", 0);
-
   // Verify that the correct histogram entry was logged.
   histogram_tester.ExpectBucketCount(
       "Autofill.StrikeDatabase.CreditCardSaveNotOfferedDueToMaxStrikes",
@@ -2169,14 +2123,14 @@ IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsFullFormBrowserTest,
   // rejection metric.
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptOffer.Local",
-      autofill_metrics::SaveCardPromptOffer::kNotShownMaxStrikesReached, 1);
+      autofill_metrics::SaveCardPromptOffer::kNotShownRequiredDelay, 1);
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptOffer.Desktop.Local",
-      autofill_metrics::SaveCardPromptOffer::kNotShownMaxStrikesReached, 1);
+      autofill_metrics::SaveCardPromptOffer::kNotShownRequiredDelay, 1);
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptOffer.Local.FirstShow",
-      autofill_metrics::SaveCardPromptOffer::kNotShownMaxStrikesReached, 1);
+      autofill_metrics::SaveCardPromptOffer::kNotShownRequiredDelay, 1);
 }
 
 // Tests overall StrikeDatabase interaction with the upload save bubble. Runs an
@@ -2185,34 +2139,25 @@ IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsFullFormBrowserTest,
 // strikes are added if the card already has max strikes.
 IN_PROC_BROWSER_TEST_P(
     SaveCardBubbleViewsFullFormBrowserTestWithAutofillUpstream,
-    StrikeDatabase_Upload_FullFlowTest) {
+    StrikeDatabase_Upload_BlockingBehavior) {
   // Start sync.
   ASSERT_TRUE(SetupSyncAndHideAccountNameEmailProfile());
 
-  // Show and ignore the bubble enough times in order to accrue maximum strikes.
-  for (int i = 0; i < credit_card_save_manager()
-                          ->GetCreditCardSaveStrikeDatabase()
-                          ->GetMaxStrikesLimit();
-       ++i) {
-    FillForm();
-    SubmitFormAndWaitForCardUploadSaveBubble();
-
-    base::HistogramTester histogram_tester;
-
-    ResetEventWaiterForSequence({DialogEvent::STRIKE_CHANGE_COMPLETE});
-    ClickOnCancelButton();
-    ASSERT_TRUE(WaitForObservedEvent());
-
-    // Ensure that a strike was added due to the bubble being declined.
-    // The sample logged is the Nth strike added, or (i+1).
-    histogram_tester.ExpectUniqueSample(
-        "Autofill.StrikeDatabase.NthStrikeAdded.CreditCardSave",
-        /*sample=*/(i + 1), /*expected_bucket_count=*/1);
-  }
+  // Show and ignore the bubble in order to trigger the required delay.
+  FillForm();
+  SubmitFormAndWaitForCardUploadSaveBubble();
 
   base::HistogramTester histogram_tester;
+  ResetEventWaiterForSequence({DialogEvent::STRIKE_CHANGE_COMPLETE});
+  ClickOnCancelButton();
+  ASSERT_TRUE(WaitForObservedEvent());
 
-  // Submit the form a fourth time. Since the card now has maximum strikes (3),
+  // Ensure that a strike was added due to the bubble being declined.
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.StrikeDatabase.NthStrikeAdded.CreditCardSave",
+      /*sample=*/1, /*expected_bucket_count=*/1);
+
+  // Submit the form again. Since the card has not passed the required delay,
   // the icon should be shown but the bubble should not.
   std::list<DialogEvent> events = {
       DialogEvent::REQUESTED_UPLOAD_SAVE,
@@ -2251,10 +2196,6 @@ IN_PROC_BROWSER_TEST_P(
     ClickOnCancelButton();
   }
 
-  // Ensure that no strike was added because the card already had max strikes.
-  histogram_tester.ExpectTotalCount(
-      "Autofill.StrikeDatabase.NthStrikeAdded.CreditCardSave", 0);
-
   // Verify that the correct histogram entry was logged.
   histogram_tester.ExpectBucketCount(
       "Autofill.StrikeDatabase.CreditCardSaveNotOfferedDueToMaxStrikes",
@@ -2264,14 +2205,14 @@ IN_PROC_BROWSER_TEST_P(
   // rejection metric.
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptOffer.Server",
-      autofill_metrics::SaveCardPromptOffer::kNotShownMaxStrikesReached, 1);
+      autofill_metrics::SaveCardPromptOffer::kNotShownRequiredDelay, 1);
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptOffer.Desktop.Server",
-      autofill_metrics::SaveCardPromptOffer::kNotShownMaxStrikesReached, 1);
+      autofill_metrics::SaveCardPromptOffer::kNotShownRequiredDelay, 1);
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptOffer.Upload.FirstShow",
-      autofill_metrics::SaveCardPromptOffer::kNotShownMaxStrikesReached, 1);
+      autofill_metrics::SaveCardPromptOffer::kNotShownRequiredDelay, 1);
 }
 
 // Tests to ensure the card nickname is shown correctly in the Upstream bubble.
@@ -2445,6 +2386,17 @@ IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsFullFormBrowserTest,
   }
 }
 
+// Tests the local save bubble. Ensures that the bubble always surfaces the
+// expiration date.
+IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsFullFormBrowserTest,
+                       Local_ShouldShowExpirationDateLabel) {
+  FillForm();
+  SubmitFormAndWaitForCardLocalSaveBubble();
+
+  EXPECT_FALSE(FindViewInBubbleById(DialogViewId::GPAY_PILL_ICON));
+  EXPECT_TRUE(FindViewInBubbleById(DialogViewId::EXPIRATION_DATE_LABEL));
+}
+
 // Tests the manage cards bubble. Ensures that it shows up by clicking the
 // credit card icon.
 IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsFullFormBrowserTest,
@@ -2550,19 +2502,22 @@ IN_PROC_BROWSER_TEST_P(
 INSTANTIATE_TEST_SUITE_P(
     ,
     SaveCardBubbleViewsFullFormBrowserTest,
-    ::testing::ConvertGenerator(::testing::Bool(),
-                                [](bool migration_enabled) {
-                                  return SaveCardBubbleViewsBrowserTestParams{
-                                      .is_page_action_migration_enabled =
-                                          migration_enabled,
-                                  };
-                                }),
+    ::testing::ConvertGenerator(
+        ::testing::Combine(::testing::Bool(), ::testing::Bool()),
+        [](const std::tuple<bool, bool>& params) {
+          return SaveCardBubbleViewsBrowserTestParams{
+              .is_page_action_migration_enabled = std::get<0>(params),
+              .is_wallet_branding_v2_enabled = std::get<1>(params)};
+        }),
     [](const ::testing::TestParamInfo<
         SaveCardBubbleViewsFullFormBrowserTest::ParamType>& info) {
-      return base::StrCat({
-          info.param.is_page_action_migration_enabled ? "NewPageAction"
-                                                      : "OldPageAction",
-      });
+      return base::StrCat({info.param.is_page_action_migration_enabled
+                               ? "NewPageAction"
+                               : "OldPageAction",
+                           "_",
+                           info.param.is_wallet_branding_v2_enabled
+                               ? "WalletBrandingV2Enabled"
+                               : "WalletBrandingV2Disabled"});
     });
 
 INSTANTIATE_TEST_SUITE_P(
@@ -2582,26 +2537,6 @@ INSTANTIATE_TEST_SUITE_P(
                                                       : "OldPageAction",
       });
     });
-
-#if !BUILDFLAG(IS_CHROMEOS)
-INSTANTIATE_TEST_SUITE_P(
-    ,
-    SaveCardBubbleViewsSyncTransportFullFormBrowserTest,
-    ::testing::ConvertGenerator(::testing::Bool(),
-                                [](bool migration_enabled) {
-                                  return SaveCardBubbleViewsBrowserTestParams{
-                                      .is_page_action_migration_enabled =
-                                          migration_enabled,
-                                  };
-                                }),
-    [](const ::testing::TestParamInfo<
-        SaveCardBubbleViewsFullFormBrowserTestSettings::ParamType>& info) {
-      return base::StrCat({
-          info.param.is_page_action_migration_enabled ? "NewPageAction"
-                                                      : "OldPageAction",
-      });
-    });
-#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 INSTANTIATE_TEST_SUITE_P(
     ,

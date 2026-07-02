@@ -27,14 +27,21 @@
 #include <unicode/unistr.h>
 #include <unicode/uvernum.h>
 
+#include <string_view>
+
+#include "base/compiler_specific.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/strings/grit/blink_strings.h"
+#include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
+#include "third_party/blink/renderer/core/html/forms/text_control_inner_elements.h"
 #include "third_party/blink/renderer/core/html/parser/html_parser_idioms.h"
+#include "third_party/blink/renderer/core/html/shadow/shadow_element_names.h"
 #include "third_party/blink/renderer/core/input_type_names.h"
 #include "third_party/blink/renderer/core/page/chrome_client.h"
 #include "third_party/blink/renderer/platform/bindings/script_regexp.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/platform_locale.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/unicode_string.h"
@@ -64,7 +71,7 @@ namespace blink {
 
 ScriptRegexp* EmailInputType::CreateEmailRegexp(v8::Isolate* isolate) {
   return MakeGarbageCollected<ScriptRegexp>(isolate, kEmailPattern,
-                                            kTextCaseASCIIInsensitive);
+                                            kTextCaseAsciiInsensitive);
 }
 
 Vector<StringView> EmailInputType::ParseMultipleValues(
@@ -74,8 +81,9 @@ Vector<StringView> EmailInputType::ParseMultipleValues(
 
 String EmailInputType::ConvertEmailAddressToAscii(const ScriptRegexp& regexp,
                                                   const StringView& address) {
-  if (address.ContainsOnlyASCIIOrEmpty())
+  if (address.ContainsOnlyAsciiOrEmpty()) {
     return address.ToString();
+  }
 
   wtf_size_t at_position = address.find('@');
   if (at_position == kNotFound)
@@ -87,8 +95,7 @@ String EmailInputType::ConvertEmailAddressToAscii(const ScriptRegexp& regexp,
   // 8bit and non-8bit strings separately.
   host.Ensure16Bit();
 
-  auto host_span = host.Span16();
-  icu::UnicodeString idn_domain_name(host_span.data(), host_span.size());
+  icu::UnicodeString idn_domain_name{std::u16string_view(host.Span16())};
   icu::UnicodeString domain_name;
 
   // Leak |idna| at the end.
@@ -112,8 +119,9 @@ String EmailInputType::ConvertEmailAddressToAscii(const ScriptRegexp& regexp,
 
 String EmailInputType::ConvertEmailAddressToUnicode(
     const String& address) const {
-  if (!address.ContainsOnlyASCIIOrEmpty())
+  if (!address.ContainsOnlyAsciiOrEmpty()) {
     return address;
+  }
 
   wtf_size_t at_position = address.find('@');
   if (at_position == kNotFound)
@@ -123,33 +131,33 @@ String EmailInputType::ConvertEmailAddressToUnicode(
     return address;
   }
 
-  String unicode_host = Platform::Current()->ConvertIDNToUnicode(
-      address.Substring(at_position + 1));
-  StringBuilder builder;
-  builder.Append(address, 0, at_position + 1);
-  builder.Append(unicode_host);
-  return builder.ToString();
+  String unicode_host =
+      Platform::Current()->ConvertIDNToUnicode(address.substr(at_position + 1));
+  return StrCat({address.subview(0, at_position + 1), unicode_host});
 }
 
 static bool IsInvalidLocalPartCharacter(UChar ch) {
-  if (!IsASCII(ch))
+  if (!IsAscii(ch)) {
     return true;
+  }
   DEFINE_STATIC_LOCAL(const String, valid_characters, (kLocalPartCharacters));
-  return valid_characters.find(ToASCIILower(ch)) == kNotFound;
+  return !valid_characters.contains(ToAsciiLower(ch));
 }
 
 static bool IsInvalidDomainCharacter(UChar ch) {
-  if (!IsASCII(ch))
+  if (!IsAscii(ch)) {
     return true;
-  return !IsASCIILower(ch) && !IsASCIIUpper(ch) && !IsASCIIDigit(ch) &&
+  }
+  return !IsAsciiLower(ch) && !IsAsciiUpper(ch) && !IsAsciiDigit(ch) &&
          ch != '.' && ch != '-';
 }
 
-static bool CheckValidDotUsage(const String& domain) {
+static bool CheckValidDotUsage(const StringView& domain) {
   if (domain.empty())
     return true;
-  if (domain[0] == '.' || domain[domain.length() - 1] == '.')
+  if (domain.starts_with('.') || domain.ends_with('.')) {
     return false;
+  }
   return !domain.contains("..");
 }
 
@@ -228,8 +236,8 @@ String EmailInputType::TypeMismatchText() const {
   // We check validity against an ASCII value because of difficulty to check
   // invalid characters. However we should show Unicode value.
   String unicode_address = ConvertEmailAddressToUnicode(invalid_address);
-  String local_part = invalid_address.Left(at_index);
-  String domain = invalid_address.Substring(at_index + 1);
+  StringView local_part = invalid_address.subview(0, at_index);
+  StringView domain = invalid_address.subview(at_index + 1);
   if (local_part.empty())
     return GetLocale().QueryString(
         IDS_FORM_VALIDATION_TYPE_MISMATCH_EMAIL_EMPTY_LOCAL, at_sign,
@@ -240,24 +248,27 @@ String EmailInputType::TypeMismatchText() const {
         unicode_address);
   wtf_size_t invalid_char_index = local_part.Find(IsInvalidLocalPartCharacter);
   if (invalid_char_index != kNotFound) {
-    unsigned char_length = U_IS_LEAD(local_part[invalid_char_index]) ? 2 : 1;
+    // SAFETY: invalid_char_index is checked against kNotFound.
+    unsigned char_length =
+        U_IS_LEAD(UNSAFE_BUFFERS(local_part[invalid_char_index])) ? 2 : 1;
     return GetLocale().QueryString(
         IDS_FORM_VALIDATION_TYPE_MISMATCH_EMAIL_INVALID_LOCAL, at_sign,
-        local_part.Substring(invalid_char_index, char_length));
+        local_part.substr(invalid_char_index, char_length).ToString());
   }
   invalid_char_index = domain.Find(IsInvalidDomainCharacter);
   if (invalid_char_index != kNotFound) {
-    unsigned char_length = U_IS_LEAD(domain[invalid_char_index]) ? 2 : 1;
+    unsigned char_length =
+        U_IS_LEAD(UNSAFE_TODO(domain[invalid_char_index])) ? 2 : 1;
     return GetLocale().QueryString(
         IDS_FORM_VALIDATION_TYPE_MISMATCH_EMAIL_INVALID_DOMAIN, at_sign,
-        domain.Substring(invalid_char_index, char_length));
+        domain.substr(invalid_char_index, char_length).ToString());
   }
   if (!CheckValidDotUsage(domain)) {
     wtf_size_t at_index_in_unicode = unicode_address.find('@');
     DCHECK_NE(at_index_in_unicode, kNotFound);
     return GetLocale().QueryString(
         IDS_FORM_VALIDATION_TYPE_MISMATCH_EMAIL_INVALID_DOTS, String("."),
-        unicode_address.Substring(at_index_in_unicode + 1));
+        unicode_address.substr(at_index_in_unicode + 1));
   }
   if (GetElement().Multiple()) {
     return GetLocale().QueryString(
@@ -273,7 +284,7 @@ bool EmailInputType::SupportsSelectionAPI() const {
 String EmailInputType::SanitizeValue(const String& proposed_value) const {
   String no_line_break_value = proposed_value.RemoveCharacters(IsHTMLLineBreak);
   if (!GetElement().Multiple())
-    return StripLeadingAndTrailingHTMLSpaces(no_line_break_value);
+    return StripLeadingAndTrailingHtmlSpaces(no_line_break_value).ToString();
   Vector<StringView> addresses = ParseMultipleValues(no_line_break_value);
   StringBuilder stripped_value;
   stripped_value.AppendRange(addresses, ",", [](const auto& address) {
@@ -315,6 +326,77 @@ String EmailInputType::VisibleValue() const {
 
 void EmailInputType::MultipleAttributeChanged() {
   GetElement().SetValueFromRenderer(SanitizeValue(GetElement().Value()));
+}
+
+void EmailInputType::CreateShadowSubtree() {
+  TextFieldInputType::CreateShadowSubtree();
+
+  if (!IsEmailVerificationStatusIndicatorEnabled()) {
+    return;
+  }
+
+  Element* container = ContainerElement();
+  CHECK(container);
+
+  Document& document = GetElement().GetDocument();
+  EmailVerificationIndicatorElement* indicator =
+      MakeGarbageCollected<EmailVerificationIndicatorElement>(document);
+  container->AppendChild(indicator);
+  UpdateEmailVerificationIndicator();
+}
+
+bool EmailInputType::NeedsContainer() const {
+  return IsEmailVerificationStatusIndicatorEnabled();
+}
+
+void EmailInputType::SetEmailVerificationState(EmailVerificationState state) {
+  if (!IsEmailVerificationStatusIndicatorEnabled()) {
+    return;
+  }
+  if (email_verification_state_ == state) {
+    return;
+  }
+  email_verification_state_ = state;
+  UpdateEmailVerificationIndicator();
+}
+
+void EmailInputType::UpdateEmailVerificationIndicator() {
+  if (!IsEmailVerificationStatusIndicatorEnabled()) {
+    return;
+  }
+
+  Element* indicator =
+      GetElement().UserAgentShadowRoot()
+          ? GetElement().UserAgentShadowRoot()->getElementById(
+                shadow_element_names::kIdEmailVerificationIndicator)
+          : nullptr;
+  if (!indicator) {
+    return;
+  }
+
+  if (GetElement().IsInCanvasSubtree()) {
+    // We don't want the website to see the "success" indicator before the
+    // form is submitted, so we show no indicator when inside a canvas subtree.
+    indicator->setAttribute(AtomicString("data-state"), AtomicString("none"));
+    return;
+  }
+
+  const char* state_str = "none";
+  switch (email_verification_state_) {
+    case EmailVerificationState::kNone:
+      state_str = "none";
+      break;
+    case EmailVerificationState::kVerified:
+      state_str = "verified";
+      break;
+  }
+  indicator->setAttribute(AtomicString("data-state"), AtomicString(state_str));
+}
+
+bool EmailInputType::IsEmailVerificationStatusIndicatorEnabled() const {
+  const ExecutionContext* context = GetElement().GetExecutionContext();
+  return RuntimeEnabledFeatures::EmailVerificationStatusIndicatorEnabled(
+      context);
 }
 
 }  // namespace blink

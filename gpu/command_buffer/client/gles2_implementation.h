@@ -21,6 +21,7 @@
 #include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
 #include "base/containers/queue.h"
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/trace_event/memory_dump_provider.h"
@@ -122,6 +123,39 @@ class GLES2_IMPL_EXPORT GLES2Implementation : public GLES2Interface,
   // GLES2Interface implementation
   void FreeSharedMemory(void*) override;
   GLboolean DidGpuSwitch(gl::GpuPreference* active_gpu) final;
+  bool CanCopySharedImageDirectlyToGLTexture(
+      bool is_opaque,
+      ClientSharedImage* shared_image,
+      uint32_t dst_target,
+      uint32_t dst_internal_format,
+      uint32_t dst_type,
+      int32_t dst_level,
+      SkAlphaType dst_alpha_type) override;
+  CopySharedImageSyncCallback CopySharedImageToGLTextureViaTextureCopy(
+      const gfx::Rect& src_rect,
+      ClientSharedImage* source_shared_image,
+      const gpu::SyncToken& source_sync_token,
+      uint32_t dst_target,
+      uint32_t dst_texture,
+      uint32_t dst_internal_format,
+      uint32_t dst_format,
+      uint32_t dst_type,
+      int32_t dst_level,
+      SkAlphaType dst_alpha_type,
+      GrSurfaceOrigin dst_origin) override;
+  CopySharedImageSyncCallback CopySharedImageDirectlyToGLTexture(
+      const gfx::Rect& src_rect,
+      ClientSharedImage* source_shared_image,
+      const gpu::SyncToken& source_sync_token,
+      bool is_opaque,
+      uint32_t dst_target,
+      uint32_t dst_texture,
+      uint32_t dst_internal_format,
+      uint32_t dst_format,
+      uint32_t dst_type,
+      int32_t dst_level,
+      SkAlphaType dst_alpha_type,
+      GrSurfaceOrigin dst_origin) override;
 
   // Include the auto-generated part of this class. We split this because
   // it means we can easily edit the non-auto generated parts right here in
@@ -525,7 +559,7 @@ class GLES2_IMPL_EXPORT GLES2Implementation : public GLES2Interface,
                          GLenum format,
                          GLenum type,
                          uint32_t unpadded_row_size,
-                         const void* pixels,
+                         base::span<const uint8_t> pixels,
                          uint32_t pixels_padded_row_size,
                          GLboolean internal,
                          ScopedTransferBufferPtr* buffer,
@@ -541,7 +575,7 @@ class GLES2_IMPL_EXPORT GLES2Implementation : public GLES2Interface,
                          GLenum format,
                          GLenum type,
                          uint32_t unpadded_row_size,
-                         const void* pixels,
+                         base::span<const uint8_t> pixels,
                          uint32_t pixels_padded_row_size,
                          GLboolean internal,
                          ScopedTransferBufferPtr* buffer,
@@ -564,6 +598,9 @@ class GLES2_IMPL_EXPORT GLES2Implementation : public GLES2Interface,
   bool GetFramebufferPixelLocalStorageParameterivANGLEHelper(GLint plane,
                                                              GLenum pname,
                                                              GLint* params);
+  bool GetFramebufferPixelLocalStorageParameteruivANGLEHelper(GLint plane,
+                                                              GLenum pname,
+                                                              GLuint* params);
   bool GetInteger64vHelper(GLenum pname, GLint64* params);
   bool GetIntegervHelper(GLenum pname, GLint* params);
   bool GetIntegeri_vHelper(GLenum pname, GLuint index, GLint* data);
@@ -645,9 +682,6 @@ class GLES2_IMPL_EXPORT GLES2Implementation : public GLES2Interface,
   void FailGLError(GLenum /* error */) { }
 #endif
 
-  void RemoveMappedBufferRangeByTarget(GLenum target);
-  void RemoveMappedBufferRangeById(GLuint buffer);
-  void ClearMappedBufferRangeMap();
   void ClearMappedBufferMap();
   void ClearMappedTextureMap();
 
@@ -769,10 +803,6 @@ class GLES2_IMPL_EXPORT GLES2Implementation : public GLES2Interface,
   typedef std::map<const void*, MappedBuffer> MappedBufferMap;
   MappedBufferMap mapped_buffers_;
 
-  // TODO(zmo): Consolidate |mapped_buffers_| and |mapped_buffer_range_map_|.
-  typedef std::unordered_map<GLuint, MappedBuffer> MappedBufferRangeMap;
-  MappedBufferRangeMap mapped_buffer_range_map_;
-
   // TODO(crbug.com/40285824): Spanify `mapped_textures_` to use
   // base::span<uint8_t> instead of void*.
   typedef std::map<const void*, MappedTexture> MappedTextureMap;
@@ -849,6 +879,14 @@ GLES2Implementation::GetFramebufferPixelLocalStorageParameterivANGLEHelper(
     GLint /* plane */,
     GLenum /* pname */,
     GLint* /* params */) {
+  return false;
+}
+
+inline bool
+GLES2Implementation::GetFramebufferPixelLocalStorageParameteruivANGLEHelper(
+    GLint /* plane */,
+    GLenum /* pname */,
+    GLuint* /* params */) {
   return false;
 }
 

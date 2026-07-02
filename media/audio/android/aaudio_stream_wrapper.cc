@@ -11,6 +11,7 @@
 #include <string_view>
 
 #include "base/android/device_info.h"
+#include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/aligned_memory.h"
@@ -22,6 +23,7 @@
 #include "base/trace_event/trace_event.h"
 #include "media/audio/android/audio_device.h"
 #include "media/audio/android/audio_device_id.h"
+#include "media/audio/audio_features.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/channel_layout.h"
 
@@ -118,6 +120,58 @@ class AAudioGlitchReporter {
   base::TimeTicks last_log_time_;
 };
 
+class AAudioCallbackStatsReporter {
+ public:
+  explicit AAudioCallbackStatsReporter(
+      AAudioStreamWrapper::StreamType stream_type)
+      : stream_start_time_(base::TimeTicks::Now()),
+        size_distribution_metric_name_(base::StrCat(
+            {"Media.Audio.Android.AAudio.CallbackSizeDistribution.",
+             StreamTypeToStringView(stream_type)})),
+        transitions_metric_name_(base::StrCat(
+            {"Media.Audio.Android.AAudio.CallbackTransitionsPer1000.",
+             StreamTypeToStringView(stream_type)})) {}
+  ~AAudioCallbackStatsReporter() = default;
+
+  void Update(int num_frames) {
+    callback_count_++;
+
+    // Track the variability of callback sizes.
+    if (num_frames != last_callback_size_) {
+      transition_count_++;
+      last_callback_size_ = num_frames;
+    }
+
+    // Track the absolute size of requested callbacks. Sub-sample this metric
+    // since it will be called hundreds/thousands of times per seconds.
+    if (callback_count_ % 100 == 0) {
+      base::UmaHistogramCounts1000(size_distribution_metric_name_, num_frames);
+    }
+  }
+
+  void LogOnClose() {
+    base::TimeDelta stream_duration =
+        base::TimeTicks::Now() - stream_start_time_;
+
+    // Exclude short-lived streams.
+    if (stream_duration < base::Seconds(10) || callback_count_ == 0) {
+      return;
+    }
+
+    int transitions_per_1000 = (transition_count_ * 1000) / callback_count_;
+    base::UmaHistogramCounts1000(transitions_metric_name_,
+                                 transitions_per_1000);
+  }
+
+ private:
+  const base::TimeTicks stream_start_time_;
+  const std::string size_distribution_metric_name_;
+  const std::string transitions_metric_name_;
+  int callback_count_ = 0;
+  int last_callback_size_ = 0;
+  int transition_count_ = 0;
+};
+
 // Used to circumvent issues where the AAudio thread callbacks continue
 // after AAudioStream_requestStop() completes. See crbug.com/1183255.
 class LOCKABLE AAudioDestructionHelper {
@@ -144,12 +198,13 @@ class LOCKABLE AAudioDestructionHelper {
     CHECK(!is_closing_);
 
     is_closing_ = true;
+    wrapper_ = nullptr;
     aaudio_stream_ = stream;
   }
 
  private:
   base::Lock lock_;
-  const raw_ptr<AAudioStreamWrapper> wrapper_ GUARDED_BY(lock_) = nullptr;
+  raw_ptr<AAudioStreamWrapper> wrapper_ GUARDED_BY(lock_) = nullptr;
   raw_ptr<AAudioStream> aaudio_stream_ GUARDED_BY(lock_) = nullptr;
   bool is_closing_ GUARDED_BY(lock_) = false;
 };
@@ -189,7 +244,8 @@ static void OnStreamErrorCallback(AAudioStream* stream,
   destruction_helper->UnlockWrapper();
 }
 
-// Matches the ordering of media::Channels.
+// Strictly matches the ordering of media::Channels, and uses the Channels'
+// underlying value as the map key for kMediaChannelToAAudioChannel.
 static constexpr REQUIRES_ANDROID_API(
     AAUDIO_CHANNEL_MASK_MIN_API) auto kMediaChannelToAAudioChannel =
     std::to_array<uint32_t>({
@@ -204,7 +260,22 @@ static constexpr REQUIRES_ANDROID_API(
         AAUDIO_CHANNEL_BACK_CENTER,
         AAUDIO_CHANNEL_SIDE_LEFT,
         AAUDIO_CHANNEL_SIDE_RIGHT,
+        AAUDIO_CHANNEL_TOP_CENTER,
+        AAUDIO_CHANNEL_TOP_FRONT_LEFT,
+        AAUDIO_CHANNEL_FRONT_CENTER,
+        AAUDIO_CHANNEL_TOP_FRONT_RIGHT,
+        AAUDIO_CHANNEL_TOP_BACK_LEFT,
+        AAUDIO_CHANNEL_TOP_BACK_CENTER,
+        AAUDIO_CHANNEL_TOP_BACK_RIGHT,
     });
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunguarded-availability"
+// It is safe to query the size of kMediaChannelToAAudioChannel at compile time.
+// The availability attributes only apply to runtime usage on older devices.
+static_assert(kMediaChannelToAAudioChannel.size() == CHANNELS_MAX + 1,
+              "kMediaChannelToAAudioChannel is likely missing a new channel");
+#pragma clang diagnostic pop
 
 REQUIRES_ANDROID_API(AAUDIO_CHANNEL_MASK_MIN_API)
 std::optional<aaudio_channel_mask_t> ChannelMaskFromChannelLayout(
@@ -243,6 +314,17 @@ std::optional<aaudio_channel_mask_t> ChannelMaskFromChannelLayout(
     return AAUDIO_CHANNEL_5POINT1;
   }
 
+  if (layout == CHANNEL_LAYOUT_5_1_4) {
+    return AAUDIO_CHANNEL_5POINT1POINT4;
+  }
+
+  if (layout == CHANNEL_LAYOUT_7_1_4) {
+    return AAUDIO_CHANNEL_7POINT1POINT4;
+  }
+
+  // TODO(crbug.com/474106765): We are in the process of natively
+  // supporting 5.1.4 and 7.1.4. Leave these for now as edge cases, but
+  // eventually this should be removed in favor of the native enums.
   if (layout == CHANNEL_LAYOUT_DISCRETE) {
     switch (channels) {
       case 10:
@@ -378,8 +460,10 @@ bool AAudioStreamWrapper::Open() {
   AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_FLOAT);
   AAudioStreamBuilder_setUsage(builder, usage_);
   AAudioStreamBuilder_setPerformanceMode(builder, performance_mode_);
-  AAudioStreamBuilder_setFramesPerDataCallback(builder,
-                                               params_.frames_per_buffer());
+  if (!base::FeatureList::IsEnabled(features::kAAudioVariableSizedCallbacks)) {
+    AAudioStreamBuilder_setFramesPerDataCallback(builder,
+                                                 params_.frames_per_buffer());
+  }
   AAudioStreamBuilder_setDeviceId(builder,
                                   requested_device_.GetId().ToAAudioDeviceId());
 
@@ -434,11 +518,15 @@ bool AAudioStreamWrapper::Open() {
     if (!device_id_matches) {
       DLOG(WARNING) << "Failed to set device ID for AAudio stream. Expected: "
                     << expected_device_id << "; actual: " << actual_device_id;
+      AAudioStream_close(aaudio_stream_);
+      aaudio_stream_ = nullptr;
       return false;
     }
   }
 
   glitch_reporter_ = std::make_unique<AAudioGlitchReporter>(stream_type_);
+  callback_stats_reporter_ =
+      std::make_unique<AAudioCallbackStatsReporter>(stream_type_);
 
   // After opening the stream, sets the effective buffer size to 3X the burst
   // size to prevent glitching if the burst is small (e.g. < 128). On some
@@ -476,6 +564,7 @@ void AAudioStreamWrapper::Close() {
   if (aaudio_stream_) {
     LogFramesPerBurstChangesToUma();
     glitch_reporter_->LogOnClose(aaudio_stream_);
+    callback_stats_reporter_->LogOnClose();
   }
 
   Stop();
@@ -615,6 +704,7 @@ aaudio_data_callback_result_t AAudioStreamWrapper::OnAudioDataRequested(
     int32_t num_frames) {
   CHECK(aaudio_stream_);
   glitch_reporter_->MaybeLogGlitches(aaudio_stream_);
+  callback_stats_reporter_->Update(num_frames);
 
   // SAFETY: `audio_data` is provided by AAudio, and we CHECK that we are using
   // `AAUDIO_FORMAT_PCM_FLOAT` and the right number of channels in `Open()`.

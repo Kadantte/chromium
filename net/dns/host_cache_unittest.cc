@@ -23,6 +23,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/fuzztest_support.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "net/base/connection_endpoint_metadata.h"
@@ -37,6 +38,7 @@
 #include "net/dns/public/host_resolver_results.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/fuzztest/src/fuzztest/fuzztest.h"
 #include "url/gurl.h"
 #include "url/scheme_host_port.h"
 #include "url/url_constants.h"
@@ -61,7 +63,8 @@ const int kMaxCacheEntries = 10;
 HostCache::Key Key(const std::string& hostname) {
   return HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, hostname, 443),
                         DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                        NetworkAnonymizationKey());
+                        NetworkAnonymizationKey(),
+                        handles::kInvalidNetworkHandle);
 }
 
 bool FoobarIndexIsOdd(const std::string& foobarx_com) {
@@ -232,11 +235,12 @@ TEST(HostCacheTest, HandlesKeysWithoutScheme) {
   base::TimeTicks now;
 
   HostCache::Key key("host1.test", DnsQueryType::UNSPECIFIED, 0,
-                     HostResolverSource::ANY, NetworkAnonymizationKey());
+                     HostResolverSource::ANY, NetworkAnonymizationKey(),
+                     handles::kInvalidNetworkHandle);
   HostCache::Key key_with_scheme(
       url::SchemeHostPort(url::kHttpsScheme, "host1.test", 443),
       DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-      NetworkAnonymizationKey());
+      NetworkAnonymizationKey(), handles::kInvalidNetworkHandle);
   ASSERT_NE(key, key_with_scheme);
   HostCache::Entry entry =
       HostCache::Entry(OK, /*ip_endpoints=*/{}, /*aliases=*/{},
@@ -277,22 +281,84 @@ TEST(HostCacheTest, HandlesKeysWithoutScheme) {
   EXPECT_TRUE(cache.Lookup(key_with_scheme, now));
 }
 
+TEST(HostCacheTest, TargetNetwork) {
+  HostCache::Key key_default_network(
+      "host1.test", DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
+      NetworkAnonymizationKey(), handles::kInvalidNetworkHandle);
+  HostCache::Key key_network_100("host1.test", DnsQueryType::UNSPECIFIED, 0,
+                                 HostResolverSource::ANY,
+                                 NetworkAnonymizationKey(), 100);
+  HostCache::Key key_network_100_again("host1.test", DnsQueryType::UNSPECIFIED,
+                                       0, HostResolverSource::ANY,
+                                       NetworkAnonymizationKey(), 100);
+  HostCache::Key key_network_200("host1.test", DnsQueryType::UNSPECIFIED, 0,
+                                 HostResolverSource::ANY,
+                                 NetworkAnonymizationKey(), 200);
+
+  EXPECT_NE(key_default_network, key_network_100);
+  EXPECT_EQ(key_network_100, key_network_100_again);
+  EXPECT_NE(key_network_100, key_network_200);
+
+  // Also test operator< for strict weak ordering
+  EXPECT_LT(key_default_network, key_network_100);  // -1 < 100
+  EXPECT_FALSE(key_network_100 < key_network_100_again);
+  EXPECT_FALSE(key_network_100_again < key_network_100);
+  EXPECT_LT(key_network_100, key_network_200);  // 100 < 200
+}
+
+TEST(HostCacheTest, SerializationPreservesTargetNetworkOnlyForDebug) {
+  HostCache cache(kMaxCacheEntries);
+  base::TimeTicks now;
+  const base::TimeDelta kTTL = base::Seconds(10);
+  const handles::NetworkHandle kNetwork = 100;
+  HostCache::Key cache_key("host2.test", DnsQueryType::UNSPECIFIED, 0,
+                           HostResolverSource::ANY, NetworkAnonymizationKey(),
+                           kNetwork);
+  HostCache::Entry entry =
+      HostCache::Entry(OK, /*ip_endpoints=*/{}, /*aliases=*/{},
+                       HostCache::Entry::SOURCE_UNKNOWN);
+  cache.Set(cache_key, entry, now, kTTL);
+  EXPECT_EQ(1U, cache.size());
+
+  // Serialize the cache for debugging (kDebug)
+  base::ListValue serialized_debug_cache;
+  cache.GetList(serialized_debug_cache, false /* include_staleness */,
+                HostCache::SerializationType::kDebug);
+  // The serialized list should contain the network-specific entry
+  EXPECT_EQ(1U, serialized_debug_cache.size());
+  const base::Value& serialized_entry = serialized_debug_cache[0];
+  ASSERT_TRUE(serialized_entry.is_dict());
+  const std::string* target_network_str =
+      serialized_entry.GetDict().FindString("target_network");
+  ASSERT_TRUE(target_network_str);
+  EXPECT_EQ(base::NumberToString(kNetwork), *target_network_str);
+
+  // Serialize the cache for restoration (kRestorable)
+  base::ListValue serialized_restorable_cache;
+  cache.GetList(serialized_restorable_cache, false /* include_staleness */,
+                HostCache::SerializationType::kRestorable);
+  // The serialized list should not contain the network-specific entry
+  EXPECT_EQ(0U, serialized_restorable_cache.size());
+}
+
 // Make sure NetworkAnonymizationKey is respected.
 TEST(HostCacheTest, NetworkAnonymizationKey) {
   const url::SchemeHostPort kHost(url::kHttpsScheme, "hostname.test", 443);
   const base::TimeDelta kTTL = base::Seconds(10);
 
-  const SchemefulSite kSite1(GURL("https://site1.test/"));
+  SchemefulSite site1(GURL("https://site1.test/"));
   const auto kNetworkAnonymizationKey1 =
-      NetworkAnonymizationKey::CreateSameSite(kSite1);
-  const SchemefulSite kSite2(GURL("https://site2.test/"));
+      NetworkAnonymizationKey::CreateSameSite(std::move(site1));
+  SchemefulSite site2(GURL("https://site2.test/"));
   const auto kNetworkAnonymizationKey2 =
-      NetworkAnonymizationKey::CreateSameSite(kSite2);
+      NetworkAnonymizationKey::CreateSameSite(std::move(site2));
 
   HostCache::Key key1(kHost, DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY, kNetworkAnonymizationKey1);
+                      HostResolverSource::ANY, kNetworkAnonymizationKey1,
+                      handles::kInvalidNetworkHandle);
   HostCache::Key key2(kHost, DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY, kNetworkAnonymizationKey2);
+                      HostResolverSource::ANY, kNetworkAnonymizationKey2,
+                      handles::kInvalidNetworkHandle);
   HostCache::Entry entry1 =
       HostCache::Entry(OK, /*ip_endpoints=*/{}, /*aliases=*/{},
                        HostCache::Entry::SOURCE_UNKNOWN);
@@ -446,10 +512,12 @@ TEST(HostCacheTest, DnsQueryTypeIsPartOfKey) {
 
   HostCache::Key key1(url::SchemeHostPort(url::kHttpScheme, "foobar.com", 80),
                       DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey());
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle);
   HostCache::Key key2(url::SchemeHostPort(url::kHttpScheme, "foobar.com", 80),
                       DnsQueryType::A, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey());
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle);
   HostCache::Entry entry =
       HostCache::Entry(OK, /*ip_endpoints=*/{}, /*aliases=*/{},
                        HostCache::Entry::SOURCE_UNKNOWN);
@@ -485,11 +553,14 @@ TEST(HostCacheTest, HostResolverFlagsArePartOfKey) {
   base::TimeTicks now;
 
   HostCache::Key key1(kHost, DnsQueryType::A, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey());
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle);
   HostCache::Key key2(kHost, DnsQueryType::A, HOST_RESOLVER_CANONNAME,
-                      HostResolverSource::ANY, NetworkAnonymizationKey());
+                      HostResolverSource::ANY, NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle);
   HostCache::Key key3(kHost, DnsQueryType::A, HOST_RESOLVER_LOOPBACK_ONLY,
-                      HostResolverSource::ANY, NetworkAnonymizationKey());
+                      HostResolverSource::ANY, NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle);
   HostCache::Entry entry =
       HostCache::Entry(OK, /*ip_endpoints=*/{}, /*aliases=*/{},
                        HostCache::Entry::SOURCE_UNKNOWN);
@@ -533,9 +604,11 @@ TEST(HostCacheTest, HostResolverSourceIsPartOfKey) {
   base::TimeTicks now;
 
   HostCache::Key key1(kHost, DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY, NetworkAnonymizationKey());
+                      HostResolverSource::ANY, NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle);
   HostCache::Key key2(kHost, DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::DNS, NetworkAnonymizationKey());
+                      HostResolverSource::DNS, NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle);
   HostCache::Entry entry =
       HostCache::Entry(OK, /*ip_endpoints=*/{}, /*aliases=*/{},
                        HostCache::Entry::SOURCE_UNKNOWN);
@@ -572,10 +645,12 @@ TEST(HostCacheTest, SecureIsPartOfKey) {
   HostCache::EntryStaleness stale;
 
   HostCache::Key key1(kHost, DnsQueryType::A, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey());
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle);
   key1.secure = true;
   HostCache::Key key2(kHost, DnsQueryType::A, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey());
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle);
   key2.secure = false;
   HostCache::Entry entry =
       HostCache::Entry(OK, /*ip_endpoints=*/{}, /*aliases=*/{},
@@ -618,11 +693,12 @@ TEST(HostCacheTest, PreferLessStaleMoreSecure) {
   base::TimeTicks now;
   HostCache::EntryStaleness stale;
 
-  HostCache::Key insecure_key(kHost, DnsQueryType::A, 0,
-                              HostResolverSource::ANY,
-                              NetworkAnonymizationKey());
+  HostCache::Key insecure_key(
+      kHost, DnsQueryType::A, 0, HostResolverSource::ANY,
+      NetworkAnonymizationKey(), handles::kInvalidNetworkHandle);
   HostCache::Key secure_key(kHost, DnsQueryType::A, 0, HostResolverSource::ANY,
-                            NetworkAnonymizationKey());
+                            NetworkAnonymizationKey(),
+                            handles::kInvalidNetworkHandle);
   secure_key.secure = true;
   HostCache::Entry entry =
       HostCache::Entry(OK, /*ip_endpoints=*/{}, /*aliases=*/{},
@@ -1129,111 +1205,139 @@ TEST(HostCacheTest, KeyComparators) {
   std::vector<CacheTestParameters> tests = {
       {HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                       DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                       DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        0},
       {HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                       DnsQueryType::A, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                       DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        1},
       {HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                       DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                       DnsQueryType::A, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        -1},
       {HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                       DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host2", 443),
                       DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        -1},
       {HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                       DnsQueryType::A, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host2", 443),
                       DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        1},
       {HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                       DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host2", 443),
                       DnsQueryType::A, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        -1},
       {HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                       DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                       DnsQueryType::UNSPECIFIED, HOST_RESOLVER_CANONNAME,
-                      HostResolverSource::ANY, NetworkAnonymizationKey()),
+                      HostResolverSource::ANY, NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        -1},
       {HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                       DnsQueryType::UNSPECIFIED, HOST_RESOLVER_CANONNAME,
-                      HostResolverSource::ANY, NetworkAnonymizationKey()),
+                      HostResolverSource::ANY, NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                       DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        1},
       {HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                       DnsQueryType::UNSPECIFIED, HOST_RESOLVER_CANONNAME,
-                      HostResolverSource::ANY, NetworkAnonymizationKey()),
+                      HostResolverSource::ANY, NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host2", 443),
                       DnsQueryType::UNSPECIFIED, HOST_RESOLVER_CANONNAME,
-                      HostResolverSource::ANY, NetworkAnonymizationKey()),
+                      HostResolverSource::ANY, NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        -1},
       // 9: Different host scheme.
       {HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                       DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        HostCache::Key(url::SchemeHostPort(url::kHttpScheme, "host1", 443),
                       DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        1},
       // 10: Different host port.
       {HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                       DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 1544),
                       DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        -1},
       // 11: Same host name without scheme/port.
       {HostCache::Key("host1", DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY, NetworkAnonymizationKey()),
+                      HostResolverSource::ANY, NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        HostCache::Key("host1", DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY, NetworkAnonymizationKey()),
+                      HostResolverSource::ANY, NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        0},
       // 12: Different host name without scheme/port.
       {HostCache::Key("host1", DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY, NetworkAnonymizationKey()),
+                      HostResolverSource::ANY, NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        HostCache::Key("host2", DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY, NetworkAnonymizationKey()),
+                      HostResolverSource::ANY, NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        -1},
       // 13: Only one with scheme/port.
       {HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                       DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                      NetworkAnonymizationKey()),
+                      NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        HostCache::Key("host1", DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY, NetworkAnonymizationKey()),
+                      HostResolverSource::ANY, NetworkAnonymizationKey(),
+                      handles::kInvalidNetworkHandle),
        -1},
   };
   HostCache::Key insecure_key =
       HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                      DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                     NetworkAnonymizationKey());
+                     NetworkAnonymizationKey(), handles::kInvalidNetworkHandle);
   HostCache::Key secure_key =
       HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, "host1", 443),
                      DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                     NetworkAnonymizationKey());
+                     NetworkAnonymizationKey(), handles::kInvalidNetworkHandle);
   secure_key.secure = true;
   tests.emplace_back(insecure_key, secure_key, -1);
 
@@ -1550,7 +1654,8 @@ TEST(HostCacheTest, SerializeAndDeserializeEntryWithoutScheme) {
   const base::TimeDelta kTTL = base::Seconds(10);
 
   HostCache::Key key("host.test", DnsQueryType::UNSPECIFIED, 0,
-                     HostResolverSource::ANY, NetworkAnonymizationKey());
+                     HostResolverSource::ANY, NetworkAnonymizationKey(),
+                     handles::kInvalidNetworkHandle);
   HostCache::Entry entry =
       HostCache::Entry(OK, /*ip_endpoints=*/{},
                        /*aliases=*/{}, HostCache::Entry::SOURCE_UNKNOWN);
@@ -1578,17 +1683,19 @@ TEST(HostCacheTest, SerializeAndDeserializeWithNetworkAnonymizationKey) {
   const url::SchemeHostPort kHost =
       url::SchemeHostPort(url::kHttpsScheme, "hostname.test", 443);
   const base::TimeDelta kTTL = base::Seconds(10);
-  const SchemefulSite kSite(GURL("https://site.test/"));
+  SchemefulSite site(GURL("https://site.test/"));
   const auto kNetworkAnonymizationKey =
-      NetworkAnonymizationKey::CreateSameSite(kSite);
-  const SchemefulSite kOpaqueSite;
+      NetworkAnonymizationKey::CreateSameSite(std::move(site));
+  SchemefulSite opaque_site;
   const auto kOpaqueNetworkAnonymizationKey =
-      NetworkAnonymizationKey::CreateSameSite(kOpaqueSite);
+      NetworkAnonymizationKey::CreateSameSite(std::move(opaque_site));
 
   HostCache::Key key1(kHost, DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY, kNetworkAnonymizationKey);
+                      HostResolverSource::ANY, kNetworkAnonymizationKey,
+                      handles::kInvalidNetworkHandle);
   HostCache::Key key2(kHost, DnsQueryType::UNSPECIFIED, 0,
-                      HostResolverSource::ANY, kOpaqueNetworkAnonymizationKey);
+                      HostResolverSource::ANY, kOpaqueNetworkAnonymizationKey,
+                      handles::kInvalidNetworkHandle);
 
   IPEndPoint endpoint(IPAddress(1, 2, 3, 4), 0);
   HostCache::Entry entry = HostCache::Entry(OK, {endpoint}, /*aliases=*/{},
@@ -1628,7 +1735,8 @@ TEST(HostCacheTest, SerializeForDebugging) {
       NetworkAnonymizationKey::CreateTransient();
 
   HostCache::Key key(kHost, DnsQueryType::UNSPECIFIED, 0,
-                     HostResolverSource::ANY, kNetworkAnonymizationKey);
+                     HostResolverSource::ANY, kNetworkAnonymizationKey,
+                     handles::kInvalidNetworkHandle);
 
   IPEndPoint endpoint(IPAddress(1, 2, 3, 4), 0);
   HostCache::Entry entry = HostCache::Entry(OK, {endpoint}, /*aliases=*/{},
@@ -1665,7 +1773,7 @@ TEST(HostCacheTest, SerializeAndDeserialize_Text) {
   std::vector<std::string> text_records({"foo", "bar"});
   HostCache::Key key(url::SchemeHostPort(url::kHttpsScheme, "example.com", 443),
                      DnsQueryType::A, 0, HostResolverSource::DNS,
-                     NetworkAnonymizationKey());
+                     NetworkAnonymizationKey(), handles::kInvalidNetworkHandle);
   key.secure = true;
   HostCache::Entry entry(OK, text_records, HostCache::Entry::SOURCE_DNS, ttl);
   EXPECT_THAT(entry.text_records(), Not(IsEmpty()));
@@ -1697,7 +1805,7 @@ TEST(HostCacheTest, SerializeAndDeserialize_Hostname) {
       {HostPortPair("example.com", 95), HostPortPair("chromium.org", 122)});
   HostCache::Key key(url::SchemeHostPort(url::kHttpsScheme, "example.com", 443),
                      DnsQueryType::A, 0, HostResolverSource::DNS,
-                     NetworkAnonymizationKey());
+                     NetworkAnonymizationKey(), handles::kInvalidNetworkHandle);
   HostCache::Entry entry(OK, hostnames, HostCache::Entry::SOURCE_DNS, ttl);
   EXPECT_THAT(entry.hostnames(), Not(IsEmpty()));
 
@@ -1725,7 +1833,7 @@ TEST(HostCacheTest, SerializeAndDeserializeEndpointResult) {
   base::TimeDelta ttl = base::Seconds(99);
   HostCache::Key key(url::SchemeHostPort(url::kHttpsScheme, "example.com", 443),
                      DnsQueryType::A, 0, HostResolverSource::DNS,
-                     NetworkAnonymizationKey());
+                     NetworkAnonymizationKey(), handles::kInvalidNetworkHandle);
   IPEndPoint ipv6_endpoint(
       IPAddress(1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4), 110);
   IPEndPoint ipv4_endpoint1(IPAddress(1, 1, 1, 1), 80);
@@ -1842,7 +1950,7 @@ TEST(HostCacheTest, DeserializeNoEndpointNoAliase) {
 
   HostCache::Key key(url::SchemeHostPort(url::kHttpsScheme, "example.com", 443),
                      DnsQueryType::A, 0, HostResolverSource::DNS,
-                     NetworkAnonymizationKey());
+                     NetworkAnonymizationKey(), handles::kInvalidNetworkHandle);
 
   HostCache::EntryStaleness stale;
   const std::pair<const HostCache::Key, HostCache::Entry>* result =
@@ -1885,7 +1993,7 @@ TEST(HostCacheTest, DeserializeLegacyAddresses) {
 
   HostCache::Key key(url::SchemeHostPort(url::kHttpsScheme, "example.com", 443),
                      DnsQueryType::A, 0, HostResolverSource::DNS,
-                     NetworkAnonymizationKey());
+                     NetworkAnonymizationKey(), handles::kInvalidNetworkHandle);
 
   HostCache::EntryStaleness stale;
   const std::pair<const HostCache::Key, HostCache::Entry>* result =
@@ -2672,7 +2780,7 @@ TEST(HostCacheTest, SerializeTrustAnchorIDs) {
   base::TimeDelta ttl = base::Seconds(99);
   HostCache::Key key(url::SchemeHostPort(url::kHttpsScheme, "example.com", 443),
                      DnsQueryType::A, 0, HostResolverSource::DNS,
-                     NetworkAnonymizationKey());
+                     NetworkAnonymizationKey(), handles::kInvalidNetworkHandle);
   std::string ipv6_alias = "ipv6_alias.test";
 
   ConnectionEndpointMetadata metadata;
@@ -2853,5 +2961,35 @@ TEST(HostCacheTest, ConvertFromInternalMergedNodata) {
 
   EXPECT_EQ(converted, expected);
 }
+
+// This fuzzer checks that parsing a JSON list to a HostCache and then
+// re-serializing it recreates the original JSON list.
+//
+// A side effect of this technique is that our distribution of HostCaches only
+// contains HostCaches that can be generated by RestoreFromListValue. It's
+// conceivable that this doesn't capture all possible HostCaches.
+//
+// TODO(dmcardle): Check the other direction of this property. Starting from an
+// arbitrary HostCache, serialize it and then parse a different HostCache.
+// Verify that the two HostCaches are equal.
+void CheckHostCacheSerialization(const base::ListValue& list) {
+  // Parse the HostCache.
+  constexpr size_t kMaxEntries = 1000;
+  HostCache host_cache(kMaxEntries);
+  if (!host_cache.RestoreFromListValue(list)) {
+    return;
+  }
+
+  // Serialize the HostCache.
+  base::ListValue serialized;
+  host_cache.GetList(
+      /*entry_list=*/serialized, /*include_staleness=*/true,
+      /*serialization_type=*/HostCache::SerializationType::kRestorable);
+
+  CHECK_EQ(list, serialized);
+}
+
+FUZZ_TEST(HostCacheTest, CheckHostCacheSerialization)
+    .WithDomains(fuzztest::Arbitrary<base::ListValue>());
 
 }  // namespace net

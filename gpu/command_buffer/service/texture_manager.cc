@@ -1820,7 +1820,8 @@ TextureRef::TextureRef(TextureManager* manager,
 scoped_refptr<TextureRef> TextureRef::Create(TextureManager* manager,
                                              GLuint client_id,
                                              GLuint service_id) {
-  return new TextureRef(manager, client_id, new Texture(service_id));
+  return base::MakeRefCounted<TextureRef>(manager, client_id,
+                                          new Texture(service_id));
 }
 
 TextureRef::~TextureRef() {
@@ -2131,7 +2132,7 @@ TextureRef* TextureManager::Consume(
     GLuint client_id,
     Texture* texture) {
   DCHECK(client_id);
-  scoped_refptr<TextureRef> ref(new TextureRef(this, client_id, texture));
+  auto ref = base::MakeRefCounted<TextureRef>(this, client_id, texture);
   bool result = textures_.insert(std::make_pair(client_id, ref)).second;
   DCHECK(result);
   return ref.get();
@@ -2527,12 +2528,6 @@ bool TextureManager::ValidateTexImage(ContextState* state,
   }
   Buffer* buffer = state->bound_pixel_unpack_buffer.get();
   if (buffer) {
-    if (buffer->GetMappedRange()) {
-      ERRORSTATE_SET_GL_ERROR(
-          error_state, GL_INVALID_OPERATION, function_name,
-          "pixel unpack buffer should not be mapped to client memory");
-      return false;
-    }
     if (buffer->IsBoundForTransformFeedbackAndOther()) {
       ERRORSTATE_SET_GL_ERROR(
           error_state, GL_INVALID_OPERATION, function_name,
@@ -2813,12 +2808,6 @@ bool TextureManager::ValidateTexSubImage(ContextState* state,
 
   Buffer* buffer = state->bound_pixel_unpack_buffer.get();
   if (buffer) {
-    if (buffer->GetMappedRange()) {
-      ERRORSTATE_SET_GL_ERROR(
-          error_state, GL_INVALID_OPERATION, function_name,
-          "pixel unpack buffer should not be mapped to client memory");
-      return false;
-    }
     if (buffer->IsBoundForTransformFeedbackAndOther()) {
       ERRORSTATE_SET_GL_ERROR(
           error_state, GL_INVALID_OPERATION, function_name,

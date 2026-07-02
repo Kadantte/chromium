@@ -4,22 +4,9 @@
 
 #include "third_party/blink/renderer/core/layout/flex/layout_flexible_box.h"
 
-#include "third_party/blink/renderer/core/dom/shadow_root.h"
-#include "third_party/blink/renderer/core/html/forms/html_opt_group_element.h"
-#include "third_party/blink/renderer/core/html/forms/html_option_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_select_element.h"
-#include "third_party/blink/renderer/core/html/html_hr_element.h"
-#include "third_party/blink/renderer/core/html/html_slot_element.h"
-#include "third_party/blink/renderer/core/inspector/inspector_trace_events.h"
-#include "third_party/blink/renderer/core/layout/block_node.h"
-#include "third_party/blink/renderer/core/layout/constraint_space.h"
-#include "third_party/blink/renderer/core/layout/flex/flex_layout_algorithm.h"
 #include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
 #include "third_party/blink/renderer/core/layout/layout_result.h"
-#include "third_party/blink/renderer/core/layout/layout_view.h"
-#include "third_party/blink/renderer/core/layout/oof_positioned_node.h"
-#include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -66,29 +53,6 @@ bool LayoutFlexibleBox::HasLeftOverflow() const {
   return GetOverflowConverter(StyleRef()).Left();
 }
 
-namespace {
-
-void MergeAnonymousFlexItems(LayoutObject* remove_child) {
-  DCHECK(!RuntimeEnabledFeatures::LayoutMergeAnonymousFixEnabled());
-
-  // When we remove a flex item, and the previous and next siblings of the item
-  // are text nodes wrapped in anonymous flex items, the adjacent text nodes
-  // need to be merged into the same flex item.
-  LayoutObject* prev = remove_child->PreviousSibling();
-  if (!prev || !prev->IsAnonymousBlockFlow()) {
-    return;
-  }
-  LayoutObject* next = remove_child->NextSibling();
-  if (!next || !next->IsAnonymousBlockFlow()) {
-    return;
-  }
-  To<LayoutBoxModelObject>(next)->MoveAllChildrenTo(
-      To<LayoutBoxModelObject>(prev));
-  next->Destroy();
-}
-
-}  // namespace
-
 // TODO(crbug.com/364348901): We should be able to remove this method entirely
 // when the CustomizableSelect flag is removed or disabled, but it causes a
 // crash in the switch-picker-appearance WPT.
@@ -120,30 +84,6 @@ const DevtoolsFlexInfo* LayoutFlexibleBox::FlexLayoutData() const {
   DCHECK_GE(fragment_count, 1u);
   // Currently, devtools data is on the first fragment of a fragmented flexbox.
   return GetLayoutResult(0)->FlexLayoutData();
-}
-
-void LayoutFlexibleBox::RemoveChild(LayoutObject* child) {
-  if (!RuntimeEnabledFeatures::LayoutMergeAnonymousFixEnabled() &&
-      !DocumentBeingDestroyed()) {
-    MergeAnonymousFlexItems(child);
-  }
-
-  LayoutBlock::RemoveChild(child);
-}
-
-void LayoutFlexibleBox::UpdateAfterLayout() {
-  NOT_DESTROYED();
-
-  // Gap decorations depend on the position of flex items, which may change
-  // when a child's size changes (e.g., during animation). Trigger a full
-  // paint invalidation to ensure the gap decorations repaint correctly.
-  // TODO(crbug.com/357648037): See if the conditions for this can be scoped
-  // more narrowly.
-  if (RuntimeEnabledFeatures::CSSGapDecorationEnabled() &&
-      StyleRef().HasGapRule()) {
-    SetShouldDoFullPaintInvalidation();
-  }
-  LayoutBlock::UpdateAfterLayout();
 }
 
 }  // namespace blink

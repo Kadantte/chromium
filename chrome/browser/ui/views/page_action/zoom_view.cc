@@ -6,6 +6,7 @@
 
 #include "base/i18n/number_formatting.h"
 #include "chrome/app/vector_icons/vector_icons.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/view_ids.h"
@@ -18,9 +19,11 @@
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/events/event.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/view_class_properties.h"
 
 namespace {
 
@@ -46,10 +49,12 @@ ZoomView::ZoomView(IconLabelBubbleView::Delegate* icon_label_bubble_delegate,
                          icon_label_bubble_delegate,
                          page_action_icon_delegate,
                          "Zoom"),
-      icon_(&kZoomMinusIcon) {
+      icon_(&(features::IsRoundedIconsEnabled() ? kZoomOutIcon
+                                                : kZoomMinusOldIcon)) {
   SetVisible(false);
   GetViewAccessibility().SetName(l10n_util::GetStringFUTF16(
       IDS_TOOLTIP_ZOOM, base::FormatPercent(current_zoom_percent_)));
+  SetProperty(views::kElementIdentifierKey, kActionItemZoomElementId);
 }
 
 ZoomView::~ZoomView() = default;
@@ -111,8 +116,12 @@ void ZoomView::ZoomChangedForActiveTab(bool can_show_bubble) {
     // The icon is hidden when the zoom level is default.
     icon_ = zoom_controller && zoom_controller->GetZoomRelativeToDefault() ==
                                    zoom::ZoomController::ZOOM_BELOW_DEFAULT_ZOOM
-                ? &kZoomMinusChromeRefreshIcon
-                : &kZoomPlusChromeRefreshIcon;
+                ? &(features::IsRoundedIconsEnabled()
+                        ? kZoomOutIcon
+                        : kZoomMinusChromeRefreshOldIcon)
+                : &(features::IsRoundedIconsEnabled()
+                        ? kZoomInIcon
+                        : kZoomPlusChromeRefreshOldIcon);
     UpdateIconImage();
 
     // Visibility must be enabled before the bubble is shown to ensure the
@@ -126,7 +135,7 @@ void ZoomView::ZoomChangedForActiveTab(bool can_show_bubble) {
     }
   } else {
     // Close the bubble first to ensure focus is not lost when SetVisible(false)
-    // is called. See crbug.com/913829.
+    // is called. See crbug.com/41431117.
     if (HasAssociatedBubble()) {
       zoom_bubble_coordinator->Hide();
     }

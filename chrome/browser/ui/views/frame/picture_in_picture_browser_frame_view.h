@@ -85,6 +85,9 @@ class PictureInPictureBrowserFrameView : public BrowserFrameView,
   void RemovedFromWidget() override;
   void SetFrameBounds(const gfx::Rect& bounds) override;
 
+  // views::FrameView:
+  gfx::Rect GetNonDecoratedClientAreaBoundsInScreen() const override;
+
   // ChromeLocationBarModelDelegate:
   content::WebContents* GetActiveWebContents() const override;
   bool GetURL(GURL* url) const override;
@@ -99,8 +102,8 @@ class PictureInPictureBrowserFrameView : public BrowserFrameView,
       security_state::SecurityLevel security_level) const override;
   bool ShowPageInfoDialog() override;
   LocationBarModel* GetLocationBarModel() const override;
-  ui::ImageModel GetLocationIcon(LocationIconView::Delegate::IconFetchedCallback
-                                     on_icon_fetched) const override;
+  ui::ImageModel GetLocationIcon(
+      LocationIconView::Delegate::IconFetchedCallback on_icon_fetched) override;
   std::optional<ui::ColorId> GetLocationIconBackgroundColorOverride()
       const override;
 
@@ -123,6 +126,9 @@ class PictureInPictureBrowserFrameView : public BrowserFrameView,
 
   // PictureInPictureWindow:
   void SetForcedTucking(bool tuck) override;
+#if BUILDFLAG(IS_MAC)
+  void OnAnyBrowserEnteredFullscreen() override;
+#endif  // BUILDFLAG(IS_MAC)
 
   // gfx::AnimationDelegate:
   void AnimationEnded(const gfx::Animation* animation) override;

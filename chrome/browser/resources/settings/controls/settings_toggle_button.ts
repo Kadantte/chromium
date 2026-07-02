@@ -130,7 +130,7 @@ export class SettingsToggleButtonElement extends
     }
   }
 
-  private fire_(eventName: string, detail?: any) {
+  private fire_(eventName: string, detail?: unknown) {
     this.dispatchEvent(
         new CustomEvent(eventName, {detail, bubbles: true, composed: true}));
   }
@@ -190,8 +190,8 @@ export class SettingsToggleButtonElement extends
   /**
    * Set up the contents of sub label with link.
    */
-  private getSubLabelWithLinkContent_(contents: string) {
-    return sanitizeInnerHtml(contents, {
+  private getSubLabelWithLinkContent_(): TrustedHTML {
+    return sanitizeInnerHtml(this.subLabelWithLink, {
       attrs: [
         'id',
         'is',

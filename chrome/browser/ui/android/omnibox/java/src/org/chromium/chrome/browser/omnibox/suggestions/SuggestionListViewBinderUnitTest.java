@@ -64,7 +64,7 @@ public class SuggestionListViewBinderUnitTest {
         mContainer =
                 (OmniboxSuggestionsContainer)
                         LayoutInflater.from(mActivity)
-                                .inflate(R.layout.omnibox_results_container, /* root= */ null);
+                                .inflate(R.layout.suggestions_result_container, /* root= */ null);
         mDropdown = spy(mContainer.findViewById(R.id.omnibox_suggestions_dropdown));
         PropertyModelChangeProcessor.create(
                 mListModel,
@@ -111,7 +111,7 @@ public class SuggestionListViewBinderUnitTest {
     }
 
     @Test
-    public void suggestionsContainerVisible_onTopResumedPosition() {
+    public void suggestionsDropdownVisible_onTopResumedPosition() {
         assertEquals(0, mSuggestionModels.size());
         assertEquals(View.GONE, mContainer.getVisibility());
         assertEquals(View.GONE, mDropdown.getVisibility());
@@ -121,9 +121,21 @@ public class SuggestionListViewBinderUnitTest {
         mListModel.set(SuggestionListProperties.ACTIVITY_WINDOW_FOCUSED, true);
         assertEquals(View.VISIBLE, mContainer.getVisibility());
         assertEquals(View.GONE, mDropdown.getVisibility());
+    }
+
+    @Test
+    public void suggestionsDropdownVisible_activityWindowFocused() {
+        List<ListItem> suggestionsList = new ArrayList<>();
+        suggestionsList.add(mDropdownItem);
+        mSuggestionModels.set(suggestionsList);
+
+        mListModel.set(SuggestionListProperties.OMNIBOX_SESSION_ACTIVE, true);
+        mListModel.set(SuggestionListProperties.ACTIVITY_WINDOW_FOCUSED, true);
+        assertEquals(View.VISIBLE, mContainer.getVisibility());
+        assertEquals(View.VISIBLE, mDropdown.getVisibility());
 
         mListModel.set(SuggestionListProperties.ACTIVITY_WINDOW_FOCUSED, false);
-        assertEquals(View.GONE, mContainer.getVisibility());
+        assertEquals(View.VISIBLE, mContainer.getVisibility());
         assertEquals(View.GONE, mDropdown.getVisibility());
     }
 
@@ -164,5 +176,14 @@ public class SuggestionListViewBinderUnitTest {
         suggestionsList.add(mDropdownItem);
         mSuggestionModels.set(suggestionsList);
         verify(mDropdown).resetSelection();
+    }
+
+    @Test
+    public void allowParkingAtSentinel() {
+        mListModel.set(SuggestionListProperties.ALLOW_PARKING_AT_SENTINEL, true);
+        verify(mDropdown).setAllowParkingAtSentinel(true);
+
+        mListModel.set(SuggestionListProperties.ALLOW_PARKING_AT_SENTINEL, false);
+        verify(mDropdown).setAllowParkingAtSentinel(false);
     }
 }

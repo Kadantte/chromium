@@ -178,11 +178,6 @@ void MapperPlaystationSixAxis(const Gamepad& input, Gamepad* mapped) {
 }
 
 void MapperDualshock4(const Gamepad& input, Gamepad* mapped) {
-  enum Dualshock4Buttons {
-    DUALSHOCK_BUTTON_TOUCHPAD = BUTTON_INDEX_COUNT,
-    DUALSHOCK_BUTTON_COUNT
-  };
-
   *mapped = input;
   mapped->buttons[BUTTON_INDEX_PRIMARY] = input.buttons[1];
   mapped->buttons[BUTTON_INDEX_SECONDARY] = input.buttons[2];
@@ -206,11 +201,6 @@ void MapperDualshock4(const Gamepad& input, Gamepad* mapped) {
 }
 
 void MapperDualSense(const Gamepad& input, Gamepad* mapped) {
-  enum DualSenseButtons {
-    DUAL_SENSE_BUTTON_TOUCHPAD = BUTTON_INDEX_COUNT,
-    DUAL_SENSE_BUTTON_COUNT
-  };
-
   *mapped = input;
   mapped->buttons[BUTTON_INDEX_PRIMARY] = input.buttons[1];
   mapped->buttons[BUTTON_INDEX_SECONDARY] = input.buttons[2];
@@ -344,28 +334,6 @@ void MapperDragonRiseGeneric(const Gamepad& input, Gamepad* mapped) {
   mapped->axes[AXIS_INDEX_RIGHT_STICK_Y] = input.axes[5];
   mapped->buttons_length = BUTTON_INDEX_COUNT - 1; /* no meta */
   mapped->axes_length = AXIS_INDEX_COUNT;
-}
-
-void Mapper2Axes8Keys(const Gamepad& input, Gamepad* mapped) {
-  *mapped = input;
-  mapped->buttons[BUTTON_INDEX_PRIMARY] = input.buttons[2];
-  mapped->buttons[BUTTON_INDEX_SECONDARY] = input.buttons[1];
-  mapped->buttons[BUTTON_INDEX_TERTIARY] = input.buttons[3];
-  mapped->buttons[BUTTON_INDEX_QUATERNARY] = input.buttons[0];
-  mapped->buttons[BUTTON_INDEX_DPAD_UP] = AxisNegativeAsButton(input.axes[1]);
-  mapped->buttons[BUTTON_INDEX_DPAD_DOWN] = AxisPositiveAsButton(input.axes[1]);
-  mapped->buttons[BUTTON_INDEX_DPAD_LEFT] = AxisNegativeAsButton(input.axes[0]);
-  mapped->buttons[BUTTON_INDEX_DPAD_RIGHT] =
-      AxisPositiveAsButton(input.axes[0]);
-
-  // Missing buttons
-  mapped->buttons[BUTTON_INDEX_LEFT_TRIGGER] = NullButton();
-  mapped->buttons[BUTTON_INDEX_RIGHT_TRIGGER] = NullButton();
-  mapped->buttons[BUTTON_INDEX_LEFT_THUMBSTICK] = NullButton();
-  mapped->buttons[BUTTON_INDEX_RIGHT_THUMBSTICK] = NullButton();
-
-  mapped->buttons_length = BUTTON_INDEX_COUNT - 1;
-  mapped->axes_length = 0;
 }
 
 void MapperOnLiveWireless(const Gamepad& input, Gamepad* mapped) {
@@ -906,7 +874,8 @@ GamepadStandardMappingFunction GetGamepadStandardMappingFunction(
     const uint16_t product_id,
     const uint16_t hid_specification_version,
     const uint16_t version_number,
-    GamepadBusType bus_type) {
+    GamepadBusType bus_type,
+    GamepadDriver driver) {
   GamepadId gamepad_id =
       GamepadIdList::Get().GetGamepadId(product_name, vendor_id, product_id);
   const auto* find_it = std::ranges::find(kAvailableMappings, gamepad_id,

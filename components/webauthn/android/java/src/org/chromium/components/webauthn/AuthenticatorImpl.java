@@ -18,6 +18,7 @@ import android.os.Bundle;
 import android.util.Pair;
 
 import org.chromium.base.Callback;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.blink.mojom.Authenticator;
 import org.chromium.blink.mojom.AuthenticatorStatus;
@@ -31,7 +32,9 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.password_manager.BrowserAssistedLoginType;
 import org.chromium.components.ukm.UkmRecorder;
+import org.chromium.content_public.browser.LifecycleState;
 import org.chromium.content_public.browser.RenderFrameHost;
+import org.chromium.content_public.browser.Visibility;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.device.DeviceFeatureList;
 import org.chromium.device.DeviceFeatureMap;
@@ -117,7 +120,9 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
     }
 
     public static void overrideFido2CredentialRequestForTesting(Fido2CredentialRequest request) {
+        Fido2CredentialRequest oldValue = sFido2CredentialRequestOverrideForTesting;
         sFido2CredentialRequestOverrideForTesting = request;
+        ResettersForTesting.register(() -> sFido2CredentialRequestOverrideForTesting = oldValue);
     }
 
     private Fido2CredentialRequest getFido2CredentialRequest() {
@@ -161,11 +166,30 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
                             new RequestMetrics.Builder().build()));
             return;
         }
+        if (mRenderFrameHost.getLifecycleState() != LifecycleState.ACTIVE) {
+            requestCallback.onComplete(
+                    WebauthnRequestResponse.forFailedMakeCredential(
+                            AuthenticatorStatus.NOT_ALLOWED_ERROR,
+                            new RequestMetrics.Builder().build()));
+            return;
+        }
         log(TAG, "makeCredential");
 
         mIsPaymentRequest = options.isPaymentCredentialCreation;
         mRequestCallback = requestCallback;
         mRequestCallback.setCompletionCallback(this::cleanupRequest);
+
+        if (isChrome(mWebContents)
+                && WebauthnBrowserBridge.shouldDisallowCredentialRequest(mRenderFrameHost)) {
+            mRequestCallback.onComplete(
+                    WebauthnRequestResponse.forFailedMakeCredential(
+                            AuthenticatorStatus.NOT_ALLOWED_ERROR,
+                            new RequestMetrics.Builder()
+                                    .setMakeCredentialOutcome(
+                                            MakeCredentialOutcome.BLOCKED_BY_EMBEDDER)
+                                    .build()));
+            return;
+        }
         if (!GmsCoreUtils.isWebauthnSupported()
                 || (!isChrome(mWebContents) && !GmsCoreUtils.isResultReceiverSupported())) {
             mRequestCallback.onComplete(
@@ -174,6 +198,13 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
                             new RequestMetrics.Builder()
                                     .setMakeCredentialOutcome(MakeCredentialOutcome.OTHER_FAILURE)
                                     .build()));
+            return;
+        }
+
+        if (mWebContents != null && mWebContents.getVisibility() != Visibility.VISIBLE) {
+            requestCallback.onComplete(
+                    WebauthnRequestResponse.forFailedMakeCredential(
+                            AuthenticatorStatus.NOT_FOCUSED, new RequestMetrics.Builder().build()));
             return;
         }
 
@@ -231,6 +262,13 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
                             new RequestMetrics.Builder().build()));
             return;
         }
+        if (mRenderFrameHost.getLifecycleState() != LifecycleState.ACTIVE) {
+            requestCallback.onComplete(
+                    WebauthnRequestResponse.forFailedGetCredential(
+                            AuthenticatorStatus.NOT_ALLOWED_ERROR,
+                            new RequestMetrics.Builder().build()));
+            return;
+        }
         log(TAG, "getCredential");
 
         mRequestCallback = requestCallback;
@@ -239,13 +277,21 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
         mIsConditionalRequest = options.mediation == Mediation.CONDITIONAL;
         mIsImmediateRequest = options.mediation == Mediation.IMMEDIATE;
 
+        if (isChrome(mWebContents)
+                && WebauthnBrowserBridge.shouldDisallowCredentialRequest(mRenderFrameHost)) {
+            mRequestCallback.onComplete(
+                    WebauthnRequestResponse.forFailedGetCredential(
+                            AuthenticatorStatus.NOT_ALLOWED_ERROR,
+                            new RequestMetrics.Builder()
+                                    .setGetAssertionOutcome(GetAssertionOutcome.BLOCKED_BY_EMBEDDER)
+                                    .build()));
+            return;
+        }
+
         boolean isPasswordOnlyFlux =
                 options.publicKey == null
                         && options.password
-                        && options.mediation == Mediation.IMMEDIATE
-                        && DeviceFeatureMap.isEnabled(
-                                DeviceFeatureList
-                                        .WEBAUTHN_AUTHENTICATOR_PASSWORDS_ONLY_IMMEDIATE_REQUESTS);
+                        && options.mediation == Mediation.IMMEDIATE;
         if (!GmsCoreUtils.isWebauthnSupported()
                 || (!isChrome(mWebContents) && !GmsCoreUtils.isResultReceiverSupported())
                 || (options.publicKey == null && !isPasswordOnlyFlux)) {
@@ -259,6 +305,15 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
             return;
         }
 
+        if (mWebContents != null
+                && options.mediation != Mediation.CONDITIONAL
+                && mWebContents.getVisibility() != Visibility.VISIBLE) {
+            requestCallback.onComplete(
+                    WebauthnRequestResponse.forFailedGetCredential(
+                            AuthenticatorStatus.NOT_FOCUSED, new RequestMetrics.Builder().build()));
+            return;
+        }
+
         mPendingFido2CredentialRequest = getFido2CredentialRequest();
         mPendingFido2CredentialRequest.handleGetCredentialRequest(
                 options, assertNonNull(mOrigin), mTopOrigin, mPayment);
@@ -267,10 +322,6 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
     @Override
     public void report(PublicKeyCredentialReportOptions options, Report_Response callback) {
         log(TAG, "report");
-        if (!DeviceFeatureMap.isEnabled(DeviceFeatureList.WEBAUTHN_ANDROID_SIGNAL)) {
-            callback.call(AuthenticatorStatus.NOT_IMPLEMENTED, null);
-            return;
-        }
 
         WebauthnRequestCallback requestCallback = WebauthnRequestCallback.forReport(callback);
         if (mRequestCallback != null) {
@@ -382,25 +433,21 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
                                                             DeviceFeatureList
                                                                     .WEBAUTHN_IMMEDIATE_GET)
                                                     && isUvpaa));
-                            boolean signalSupported =
-                                    isUvpaa
-                                            && DeviceFeatureMap.isEnabled(
-                                                    DeviceFeatureList.WEBAUTHN_ANDROID_SIGNAL);
                             capabilities.add(
                                     createWebAuthnClientCapability(
                                             AuthenticatorConstants
                                                     .CAPABILITY_SIGNAL_ALL_ACCEPTED_CREDENTIALS,
-                                            signalSupported));
+                                            isUvpaa));
                             capabilities.add(
                                     createWebAuthnClientCapability(
                                             AuthenticatorConstants
                                                     .CAPABILITY_SIGNAL_CURRENT_USER_DETAILS,
-                                            signalSupported));
+                                            isUvpaa));
                             capabilities.add(
                                     createWebAuthnClientCapability(
                                             AuthenticatorConstants
                                                     .CAPABILITY_SIGNAL_UNKNOWN_CREDENTIAL,
-                                            signalSupported));
+                                            isUvpaa));
                             callback.call(capabilities.toArray(new WebAuthnClientCapability[0]));
                         });
     }
@@ -602,7 +649,7 @@ public final class AuthenticatorImpl implements Authenticator, AuthenticationCon
 
             @Override
             public void onIntentCompleted(int resultCode, @Nullable Intent data) {
-                mCallback.onResult(new Pair(resultCode, data));
+                mCallback.onResult(new Pair<>(resultCode, data));
             }
         }
     }

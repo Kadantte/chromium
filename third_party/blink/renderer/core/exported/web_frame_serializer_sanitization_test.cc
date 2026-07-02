@@ -100,16 +100,17 @@ class WebFrameSerializerSanitizationTest : public testing::Test {
       ShadowRootMode shadow_type,
       const char* shadow_content,
       FocusDelegation focus_delegation = FocusDelegation::kNone) {
-    Element* host_element = scope.getElementById(AtomicString::FromUTF8(host));
+    Element* host_element = scope.getElementById(AtomicString::FromUtf8(host));
     ShadowRoot* shadow_root;
     shadow_root = &host_element->AttachShadowRootInternal(
         shadow_type, focus_delegation, SlotAssignmentMode::kNamed,
-        /*registry*/ nullptr, /*serializable*/ false, /*clonable*/ false,
-        /*reference_target*/ g_null_atom, /* markers */ Vector<AtomicString>());
+        /*registry*/ nullptr, /*waiting_for_scoped_registry*/ false,
+        /*serializable*/ false, /*clonable*/ false,
+        /*reference_target*/ g_null_atom);
     shadow_root->SetDelegatesFocus(focus_delegation ==
                                    FocusDelegation::kDelegateFocus);
     shadow_root->SetInnerHTMLWithoutTrustedTypes(
-        String::FromUTF8(shadow_content));
+        String::FromUtf8(shadow_content));
     scope.GetDocument().View()->UpdateAllLifecyclePhasesForTest();
     return shadow_root;
   }
@@ -141,7 +142,7 @@ TEST_F(WebFrameSerializerSanitizationTest, RemoveInlineScriptInAttributes) {
   EXPECT_FALSE(mhtml.contains("ONLOAD="));
   EXPECT_FALSE(mhtml.contains("onclick="));
   EXPECT_FALSE(mhtml.contains("href="));
-  EXPECT_FALSE(mhtml.Contains("from="));
+  EXPECT_FALSE(mhtml.contains("from="));
   EXPECT_FALSE(mhtml.contains("to="));
   EXPECT_FALSE(mhtml.contains("javascript:"));
 
@@ -304,7 +305,7 @@ TEST_F(WebFrameSerializerSanitizationTest, LinkIntegrity) {
 
   // beautifull.css remains, without 'integrity'. integrityfail.css is removed.
   EXPECT_TRUE(
-      mhtml.Contains("<link rel=3D\"stylesheet\" "
+      mhtml.contains("<link rel=3D\"stylesheet\" "
                      "href=3D\"http://www.test.com/beautifull.css\">"));
   EXPECT_FALSE(mhtml.contains("http://www.test.com/integrityfail.css"));
 }

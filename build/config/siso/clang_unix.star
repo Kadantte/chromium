@@ -7,17 +7,13 @@
 load("@builtin//path.star", "path")
 load("@builtin//struct.star", "module")
 load("./android.star", "android")
-load("./clang_code_coverage_wrapper.star", "clang_code_coverage_wrapper")
+load("./clang_all.star", "clang_all")
 load("./config.star", "config")
 load("./gn_logs.star", "gn_logs")
 load("./win_sdk.star", "win_sdk")
 
-def __clang_compile_coverage(ctx, cmd):
-    clang_command = clang_code_coverage_wrapper.run(ctx, list(cmd.args))
-    ctx.actions.fix(args = clang_command)
-
 def __clang_link(ctx, cmd):
-    if not config.get(ctx, "remote-link"):
+    if not (config.get(ctx, "remote-link") or config.get(ctx, "default-remote")):
         return
     inputs = []
     sysroot = ""
@@ -73,10 +69,9 @@ def __clang_link(ctx, cmd):
 
     ctx.actions.fix(inputs = cmd.inputs + inputs)
 
-__handlers = {
-    "clang_compile_coverage": __clang_compile_coverage,
-    "clang_link": __clang_link,
-}
+__handlers = {}
+__handlers.update(clang_all.handlers)
+__handlers["clang_link"] = __clang_link
 
 def __rules(ctx):
     gn_logs_data = gn_logs.read(ctx)
@@ -89,11 +84,14 @@ def __rules(ctx):
     use_thin_lto = gn_logs_data.get("use_thin_lto") == "true"
     remote_link_timeout = "80m" if use_thin_lto else "10m"
 
+    remote_link = config.get(ctx, "remote-link") or config.get(ctx, "default-remote")
+
     rules = []
     if win_sdk.enabled(ctx):
         rules.extend([
             {
                 "name": "clang-cl/cxx",
+                "handler": "clang_compile",
                 "action": "(.*_)?cxx",
                 "command_prefix": "../../third_party/llvm-build/Release+Asserts/bin/clang-cl ",
                 "inputs": [
@@ -106,6 +104,7 @@ def __rules(ctx):
             },
             {
                 "name": "clang-cl/cc",
+                "handler": "clang_compile",
                 "action": "(.*_)?cc",
                 "command_prefix": "../../third_party/llvm-build/Release+Asserts/bin/clang-cl ",
                 "inputs": [
@@ -140,7 +139,7 @@ def __rules(ctx):
                     "*.pak",
                     "*.py",
                 ],
-                "remote": config.get(ctx, "remote-link"),
+                "remote": remote_link,
                 "platform_ref": "large",
                 "input_root_absolute_path": input_root_absolute_path,
                 "timeout": remote_link_timeout,
@@ -161,7 +160,7 @@ def __rules(ctx):
                     "*.pak",
                     "*.py",
                 ],
-                "remote": config.get(ctx, "remote-link"),
+                "remote": remote_link,
                 "platform_ref": "large",
                 "input_root_absolute_path": input_root_absolute_path,
                 "timeout": remote_link_timeout,
@@ -182,7 +181,7 @@ def __rules(ctx):
                     "*.pak",
                     "*.py",
                 ],
-                "remote": config.get(ctx, "remote-link"),
+                "remote": remote_link,
                 "platform_ref": "large",
                 "input_root_absolute_path": input_root_absolute_path,
                 "timeout": remote_link_timeout,
@@ -192,6 +191,7 @@ def __rules(ctx):
     rules.extend([
         {
             "name": "clang/cxx",
+            "handler": "clang_compile",
             "action": "(.*_)?cxx",
             "command_prefix": "../../third_party/llvm-build/Release+Asserts/bin/clang++ ",
             "inputs": [
@@ -204,6 +204,7 @@ def __rules(ctx):
         },
         {
             "name": "clang/cxx_module",
+            "handler": "clang_compile",
             "action": "(.*_)?cxx_module",
             "command_prefix": "../../third_party/llvm-build/Release+Asserts/bin/clang++ ",
             "inputs": [
@@ -216,6 +217,7 @@ def __rules(ctx):
         },
         {
             "name": "clang/cc",
+            "handler": "clang_compile",
             "action": "(.*_)?cc",
             "command_prefix": "../../third_party/llvm-build/Release+Asserts/bin/clang ",
             "inputs": [
@@ -228,6 +230,7 @@ def __rules(ctx):
         },
         {
             "name": "clang/objcxx",
+            "handler": "clang_compile",
             "action": "(.*_)?objcxx",
             "command_prefix": "../../third_party/llvm-build/Release+Asserts/bin/clang++",
             "inputs": [
@@ -240,6 +243,7 @@ def __rules(ctx):
         },
         {
             "name": "clang/objc",
+            "handler": "clang_compile",
             "action": "(.*_)?objc",
             "command_prefix": "../../third_party/llvm-build/Release+Asserts/bin/clang",
             "inputs": [
@@ -252,12 +256,16 @@ def __rules(ctx):
         },
         {
             "name": "clang/asm",
+            "handler": "clang_compile",
             "action": "(.*_)?asm",
             "command_prefix": "../../third_party/llvm-build/Release+Asserts/bin/clang",
             "inputs": [
                 "third_party/llvm-build/Release+Asserts/bin/clang",
             ],
-            "remote": config.get(ctx, "cog"),
+            # Remote assembly is typically much slower than local assembly.
+            # However, on Cog, local actions incur the overhead of fetching the
+            # toolchain and all inputs, making remote execution preferable.
+            "remote": config.get(ctx, "cog") or config.get(ctx, "default-remote"),
             "input_root_absolute_path": input_root_absolute_path,
             "timeout": "2m",
         },
@@ -316,10 +324,6 @@ def __rules(ctx):
         {
             "name": "clang/alink/llvm-ar",
             "action": "(.*_)?alink",
-            "inputs": [
-                # TODO: crbug.com/316267242 - Add inputs to GN config.
-                "third_party/llvm-build/Release+Asserts/bin/llvm-ar",
-            ],
             "exclude_input_patterns": [
                 "*.cc",
                 "*.h",
@@ -329,7 +333,7 @@ def __rules(ctx):
                 "*.stamp",
             ],
             "handler": "lld_thin_archive",
-            "remote": config.get(ctx, "remote-link"),
+            "remote": remote_link,
             "timeout": "2m",
             "platform_ref": "large",
             "accumulate": True,
@@ -343,10 +347,9 @@ def __rules(ctx):
                 "*.h",
                 "*.js",
                 "*.pak",
-                "*.py",
                 "*.stamp",
             ],
-            "remote": config.get(ctx, "remote-link"),
+            "remote": remote_link,
             "restat_content": True,
             "platform_ref": "large",
             "timeout": remote_link_timeout,
@@ -360,10 +363,9 @@ def __rules(ctx):
                 "*.h",
                 "*.js",
                 "*.pak",
-                "*.py",
                 "*.stamp",
             ],
-            "remote": config.get(ctx, "remote-link"),
+            "remote": remote_link,
             "platform_ref": "large",
             "timeout": remote_link_timeout,
         },
@@ -377,18 +379,25 @@ def __rules(ctx):
                 "*.info",
                 "*.js",
                 "*.pak",
-                "*.py",
                 "*.stamp",
             ],
-            "remote": config.get(ctx, "remote-link"),
+            "remote": remote_link,
             "platform_ref": "large",
             "timeout": remote_link_timeout,
         },
     ])
     return rules
 
+def __filegroups(ctx):
+    return clang_all.filegroups(ctx)
+
+def __input_deps(ctx):
+    return clang_all.input_deps(ctx)
+
 clang_unix = module(
     "clang_unix",
     handlers = __handlers,
     rules = __rules,
+    filegroups = __filegroups,
+    input_deps = __input_deps,
 )

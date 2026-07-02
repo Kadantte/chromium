@@ -8,6 +8,7 @@ import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.location.Location;
+import android.os.SystemClock;
 
 import com.google.android.gms.location.FusedLocationProviderClient;
 import com.google.android.gms.location.Granularity;
@@ -42,7 +43,9 @@ public class LocationProviderGmsCore implements LocationProvider {
     private final Context mContext;
     private final FusedLocationProviderClient mClient;
     private boolean mEffectiveHighAccuracy;
-    private boolean mRequestedHighAccuracy;
+
+    private long mStartTime;
+    private boolean mFirstPositionReceived;
 
     private @Nullable LocationCallback mLocationCallback;
 
@@ -66,8 +69,9 @@ public class LocationProviderGmsCore implements LocationProvider {
     @Override
     public void start(boolean enableHighAccuracy) {
         ThreadUtils.assertOnUiThread();
-        mRequestedHighAccuracy = enableHighAccuracy;
-        mEffectiveHighAccuracy = mRequestedHighAccuracy;
+        mEffectiveHighAccuracy = enableHighAccuracy;
+        mStartTime = SystemClock.elapsedRealtime();
+        mFirstPositionReceived = false;
         if (mContext.checkCallingOrSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
                 != PackageManager.PERMISSION_GRANTED) {
             // Workaround for a bug in Google Play Services where, if an app only has
@@ -113,16 +117,31 @@ public class LocationProviderGmsCore implements LocationProvider {
                             .build();
         }
 
+        final boolean requestedHighAccuracy = enableHighAccuracy;
         stop();
         mLocationCallback =
                 new LocationCallback() {
                     @Override
                     public void onLocationResult(LocationResult locationResult) {
-                        if (locationResult == null) {
+                        if (mLocationCallback != this || locationResult == null) {
                             return;
                         }
                         Location location = locationResult.getLastLocation();
                         if (location != null) {
+                            if (!mFirstPositionReceived) {
+                                long durationMs = SystemClock.elapsedRealtime() - mStartTime;
+                                String suffix =
+                                        mEffectiveHighAccuracy ? ".Precise" : ".Approximate";
+                                RecordHistogram.recordCustomTimesHistogram(
+                                        "Geolocation.GMSCoreLocationProvider"
+                                                + ".TimeToFirstPosition"
+                                                + suffix,
+                                        durationMs,
+                                        1,
+                                        10000,
+                                        50);
+                                mFirstPositionReceived = true;
+                            }
                             if (location.hasAccuracy()) {
                                 final String histogramName =
                                         "Geolocation.GMSCoreLocationProvider"
@@ -133,11 +152,11 @@ public class LocationProviderGmsCore implements LocationProvider {
                                 RecordHistogram.recordCount100000Histogram(
                                         histogramName, (int) location.getAccuracy());
                             }
-                            // Using `mRequestedHighAccuracy` for location update cause
+                            // Using `requestedHighAccuracy` for location update cause
                             // `mEffectiveHighAccuracy` can be override by app-level permission
                             // check.
                             LocationProviderAdapter.onNewLocationAvailable(
-                                    location, mRequestedHighAccuracy);
+                                    location, requestedHighAccuracy);
                         }
                     }
                 };
@@ -171,6 +190,7 @@ public class LocationProviderGmsCore implements LocationProvider {
     @Override
     public void stop() {
         ThreadUtils.assertOnUiThread();
+        mFirstPositionReceived = false;
 
         if (mLocationCallback != null) {
             mClient.removeLocationUpdates(mLocationCallback);

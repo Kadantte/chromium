@@ -1815,15 +1815,6 @@ _FUNCTION_INFO = {
     'type': 'StateSet',
     'state': 'ClearStencil',
   },
-  'EnableFeatureCHROMIUM': {
-    'type': 'Custom',
-    'data_transfer_methods': ['shm'],
-    'decoder_func': 'DoEnableFeatureCHROMIUM',
-    'cmd_args': 'GLuint bucket_id, GLint* result',
-    'result': ['GLint'],
-    'extension': 'GL_CHROMIUM_enable_feature',
-    'pepper_interface': 'ChromiumEnableFeature',
-  },
   'CompileShader': {'decoder_func': 'DoCompileShader', 'unit_test': False},
   'CompressedTexImage2D': {
     'type': 'Custom',
@@ -2291,6 +2282,16 @@ _FUNCTION_INFO = {
     'decoder_func': 'DoGetBufferParameteriv',
     'expectation': False,
     'shadowed': True,
+  },
+    'GetBufferSubDataCHROMIUM': {
+    'type': 'Custom',
+    'data_transfer_methods': ['shm'],
+    'impl_func': False,
+    'client_test': False,
+    'cmd_args':
+        'GLenumBufferTarget target, GLintptr offset, GLsizeiptr size,'
+        'uint32_t data_shm_id, uint32_t data_shm_offset',
+    'trace_level': 1,
   },
   'GetError': {
     'type': 'Is',
@@ -3917,7 +3918,14 @@ _FUNCTION_INFO = {
     'count': 1,
     'unit_test': False,
     'es3': True,
-    'decoder_func': 'DoBeginPixelLocalStorageANGLE',
+    'decoder_func': 'DoEndPixelLocalStorageANGLE',
+  },
+  'EndPixelLocalStorageImplicitANGLE': {
+    'extension': 'ANGLE_shader_pixel_local_storage',
+    'extension_flag': 'angle_shader_pixel_local_storage',
+    'unit_test': False,
+    'es3': True,
+    'decoder_func': 'DoEndPixelLocalStorageImplicitANGLE',
   },
   'PixelLocalStorageBarrierANGLE': {
     'extension': 'ANGLE_shader_pixel_local_storage',
@@ -3957,6 +3965,15 @@ _FUNCTION_INFO = {
     'es3': True,
     'result': ['SizedResult<GLint>'],
     'decoder_func': 'DoGetFramebufferPixelLocalStorageParameterivANGLE',
+  },
+  'GetFramebufferPixelLocalStorageParameteruivANGLE': {
+    'extension': 'ANGLE_shader_pixel_local_storage',
+    'extension_flag': 'angle_shader_pixel_local_storage',
+    'type': 'GETn',
+    'unit_test': False,
+    'es3': True,
+    'result': ['SizedResult<GLuint>'],
+    'decoder_func': 'DoGetFramebufferPixelLocalStorageParameteruivANGLE',
   },
 
 }

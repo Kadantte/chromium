@@ -6,6 +6,9 @@ import("//media/media_options.gni")
 import("//third_party/webrtc/webrtc.gni")
 
 component("webrtc") {
+  _configs = configs
+  configs = []
+  configs = [ "//third_party/tflite:tflite_shim_config" ] + _configs
   output_name = "media_webrtc"
 
   sources = [
@@ -21,15 +24,25 @@ component("webrtc") {
     "webrtc_features.h",
   ]
 
+  if (chrome_wide_echo_cancellation_supported) {
+    sources += [
+      "voice_isolation/voice_isolation.cc",
+      "voice_isolation/voice_isolation.h",
+    ]
+  }
+
   defines = [ "IS_MEDIA_WEBRTC_IMPL" ]
 
   deps = [
     "//base",
     "//build:chromecast_buildflags",
-    "//components/optimization_guide/core/inference:op_resolver",
     "//media",
     "//third_party/webrtc_overrides:webrtc_component",
   ]
+
+  if (!is_fuchsia) {
+    deps += [ "//components/optimization_guide/core/inference:op_resolver" ]
+  }
 
   public_deps = [ "//third_party/tflite" ]
 }

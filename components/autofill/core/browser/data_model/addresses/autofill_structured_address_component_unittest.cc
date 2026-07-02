@@ -15,6 +15,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_i18n_api.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_i18n_hierarchies.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component_test_api.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_name.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_test_utils.h"
@@ -1971,7 +1972,7 @@ TEST_P(PerCountryAutofillStructuredAddressAddressComponentTest,
        MergeModesDefinedExactlyWhereNeeded) {
   AddressComponentsStore address_component_store =
       i18n_model_definition::CreateAddressComponentModel(
-          autofill::AddressCountryCode(GetCountryCode()));
+          AddressCountryCode(GetCountryCode()));
 
   TypesByProperties types_by_properties =
       GetTypesByProperties(address_component_store);

@@ -5,6 +5,7 @@
 #ifndef UI_VIEWS_ACCESSIBILITY_VIEW_ACCESSIBILITY_H_
 #define UI_VIEWS_ACCESSIBILITY_VIEW_ACCESSIBILITY_H_
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -16,7 +17,7 @@
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "build/build_config.h"
+#include "base/scoped_observation.h"
 #include "ui/accessibility/ax_enums.mojom-forward.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/accessibility/platform/ax_platform_node_id.h"
@@ -78,6 +79,47 @@ class VIEWS_EXPORT ViewAccessibility : public WidgetObserver {
 
   enum class State { kUninitialized, kInitializing, kInitialized };
 
+  // The ARIA live region politeness level.
+  enum class LiveRegionStatus {
+    kPolite,
+    kAssertive,
+    kOff,
+  };
+
+  // Converts a LiveRegionStatus enum to its ARIA string representation
+  // (e.g. "polite").
+  static const char* LiveRegionStatusToString(LiveRegionStatus status);
+
+  // Describes what triggered a potential kLiveRegionChanged event.
+  // Used to check against the aria-relevant attribute before firing.
+  enum class LiveRegionEventTrigger {
+    kAdditions,  // A node was added to the live region.
+    kText,       // A node's text (name) changed.
+    kRemovals,   // A node was removed from the live region.
+  };
+
+  // Bitmask for the ARIA "aria-relevant" attribute values.
+  enum LiveRegionRelevant : uint8_t {
+    kLiveRegionRelevantAdditions = 1 << 0,
+    kLiveRegionRelevantText = 1 << 1,
+    kLiveRegionRelevantRemovals = 1 << 2,
+    kLiveRegionRelevantAll = kLiveRegionRelevantAdditions |
+                             kLiveRegionRelevantText |
+                             kLiveRegionRelevantRemovals,
+  };
+
+  // Default: "additions text" per the ARIA spec.
+  static constexpr uint8_t kLiveRegionRelevantDefault =
+      kLiveRegionRelevantAdditions | kLiveRegionRelevantText;
+
+  // Converts a LiveRegionRelevant bitmask to the ARIA string representation
+  // (e.g. "additions text").
+  static std::string LiveRegionRelevantToString(uint8_t relevant);
+
+  // Converts an ARIA aria-relevant string (e.g. "additions text") to a
+  // LiveRegionRelevant bitmask.
+  static uint8_t LiveRegionRelevantFromString(const std::string& relevant);
+
   static std::unique_ptr<ViewAccessibility> Create(View* view);
 
   // Returns whether the Views-sourced accessibility tree is enabled. This
@@ -130,6 +172,9 @@ class VIEWS_EXPORT ViewAccessibility : public WidgetObserver {
 
   // Call when a menu closes, to restore focus to where it was previously.
   virtual void FireFocusAfterMenuClose();
+
+  // Sends a transient focus notification without changing the focused view.
+  virtual void NotifyTransientFocus();
 
   // Sets/gets whether or not this view's descendants should be included in
   // the accessibility tree. It is the functional equivalent of calling
@@ -278,15 +323,18 @@ class VIEWS_EXPORT ViewAccessibility : public WidgetObserver {
   void SetTextSelStart(int32_t text_sel_start);
   void SetTextSelEnd(int32_t text_sel_end);
 
-  void SetLiveAtomic(bool live_atomic);
-
-  void SetLiveStatus(const std::string& status);
-
-  void SetLiveRelevant(const std::string& live_relevant);
-  void RemoveLiveRelevant();
-
-  void SetContainerLiveRelevant(const std::string& live_relevant);
-  void RemoveContainerLiveRelevant();
+  // Designates this view as a live region container, setting all required
+  // attributes (kLiveStatus, kContainerLiveStatus, kLiveRelevant, etc.) and
+  // propagating kContainerLiveStatus to descendants. Automatically fires
+  // kLiveRegionChanged events when children are added/removed or text changes.
+  //
+  // |relevant| controls which mutations fire kLiveRegionChanged; defaults to
+  // kLiveRegionRelevantDefault ("additions text"). |atomic| maps to
+  // aria-atomic; defaults to false.
+  void SetLiveRegionContainer(LiveRegionStatus live_status,
+                              uint8_t relevant = kLiveRegionRelevantDefault,
+                              bool atomic = false);
+  void RemoveLiveRegionContainer();
 
   // Hides this view from the accessibility APIs. Keep in mind that this is not
   // the sole determinant of whether the ignored state is set. See
@@ -426,9 +474,6 @@ class VIEWS_EXPORT ViewAccessibility : public WidgetObserver {
 
   virtual void SetShowContextMenu(bool show_context_menu);
 
-  void SetContainerLiveStatus(const std::string& status);
-  void RemoveContainerLiveStatus();
-
   // Sets the kValue attribute of the accessible object.
   // In case of ProgressBar, if progressBarIndicator value is negative,
   // then kValue attribute should not be set.
@@ -436,6 +481,10 @@ class VIEWS_EXPORT ViewAccessibility : public WidgetObserver {
   void SetValue(std::u16string_view value);
   void RemoveValue();
   std::u16string GetValue() const;
+
+  void SetValueForRange(float value);
+  void SetMinValueForRange(float value);
+  void SetMaxValueForRange(float value);
 
   void SetDefaultActionVerb(
       const ax::mojom::DefaultActionVerb default_action_verb);
@@ -483,6 +532,21 @@ class VIEWS_EXPORT ViewAccessibility : public WidgetObserver {
   virtual void UpdateInvisibleState();
 
   bool should_be_invisible() const { return should_be_invisible_; }
+
+  // Updates the container live status of the `data_` object.
+  // The view is considered a live region container if it has a live status
+  // set. If not, it inherits the container live status from its parent.
+  // UpdateContainerLiveStatus() updates only this node, without recursion.
+  // UpdateContainerLiveStatusRecursive() updates this node and recurses into
+  // children.
+  void UpdateContainerLiveStatus();
+  void UpdateContainerLiveStatusRecursive();
+
+  // Fires a kLiveRegionChanged event if this node is inside a live region
+  // and the given trigger type is included in the aria-relevant attribute.
+  // Walks up ancestors to find the live region root (where kLiveStatus is set)
+  // and fires the event on that node.
+  void FireLiveRegionChangedIfNeeded(LiveRegionEventTrigger trigger);
 
   // Override the child tree id.
   void SetChildTreeID(ui::AXTreeID tree_id);

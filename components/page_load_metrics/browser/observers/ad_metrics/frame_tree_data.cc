@@ -253,11 +253,14 @@ void FrameTreeData::UpdateForNavigation(
     SetFrameSize(*(render_frame_host->GetFrameSize()));
 
   // For frames triggered on render, their origin is their parent's origin.
+  initial_origin_ = render_frame_host->GetLastCommittedOrigin();
   origin_status_ =
       AdsPageLoadMetricsObserver::IsFrameSameOriginToOutermostMainFrame(
           render_frame_host)
           ? OriginStatus::kSame
           : OriginStatus::kCross;
+
+  devtools_frame_token_ = render_frame_host->GetDevToolsFrameToken();
 
   root_frame_depth_ = GetFullFrameDepth(render_frame_host);
 }
@@ -267,7 +270,7 @@ void FrameTreeData::ProcessResourceLoadInFrame(
     int process_id,
     const ResourceTracker& resource_tracker) {
   content::GlobalRequestID global_id(
-      content::ToOriginatingProcessUnsafe(process_id), resource->request_id);
+      content::ToOriginatingProcessIdUnsafe(process_id), resource->request_id);
   if (!resource_tracker.HasPreviousUpdateForResource(global_id))
     num_resources_++;
   resource_data_.ProcessResourceLoad(resource);

@@ -9,6 +9,7 @@
 
 #include "base/base_paths.h"
 #include "base/command_line.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/files/file.h"
 #include "base/files/file_enumerator.h"
@@ -58,6 +59,7 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/sync_call_restrictions.h"
 #include "net/base/features.h"
+#include "net/base/switches.h"
 #include "net/cookies/cookie_util.h"
 #include "net/disk_cache/backend_experiment.h"
 #include "net/disk_cache/disk_cache.h"
@@ -96,6 +98,7 @@
 
 #include "base/files/memory_mapped_file.h"
 #include "base/files/scoped_temp_file.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/rand_util.h"
 #include "content/browser/network/network_service_process_tracker_win.h"
 #include "content/common/features.h"
@@ -343,7 +346,7 @@ IN_PROC_BROWSER_TEST_F(NetworkServiceBrowserSimpleCacheTest,
 
   network::mojom::URLLoaderFactoryParamsPtr params =
       network::mojom::URLLoaderFactoryParams::New();
-  params->process_id = network::OriginatingProcess::browser();
+  params->process_id = network::OriginatingProcessId::browser();
   params->automatically_assign_isolation_info = true;
   params->is_orb_enabled = false;
   params->is_trusted = true;
@@ -594,7 +597,7 @@ IN_PROC_BROWSER_TEST_F(NetworkServiceBrowserTest, FactoryOverride) {
   auto loader = network::SimpleURLLoader::Create(std::move(request),
                                                  TRAFFIC_ANNOTATION_FOR_TESTS);
   auto params = network::mojom::URLLoaderFactoryParams::New();
-  params->process_id = network::OriginatingProcess::browser();
+  params->process_id = network::OriginatingProcessId::browser();
   params->factory_override = network::mojom::URLLoaderFactoryOverride::New();
   params->factory_override->overriding_factory =
       test_loader_factory_receiver.BindNewPipeAndPassRemote();
@@ -634,7 +637,7 @@ class NetworkServiceBrowserCacheResetTest : public NetworkServiceBrowserTest {
     // execution order, potentially causing disk_cache::Backend to be destructed
     // before disk_cache::Entry. See the crbug for more details.
     scoped_feature_list_.InitAndDisableFeature(
-        network::features::kNetworkServicePerPriorityTaskQueues);
+        net::features::kNetworkServicePerPriorityTaskQueues);
   }
 
  protected:
@@ -705,7 +708,7 @@ class NetworkServiceBrowserCacheResetTest : public NetworkServiceBrowserTest {
 
     network::mojom::URLLoaderFactoryParamsPtr url_loader_params =
         network::mojom::URLLoaderFactoryParams::New();
-    url_loader_params->process_id = network::OriginatingProcess::browser();
+    url_loader_params->process_id = network::OriginatingProcessId::browser();
     url_loader_params->is_trusted = true;
     mojo::Remote<network::mojom::URLLoaderFactory> url_loader_factory;
     network_context->CreateURLLoaderFactory(
@@ -842,7 +845,8 @@ void SetCookie(
   auto cookie = net::CanonicalCookie::CreateUnsafeCookieForTesting(
       kCookieName, kCookieValue, "example.test", "/", t, t + base::Days(1),
       base::Time(), base::Time(), /*secure=*/true, /*http-only=*/false,
-      net::CookieSameSite::NO_RESTRICTION, net::COOKIE_PRIORITY_DEFAULT);
+      net::CookieSameSite::NO_RESTRICTION, net::COOKIE_PRIORITY_DEFAULT,
+      net::CookieSourceType::kOther);
   base::RunLoop run_loop;
   cookie_manager->SetCanonicalCookie(
       *cookie, net::cookie_util::SimulatedCookieSource(*cookie, "https"),
@@ -1642,7 +1646,7 @@ class NetworkServiceInvalidLogBrowserTest : public ContentBrowserTest {
       const NetworkServiceInvalidLogBrowserTest&) = delete;
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    command_line->AppendSwitchASCII(network::switches::kLogNetLog, "/abc/def");
+    command_line->AppendSwitchASCII(net::switches::kLogNetLog, "/abc/def");
   }
 
   void SetUpOnMainThread() override {
@@ -1674,7 +1678,7 @@ class NetworkServiceNetLogBrowserTest : public ContentBrowserTest {
   }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    command_line->AppendSwitchPath(network::switches::kLogNetLog, log_path_);
+    command_line->AppendSwitchPath(net::switches::kLogNetLog, log_path_);
   }
 
   void TearDownInProcessBrowserTestFixture() override {
@@ -1835,7 +1839,6 @@ class NetworkServiceCookieEncryptionBrowserTest : public ContentBrowserTest {
     }
 
     bool UseForEncryption() final { return true; }
-    bool IsCompatibleWithOsCryptSync() final { return false; }
 
     const std::vector<uint8_t> key_;
   };
@@ -1882,7 +1885,7 @@ IN_PROC_BROWSER_TEST_F(NetworkServiceCookieEncryptionBrowserTest,
         os_crypt_async.GetInstance(base::BindOnce(
             [](network::mojom::CookieEncryptionProvider::GetEncryptorCallback
                    callback,
-               os_crypt_async::Encryptor encryptor) {
+               scoped_refptr<os_crypt_async::Encryptor> encryptor) {
               std::move(callback).Run(std::move(encryptor));
             },
             std::move(callback)));
@@ -1918,7 +1921,7 @@ IN_PROC_BROWSER_TEST_F(NetworkServiceCookieEncryptionBrowserTest,
                        base::File::FLAG_DELETE_ON_CLOSE);
     ASSERT_TRUE(temp_file.IsValid());
     base::Process peer_process = base::Process::OpenWithExtraPrivileges(
-        GetNetworkServiceProcess().Pid());
+        GetNetworkServiceProcessForTesting().Pid());
     const auto minidump_type = static_cast<MINIDUMP_TYPE>(
         MiniDumpWithFullMemory | MiniDumpIgnoreInaccessibleMemory);
     ASSERT_TRUE(::MiniDumpWriteDump(peer_process.Handle(), peer_process.Pid(),

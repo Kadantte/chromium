@@ -24,6 +24,7 @@
 #include "services/media_session/public/mojom/constants.mojom.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/mediasession/media_session.mojom.h"
+#include "ui/gfx/geometry/size.h"
 
 using ::testing::_;
 using ::testing::AnyNumber;
@@ -63,14 +64,15 @@ class MockMediaSessionPlayerObserver : public MediaSessionPlayerObserver {
 
   ~MockMediaSessionPlayerObserver() override = default;
 
-  MOCK_METHOD1(OnSuspend, void(int player_id));
-  MOCK_METHOD1(OnResume, void(int player_id));
+  MOCK_METHOD2(OnSuspend, void(int player_id, bool triggered_by_user));
+  MOCK_METHOD2(OnResume, void(int player_id, bool triggered_by_user));
   MOCK_METHOD2(OnSeekForward, void(int player_id, base::TimeDelta seek_time));
   MOCK_METHOD2(OnSeekBackward, void(int player_id, base::TimeDelta seek_time));
   MOCK_METHOD2(OnSeekTo, void(int player_id, base::TimeDelta seek_time));
   MOCK_METHOD2(OnSetVolumeMultiplier,
                void(int player_id, double volume_multiplier));
-  MOCK_METHOD1(OnEnterPictureInPicture, void(int player_id));
+  MOCK_METHOD2(OnEnterPictureInPicture,
+               void(int player_id, const std::optional<gfx::Size>& min_size));
   MOCK_METHOD2(OnSetAudioSinkId,
                void(int player_id, const std::string& raw_device_id));
   MOCK_METHOD2(OnSetMute, void(int player_id, bool mute));
@@ -500,7 +502,7 @@ TEST_F(MediaSessionImplServiceRoutingTest,
 
   CreateServiceForFrame(main_frame_);
 
-  EXPECT_CALL(*GetPlayerForFrame(sub_frame_), OnSuspend(_));
+  EXPECT_CALL(*GetPlayerForFrame(sub_frame_), OnSuspend(_, false));
   EXPECT_CALL(*GetClientForFrame(main_frame_),
               DidReceiveAction(MediaSessionAction::kPause, _))
       .WillOnce(InvokeWithoutArgs(&run_loop, &base::RunLoop::Quit));
@@ -522,7 +524,7 @@ TEST_F(MediaSessionImplServiceRoutingTest,
 
   CreateServiceForFrame(sub_frame_);
 
-  EXPECT_CALL(*GetPlayerForFrame(main_frame_), OnSuspend(_));
+  EXPECT_CALL(*GetPlayerForFrame(main_frame_), OnSuspend(_, false));
   EXPECT_CALL(*GetClientForFrame(sub_frame_),
               DidReceiveAction(MediaSessionAction::kPause, _))
       .WillOnce(InvokeWithoutArgs(&run_loop, &base::RunLoop::Quit));
@@ -1105,7 +1107,7 @@ TEST_F(MediaSessionImplServiceRoutingTest, StopBehaviourDefault) {
   StartPlayerForFrame(main_frame_);
   CreateServiceForFrame(main_frame_);
 
-  EXPECT_CALL(*GetPlayerForFrame(main_frame_), OnSuspend(_))
+  EXPECT_CALL(*GetPlayerForFrame(main_frame_), OnSuspend(_, true))
       .WillOnce(InvokeWithoutArgs(&run_loop, &base::RunLoop::Quit));
   EXPECT_CALL(*GetClientForFrame(main_frame_),
               DidReceiveAction(MediaSessionAction::kStop, _))
@@ -1121,7 +1123,7 @@ TEST_F(MediaSessionImplServiceRoutingTest, StopBehaviourWhenActionEnabled) {
   StartPlayerForFrame(main_frame_);
   CreateServiceForFrame(main_frame_);
 
-  EXPECT_CALL(*GetPlayerForFrame(main_frame_), OnSuspend(_));
+  EXPECT_CALL(*GetPlayerForFrame(main_frame_), OnSuspend(_, true));
   EXPECT_CALL(*GetClientForFrame(main_frame_),
               DidReceiveAction(MediaSessionAction::kStop, _))
       .WillOnce(InvokeWithoutArgs(&run_loop, &base::RunLoop::Quit));
@@ -1395,6 +1397,49 @@ TEST_F(MediaSessionImplServiceRoutingTest, GetRoutedFrameForServices) {
   ASSERT_EQ(sub_frame_, GetMediaSession()->GetRoutedFrame());
   DestroyServiceForFrame(sub_frame_);
   ASSERT_EQ(nullptr, GetMediaSession()->GetRoutedFrame());
+}
+
+TEST_F(MediaSessionImplServiceRoutingTest,
+       AmbientPlayersOnly_PausedServiceOverridesPlaybackState) {
+  CreateServiceForFrame(main_frame_);
+  // Start an ambient player on the main frame, so HasOnlyAmbientPlayers() will
+  // be true.
+  StartPlayerForFrame(main_frame_, media::MediaContentType::kAmbient);
+
+  // Verify that the service is routed.
+  ASSERT_EQ(services_[main_frame_].get(), ComputeServiceForRouting());
+
+  // Set the routed service's playback state to PAUSED.
+  services_[main_frame_]->SetPlaybackState(
+      blink::mojom::MediaSessionPlaybackState::PAUSED);
+
+  // Observe the MediaSessionInfo and verify that its playback_state is updated
+  // to kPaused.
+  media_session::test::MockMediaSessionMojoObserver observer(
+      *GetMediaSession());
+  observer.WaitForPlaybackState(
+      media_session::mojom::MediaPlaybackState::kPaused);
+}
+
+TEST_F(MediaSessionImplServiceRoutingTest,
+       PersistentPlayerPresent_PausedServiceDoesNotOverridePlaybackState) {
+  CreateServiceForFrame(main_frame_);
+  // Start a normal/persistent player on the main frame.
+  StartPlayerForFrame(main_frame_, media::MediaContentType::kPersistent);
+
+  // Verify that the service is routed.
+  ASSERT_EQ(services_[main_frame_].get(), ComputeServiceForRouting());
+
+  // Set the routed service's playback state to PAUSED.
+  services_[main_frame_]->SetPlaybackState(
+      blink::mojom::MediaSessionPlaybackState::PAUSED);
+
+  // Observe the MediaSessionInfo and verify that its playback_state remains
+  // kPlaying.
+  media_session::test::MockMediaSessionMojoObserver observer(
+      *GetMediaSession());
+  observer.WaitForPlaybackState(
+      media_session::mojom::MediaPlaybackState::kPlaying);
 }
 
 // Test duration duration update throttle behavior for routed service.

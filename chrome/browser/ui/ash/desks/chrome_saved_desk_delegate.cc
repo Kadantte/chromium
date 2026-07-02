@@ -4,18 +4,19 @@
 
 #include "chrome/browser/ui/ash/desks/chrome_saved_desk_delegate.h"
 
+#include "ash/constants/chrome_webui_url_constants.h"
 #include "ash/constants/notifier_catalogs.h"
 #include "ash/constants/web_app_id_constants.h"
 #include "ash/public/cpp/desk_template.h"
 #include "ash/public/cpp/system/toast_data.h"
 #include "ash/public/cpp/system/toast_manager.h"
 #include "ash/public/cpp/window_properties.h"
+#include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/i18n/number_formatting.h"
 #include "base/trace_event/trace_event.h"
-#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/icon_standardizer.h"
@@ -27,7 +28,6 @@
 #include "chrome/browser/ui/ash/desks/chrome_desks_util.h"
 #include "chrome/browser/ui/ash/desks/desks_client.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/theme_resources.h"
 #include "components/app_constants/constants.h"
 #include "components/app_restore/app_launch_info.h"
@@ -298,7 +298,7 @@ void ChromeSavedDeskDelegate::GetAppLaunchDataForSavedDesk(
       (app_type == apps::AppType::kChromeApp ||
        app_type == apps::AppType::kWeb)) {
     // If these values are not present, we will not be able to restore the
-    // application. See http://crbug.com/1232520 for more information.
+    // application. See http://crbug.com/40191158 for more information.
     if (!app_launch_info->container.has_value() ||
         !app_launch_info->disposition.has_value()) {
       std::move(callback).Run({});
@@ -355,7 +355,7 @@ ChromeSavedDeskDelegate::MaybeRetrieveIconForSpecialIdentifier(
     const ui::ColorProvider* color_provider) const {
   TRACE_EVENT0(
       "ui", "ChromeSavedDeskDelegate::MaybeRetrieveIconForSpecialIdentifier");
-  if (identifier == chrome::kChromeUINewTabURL) {
+  if (identifier == ash::chrome_urls::kChromeUINewTabURL) {
     ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
     return apps::CreateStandardIconImage(
         rb.GetImageNamed(IDR_PRODUCT_LOGO_32).AsImageSkia());
@@ -363,7 +363,7 @@ ChromeSavedDeskDelegate::MaybeRetrieveIconForSpecialIdentifier(
     DCHECK(color_provider);
     gfx::ImageSkia icon =
         ui::ThemedVectorIcon(
-            ui::ImageModel::FromVectorIcon(kIncognitoProfileIcon,
+            ui::ImageModel::FromVectorIcon(ash::kIncognitoProfileIcon,
                                            ui::kColorAvatarIconIncognito)
                 .GetVectorIcon())
             .GetImageSkia(color_provider);

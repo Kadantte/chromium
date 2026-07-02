@@ -179,6 +179,7 @@ class Speedometer31(_Speedometer3):
                 documentation_url='https://github.com/WebKit/Speedometer')
 class Speedometer3(Speedometer31):
   """The latest version of the Speedometer 3.x benchmark."""
+
   SCHEDULED = True
 
   @classmethod
@@ -215,6 +216,8 @@ class Speedometer3Predictable(Speedometer3):
   This should (hopefully) help reduce variance in the score.
   """
 
+  SCHEDULED = False
+
   @classmethod
   def Name(cls):
     return 'speedometer3-predictable'
@@ -238,4 +241,4 @@ class Speedometer3NoFieldTrials(Speedometer3):
 
   def SetExtraBrowserOptions(self, options):
     options.AppendExtraBrowserArgs('--disable-field-trial-config')
-    options.RemoveExtraBrowserArg('--enable-field-trial-config')
+    self.RemoveExtraBrowserArgWithValues(options, '--enable-field-trial-config')

@@ -10,6 +10,7 @@
 #include "base/files/file_util.h"
 #include "base/files/memory_mapped_file.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/notimplemented.h"
@@ -19,7 +20,7 @@
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/types/expected_macros.h"
-#include "mojo/public/cpp/bindings/self_owned_associated_receiver.h"
+#include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "services/webnn/buildflags.h"
 #include "services/webnn/error.h"
 #include "services/webnn/public/cpp/webnn_trace.h"
@@ -45,15 +46,6 @@
 #include "third_party/tflite/src/tensorflow/lite/c/common.h"
 #include "third_party/tflite/src/tensorflow/lite/interpreter_builder.h"
 #include "third_party/tflite/src/tensorflow/lite/stderr_reporter.h"
-
-#if BUILDFLAG(BUILD_TFLITE_WITH_NNAPI)
-#include "third_party/tflite/src/tensorflow/lite/core/c/c_api_types.h"
-#include "third_party/tflite/src/tensorflow/lite/delegates/nnapi/nnapi_delegate.h"
-#endif
-
-#if BUILDFLAG(BUILD_TFLITE_WITH_OPENCL)
-#include "third_party/tflite/src/tensorflow/lite/delegates/gpu/delegate.h"
-#endif
 
 #if BUILDFLAG(BUILD_TFLITE_WITH_XNNPACK)
 #include "third_party/tflite/src/tensorflow/lite/delegates/xnnpack/xnnpack_delegate.h"
@@ -132,6 +124,7 @@ class GraphImplTflite::ComputeResources {
  public:
   static base::expected<std::unique_ptr<ComputeResources>, mojom::ErrorPtr>
   Create(mojom::Device context_device,
+         bool is_xnnpack_enabled,
          GraphBuilderTflite::Result build_graph_result) {
     auto self = std::make_unique<ComputeResources>(
         std::move(build_graph_result.input_name_to_descriptor),
@@ -160,8 +153,8 @@ class GraphImplTflite::ComputeResources {
             mojom::Error::Code::kUnknownError, "Failed to map weights file."));
       }
       self->allocation_ = std::make_unique<::tflite::MemoryAllocation>(
-          self->weights_mapped_file_.data(),
-          self->weights_mapped_file_.length(),
+          self->weights_mapped_file_.bytes().data(),
+          self->weights_mapped_file_.bytes().size(),
           ::tflite::DefaultErrorReporter());
     }
 
@@ -176,13 +169,13 @@ class GraphImplTflite::ComputeResources {
     builder.SetNumThreads(num_of_threads);
     self->SetUpDelegates(builder, context_device,
                          build_graph_result.graph_requires_fp32_precision,
-                         num_of_threads);
+                         num_of_threads, is_xnnpack_enabled);
 
     TfLiteStatus status = builder(&self->interpreter_);
 
     // If failed to build interpreter with delegates, re-build the interpreter
     // with just the XNNPack delegate, then try again with no delegate.
-    if (status == kTfLiteDelegateError) {
+    if (status == kTfLiteDelegateError && is_xnnpack_enabled) {
       self->delegates_.clear();
       ::tflite::InterpreterBuilder builder_with_xnnpack(
           self->model_->GetModel(), op_resolver,
@@ -224,6 +217,26 @@ class GraphImplTflite::ComputeResources {
           mojom::Error::New(mojom::Error::Code::kUnknownError,
                             base::StrCat({"Unable to allocate tensors: ",
                                           TfLiteStatusToString(status)})));
+    }
+
+    // Check that the input and output tensor sizes match the model.
+    for (auto [name, descriptor] : self->input_name_to_descriptor) {
+      TfLiteTensor* tensor =
+          self->interpreter_->tensor(descriptor.tensor_index);
+      if (tensor->bytes != descriptor.descriptor.PackedByteLength()) {
+        return base::unexpected(mojom::Error::New(
+            mojom::Error::Code::kUnknownError,
+            base::StrCat({"Input tensor size mismatch: ", name})));
+      }
+    }
+    for (auto [name, descriptor] : self->output_name_to_descriptor) {
+      TfLiteTensor* tensor =
+          self->interpreter_->tensor(descriptor.tensor_index);
+      if (tensor->bytes != descriptor.descriptor.PackedByteLength()) {
+        return base::unexpected(mojom::Error::New(
+            mojom::Error::Code::kUnknownError,
+            base::StrCat({"Output tensor size mismatch: ", name})));
+      }
     }
 
     absl::flat_hash_set<mojom::Device> devices;
@@ -280,8 +293,10 @@ class GraphImplTflite::ComputeResources {
       }
 
       base::span<uint8_t> data = buffer->AsSpan();
+      CHECK_EQ(data.size(), tensor->bytes);
+
       TfLiteStatus status = interpreter_->SetCustomAllocationForTensor(
-          tensor_idx, {data.data(), data.size()});
+          tensor_idx, {data.data(), buffer->AllocatedSize()});
       if (status != kTfLiteOk) {
         LOG(ERROR) << "Unable set custom tensor allocation: "
                    << TfLiteStatusToString(status);
@@ -372,57 +387,37 @@ class GraphImplTflite::ComputeResources {
   void SetUpDelegates(::tflite::InterpreterBuilder& builder,
                       mojom::Device context_device,
                       bool graph_requires_fp32_precision,
-                      int num_of_threads) {
-#if BUILDFLAG(BUILD_TFLITE_WITH_NNAPI)
-    if (context_device == mojom::Device::kNpu) {
-      TfLiteDelegate* delegate = new ::tflite::StatefulNnApiDelegate();
-      builder.AddDelegate(delegate);
-      delegates_.emplace_back(
-          TfLiteDelegatePtr(
-              delegate,
-              [](TfLiteDelegate* delegate) {
-                // Cast `delegate` back to a C++ object type so that the correct
-                // destructor is invoked.
-                delete static_cast<::tflite::StatefulNnApiDelegate*>(delegate);
-              }),
-          mojom::Device::kNpu);
-    }
-#endif
-
+                      int num_of_threads,
+                      bool is_xnnpack_enabled) {
     if (context_device == mojom::Device::kGpu) {
 #if BUILDFLAG(WEBNN_USE_CHROME_ML_API)
       // TODO(crbug.com/394119734): Simplify this check once these functions are
       // always available.
       auto* chrome_ml = ml::ChromeML::Get();
-      if (chrome_ml && chrome_ml->api().CreateGpuDelegate &&
-          chrome_ml->api().DestroyGpuDelegate) {
+      if (chrome_ml && chrome_ml->HasCreateGpuDelegate() &&
+          chrome_ml->HasDestroyGpuDelegate()) {
         GpuDelegatePrecision precision = GpuDelegatePrecision::kFp16;
         if (graph_requires_fp32_precision) {
           precision = GpuDelegatePrecision::kFp32;
         }
         TfLiteDelegate* delegate =
-            ml::ChromeML::Get()->api().CreateGpuDelegateWithPrecision(
-                precision);
+            ml::ChromeML::Get()->CreateGpuDelegateWithPrecision(precision);
         builder.AddDelegate(delegate);
         delegates_.emplace_back(
             TfLiteDelegatePtr(delegate,
                               [](TfLiteDelegate* delegate) {
-                                ml::ChromeML::Get()->api().DestroyGpuDelegate(
+                                ml::ChromeML::Get()->DestroyGpuDelegate(
                                     delegate);
                               }),
             mojom::Device::kGpu);
       }
-
-#elif BUILDFLAG(BUILD_TFLITE_WITH_OPENCL)
-      TfLiteDelegate* delegate = TfLiteGpuDelegateV2Create(nullptr);
-      builder.AddDelegate(delegate);
-      delegates_.emplace_back(
-          TfLiteDelegatePtr(delegate, TfLiteGpuDelegateV2Delete),
-          mojom::Device::kGpu);
 #endif
     }
 
-    SetUpXNNPackDelegate(builder, num_of_threads);
+    // Skip XNNPACK delegate creation when `xnn_initialize()` failed.
+    if (is_xnnpack_enabled) {
+      SetUpXNNPackDelegate(builder, num_of_threads);
+    }
   }
 
   void SetUpXNNPackDelegate(::tflite::InterpreterBuilder& builder,
@@ -462,13 +457,13 @@ class GraphImplTflite::ComputeResources {
 
 // static
 void GraphImplTflite::CreateAndBuild(
-    mojo::PendingAssociatedReceiver<mojom::WebNNGraph> receiver,
     mojom::GraphInfoPtr graph_info,
     ComputeResourceInfo compute_resource_info,
     base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>
         constant_operands,
-    base::flat_map<OperandId, WebNNTensorImpl*> constant_tensor_operands,
-    ContextImplTflite* context,
+    base::flat_map<OperandId, scoped_refptr<WebNNTensorImpl>>
+        constant_tensor_operands,
+    ContextImplTflite& context,
     base::File weights_file,
     WebNNContextImpl::CreateGraphImplCallback callback) {
   base::flat_map<OperandId, base::flat_set<OperationId>>
@@ -481,14 +476,14 @@ void GraphImplTflite::CreateAndBuild(
       {base::TaskPriority::USER_BLOCKING,
        base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN, base::MayBlock()},
       base::BindOnce(&GraphImplTflite::CreateAndBuildOnBackgroundThread,
-                     context->properties(), context->options().device,
-                     std::move(graph_info), std::move(constant_operands),
+                     context.properties(), context.options().device,
+                     context.IsXNNPackInitialized(), std::move(graph_info),
+                     std::move(constant_operands),
                      std::move(operand_to_dependent_operations),
                      std::move(operand_to_producing_operation),
                      std::move(weights_file)),
-      base::BindOnce(&GraphImplTflite::DidCreateAndBuild, std::move(receiver),
-                     context->AsWeakPtr(), std::move(compute_resource_info),
-                     std::move(callback)));
+      base::BindOnce(&GraphImplTflite::DidCreateAndBuild, context.AsWeakPtr(),
+                     std::move(compute_resource_info), std::move(callback)));
 }
 
 // static
@@ -497,6 +492,7 @@ base::expected<std::unique_ptr<GraphImplTflite::ComputeResources>,
 GraphImplTflite::CreateAndBuildOnBackgroundThread(
     ContextProperties context_properties,
     mojom::Device context_device,
+    bool is_xnnpack_enabled,
     mojom::GraphInfoPtr graph_info,
     base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>
         constant_operands,
@@ -509,19 +505,20 @@ GraphImplTflite::CreateAndBuildOnBackgroundThread(
       GraphBuilderTflite::CreateAndBuild(
           context_properties, *graph_info, std::move(constant_operands),
           std::move(operand_to_dependent_operations),
-          std::move(operand_to_producing_operation), std::move(weights_file)),
+          std::move(operand_to_producing_operation), std::move(weights_file),
+          /*use_external_buffer=*/false),
       [](std::string error) {
         return mojom::Error::New(mojom::Error::Code::kNotSupportedError,
                                  std::move(error));
       });
 
   ASSIGN_OR_RETURN(std::unique_ptr<ComputeResources> compute_resources,
-                   ComputeResources::Create(context_device, std::move(result)));
+                   ComputeResources::Create(context_device, is_xnnpack_enabled,
+                                            std::move(result)));
   return compute_resources;
 }
 
 void GraphImplTflite::DidCreateAndBuild(
-    mojo::PendingAssociatedReceiver<mojom::WebNNGraph> receiver,
     base::WeakPtr<WebNNContextImpl> context,
     ComputeResourceInfo compute_resource_info,
     WebNNContextImpl::CreateGraphImplCallback callback,
@@ -546,25 +543,22 @@ void GraphImplTflite::DidCreateAndBuild(
       base::MakeRefCounted<QueueableResourceState<ComputeResources>>(
           std::move(*compute_resources));
   std::move(callback).Run(base::MakeRefCounted<GraphImplTflite>(
-      std::move(receiver), std::move(compute_resource_info),
-      std::move(input_name_to_descriptor), std::move(output_name_to_descriptor),
-      std::move(compute_resources_state), std::move(context),
-      std::move(devices)));
+      std::move(compute_resource_info), std::move(input_name_to_descriptor),
+      std::move(output_name_to_descriptor), std::move(compute_resources_state),
+      *context, std::move(devices)));
 }
 
 GraphImplTflite::~GraphImplTflite() = default;
 
 GraphImplTflite::GraphImplTflite(
-    mojo::PendingAssociatedReceiver<mojom::WebNNGraph> receiver,
     ComputeResourceInfo compute_resource_info,
     base::flat_map<std::string, TensorDescriptor> input_name_to_descriptor,
     base::flat_map<std::string, TensorDescriptor> output_name_to_descriptor,
     scoped_refptr<QueueableResourceState<ComputeResources>>
         compute_resources_state,
-    base::WeakPtr<WebNNContextImpl> context,
+    WebNNContextImpl& context,
     std::vector<mojom::Device> devices)
-    : WebNNGraphImpl(std::move(receiver),
-                     std::move(context),
+    : WebNNGraphImpl(context,
                      std::move(compute_resource_info),
                      std::move(devices)),
       compute_resources_state_(std::move(compute_resources_state)),

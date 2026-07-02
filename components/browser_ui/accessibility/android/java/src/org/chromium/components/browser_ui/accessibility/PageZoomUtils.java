@@ -276,9 +276,7 @@ public class PageZoomUtils {
 
         // If the user has ever set a custom zoom level, show the menu item.
         // This is restricted to LFF (Tablets) as UX has not approved this for mobile/phones.
-        if (AccessibilityFeatureMap.sAndroidZoomIndicator.isEnabled()
-                && DeviceFormFactor.isNonMultiDisplayContextOnTablet(
-                        ContextUtils.getApplicationContext())
+        if (DeviceFormFactor.isNonMultiDisplayContextOnTablet(ContextUtils.getApplicationContext())
                 && context != null
                 && !HostZoomMap.getAllHostZoomLevels(context).isEmpty()) {
             PageZoomUma.logAppMenuEnabledStateHistogram(
@@ -286,9 +284,8 @@ public class PageZoomUtils {
             return true;
         }
 
-        if (AccessibilityFeatureMap.sAndroidZoomIndicator.isEnabled()
-                && DeviceFormFactor.isNonMultiDisplayContextOnTablet(
-                        ContextUtils.getApplicationContext())) {
+        if (DeviceFormFactor.isNonMultiDisplayContextOnTablet(
+                ContextUtils.getApplicationContext())) {
             // Default to true for Lff
             PageZoomUma.logAppMenuEnabledStateHistogram(
                     PageZoomUma.AccessibilityPageZoomAppMenuEnabledState.FORM_FACTOR_ENABLED);
@@ -366,6 +363,9 @@ public class PageZoomUtils {
      * @return int The index of the next closest zoom factor
      */
     public static int getNextIndex(boolean decrease, double currentZoomFactor) {
+        // Round to match the precision of AVAILABLE_ZOOM_FACTORS to avoid precision issues.
+        currentZoomFactor = MathUtils.roundTwoDecimalPlaces(currentZoomFactor);
+
         // BinarySearch will return the index of the first value equal to the given value.
         // Otherwise it will return (-(insertion point) - 1).
         // If a negative value is returned, then add one and negate to get the insertion point.

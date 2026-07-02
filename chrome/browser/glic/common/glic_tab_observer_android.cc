@@ -22,12 +22,18 @@ TabCreationType ToTypeCreationType(TabModel::TabLaunchType type) {
     // Similar to ctrl + T on desktop
     case TabModel::TabLaunchType::FROM_RECENT_TABS_FOREGROUND:
     case TabModel::TabLaunchType::FROM_RECENT_TABS:
+    // Programmatic tab creations via TabListInterface map to kUserInitiated
+    // to align behavior with Desktop.
+    case TabModel::TabLaunchType::FROM_TAB_LIST_INTERFACE:
+    case TabModel::TabLaunchType::FROM_TAB_LIST_INTERFACE_BACKGROUND:
       return TabCreationType::kUserInitiated;
     case TabModel::TabLaunchType::FROM_LINK:
     case TabModel::TabLaunchType::FROM_LINK_CREATING_NEW_WINDOW:
     case TabModel::TabLaunchType::FROM_LONGPRESS_FOREGROUND:
     case TabModel::TabLaunchType::FROM_LONGPRESS_BACKGROUND:
       return TabCreationType::kFromLink;
+    case TabModel::TabLaunchType::FROM_BOOKMARK_BAR_BACKGROUND:
+      return TabCreationType::kFromBookmark;
     default:
       return TabCreationType::kUnknown;
   }
@@ -74,6 +80,9 @@ void GlicTabObserverAndroid::OnTabChanged(TabAndroid* tab) {
 }
 
 void GlicTabObserverAndroid::StartObservingTab(TabAndroid* tab) {
+  if (!tab) {
+    return;
+  }
   if (!observed_tabs_.IsObservingSource(tab)) {
     observed_tabs_.AddObservation(tab);
   }
@@ -98,6 +107,9 @@ void GlicTabObserverAndroid::StartObservingTab(TabAndroid* tab) {
 }
 
 void GlicTabObserverAndroid::StopObservingTab(TabAndroid* tab) {
+  if (!tab) {
+    return;
+  }
   tab_observers_.erase(tab);
   if (observed_tabs_.IsObservingSource(tab)) {
     observed_tabs_.RemoveObservation(tab);
@@ -114,7 +126,8 @@ GlicTabObserverAndroid::~GlicTabObserverAndroid() {
 
 void GlicTabObserverAndroid::OnTabModelAdded(TabModel* model) {
   if (model->GetProfile() != profile_ ||
-      model->GetTabModelType() != TabModel::TabModelType::kStandard) {
+      model->GetTabModelType() != TabModel::TabModelType::kStandard ||
+      model->IsEmptyRegularModelForEphemeralOrIncognitoCct()) {
     return;
   }
 
@@ -131,6 +144,11 @@ void GlicTabObserverAndroid::OnTabModelAdded(TabModel* model) {
 
 void GlicTabObserverAndroid::OnTabModelRemoved(TabModel* model) {
   if (observed_tab_models_.IsObservingSource(model)) {
+    for (int i = 0; i < model->GetTabCount(); ++i) {
+      if (TabAndroid* tab = model->GetTabAt(i)) {
+        StopObservingTab(tab);
+      }
+    }
     observed_tab_models_.RemoveObservation(model);
     last_active_tab_map_.erase(model);
   }
@@ -167,6 +185,10 @@ void GlicTabObserverAndroid::DidSelectTab(TabAndroid* tab,
 void GlicTabObserverAndroid::TabClosureCommitted(TabAndroid* tab) {
   ResetLastActiveTab(TabModelList::GetTabModelForTabAndroid(tab));
   callback_.Run(TabMutationEvent{});
+}
+
+void GlicTabObserverAndroid::DidRemoveTabForClosure(TabAndroid* tab) {
+  TabRemoved(tab);
 }
 
 void GlicTabObserverAndroid::TabRemoved(TabAndroid* tab) {
@@ -212,11 +234,37 @@ void GlicTabObserverAndroid::OnTabCloseUndone(
   }
 }
 
+void GlicTabObserverAndroid::WillCloseTab(TabAndroid* tab) {
+  // This is the last event when `tab` is attached to a tab model.
+  TabModel* closing_tab_tab_model = TabModelList::GetTabModelForTabAndroid(tab);
+  CHECK(closing_tab_tab_model);
+
+  // Remove `tab` from `last_active_tab_map_` before the tab gets detached from
+  // its model.
+  MaybeClearLastActiveTab(closing_tab_tab_model, tab);
+}
+
+void GlicTabObserverAndroid::MaybeClearLastActiveTab(TabModel* tab_model,
+                                                     TabAndroid* tab) {
+  auto iter = last_active_tab_map_.find(tab_model);
+  if (iter == last_active_tab_map_.end() || iter->second != tab) {
+    return;
+  }
+
+  last_active_tab_map_.erase(tab_model);
+}
+
 void GlicTabObserverAndroid::ResetLastActiveTab(TabModel* tab_model) {
   if (!tab_model) {
     return;
   }
 
+  content::WebContents* active_web_contents = tab_model->GetActiveWebContents();
+  if (!active_web_contents) {
+    last_active_tab_map_.erase(tab_model);
+    return;
+  }
+
   last_active_tab_map_[tab_model] =
-      TabAndroid::FromWebContents(tab_model->GetActiveWebContents());
+      TabAndroid::FromWebContents(active_web_contents);
 }

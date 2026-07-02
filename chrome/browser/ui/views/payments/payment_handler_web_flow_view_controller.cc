@@ -8,19 +8,22 @@
 #include <utility>
 
 #include "base/check_op.h"
+#include "base/feature_list.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/app/vector_icons/vector_icons.h"
+#include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/task_manager/web_contents_tags.h"
 #include "chrome/browser/themes/theme_service.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/views/payments/payment_request_dialog_view.h"
 #include "chrome/browser/ui/views/payments/payment_request_views_util.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/omnibox/browser/location_bar_model_util.h"
 #include "components/payments/content/icon/icon_size.h"
 #include "components/payments/content/payment_handler_navigation_throttle.h"
@@ -34,6 +37,7 @@
 #include "components/url_formatter/elide_url.h"
 #include "components/vector_icons/vector_icons.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -42,6 +46,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/image/image_skia.h"
@@ -207,7 +212,10 @@ class PaymentHandlerCloseButton : public views::ImageButton {
 
     // This view does not set its color using the browser theme color, as this
     // may differ from the header color, which is based on the web view theme.
-    views::SetImageFromVectorIconWithColor(this, vector_icons::kCloseIcon,
+    views::SetImageFromVectorIconWithColor(this,
+                                           ::features::IsRoundedIconsEnabled()
+                                               ? vector_icons::kCloseIcon
+                                               : vector_icons::kCloseOldIcon,
                                            {enabled_color, disabled_color});
   }
 
@@ -266,7 +274,6 @@ PaymentHandlerWebFlowViewController::PaymentHandlerWebFlowViewController(
     GURL target,
     PaymentHandlerOpenWindowCallback first_navigation_complete_callback)
     : PaymentRequestSheetController(spec, state, dialog),
-      log_(payment_request_web_contents),
       profile_(profile),
       target_(target),
       first_navigation_complete_callback_(
@@ -281,7 +288,9 @@ PaymentHandlerWebFlowViewController::~PaymentHandlerWebFlowViewController() {
       manager->SetDelegate(nullptr);
     }
   }
-  state()->OnPaymentAppWindowClosed();
+  if (state()) {
+    state()->OnPaymentAppWindowClosed();
+  }
 }
 
 std::u16string PaymentHandlerWebFlowViewController::GetSheetTitle() {
@@ -317,13 +326,23 @@ void PaymentHandlerWebFlowViewController::FillContentView(
   PaymentHandlerNavigationThrottle::MarkPaymentHandlerWebContents(
       web_contents());
   web_contents()->SetDelegate(this);
-  DCHECK_NE(log_.web_contents(), web_contents());
+  content::WebContents* parent_tab_web_contents = state()->GetWebContents();
+
+  DCHECK_NE(parent_tab_web_contents, web_contents());
   content::PaymentAppProvider::GetOrCreateForWebContents(
-      /*payment_request_web_contents=*/log_.web_contents())
+      /*payment_request_web_contents=*/parent_tab_web_contents)
       ->SetOpenedWindow(
           /*payment_handler_web_contents=*/web_contents());
 
-  web_view->LoadInitialURL(target_);
+  if (base::FeatureList::IsEnabled(
+          payments::features::kPaymentHandlerDialogUseInitiatorInUrlLoad)) {
+    content::NavigationController::LoadURLParams params(target_);
+    params.initiator_origin =
+        url::Origin::Create(parent_tab_web_contents->GetLastCommittedURL());
+    web_view->GetWebContents()->GetController().LoadURLWithParams(params);
+  } else {
+    web_view->LoadInitialURL(target_);
+  }
 
   // Make the web view show up in the task manager.
   task_manager::WebContentsTags::CreateForTabContents(web_contents());
@@ -334,6 +353,17 @@ void PaymentHandlerWebFlowViewController::FillContentView(
       web_contents());
   web_modal::WebContentsModalDialogManager::FromWebContents(web_contents())
       ->SetDelegate(&dialog_manager_delegate_);
+
+  // If the web-contents for the parent tab has devtools open and the "Auto-open
+  // DevTools for pop-ups" setting is enabled, trigger devtools for the Payment
+  // Handler modal. This does not happen by default as Payment Handler is not a
+  // regular pop-up window.
+  DevToolsWindow* window = DevToolsWindow::GetInstanceForInspectedWebContents(
+      parent_tab_web_contents);
+  if (window && window->OpenNewWindowForPopups()) {
+    DevToolsWindow::OpenDevToolsWindow(
+        web_contents(), DevToolsOpenedByAction::kAutomaticForNewTarget);
+  }
 
   // The webview must get an explicitly set height otherwise the layout doesn't
   // make it fill its container. This is likely because it has no content at the
@@ -489,7 +519,8 @@ content::WebContents* PaymentHandlerWebFlowViewController::AddNewContents(
     bool* was_blocked) {
   // Open new foreground tab or popup triggered by user activation in payment
   // handler window in browser.
-  Browser* browser = chrome::FindLastActiveWithProfile(profile_);
+  BrowserWindowInterface* const browser =
+      ProfileBrowserCollection::GetForProfile(profile_)->GetLastActiveBrowser();
   if (browser && user_gesture &&
       (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB ||
        disposition == WindowOpenDisposition::NEW_POPUP)) {
@@ -505,6 +536,15 @@ bool PaymentHandlerWebFlowViewController::HandleKeyboardEvent(
   return content_view() && content_view()->GetFocusManager() &&
          unhandled_keyboard_event_handler_.HandleKeyboardEvent(
              event, content_view()->GetFocusManager());
+}
+
+// We explicitly ignore close requests from the WebContents (e.g., via
+// window.close()) to prevent merchant JS or unauthorized scripts from
+// unexpectedly closing the dialog. The payment dialog lifecycle is managed
+// by the browser UI and the Payment Request API.
+void PaymentHandlerWebFlowViewController::CloseContents(
+    content::WebContents* source) {
+  // Do nothing.
 }
 
 void PaymentHandlerWebFlowViewController::DidFinishNavigation(
@@ -575,7 +615,9 @@ void PaymentHandlerWebFlowViewController::AbortPayment() {
     web_contents()->Close();
   }
 
-  state()->OnPaymentResponseError(errors::kPaymentHandlerInsecureNavigation);
+  state()->OnPaymentResponseError(
+      mojom::PaymentEventResponseType::PAYMENT_HANDLER_INSECURE_NAVIGATION,
+      errors::kPaymentHandlerInsecureNavigation);
 }
 
 void PaymentHandlerWebFlowViewController::SetHeaderColorsAndOriginLabelText() {
@@ -611,6 +653,13 @@ void PaymentHandlerWebFlowViewController::SetHeaderColorsAndOriginLabelText() {
 
   if (close_button_) {
     close_button_->SetColorBasedOnBackground(background_color);
+  }
+}
+
+void PaymentHandlerWebFlowViewController::DidGetUserInteraction(
+    const blink::WebInputEvent& event) {
+  if (state()) {
+    state()->set_user_interaction_in_web_payment_app(true);
   }
 }
 

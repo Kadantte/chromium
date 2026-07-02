@@ -218,14 +218,24 @@ bool CSSSupportsParser::ConsumeAtRuleFn(CSSParserTokenStream& stream) {
   }
 
   // @charset is accepted in parsing but is not a valid at-rule.
-  return guard.Release() && at_rule_id != CSSAtRuleID::kCSSAtRuleCharset;
+  if (guard.Release() && at_rule_id != CSSAtRuleID::kCSSAtRuleCharset) {
+    stream.ConsumeWhitespace();
+    return true;
+  }
+  return false;
 }
 
 namespace {
 bool IsSupportedNamedFeature(CSSValueID id) {
   // When this list becomes longer we should use an algorithm better than
   // linear search.
-  return id == CSSValueID::kAlignContentOnDisplayBlock;
+  if (id == CSSValueID::kAnchorPositionFollowsTransforms) {
+    return true;
+  }
+  if (id == CSSValueID::kSingleAxisScrollContainer) {
+    return RuntimeEnabledFeatures::SingleAxisScrollContainersEnabled();
+  }
+  return false;
 }
 }  // namespace
 

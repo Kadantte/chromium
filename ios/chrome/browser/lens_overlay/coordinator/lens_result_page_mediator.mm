@@ -124,6 +124,15 @@ BOOL IsMaximizeBottomSheetURL(const GURL& URL) {
   return base::EqualsCaseInsensitiveASCII(host, "resultpanel-header-hide");
 }
 
+// Detect if the AIM overlay is displayed based on the fragment.
+BOOL IsAIMOverlayShownUrl(const GURL& URL) {
+  if (!(lens::IsGoogleHostURL(URL) && URLHasLensRequestQueryParam(URL))) {
+    return NO;
+  }
+
+  return URL.ref().find("aimos=1") != std::string::npos;
+}
+
 // Maps `value` of the closed interval [`in_min`, `in_max`] to
 // [`out_min`, `out_max`].
 float IntervalMap(float value,
@@ -188,6 +197,8 @@ inline constexpr char kDarkModeParameterDarkValue[] = "1";
   float _lastCommitedProgress;
   /// Most recent loaded HTTP headers.
   NSDictionary<NSString*, NSString*>* _latestHttpHeaders;
+  /// Whether the AIM overlay is currently displayed.
+  BOOL _isAIMOverlayShown;
 }
 
 - (instancetype)
@@ -279,10 +290,12 @@ inline constexpr char kDarkModeParameterDarkValue[] = "1";
     _latestHttpHeaders = [httpHeaders copy];
   }
   NSMutableDictionary<NSString*, NSString*>* headers =
-      [_latestHttpHeaders mutableCopy] ?: [NSMutableDictionary dictionary];
-  // Add variation headers last, because they have precedence.
-  [headers addEntriesFromDictionary:web_navigation_util::VariationHeadersForURL(
-                                        URL, _isIncognito)];
+      [web_navigation_util::VariationHeadersForURL(URL, _isIncognito)
+          mutableCopy];
+  if (_latestHttpHeaders) {
+    // Add latest HTTP headers last, because they have precedence.
+    [headers addEntriesFromDictionary:_latestHttpHeaders];
+  }
   webParams.extra_headers = headers;
 
   _webState->GetNavigationManager()->LoadURLWithParams(webParams);
@@ -408,9 +421,23 @@ inline constexpr char kDarkModeParameterDarkValue[] = "1";
 - (void)webState:(web::WebState*)webState
     didStartNavigation:(web::NavigationContext*)navigationContext {
   BOOL isSameDocument = navigationContext->IsSameDocument();
-  // Disregard same document navigation from initiating progress loading.
-  if (!isSameDocument) {
+  if (isSameDocument) {
+    // Disregard same document navigation from initiating progress loading.
+
+    // Check for overlay status.
+    GURL URL = navigationContext->GetUrl();
+    if (IsAIMOverlayShownUrl(URL)) {
+      _isAIMOverlayShown = YES;
+      [self.bottomSheetCommands requestMaximizeBottomSheet];
+      [self.bottomSheetCommands hideSearchBar];
+    } else if (_isAIMOverlayShown) {
+      _isAIMOverlayShown = NO;
+      [self.bottomSheetCommands showSearchBar];
+    }
+  } else {
+    // Reset progress for new page.
     _lastCommitedProgress = 0;
+    _isAIMOverlayShown = NO;
   }
 }
 
@@ -486,7 +513,7 @@ inline constexpr char kDarkModeParameterDarkValue[] = "1";
             initiatedByUser:(BOOL)initiatedByUser {
   // Check if requested web state is a popup and block it if necessary.
   if (!initiatedByUser) {
-    auto* helper = BlockedPopupTabHelper::GetOrCreateForWebState(webState);
+    auto* helper = BlockedPopupTabHelper::FromWebState(webState);
     if (helper->ShouldBlockPopup(openerURL)) {
       // It's possible for a page to inject a popup into a window created via
       // window.open before its initial load is committed.  Rather than relying
@@ -535,6 +562,15 @@ inline constexpr char kDarkModeParameterDarkValue[] = "1";
                                                    NSString* password))handler {
   _browserWebStateDelegate->OnAuthRequired(
       webState, protectionSpace, proposedCredential, base::BindOnce(handler));
+}
+
+- (void)webState:(web::WebState*)webState
+    didRequestClientCertAuthForProtectionSpace:
+        (NSURLProtectionSpace*)protectionSpace
+                             completionHandler:
+                                 (void (^)(SecIdentityRef))handler {
+  _browserWebStateDelegate->OnAuthRequired(webState, protectionSpace,
+                                           base::BindOnce(handler));
 }
 
 // This API can be used to show custom input views in the web view.

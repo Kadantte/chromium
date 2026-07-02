@@ -6,14 +6,12 @@
 
 #include <stddef.h>
 
-#include <ostream>
+#include <array>
+#include <string>
 #include <string_view>
 
-#include "base/check.h"
-#include "base/containers/adapters.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/containers/fixed_flat_set.h"
-#include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -24,7 +22,6 @@
 #include "components/autofill/core/common/autofill_regex_constants.h"
 #include "components/autofill/core/common/autofill_regexes.h"
 #include "components/autofill/core/common/credit_card_network_identifiers.h"
-#include "components/strings/grit/components_strings.h"
 
 namespace autofill {
 
@@ -73,6 +70,12 @@ bool IsValidState(std::u16string_view text) {
 bool IsPossiblePhoneNumber(std::u16string_view text,
                            const std::string& country_code) {
   return i18n::IsPossiblePhoneNumber(base::UTF16ToUTF8(text), country_code);
+}
+
+bool IsPlaceholder(std::u16string_view text) {
+  static constexpr char16_t kPlaceholderRe[] =
+      u"\\b(?:select|choose|optional)\\b";
+  return MatchesRegex<kPlaceholderRe>(text);
 }
 
 bool IsValidZip(std::u16string_view text,

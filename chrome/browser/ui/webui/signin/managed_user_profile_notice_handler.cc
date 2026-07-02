@@ -12,7 +12,9 @@
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "build/branding_buildflags.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/enterprise/browser_management/management_identity.h"
 #include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
@@ -29,8 +31,8 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/webui/management/management_ui_handler.h"
 #include "chrome/browser/ui/webui/signin/signin_utils.h"
+#include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
-#include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/policy/core/browser/signin/profile_separation_policies.h"
 #include "components/prefs/pref_service.h"
@@ -53,7 +55,10 @@
 #include "chrome/browser/enterprise/profile_management/profile_management_features.h"
 #endif
 
-using signin::constants::kNoHostedDomainFound;
+#if BUILDFLAG(CHROME_FOR_TESTING)
+#include "base/command_line.h"
+#include "base/task/sequenced_task_runner.h"
+#endif
 
 namespace {
 const int kAvatarSize = 100;
@@ -63,15 +68,13 @@ constexpr base::TimeDelta kLongProcessingThreshold = base::Seconds(5);
 std::string GetManagedAccountTitle(ProfileAttributesEntry* entry,
                                    const std::string& account_domain_name) {
   DCHECK(entry);
-  if (entry->GetHostedDomain() == kNoHostedDomainFound) {
+  std::optional<std::string> hosted_domain = entry->GetHostedDomain();
+  if (hosted_domain == std::string()) {
     return std::string();
   }
-  const std::string domain_name = entry->GetHostedDomain().empty()
-                                      ? account_domain_name
-                                      : entry->GetHostedDomain();
   return l10n_util::GetStringFUTF8(
       IDS_ENTERPRISE_PROFILE_WELCOME_ACCOUNT_MANAGED_BY,
-      base::UTF8ToUTF16(domain_name));
+      base::UTF8ToUTF16(hosted_domain.value_or(account_domain_name)));
 }
 
 std::string GetManagedDeviceTitle() {
@@ -138,6 +141,7 @@ ManagedUserProfileNoticeHandler::ManagedUserProfileNoticeHandler(
       browser_ ||
       (type_ !=
            ManagedUserProfileNoticeUI::ScreenType::kEnterpriseAccountCreation ||
+       // TODO(crbug.com/490053225): Clean this "||" up
        type_ == ManagedUserProfileNoticeUI::ScreenType::kProfilePicker));
   if (browser_) {
     browser_did_close_subscription_ = browser_->RegisterBrowserDidClose(
@@ -203,7 +207,21 @@ void ManagedUserProfileNoticeHandler::OnExtendedAccountInfoUpdated(
     const AccountInfo& info) {
   if (info.account_id == account_id_ && !info.account_image.IsEmpty()) {
     UpdateProfileInfo(profile_path_);
-    observed_account_.Reset();
+  }
+}
+void ManagedUserProfileNoticeHandler::OnExtendedAccountInfoRemoved(
+    const AccountInfo& info) {
+  // If the account has been removed, we should cancel the process.
+  if (info.account_id == account_id_ && !canceling_) {
+    HandleCancel(base::ListValue());
+  }
+}
+
+void ManagedUserProfileNoticeHandler::OnIdentityManagerShutdown(
+    signin::IdentityManager* identity_manager) {
+  // If the identity manager has been shutdown, we should cancel the process.
+  if (!canceling_) {
+    HandleCancel(base::ListValue());
   }
 }
 
@@ -215,6 +233,9 @@ void ManagedUserProfileNoticeHandler::OnJavascriptAllowed() {
   } else {
     observed_account_.Observe(
         IdentityManagerFactory::GetForProfile(Profile::FromWebUI(web_ui())));
+  }
+  if (javascript_allowed_callback_) {
+    std::move(javascript_allowed_callback_).Run();
   }
 }
 
@@ -229,6 +250,13 @@ void ManagedUserProfileNoticeHandler::HandleInitialized(
   AllowJavascript();
   const base::Value& callback_id = args[0];
   ResolveJavascriptCallback(callback_id, GetProfileInfoValue());
+
+#if BUILDFLAG(CHROME_FOR_TESTING)
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&ManagedUserProfileNoticeHandler::ProcessAutoApprove,
+                     weak_ptr_factory_.GetWeakPtr()));
+#endif
 }
 
 void ManagedUserProfileNoticeHandler::HandleInitializedWithSize(
@@ -239,6 +267,27 @@ void ManagedUserProfileNoticeHandler::HandleInitializedWithSize(
     signin::SetInitializedModalHeight(browser_, web_ui(), args);
   }
 }
+
+#if BUILDFLAG(CHROME_FOR_TESTING)
+void ManagedUserProfileNoticeHandler::ProcessAutoApprove() {
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  if (!command_line->HasSwitch(
+          switches::kEnterpriseSigninDialogBehaviorForTesting)) {
+    return;
+  }
+  std::string behavior = command_line->GetSwitchValueASCII(
+      switches::kEnterpriseSigninDialogBehaviorForTesting);
+
+  if (behavior == "accept-new-profile") {
+    CallProceedCallbackForTesting(signin::SIGNIN_CHOICE_NEW_PROFILE);
+  } else if (behavior == "accept-link-data" ||
+             behavior == "accept-current-profile") {
+    CallProceedCallbackForTesting(signin::SIGNIN_CHOICE_CONTINUE);
+  } else if (behavior == "cancel") {
+    HandleCancel(base::ListValue());
+  }
+}
+#endif
 
 void ManagedUserProfileNoticeHandler::HandleProceed(
     const base::ListValue& args) {
@@ -348,6 +397,19 @@ void ManagedUserProfileNoticeHandler::UpdateProfileInfo(
   if (profile_path != profile_path_) {
     return;
   }
+
+  // If the user has canceled the process, we should not update the profile info.
+  if (canceling_) {
+    return;
+  }
+
+  // If the account has been removed, we should not update the profile info.
+  if (auto account_info =
+          IdentityManagerFactory::GetForProfile(Profile::FromWebUI(web_ui()))
+              ->FindExtendedAccountInfoByAccountId(account_id_);
+      account_info.IsEmpty()) {
+    return;
+  }
   FireWebUIListener("on-profile-info-changed", GetProfileInfoValue());
 }
 
@@ -398,15 +460,13 @@ std::string ManagedUserProfileNoticeHandler::GetManagedAccountTitleWithEmail(
   return l10n_util::GetStringFUTF8(
       IDS_ENTERPRISE_PROFILE_WELCOME_PROFILE_SEPARATION_DEVICE_MANAGED, email);
 #else
-  if (entry->GetHostedDomain() == kNoHostedDomainFound) {
+  std::optional<std::string> hosted_domain = entry->GetHostedDomain();
+  if (hosted_domain == std::string()) {
     return std::string();
   }
-  const std::string domain_name = entry->GetHostedDomain().empty()
-                                      ? account_domain_name
-                                      : entry->GetHostedDomain();
   return l10n_util::GetStringFUTF8(
       IDS_ENTERPRISE_PROFILE_WELCOME_ACCOUNT_EMAIL_MANAGED_BY, email,
-      base::UTF8ToUTF16(domain_name));
+      base::UTF8ToUTF16(hosted_domain.value_or(account_domain_name)));
 #endif  //  !BUILDFLAG(IS_CHROMEOS)
 }
 
@@ -450,6 +510,11 @@ base::DictValue ManagedUserProfileNoticeHandler::GetProfileInfoValue() {
                        ? IDS_ENTERPRISE_PROFILE_WELCOME_CREATE_PROFILE_BUTTON
                        : IDS_APP_CONTINUE));
       break;
+    case ManagedUserProfileNoticeUI::ScreenType::kDeviceSignalsDisclaimer:
+      dict.Set("showEnterpriseBadge", true);
+      break;
+    case ManagedUserProfileNoticeUI::ScreenType::kFirstRun:
+      // TODO(crbug.com/483637730): Specify the exact UI for the First Run case
     case ManagedUserProfileNoticeUI::ScreenType::kProfilePicker:
     case ManagedUserProfileNoticeUI::ScreenType::kEnterpriseAccountCreation:
       title = l10n_util::GetStringUTF8(

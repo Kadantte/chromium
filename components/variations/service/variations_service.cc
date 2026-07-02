@@ -16,6 +16,7 @@
 #include "base/base64.h"
 #include "base/command_line.h"
 #include "base/debug/crash_logging.h"
+#include "base/debug/dump_without_crashing.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -67,8 +68,6 @@ namespace {
 // seed over http.
 const char kEncryptedMessageLabel[] = "chrome variations";
 
-// TODO(crbug.com/41359527): Change this key to a unique VariationsService one,
-// once the matching private key is changed server side.
 // Key is used to encrypt headers in seed retrieval requests that happen over
 // HTTP connections (when retrying after an unsuccessful HTTPS retrieval
 // attempt).
@@ -81,6 +80,9 @@ const uint32_t kServerPublicKeyVersion = 1;
 
 // For the HTTP date headers, the resolution of the server time is 1 second.
 const uint32_t kServerTimeResolutionInSeconds = 1;
+
+// Timeout for fetching the variations seed.
+const base::TimeDelta kVariationsSeedFetchTimeout = base::Seconds(60);
 
 // Whether the VariationsService should fetch the seed for testing.
 bool g_should_fetch_for_testing = false;
@@ -515,7 +517,11 @@ GURL VariationsService::GetVariationsServerURL(HttpOptions http_options) {
         net::AppendOrReplaceQueryParameter(server_url, "corpus", corpus);
   }
 
-  DCHECK(server_url.is_valid());
+  if (!server_url.is_valid()) {
+    SCOPED_CRASH_KEY_STRING1024("VariationsService", "server_url",
+                                server_url.possibly_invalid_spec());
+    base::debug::DumpWithoutCrashing();
+  }
   return server_url;
 }
 
@@ -684,6 +690,7 @@ bool VariationsService::DoFetchFromURL(const GURL& url, bool is_http_retry) {
       std::move(resource_request), traffic_annotation);
   // Ensure our callback is called even with "304 Not Modified" responses.
   pending_seed_request_->SetAllowHttpErrorResults(true);
+  pending_seed_request_->SetTimeoutDuration(kVariationsSeedFetchTimeout);
   pending_seed_request_->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
       client_->GetURLLoaderFactory().get(),
       base::BindOnce(&VariationsService::OnSimpleLoaderComplete,
@@ -707,6 +714,7 @@ bool VariationsService::DoFetchFromURL(const GURL& url, bool is_http_retry) {
 void VariationsService::StoreSeed(std::string seed_data,
                                   std::string seed_signature,
                                   std::string country_code,
+                                  std::string geo_level1,
                                   base::Time date_fetched,
                                   bool is_delta_compressed,
                                   bool is_gzip_compressed) {
@@ -717,8 +725,8 @@ void VariationsService::StoreSeed(std::string seed_data,
                      weak_ptr_factory_.GetWeakPtr(), is_delta_compressed);
   field_trial_creator_.seed_store()->StoreSeedData(
       std::move(done_callback), std::move(seed_data), std::move(seed_signature),
-      std::move(country_code), date_fetched, is_delta_compressed,
-      is_gzip_compressed,
+      std::move(country_code), std::move(geo_level1), date_fetched,
+      is_delta_compressed, is_gzip_compressed,
       /*require_synchronous=*/false);
 }
 
@@ -898,10 +906,21 @@ void VariationsService::OnSimpleLoaderComplete(
 
   std::string_view signature =
       GetHeaderValue(headers.get(), "X-Seed-Signature");
-  std::string_view country_code = GetHeaderValue(headers.get(), "X-Country");
+  std::string_view country_code;
+  std::string_view geo_level1;
+  // Only trust the header contents when the seed was fetched over HTTPS. This
+  // does not apply to the seed signature as that can't be easily forged.
+  // Note: In the case of an insecure fetch, the empty `country_code` and
+  // `geo_level1` strings will be ignored downstream and the existing location
+  // values in Local State will be preserved.
+  if (!last_request_was_http_retry_) {
+    country_code = GetHeaderValue(headers.get(), "X-Country");
+    geo_level1 = GetHeaderValue(headers.get(), "X-Geo-Level-1");
+  }
   StoreSeed(std::move(*response_body), std::string(signature),
-            std::string(country_code), response_date.value_or(base::Time()),
-            is_delta_compressed, is_gzip_compressed);
+            std::string(country_code), std::string(geo_level1),
+            response_date.value_or(base::Time()), is_delta_compressed,
+            is_gzip_compressed);
 }
 
 bool VariationsService::MaybeRetryOverHTTP() {
@@ -1003,16 +1022,14 @@ std::string VariationsService::GetLatestCountry() const {
 
 bool VariationsService::SetUpFieldTrials(
     const std::vector<std::string>& variation_ids,
-    const std::string& command_line_variation_ids,
     const std::vector<base::FeatureList::FeatureOverrideInfo>& extra_overrides,
     std::unique_ptr<base::FeatureList> feature_list,
     PlatformFieldTrials* platform_field_trials) {
   ForceTrialsAtStartup(*local_state_);
 
   return field_trial_creator_.SetUpFieldTrials(
-      variation_ids, command_line_variation_ids, extra_overrides,
-      std::move(feature_list), state_manager_, platform_field_trials,
-      &safe_seed_manager_,
+      variation_ids, extra_overrides, std::move(feature_list), state_manager_,
+      platform_field_trials, &safe_seed_manager_,
       /*add_entropy_source_to_variations_ids=*/true, *entropy_providers_);
 }
 
@@ -1026,6 +1043,10 @@ void VariationsService::GetStudiesAvailableToForce(
 
 SeedType VariationsService::GetSeedType() const {
   return field_trial_creator_.seed_type();
+}
+
+VariationsSource VariationsService::GetVariationsSource() const {
+  return field_trial_creator_.variations_source();
 }
 
 void VariationsService::CancelCurrentRequestForTesting() {
@@ -1078,11 +1099,9 @@ void VariationsService::GetStudiesAvailableToForceFromSeed(
     std::move(done_callback).Run({});
     return;
   }
-  // TODO(crbug.com/41492213): chrome://metrics-internals/#field-trials will not
-  // support studies that are constrained to a layer with LIMITED entropy mode
-  // before limited entropy randomization fully lands.
+
   auto entropy_providers = state_manager_->CreateEntropyProviders(
-      /*enable_limited_entropy_mode=*/false);
+      /*enable_limited_entropy_mode=*/true);
   auto studies = variations::GetStudiesAvailableToForce(
       seed, *entropy_providers, *GetClientFilterableStateForVersion());
   std::move(done_callback).Run(std::move(studies));

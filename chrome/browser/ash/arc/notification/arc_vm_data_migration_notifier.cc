@@ -12,13 +12,13 @@
 #include "base/time/time.h"
 #include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/ash/arc/policy/arc_policy_util.h"
-#include "chrome/browser/lifetime/application_lifetime.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
 #include "chromeos/ash/experiences/arc/session/arc_vm_data_migration_status.h"
 #include "chromeos/ash/experiences/arc/vm_data_migration/arc_vm_data_migration_confirmation_dialog.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/message_center/message_center.h"
@@ -34,24 +34,6 @@ namespace {
 constexpr char kNotifierId[] = "arc_vm_data_migration_notifier";
 constexpr char kNotificationId[] = "arc_vm_data_migration_notification";
 
-bool ShouldShowNotification(Profile* profile) {
-  switch (GetArcVmDataMigrationStatus(profile->GetPrefs())) {
-    case ArcVmDataMigrationStatus::kUnnotified:
-    case ArcVmDataMigrationStatus::kNotified:
-    case ArcVmDataMigrationStatus::kConfirmed:
-      return !policy_util::IsAccountManaged(profile) ||
-             GetArcVmDataMigrationStrategy(profile->GetPrefs()) ==
-                 ArcVmDataMigrationStrategy::kPrompt;
-    case ArcVmDataMigrationStatus::kStarted:
-    case ArcVmDataMigrationStatus::kFinished:
-      return false;
-  }
-}
-
-void ReportNotificationShownForTheFirstTime() {
-  base::UmaHistogramBoolean(
-      "Arc.VmDataMigration.NotificationShownForTheFirstTime", true);
-}
 
 void ReportNotificationShown(int days_until_deadline) {
   base::UmaHistogramExactLinear(
@@ -84,25 +66,8 @@ void ArcVmDataMigrationNotifier::OnArcStarted() {
           kArcVmDataMigrationStatusOnArcStartedHistogramName, profile_),
       GetArcVmDataMigrationStatus(profile_->GetPrefs()));
 
-  // Do not show a notification if virtio-blk /data is forcibly enabled, in
-  // which case the migration is not needed.
-  if (base::FeatureList::IsEnabled(kEnableVirtioBlkForData))
-    return;
-
-  if (!ShouldShowNotification(profile_)) {
-    return;
-  }
-
-  if (GetArcVmDataMigrationStatus(profile_->GetPrefs()) ==
-      ArcVmDataMigrationStatus::kUnnotified) {
-    ReportNotificationShownForTheFirstTime();
-    profile_->GetPrefs()->SetTime(
-        prefs::kArcVmDataMigrationNotificationFirstShownTime,
-        base::Time::Now());
-  }
-  SetArcVmDataMigrationStatus(profile_->GetPrefs(),
-                              ArcVmDataMigrationStatus::kNotified);
-  ShowNotification();
+  // Note: As we are in the process of deprecating the ARCVM data migrator,
+  // we no longer show the migration prompt to prevent new migrations.
 }
 
 void ArcVmDataMigrationNotifier::OnArcSessionStopped(ArcStopReason reason) {
@@ -189,7 +154,7 @@ void ArcVmDataMigrationNotifier::OnRestartAccepted(bool accepted) {
         ArcVmDataMigrationStatus::kStarted) {
       SetArcVmDataMigrationStatus(prefs, ArcVmDataMigrationStatus::kConfirmed);
     }
-    chrome::AttemptRestart();
+    session_manager::SessionManager::Get()->RequestRestart();
   }
 }
 

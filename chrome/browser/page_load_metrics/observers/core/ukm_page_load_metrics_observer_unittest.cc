@@ -4,6 +4,7 @@
 
 #include "chrome/browser/page_load_metrics/observers/core/ukm_page_load_metrics_observer.h"
 
+#include <map>
 #include <memory>
 #include <optional>
 
@@ -13,9 +14,9 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_clock.h"
-#include "base/test/test_trace_processor.h"
-#include "base/test/trace_event_analyzer.h"
-#include "base/test/trace_test_utils.h"
+#include "base/test/tracing/test_trace_processor.h"
+#include "base/test/tracing/trace_event_analyzer.h"
+#include "base/test/tracing/trace_test_utils.h"
 #include "base/time/time.h"
 #include "base/trace_event/traced_value.h"
 #include "base/unguessable_token.h"
@@ -66,6 +67,7 @@
 #include "services/network/public/cpp/network_quality_tracker.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/common/performance/largest_contentful_paint_type.h"
+#include "third_party/blink/public/mojom/navigation/navigation_type_for_navigation_api.mojom-shared.h"
 #include "third_party/metrics_proto/system_profile.pb.h"
 
 using content::NavigationSimulator;
@@ -146,7 +148,9 @@ class UkmPageLoadMetricsObserverTest
     HistoryTabHelper::FromWebContents(web_contents())
         ->SetForceEligibleTabForTesting(true);
 
-    HistoryClustersTabHelper::CreateForWebContents(web_contents());
+    HistoryTabHelper::CreateForWebContents(web_contents());
+    HistoryClustersTabHelper::CreateForWebContents(
+        web_contents(), HistoryTabHelper::FromWebContents(web_contents()));
   }
 
   TestingProfile::TestingFactories GetTestingFactories() const override {
@@ -1301,11 +1305,14 @@ TEST_F(UkmPageLoadMetricsObserverTest, NormalizedUserInteractionLatencies) {
 
   base::TimeTicks current_time = base::TimeTicks::Now();
   event_timings.emplace_back(page_load_metrics::mojom::EventTiming::New(
-      base::Milliseconds(50), 1, current_time + base::Milliseconds(1000)));
+      base::Milliseconds(50), 1, current_time + base::Milliseconds(1000),
+      current_time + base::Milliseconds(1030)));
   event_timings.emplace_back(page_load_metrics::mojom::EventTiming::New(
-      base::Milliseconds(100), 2, current_time + base::Milliseconds(2000)));
+      base::Milliseconds(100), 2, current_time + base::Milliseconds(2000),
+      current_time + base::Milliseconds(2044)));
   event_timings.emplace_back(page_load_metrics::mojom::EventTiming::New(
-      base::Milliseconds(150), 3, current_time + base::Milliseconds(3000)));
+      base::Milliseconds(150), 3, current_time + base::Milliseconds(3000),
+      current_time + base::Milliseconds(3050)));
 
   tester()->SimulateEventTimingUpdate(event_timings);
 
@@ -1344,7 +1351,8 @@ TEST_F(UkmPageLoadMetricsObserverTest,
   std::vector<page_load_metrics::mojom::EventTimingPtr> event_timings;
 
   event_timings.emplace_back(page_load_metrics::mojom::EventTiming::New(
-      base::Milliseconds(50), 1, base::TimeTicks::Now()));
+      base::Milliseconds(50), 1, base::TimeTicks::Now(),
+      base::TimeTicks::Now()));
 
   tester()->SimulateEventTimingUpdate(event_timings);
 
@@ -1850,8 +1858,9 @@ TEST_F(UkmPageLoadMetricsObserverTest, SoftNavigationCount) {
 
   auto soft_navigation_metrics =
       page_load_metrics::mojom::SoftNavigationMetrics(
-          1, base::Milliseconds(12), 42000, base::UnguessableToken::Create(),
-          page_load_metrics::mojom::LargestContentfulPaintTiming::New());
+          1, base::Milliseconds(12), base::TimeTicks() + base::Milliseconds(12),
+          blink::mojom::NavigationTypeForNavigationApi::kPush,
+          base::UnguessableToken::Create());
 
   content::MockNavigationHandle navigation_handle;
   navigation_handle.set_has_committed(true);
@@ -2378,6 +2387,132 @@ TEST_F(UkmPageLoadMetricsObserverTest, DefaultSearchReported) {
     tester()->test_ukm_recorder().ExpectEntryMetric(
         kv.second.get(), GeneratedNavigation::kFinalURLIsHomePageName, false);
   }
+}
+
+TEST_F(UkmPageLoadMetricsObserverTest, TypedAndDefaultSearchMatches) {
+  using Navigation_TypedAndDefault = ukm::builders::Navigation_TypedAndDefault;
+
+  TemplateURLService* model = TemplateURLServiceFactory::GetForProfile(
+      Profile::FromBrowserContext(browser_context()));
+  ASSERT_TRUE(model);
+  search_test_utils::WaitForTemplateURLServiceToLoad(model);
+  ASSERT_TRUE(model->loaded());
+
+  // Register Default Search Engine: test-engine.com.
+  TemplateURLData default_engine_data;
+  default_engine_data.SetShortName(u"Engine");
+  default_engine_data.SetKeyword(u"test-engine.com");
+  default_engine_data.SetURL(
+      "https://www.test-engine.com/search?q={searchTerms}");
+  TemplateURL* default_engine_turl =
+      model->Add(std::make_unique<TemplateURL>(default_engine_data));
+  ASSERT_TRUE(default_engine_turl);
+  model->SetUserSelectedDefaultSearchProvider(default_engine_turl);
+
+  // Simulate typed navigation to Default Search Engine.
+  tester()->NavigateWithPageTransitionAndCommit(
+      GURL("https://www.test-engine.com/"),
+      ui::PageTransitionFromInt(ui::PAGE_TRANSITION_TYPED |
+                                ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
+
+  // Simulate closing the tab to flush metrics.
+  DeleteContents();
+
+  std::map<ukm::SourceId, ukm::mojom::UkmEntryPtr> merged_entries =
+      tester()->test_ukm_recorder().GetMergedEntriesByName(
+          Navigation_TypedAndDefault::kEntryName);
+  EXPECT_EQ(1ul, merged_entries.size());
+
+  for (const auto& kv : merged_entries) {
+    tester()->test_ukm_recorder().ExpectEntrySourceHasUrl(
+        kv.second.get(), GURL("https://www.test-engine.com/"));
+    tester()->test_ukm_recorder().ExpectEntryMetric(
+        kv.second.get(), Navigation_TypedAndDefault::kIsSameAsDefaultName, 1);
+  }
+}
+
+TEST_F(UkmPageLoadMetricsObserverTest, TypedAndDefaultSearchDiffers) {
+  using Navigation_TypedAndDefault = ukm::builders::Navigation_TypedAndDefault;
+
+  TemplateURLService* model = TemplateURLServiceFactory::GetForProfile(
+      Profile::FromBrowserContext(browser_context()));
+  ASSERT_TRUE(model);
+  search_test_utils::WaitForTemplateURLServiceToLoad(model);
+  ASSERT_TRUE(model->loaded());
+
+  // Register Default Search Engine: test-engine.com.
+  TemplateURLData default_engine_data;
+  default_engine_data.SetShortName(u"Engine");
+  default_engine_data.SetKeyword(u"test-engine.com");
+  default_engine_data.SetURL(
+      "https://www.test-engine.com/search?q={searchTerms}");
+  TemplateURL* default_engine_turl =
+      model->Add(std::make_unique<TemplateURL>(default_engine_data));
+  ASSERT_TRUE(default_engine_turl);
+  model->SetUserSelectedDefaultSearchProvider(default_engine_turl);
+
+  // Register another search engine: othersearch.com.
+  TemplateURLData other_data;
+  other_data.SetShortName(u"OtherSearch");
+  other_data.SetKeyword(u"othersearch.com");
+  other_data.SetURL("https://www.othersearch.com/search?q={searchTerms}");
+  TemplateURL* other_turl =
+      model->Add(std::make_unique<TemplateURL>(other_data));
+  ASSERT_TRUE(other_turl);
+
+  // Simulate typed navigation to the other search engine (differs).
+  tester()->NavigateWithPageTransitionAndCommit(
+      GURL("https://www.othersearch.com/"),
+      ui::PageTransitionFromInt(ui::PAGE_TRANSITION_TYPED |
+                                ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
+
+  // Simulate closing the tab to flush metrics.
+  DeleteContents();
+
+  std::map<ukm::SourceId, ukm::mojom::UkmEntryPtr> merged_entries =
+      tester()->test_ukm_recorder().GetMergedEntriesByName(
+          Navigation_TypedAndDefault::kEntryName);
+  EXPECT_EQ(1ul, merged_entries.size());
+
+  for (const auto& kv : merged_entries) {
+    tester()->test_ukm_recorder().ExpectEntrySourceHasUrl(
+        kv.second.get(), GURL("https://www.othersearch.com/"));
+    tester()->test_ukm_recorder().ExpectEntryMetric(
+        kv.second.get(), Navigation_TypedAndDefault::kIsSameAsDefaultName, 0);
+  }
+}
+
+TEST_F(UkmPageLoadMetricsObserverTest, TypedAndDefaultSearchIgnored) {
+  using Navigation_TypedAndDefault = ukm::builders::Navigation_TypedAndDefault;
+
+  TemplateURLService* model = TemplateURLServiceFactory::GetForProfile(
+      Profile::FromBrowserContext(browser_context()));
+  ASSERT_TRUE(model);
+  search_test_utils::WaitForTemplateURLServiceToLoad(model);
+  ASSERT_TRUE(model->loaded());
+
+  // Register Default Search Engine: test-engine.com.
+  TemplateURLData default_engine_data;
+  default_engine_data.SetShortName(u"test-engine");
+  default_engine_data.SetKeyword(u"test-engine.com");
+  default_engine_data.SetURL(
+      "https://www.test-engine.com/search?q={searchTerms}");
+  TemplateURL* default_engine_turl =
+      model->Add(std::make_unique<TemplateURL>(default_engine_data));
+  ASSERT_TRUE(default_engine_turl);
+  model->SetUserSelectedDefaultSearchProvider(default_engine_turl);
+
+  // Simulate LINK navigation (not typed via address bar).
+  tester()->NavigateWithPageTransitionAndCommit(GURL("https://www.google.com/"),
+                                                ui::PAGE_TRANSITION_LINK);
+
+  // Simulate closing the tab to flush metrics.
+  DeleteContents();
+
+  std::map<ukm::SourceId, ukm::mojom::UkmEntryPtr> merged_entries =
+      tester()->test_ukm_recorder().GetMergedEntriesByName(
+          Navigation_TypedAndDefault::kEntryName);
+  EXPECT_EQ(0ul, merged_entries.size());
 }
 
 TEST_F(UkmPageLoadMetricsObserverTest, NavigationIsScopedSearchLikeNavigation) {

@@ -7,6 +7,7 @@
 #include <memory>
 #include <utility>
 
+#include "ash/constants/webui_url_constants.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/system/sys_info.h"
@@ -18,10 +19,8 @@
 #include "chrome/browser/ui/webui/ash/add_supervision/add_supervision_handler_utils.h"
 #include "chrome/browser/ui/webui/ash/add_supervision/add_supervision_metrics_recorder.h"
 #include "chrome/browser/ui/webui/ash/add_supervision/confirm_signout_dialog.h"
-#include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/add_supervision_resources.h"
 #include "chrome/grit/add_supervision_resources_map.h"
-#include "chrome/grit/browser_resources.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/supervision_resources.h"
 #include "chrome/grit/supervision_resources_map.h"
@@ -90,8 +89,7 @@ void AddSupervisionDialog::Show() {
 // static
 AddSupervisionDialog* AddSupervisionDialog::GetInstance() {
   return static_cast<AddSupervisionDialog*>(
-      SystemWebDialogDelegate::FindInstance(
-          chrome::kChromeUIAddSupervisionURL));
+      SystemWebDialogDelegate::FindInstance(ash::kChromeUIAddSupervisionURL));
 }
 
 // static
@@ -147,7 +145,7 @@ bool AddSupervisionDialog::ShouldShowDialogTitle() const {
 
 AddSupervisionDialog::AddSupervisionDialog()
     : SystemWebDialogDelegate(
-          GURL(chrome::kChromeUIAddSupervisionURL),
+          GURL(ash::kChromeUIAddSupervisionURL),
           l10n_util::GetStringUTF16(IDS_ADD_SUPERVISION_PAGE_TITLE)) {}
 
 AddSupervisionDialog::~AddSupervisionDialog() = default;
@@ -201,7 +199,7 @@ void AddSupervisionUI::BindInterface(
 
 void AddSupervisionUI::SetUpResources() {
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
-      Profile::FromWebUI(web_ui()), chrome::kChromeUIAddSupervisionHost);
+      Profile::FromWebUI(web_ui()), ash::kChromeUIAddSupervisionHost);
   webui::EnableTrustedTypesCSP(source);
 
   // Initialize supervision URL from the command-line arguments (if provided).

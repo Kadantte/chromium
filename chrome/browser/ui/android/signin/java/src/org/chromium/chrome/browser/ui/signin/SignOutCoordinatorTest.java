@@ -19,7 +19,6 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import androidx.fragment.app.FragmentManager;
 import androidx.test.filters.MediumTest;
 import androidx.test.filters.SmallTest;
 
@@ -35,13 +34,9 @@ import org.mockito.quality.Strictness;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.HistogramWatcher;
-import org.chromium.chrome.browser.password_manager.PasswordManagerUtilBridge;
-import org.chromium.chrome.browser.password_manager.PasswordManagerUtilBridgeJni;
-import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
@@ -49,16 +44,14 @@ import org.chromium.chrome.browser.sync.SyncServiceFactory;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.components.prefs.PrefService;
-import org.chromium.components.signin.identitymanager.ConsentLevel;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.metrics.SignoutReason;
 import org.chromium.components.sync.DataType;
 import org.chromium.components.sync.SyncService;
 import org.chromium.components.sync.UserActionableError;
-import org.chromium.components.user_prefs.UserPrefs;
-import org.chromium.components.user_prefs.UserPrefsJni;
+import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.ui.test.util.BlankUiTestActivity;
+import org.chromium.ui.test.util.MockitoHelper;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -75,14 +68,9 @@ public class SignOutCoordinatorTest {
     public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
     @Mock private Profile mProfile;
-    @Mock private FragmentManager mFragmentManager;
-    @Mock private IdentityServicesProvider mIdentityServicesProviderMock;
     @Mock private IdentityManager mIdentityManagerMock;
     @Mock private SigninManager mSigninManagerMock;
     @Mock private SyncService mSyncService;
-    @Mock private PasswordManagerUtilBridge.Natives mPasswordManagerUtilBridgeNativeMock;
-    @Mock private UserPrefs.Natives mUserPrefsNatives;
-    @Mock private PrefService mPrefService;
     @Mock private Runnable mOnSignOut;
 
     private final Set<Integer> mUnsyncedDataTypes = new HashSet<>();
@@ -90,44 +78,8 @@ public class SignOutCoordinatorTest {
 
     @Before
     public void setUp() {
-        LibraryLoader.getInstance().ensureInitialized();
+        NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
         mActivityTestRule.launchActivity(null);
-    }
-
-    @Test
-    @MediumTest
-    public void testLegacyDialogWithRevokeSyncConsentReason() {
-        setUpMocks();
-        doReturn(true).when(mIdentityManagerMock).hasPrimaryAccount(ConsentLevel.SYNC);
-        PasswordManagerUtilBridgeJni.setInstanceForTesting(mPasswordManagerUtilBridgeNativeMock);
-        UserPrefsJni.setInstanceForTesting(mUserPrefsNatives);
-        when(mUserPrefsNatives.get(mProfile)).thenReturn(mPrefService);
-        when(mProfile.isChild()).thenReturn(true);
-        when(mPrefService.getBoolean(Pref.ALLOW_DELETING_BROWSER_HISTORY)).thenReturn(true);
-
-        startSignOutFlow(
-                SignoutReason.USER_CLICKED_REVOKE_SYNC_CONSENT_SETTINGS, mOnSignOut, false);
-
-        onView(withText(R.string.turn_off_sync_title))
-                .inRoot(isDialog())
-                .check(matches(isDisplayed()));
-    }
-
-    @Test
-    @MediumTest
-    public void testLegacyDialog_hasSyncingAccount() {
-        setUpMocks();
-        PasswordManagerUtilBridgeJni.setInstanceForTesting(mPasswordManagerUtilBridgeNativeMock);
-        UserPrefsJni.setInstanceForTesting(mUserPrefsNatives);
-        when(mUserPrefsNatives.get(mProfile)).thenReturn(mPrefService);
-        when(mPrefService.getBoolean(Pref.ALLOW_DELETING_BROWSER_HISTORY)).thenReturn(true);
-        doReturn(true).when(mIdentityManagerMock).hasPrimaryAccount(ConsentLevel.SYNC);
-
-        startSignOutFlow(SignoutReason.USER_CLICKED_SIGNOUT_SETTINGS, mOnSignOut, false);
-
-        onView(withText(R.string.turn_off_sync_and_signout_title))
-                .inRoot(isDialog())
-                .check(matches(isDisplayed()));
     }
 
     @Test
@@ -145,12 +97,12 @@ public class SignOutCoordinatorTest {
                 .runAfterOperationInProgress(any(Runnable.class));
         doAnswer(
                         args -> {
-                            SigninManager.SignOutCallback signOutCallback = args.getArgument(1);
-                            signOutCallback.signOutComplete();
+                            Runnable signOutCallback = args.getArgument(1);
+                            signOutCallback.run();
                             return null;
                         })
                 .when(mSigninManagerMock)
-                .signOut(eq(signOutReason), any(SigninManager.SignOutCallback.class), eq(false));
+                .signOut(eq(signOutReason), any(Runnable.class));
 
         startSignOutFlow(signOutReason, mOnSignOut, false);
 
@@ -189,12 +141,12 @@ public class SignOutCoordinatorTest {
                 .runAfterOperationInProgress(any(Runnable.class));
         doAnswer(
                         args -> {
-                            SigninManager.SignOutCallback signOutCallback = args.getArgument(1);
-                            signOutCallback.signOutComplete();
+                            Runnable signOutCallback = args.getArgument(1);
+                            signOutCallback.run();
                             return null;
                         })
                 .when(mSigninManagerMock)
-                .signOut(eq(signOutReason), any(SigninManager.SignOutCallback.class), eq(false));
+                .signOut(eq(signOutReason), any(Runnable.class));
 
         startSignOutFlow(signOutReason, mOnSignOut, false, /* suppressSnackbar= */ true);
 
@@ -211,7 +163,6 @@ public class SignOutCoordinatorTest {
         setUpMocks();
         when(mSyncService.getUserActionableError())
                 .thenReturn(UserActionableError.BOOKMARKS_LIMIT_EXCEEDED);
-        when(mSyncService.getBookmarksLimit()).thenReturn(100000);
 
         HistogramWatcher histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
@@ -266,12 +217,11 @@ public class SignOutCoordinatorTest {
                 .runAfterOperationInProgress(any(Runnable.class));
         doAnswer(
                         args -> {
-                            args.getArgument(1, SigninManager.SignOutCallback.class)
-                                    .signOutComplete();
+                            args.getArgument(1, Runnable.class).run();
                             return null;
                         })
                 .when(mSigninManagerMock)
-                .signOut(eq(signOutReason), any(SigninManager.SignOutCallback.class), eq(false));
+                .signOut(eq(signOutReason), any(Runnable.class));
         startSignOutFlow(signOutReason, mOnSignOut, false);
         onView(withText(R.string.sign_out_unsaved_data_title))
                 .inRoot(isDialog())
@@ -329,12 +279,11 @@ public class SignOutCoordinatorTest {
                 .runAfterOperationInProgress(any(Runnable.class));
         doAnswer(
                         args -> {
-                            args.getArgument(1, SigninManager.SignOutCallback.class)
-                                    .signOutComplete();
+                            args.getArgument(1, Runnable.class).run();
                             return null;
                         })
                 .when(mSigninManagerMock)
-                .signOut(eq(signOutReason), any(SigninManager.SignOutCallback.class), eq(false));
+                .signOut(eq(signOutReason), any(Runnable.class));
         startSignOutFlow(signOutReason, mOnSignOut, true);
         onView(withText(R.string.sign_out_title)).inRoot(isDialog()).check(matches(isDisplayed()));
 
@@ -400,6 +349,7 @@ public class SignOutCoordinatorTest {
                 case SignoutReason.USER_TAPPED_UNDO_RIGHT_AFTER_SIGN_IN_FROM_BOOKMARKS:
                 case SignoutReason.USER_TAPPED_UNDO_RIGHT_AFTER_SIGN_IN_FROM_NTP:
                 case SignoutReason.USER_TAPPED_UNDO_RIGHT_AFTER_SIGN_IN_FROM_RECENT_TABS:
+                case SignoutReason.USER_TAPPED_UNDO_RIGHT_AFTER_SIGN_IN_FROM_AUTOFILL_AND_PASSWORDS:
                     continue;
             }
             // All other reasons should throw.
@@ -410,11 +360,8 @@ public class SignOutCoordinatorTest {
     @Test
     @SmallTest
     public void testUndoSigninWithSnackbarThrowsNotSignedIn() {
-        IdentityServicesProvider.setInstanceForTests(mIdentityServicesProviderMock);
-        doReturn(mIdentityManagerMock)
-                .when(mIdentityServicesProviderMock)
-                .getIdentityManager(mProfile);
-        doReturn(false).when(mIdentityManagerMock).hasPrimaryAccount(ConsentLevel.SIGNIN);
+        IdentityServicesProvider.setIdentityManagerForTesting(mIdentityManagerMock);
+        doReturn(false).when(mIdentityManagerMock).hasPrimaryAccount();
 
         assertUndoSignInWithSnackbarThrows(
                 IllegalStateException.class,
@@ -439,20 +386,18 @@ public class SignOutCoordinatorTest {
     }
 
     private void setUpMocks() {
-        IdentityServicesProvider.setInstanceForTests(mIdentityServicesProviderMock);
-        doReturn(mIdentityManagerMock)
-                .when(mIdentityServicesProviderMock)
-                .getIdentityManager(mProfile);
-        doReturn(true).when(mIdentityManagerMock).hasPrimaryAccount(ConsentLevel.SIGNIN);
-        doReturn(mSigninManagerMock).when(mIdentityServicesProviderMock).getSigninManager(mProfile);
+        IdentityServicesProvider.setIdentityManagerForTesting(mIdentityManagerMock);
+        IdentityServicesProvider.setSigninManagerForTesting(mSigninManagerMock);
+        doReturn(true).when(mIdentityManagerMock).hasPrimaryAccount();
         SyncServiceFactory.setInstanceForTesting(mSyncService);
         doAnswer(
                         args -> {
-                            args.getArgument(0, Callback.class).onResult(mUnsyncedDataTypes);
+                            Callback<Set<Integer>> callback = args.getArgument(0);
+                            callback.onResult(mUnsyncedDataTypes);
                             return null;
                         })
                 .when(mSyncService)
-                .getTypesWithUnsyncedData(any(Callback.class));
+                .getTypesWithUnsyncedData(MockitoHelper.anyCallback());
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -478,7 +423,6 @@ public class SignOutCoordinatorTest {
                         SignOutCoordinator.startSignOutFlow(
                                 mActivityTestRule.getActivity(),
                                 mProfile,
-                                mFragmentManager,
                                 mActivityTestRule.getActivity().getModalDialogManager(),
                                 mSnackbarManager,
                                 signoutReason,

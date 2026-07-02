@@ -22,7 +22,7 @@ class NavigationThrottleRegistry;
 class RenderFrameHost;
 
 namespace webid {
-class RequestService;
+class Request;
 
 // The NavigationInterceptor enables Identity Providers to control
 // navigations to their endpoints by cancelling it and replacing it
@@ -35,7 +35,8 @@ class CONTENT_EXPORT NavigationInterceptor
     ~RequestBuilder() = default;
     CONTENT_EXPORT std::optional<
         std::vector<blink::mojom::IdentityProviderGetParametersPtr>>
-    Build(const net::structured_headers::Dictionary& dictionary);
+    Build(const GURL& base_url,
+          const net::structured_headers::Dictionary& dictionary);
   };
 
   class ResponseBuilder {
@@ -45,12 +46,12 @@ class CONTENT_EXPORT NavigationInterceptor
     Build(const base::Value& response);
   };
 
-  using RequestServiceBuilder =
-      base::RepeatingCallback<RequestService*(content::RenderFrameHost* rfh)>;
+  using RequestFactory =
+      base::RepeatingCallback<Request*(content::RenderFrameHost* rfh)>;
 
   explicit NavigationInterceptor(NavigationThrottleRegistry& registry);
   NavigationInterceptor(NavigationThrottleRegistry& registry,
-                        RequestServiceBuilder service_builder);
+                        RequestFactory request_factory);
   ~NavigationInterceptor() override;
 
   NavigationInterceptor(const NavigationInterceptor&) = delete;
@@ -65,9 +66,13 @@ class CONTENT_EXPORT NavigationInterceptor
   static void MaybeCreateAndAdd(NavigationThrottleRegistry& registry);
 
  private:
-  ThrottleCheckResult ProcessRequest();
+  ThrottleCheckResult ProcessRequest(const GURL& intercepted_url);
 
   void OnHeaderParsed(
+      const GURL& intercepted_url,
+      base::expected<net::structured_headers::Dictionary, std::string> result);
+  void OnConnectionStatusHeaderParsed(
+      const GURL& intercepted_url,
       base::expected<net::structured_headers::Dictionary, std::string> result);
   void OnTokenResponse(
       blink::mojom::RequestTokenStatus status,
@@ -76,7 +81,7 @@ class CONTENT_EXPORT NavigationInterceptor
       blink::mojom::TokenErrorPtr error,
       bool is_auto_selected);
 
-  RequestServiceBuilder service_builder_;
+  RequestFactory request_factory_;
   // Tracks the document present in the target RenderFrameHost at the time the
   // relevant navigation began. This will be navigated to complete the FedCM
   // flow after the initiating navigation is canceled and replaced. A

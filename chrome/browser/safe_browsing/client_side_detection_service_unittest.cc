@@ -35,13 +35,10 @@
 #include "components/optimization_guide/core/delivery/test_optimization_guide_model_provider.h"
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/core/common/features.h"
-#include "components/safe_browsing/core/common/proto/client_model.pb.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/safe_browsing/core/common/safebrowsing_constants.h"
-#include "components/variations/variations_associated_data.h"
 #include "content/public/test/browser_task_environment.h"
-#include "crypto/sha2.h"
 #include "net/http/http_status_code.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
@@ -174,14 +171,19 @@ class ClientSideDetectionServiceTest
     ValidateModel(model_file_path, {additional_files_path});
   }
 
-  bool SendClientReportPhishingRequest(const GURL& phishing_url,
-                                       float score,
-                                       const std::string& access_token) {
+  bool SendClientReportPhishingRequest(
+      const GURL& phishing_url,
+      float score,
+      const std::string& access_token,
+      std::optional<ClientSideDetectionType> detection_type = std::nullopt) {
     std::unique_ptr<ClientPhishingRequest> request =
         std::make_unique<ClientPhishingRequest>(ClientPhishingRequest());
     request->set_url(phishing_url.spec());
     request->set_client_score(score);
     request->set_is_phishing(true);  // client thinks the URL is phishing.
+    if (detection_type.has_value()) {
+      request->set_client_side_detection_type(detection_type.value());
+    }
 
     base::RunLoop run_loop;
     csd_service_->SendClientReportPhishingRequest(
@@ -348,9 +350,16 @@ TEST_P(ClientSideDetectionServiceTest, SendClientReportPhishingRequest) {
       /*sample=*/net::HTTP_OK,
       /*expected_bucket_count=*/1);
 
+  // Triggering user report should not contribute to ping count.
+  ClientPhishingResponse response;
+  response.set_phishy(true);
+  SetClientReportPhishingResponse(response.SerializeAsString(), net::OK);
+  EXPECT_TRUE(SendClientReportPhishingRequest(
+      url, score, access_token, ClientSideDetectionType::USER_REPORT));
+  EXPECT_FALSE(AtPhishingReportLimit());
+
   // Normal behavior with no access token.
   histogram_tester = std::make_unique<base::HistogramTester>();
-  ClientPhishingResponse response;
   response.set_phishy(true);
   SetClientReportPhishingResponse(response.SerializeAsString(), net::OK);
   EXPECT_TRUE(SendClientReportPhishingRequest(url, score, access_token));
@@ -375,6 +384,13 @@ TEST_P(ClientSideDetectionServiceTest, SendClientReportPhishingRequest) {
       /*expected_bucket_count=*/1);
 
   // We have sent 3 pings so far, which is the cap.
+  EXPECT_TRUE(AtPhishingReportLimit());
+
+  // Even if we are at the limit, user report should still be triggered.
+  response.set_phishy(true);
+  SetClientReportPhishingResponse(response.SerializeAsString(), net::OK);
+  EXPECT_TRUE(SendClientReportPhishingRequest(
+      url, score, access_token, ClientSideDetectionType::USER_REPORT));
   EXPECT_TRUE(AtPhishingReportLimit());
 
   GURL third_url("http://c.com/");
@@ -468,27 +484,6 @@ TEST_P(ClientSideDetectionServiceTest,
       }));
   SetClientReportPhishingResponse(response.SerializeAsString(), net::OK);
   EXPECT_TRUE(SendClientReportPhishingRequest(url, score, access_token));
-}
-
-TEST_P(ClientSideDetectionServiceTest, GetNumReportTest) {
-  csd_service_ = std::make_unique<ClientSideDetectionService>(
-      std::make_unique<ChromeClientSideDetectionServiceDelegate>(profile_),
-      model_observer_tracker_.get());
-  ReadModelAndTfLiteFiles();
-
-  base::Time now = base::Time::Now();
-  base::TimeDelta twenty_five_hours = base::Hours(25);
-  EXPECT_TRUE(csd_service_->AddPhishingReport(now - twenty_five_hours));
-  EXPECT_TRUE(csd_service_->AddPhishingReport(now - twenty_five_hours));
-  EXPECT_TRUE(csd_service_->AddPhishingReport(now));
-  EXPECT_TRUE(csd_service_->AddPhishingReport(now));
-
-  EXPECT_EQ(2, csd_service_->GetPhishingNumReports());
-  EXPECT_FALSE(AtPhishingReportLimit());
-
-  EXPECT_TRUE(csd_service_->AddPhishingReport(now));
-  EXPECT_EQ(3, csd_service_->GetPhishingNumReports());
-  EXPECT_TRUE(AtPhishingReportLimit());
 }
 
 TEST_P(ClientSideDetectionServiceTest,
@@ -590,69 +585,6 @@ TEST_P(ClientSideDetectionServiceTest, CacheTest) {
   TestCache();
 }
 
-TEST_P(ClientSideDetectionServiceTest, IsPrivateIPAddress) {
-  csd_service_ = std::make_unique<ClientSideDetectionService>(
-      std::make_unique<ChromeClientSideDetectionServiceDelegate>(profile_),
-      model_observer_tracker_.get());
-
-  net::IPAddress address;
-  EXPECT_TRUE(address.AssignFromIPLiteral("10.1.2.3"));
-  EXPECT_TRUE(csd_service_->IsPrivateIPAddress(address));
-
-  EXPECT_TRUE(address.AssignFromIPLiteral("127.0.0.1"));
-  EXPECT_TRUE(csd_service_->IsPrivateIPAddress(address));
-
-  EXPECT_TRUE(address.AssignFromIPLiteral("172.24.3.4"));
-  EXPECT_TRUE(csd_service_->IsPrivateIPAddress(address));
-
-  EXPECT_TRUE(address.AssignFromIPLiteral("192.168.1.1"));
-  EXPECT_TRUE(csd_service_->IsPrivateIPAddress(address));
-
-  EXPECT_TRUE(address.AssignFromIPLiteral("fc00::"));
-  EXPECT_TRUE(csd_service_->IsPrivateIPAddress(address));
-
-  EXPECT_TRUE(address.AssignFromIPLiteral("fec0::"));
-  EXPECT_TRUE(csd_service_->IsPrivateIPAddress(address));
-
-  EXPECT_TRUE(address.AssignFromIPLiteral("fec0:1:2::3"));
-  EXPECT_TRUE(csd_service_->IsPrivateIPAddress(address));
-
-  EXPECT_TRUE(address.AssignFromIPLiteral("::1"));
-  EXPECT_TRUE(csd_service_->IsPrivateIPAddress(address));
-
-  EXPECT_TRUE(address.AssignFromIPLiteral("::ffff:192.168.1.1"));
-  EXPECT_TRUE(csd_service_->IsPrivateIPAddress(address));
-
-  EXPECT_TRUE(address.AssignFromIPLiteral("1.2.3.4"));
-  EXPECT_FALSE(csd_service_->IsPrivateIPAddress(address));
-
-  EXPECT_TRUE(address.AssignFromIPLiteral("200.1.1.1"));
-  EXPECT_FALSE(csd_service_->IsPrivateIPAddress(address));
-
-  EXPECT_TRUE(address.AssignFromIPLiteral("2001:0db8:ac10:fe01::"));
-  EXPECT_FALSE(csd_service_->IsPrivateIPAddress(address));
-
-  EXPECT_TRUE(address.AssignFromIPLiteral("::ffff:23c5:281b"));
-  EXPECT_FALSE(csd_service_->IsPrivateIPAddress(address));
-}
-
-TEST_P(ClientSideDetectionServiceTest, IsLocalResource) {
-  csd_service_ = std::make_unique<ClientSideDetectionService>(
-      std::make_unique<ChromeClientSideDetectionServiceDelegate>(profile_),
-      model_observer_tracker_.get());
-
-  net::IPAddress address;
-  EXPECT_TRUE(csd_service_->IsLocalResource(address));
-
-  // Create an IP address of invalid length
-  uint8_t addr[5] = {0xFE, 0xDC, 0xBA, 0x98};
-  address = net::IPAddress(addr);
-  EXPECT_TRUE(csd_service_->IsLocalResource(address));
-
-  EXPECT_TRUE(address.AssignFromIPLiteral("1.2.3.4"));
-  EXPECT_FALSE(csd_service_->IsLocalResource(address));
-}
-
 TEST_P(ClientSideDetectionServiceTest, TestModelFollowsPrefs) {
   profile_->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnabled, false);
   profile_->GetPrefs()->SetBoolean(prefs::kSafeBrowsingScoutReportingEnabled,
@@ -686,5 +618,67 @@ TEST_P(ClientSideDetectionServiceTest,
   profile_->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnhanced, true);
   EXPECT_TRUE(csd_service_->IsSubscribedToImageEmbeddingModelUpdates());
 }
+
+class ClientSideDetectionServiceOnlyESBTest
+    : public testing::Test,
+      public testing::WithParamInterface<std::tuple<bool, bool>> {
+ public:
+  ClientSideDetectionServiceOnlyESBTest()
+      : profile_manager_(TestingBrowserProcess::GetGlobal()) {
+    EXPECT_TRUE(profile_manager_.SetUp());
+    profile_ = profile_manager_.CreateTestingProfile("test-user");
+  }
+
+  bool is_esb_enabled() const { return std::get<0>(GetParam()); }
+  bool is_feature_enabled() const { return std::get<1>(GetParam()); }
+
+ protected:
+  void SetUp() override {
+    if (is_feature_enabled()) {
+      feature_list_.InitAndEnableFeature(
+          kClientSideDetectionOnlyESBClassification);
+    } else {
+      feature_list_.InitAndDisableFeature(
+          kClientSideDetectionOnlyESBClassification);
+    }
+    model_observer_tracker_ =
+        std::make_unique<ClientSidePhishingModelObserverTracker>();
+  }
+
+  void TearDown() override {
+    base::RunLoop().RunUntilIdle();
+    csd_service_.reset();
+  }
+
+  content::BrowserTaskEnvironment task_environment_;
+  TestingProfileManager profile_manager_;
+  raw_ptr<TestingProfile> profile_;
+  std::unique_ptr<ClientSideDetectionService> csd_service_;
+  base::test::ScopedFeatureList feature_list_;
+  std::unique_ptr<ClientSidePhishingModelObserverTracker>
+      model_observer_tracker_;
+};
+
+TEST_P(ClientSideDetectionServiceOnlyESBTest,
+       TestReceivingImageClassifierUpdatesAfterResubscription) {
+  profile_->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnabled, true);
+  profile_->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnhanced,
+                                   is_esb_enabled());
+
+  csd_service_ = std::make_unique<ClientSideDetectionService>(
+      std::make_unique<ChromeClientSideDetectionServiceDelegate>(profile_),
+      model_observer_tracker_.get());
+
+  if (is_feature_enabled()) {
+    EXPECT_EQ(csd_service_->IsSubscribedToImageClassifierModelUpdates(),
+              is_esb_enabled());
+  } else {
+    EXPECT_TRUE(csd_service_->IsSubscribedToImageClassifierModelUpdates());
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         ClientSideDetectionServiceOnlyESBTest,
+                         testing::Combine(testing::Bool(), testing::Bool()));
 
 }  // namespace safe_browsing

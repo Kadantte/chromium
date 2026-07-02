@@ -24,7 +24,6 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_XMLHTTPREQUEST_XML_HTTP_REQUEST_H_
 
 #include <memory>
-#include <optional>
 
 #include "base/containers/span.h"
 #include "base/memory/scoped_refptr.h"

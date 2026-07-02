@@ -14,7 +14,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_proto_conversion.h"
-#include "chrome/browser/actor/actor_switches.h"
 #include "chrome/browser/actor/actor_test_util.h"
 #include "chrome/browser/actor/tools/click_tool_request.h"
 #include "chrome/browser/actor/tools/navigate_tool_request.h"
@@ -29,9 +28,9 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
 #include "chrome/common/buildflags.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/actor/core/actor_switches.h"
 #include "components/autofill/content/browser/content_autofill_driver.h"
 #include "components/autofill/core/browser/foundations/autofill_manager.h"
 #include "components/autofill/core/browser/foundations/test_autofill_manager_waiter.h"
@@ -40,8 +39,8 @@
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/autofill/core/common/autofill_test_utils.h"
 #include "components/autofill/core/common/form_data.h"
-#include "components/history_embeddings/mock_answerer.h"
-#include "components/history_embeddings/mock_intent_classifier.h"
+#include "components/history_embeddings/core/mock_answerer.h"
+#include "components/history_embeddings/core/mock_intent_classifier.h"
 #include "components/network_session_configurator/common/network_switches.h"
 #include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/optimization_guide/proto/features/actions_data.pb.h"
@@ -340,8 +339,7 @@ IN_PROC_BROWSER_TEST_F(AiDataKeyedServiceBrowserTest, AIPageContent) {
   {
     const auto& page_content = ai_data->action_annotated_page_content();
     EXPECT_EQ(page_content.version(),
-              optimization_guide::proto::
-                  ANNOTATED_PAGE_CONTENT_VERSION_ONLY_ACTIONABLE_ELEMENTS_1_0);
+              optimization_guide::proto::ANNOTATED_PAGE_CONTENT_VERSION_1_0);
     const auto& content_attributes =
         page_content.root_node().content_attributes();
     EXPECT_EQ(content_attributes.attribute_type(),

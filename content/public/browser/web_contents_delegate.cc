@@ -25,6 +25,7 @@
 #include "third_party/blink/public/common/security/protocol_handler_security_level.h"
 #include "third_party/blink/public/mojom/input/pointer_lock_result.mojom.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
+#include "third_party/blink/public/mojom/picture_in_picture/picture_in_picture.mojom.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/gfx/geometry/rect.h"
@@ -161,6 +162,8 @@ WebContents* WebContentsDelegate::CreateCustomWebContents(
     const GURL& opener_url,
     const std::string& frame_name,
     const GURL& target_url,
+    WindowOpenDisposition disposition,
+    const blink::mojom::WindowFeatures& window_features,
     const StoragePartitionConfig& partition_config,
     SessionStorageNamespace* session_storage_namespace) {
   return nullptr;
@@ -229,6 +232,11 @@ void WebContentsDelegate::RequestPointerLock(WebContents* web_contents,
                                              bool last_unlocked_by_target) {
   web_contents->GotResponseToPointerLockRequest(
       blink::mojom::PointerLockResult::kUnknownError);
+}
+
+bool WebContentsDelegate::AllowKeyboardLockForInnerContents(
+    WebContents* web_contents) {
+  return false;
 }
 
 void WebContentsDelegate::RequestKeyboardLock(WebContents* web_contents,
@@ -394,6 +402,10 @@ bool WebContentsDelegate::OnlyExpandTopControlsAtPageTop() {
   return false;
 }
 
+bool WebContentsDelegate::IsDocumentPictureInPictureBlockedBySystem() const {
+  return false;
+}
+
 PictureInPictureResult WebContentsDelegate::EnterPictureInPicture(
     WebContents* web_contents) {
   return PictureInPictureResult::kNotSupported;
@@ -498,6 +510,22 @@ WebContentsDelegate::GetSavedRelatedApplications(WebContents* web_contents) {
 WebContents* WebContentsDelegate::GetResponsibleWebContents(
     WebContents* web_contents) {
   return nullptr;
+}
+
+bool WebContentsDelegate::IsPictureInPictureEnabled() const {
+  return true;
+}
+
+bool WebContentsDelegate::IsImmersivePlaybackEnabled() const {
+  return false;
+}
+
+void WebContentsDelegate::RequestImmersivePlaybackConfirmation(
+    const ImmersiveOptions& default_options,
+    base::OnceCallback<void(ImmersivePlaybackConfirmationResult)> callback) {
+  ImmersivePlaybackConfirmationResult result;
+  result.status = ImmersivePlaybackConfirmationStatus::kFailed;
+  std::move(callback).Run(std::move(result));
 }
 
 }  // namespace content

@@ -8,15 +8,16 @@
 #include <string>
 
 #include "base/callback_list.h"
+#include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
-#include "base/time/time.h"
+#include "base/scoped_observation.h"
 #include "chrome/browser/glic/glic_metrics.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/public/glic_invoke_options.h"
 #include "chrome/browser/page_content_annotations/multi_source_page_context_fetcher.h"
 #include "chrome/common/chrome_render_frame.mojom.h"
 #include "components/lens/lens_metadata.mojom.h"
 #include "components/tabs/public/tab_interface.h"
-#include "content/public/browser/clipboard_types.h"
 #include "content/public/browser/global_routing_id.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
@@ -27,10 +28,6 @@
 namespace content {
 class RenderFrameHost;
 }  // namespace content
-
-namespace ui {
-class ClipboardFormatType;
-}  // namespace ui
 
 namespace tabs {
 class TabInterface;
@@ -53,6 +50,8 @@ class GlicShareImageHandler : public content::WebContentsObserver {
                          const GURL& src_url);
 
  private:
+  friend class GlicShareImageHandlerTest;
+
   // content::WebContentsObserver.
   void DidFinishNavigation(
       content::NavigationHandle* navigation_handle) override;
@@ -82,17 +81,9 @@ class GlicShareImageHandler : public content::WebContentsObserver {
   // Attempt to display an error toast
   void MaybeShowErrorToast(tabs::TabInterface* tab);
 
-  // Starts a process that will perform a paste policy check once the glic panel
-  // is ready.
-  void PerformPastePolicyCheckWhenReady();
-
-  // Performs the paste policy check. This is called by
-  // `PerformPastePolicyCheckWhenReady` once the client is ready.
-  void DoPastePolicyCheck();
-
-  // Returns true if the glic client for the given tab is ready for context to
-  // be sent.
-  bool IsClientReady(tabs::TabInterface& tab);
+  // Called if the invoke API hits a failure. This completes the share process
+  // and causes metrics to be logged.
+  void OnInvokeError(GlicInvokeError error);
 
   // Called when the end result of sharing is known. Sends context on success.
   void ShareComplete(ShareImageResult result);
@@ -105,25 +96,10 @@ class GlicShareImageHandler : public content::WebContentsObserver {
   // timer if it is running and clears state.
   void Reset();
 
-  void OnCopyPolicyCheckComplete(
-      const ui::ClipboardFormatType& data_type,
-      const content::ClipboardPasteData& data,
-      std::optional<std::u16string> replacement_data);
-
-  void OnPastePolicyCheckComplete(
-      std::optional<content::ClipboardPasteData> data);
-
   raw_ref<GlicKeyedService> service_;  // owns this
 
   bool is_share_in_progress_ = false;
 
-  // TODO(b:448652827): Find another way to observe the outcome of ToggleUI.
-  // For the moment, we will poll and these members are used for controlling
-  // this process and sending the captured context when the panel is ready, if
-  // possible.
-  base::RepeatingTimer glic_panel_ready_timer_;
-  base::TimeTicks glic_panel_open_time_;
-  mojom::AdditionalContextPtr additional_context_;
   tabs::TabHandle tab_handle_;
   content::GlobalRenderFrameHostId render_frame_host_id_;
   GURL src_url_;

@@ -8,9 +8,11 @@
 
 #include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
+#include "base/feature_list.h"
 #include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
 #include "gpu/command_buffer/client/gles2_interface.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/platform/web_graphics_context_3d_provider.h"
 #include "third_party/blink/renderer/bindings/modules/v8/webgl_any.h"
 #include "third_party/blink/renderer/core/dom/document.h"
@@ -151,14 +153,14 @@ bool ValidateSubSourceAndGetData(DOMArrayBufferView* view,
 class PointableStringArray {
  public:
   PointableStringArray(const Vector<String>& strings)
-      : data_(std::make_unique<std::string[]>(strings.size())),
+      : data_(base::HeapArray<std::string>::WithSize(strings.size())),
         pointers_(strings.size()) {
     DCHECK(strings.size() < std::numeric_limits<GLsizei>::max());
     for (wtf_size_t i = 0; i < strings.size(); ++i) {
       // Strings must never move once they are stored in data_...
-      UNSAFE_TODO(data_[i]) = strings[i].Ascii();
+      data_[i] = strings[i].Ascii();
       // ... so that the c_str() remains valid.
-      pointers_[i] = UNSAFE_TODO(data_[i]).c_str();
+      pointers_[i] = data_[i].c_str();
     }
   }
 
@@ -166,7 +168,7 @@ class PointableStringArray {
   char const* const* data() const { return pointers_.data(); }
 
  private:
-  std::unique_ptr<std::string[]> data_;
+  base::HeapArray<std::string> data_;
   Vector<const char*> pointers_;
 };
 
@@ -446,17 +448,9 @@ void WebGL2RenderingContextBase::getBufferSubData(
     return;
   }
 
-  void* mapped_data = ContextGL()->MapBufferRange(
+  ContextGL()->GetBufferSubDataCHROMIUM(
       target, static_cast<GLintptr>(src_byte_offset),
-      static_cast<GLsizeiptr>(destination_byte_length), GL_MAP_READ_BIT);
-
-  if (!mapped_data)
-    return;
-
-  UNSAFE_TODO(memcpy(destination_data_ptr, mapped_data,
-                     static_cast<size_t>(destination_byte_length)));
-
-  ContextGL()->UnmapBuffer(target);
+      static_cast<GLsizeiptr>(destination_byte_length), destination_data_ptr);
 }
 
 void WebGL2RenderingContextBase::blitFramebuffer(GLint src_x0,
@@ -471,6 +465,13 @@ void WebGL2RenderingContextBase::blitFramebuffer(GLint src_x0,
                                                  GLenum filter) {
   if (isContextLost())
     return;
+
+  if (base::FeatureList::IsEnabled(features::kWebGLDiscardBackBuffer)) {
+    // If the canvas has been created with preserveDrawingBuffer set to false,
+    // then it should be cleared. See the comment in
+    // WebGLRenderingContextBase::GetImage() for details.
+    ClearIfComposited(kClearCallerOther);
+  }
 
   ContextGL()->BlitFramebufferCHROMIUM(src_x0, src_y0, src_x1, src_y1, dst_x0,
                                        dst_y0, dst_x1, dst_y1, mask, filter);
@@ -746,7 +747,7 @@ void WebGL2RenderingContextBase::readBuffer(GLenum mode) {
     case GL_COLOR_ATTACHMENT0:
       break;
     default:
-      if (mode < GL_COLOR_ATTACHMENT0 && mode > GL_COLOR_ATTACHMENT0 + 31) {
+      if (mode < GL_COLOR_ATTACHMENT0 || mode > GL_COLOR_ATTACHMENT0 + 31) {
         SynthesizeGLError(GL_INVALID_ENUM, "readBuffer", "invalid read buffer");
         return;
       } else if (mode >= static_cast<GLenum>(GL_COLOR_ATTACHMENT0 +
@@ -1784,6 +1785,14 @@ void WebGL2RenderingContextBase::texSubImage2D(
     GLenum type,
     HTMLVideoElement* video,
     ExceptionState& exception_state) {
+  if (isContextLost()) {
+    return;
+  }
+  if (bound_pixel_unpack_buffer_) {
+    SynthesizeGLError(GL_INVALID_OPERATION, "texSubImage2D",
+                      "a buffer is bound to PIXEL_UNPACK_BUFFER");
+    return;
+  }
   WebGLRenderingContextBase::texSubImage2D(script_state, target, level, xoffset,
                                            yoffset, format, type, video,
                                            exception_state);
@@ -1799,6 +1808,14 @@ void WebGL2RenderingContextBase::texSubImage2D(
     GLenum type,
     VideoFrame* frame,
     ExceptionState& exception_state) {
+  if (isContextLost()) {
+    return;
+  }
+  if (bound_pixel_unpack_buffer_) {
+    SynthesizeGLError(GL_INVALID_OPERATION, "texSubImage2D",
+                      "a buffer is bound to PIXEL_UNPACK_BUFFER");
+    return;
+  }
   WebGLRenderingContextBase::texSubImage2D(script_state, target, level, xoffset,
                                            yoffset, format, type, frame,
                                            exception_state);
@@ -4417,11 +4434,11 @@ ScriptValue WebGL2RenderingContextBase::getIndexedParameter(
         return ScriptValue::CreateNull(script_state->GetIsolate());
       }
       if (target == GL_COLOR_WRITEMASK) {
-        constexpr size_t result_size = 4;
-        Vector<GLint> values(result_size);
+        constexpr wtf_size_t kResultSize = 4;
+        Vector<GLint> values(kResultSize);
         ContextGL()->GetIntegeri_v(target, index, values.data());
-        Vector<bool> bool_values(result_size);
-        for (size_t i = 0; i < result_size; i++) {
+        Vector<bool> bool_values(kResultSize);
+        for (wtf_size_t i = 0; i < kResultSize; ++i) {
           bool_values[i] = (values[i] != GL_FALSE);
         }
         return WebGLAny(script_state, bool_values);
@@ -5838,6 +5855,20 @@ WebGL2RenderingContextBase::GetUnpackPixelStoreParams(
     params.skip_images = unpack_skip_images_;
   }
   return params;
+}
+
+void WebGL2RenderingContextBase::DrawingBufferClientRestoreRasterizerDiscard() {
+  if (destruction_in_progress_) {
+    return;
+  }
+  if (!ContextGL()) {
+    return;
+  }
+  if (rasterizer_discard_enabled_) {
+    ContextGL()->Enable(GL_RASTERIZER_DISCARD);
+  } else {
+    ContextGL()->Disable(GL_RASTERIZER_DISCARD);
+  }
 }
 
 void WebGL2RenderingContextBase::

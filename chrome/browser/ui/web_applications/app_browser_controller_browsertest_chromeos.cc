@@ -16,12 +16,12 @@
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/extensions/application_launch.h"
 #include "chrome/browser/ui/extensions/extensions_container.h"
+#include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
@@ -190,8 +190,9 @@ IN_PROC_BROWSER_TEST_F(AppBrowserControllerBrowserTestCrOs, TabsTest) {
       Browser::WindowFeature::kFeatureTabStrip));
 
   // No favicons shown for web apps.
-  EXPECT_FALSE(app_browser_->ShouldDisplayFavicon(
-      app_browser_->tab_strip_model()->GetActiveWebContents()));
+  tabs::TabInterface* const tab_interface =
+      app_browser_->tab_strip_model()->GetActiveTab();
+  EXPECT_FALSE(TabUIHelper::From(tab_interface)->ShouldDisplayFavicon());
 
   // Tabbed PWAs only open URLs within the scope of the app. The manifest is
   // another URL besides |tabbed_app_url_| in scope.
@@ -203,7 +204,7 @@ IN_PROC_BROWSER_TEST_F(AppBrowserControllerBrowserTestCrOs, TabsTest) {
   EXPECT_EQ(app_browser_->tab_strip_model()->count(), 2);
   EXPECT_EQ(GetActiveTabURL(), manifest);
   // Create tab3 with default URL, check URL, number of tabs.
-  chrome::NewTab(app_browser_);
+  chrome::NewTab(app_browser_, NewTabTypes::kNoUserAction);
   EXPECT_EQ(app_browser_->tab_strip_model()->count(), 3);
   EXPECT_EQ(GetActiveTabURL(), tabbed_app_url_);
   // Switch to tab1, check URL.
@@ -241,7 +242,7 @@ IN_PROC_BROWSER_TEST_F(AppBrowserControllerBrowserTestCrOs, NonAppUrl) {
   InstallAndLaunchMockApp();
 
   // Check we have 2 browsers: |browser()| and |app_browser_|.
-  EXPECT_EQ(chrome::GetTotalBrowserCount(), 2u);
+  EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 2u);
   EXPECT_NE(browser(), app_browser_);
   EXPECT_TRUE(browser()->is_type_normal());
   EXPECT_EQ(browser()->tab_strip_model()->count(), 1);
@@ -253,8 +254,8 @@ IN_PROC_BROWSER_TEST_F(AppBrowserControllerBrowserTestCrOs, NonAppUrl) {
   EXPECT_EQ(GetActiveTabURL(), tabbed_app_url_);
 
   // Create tab2 with URL not from app, it will open in the NORMAL browser.
-  chrome::AddTabAt(app_browser_, GURL(chrome::kChromeUINewTabURL), -1, true);
-  EXPECT_EQ(chrome::GetTotalBrowserCount(), 2u);
+  chrome::AddTabAt(app_browser_, chrome::ChromeUINewTabURLAsGURL(), -1, true);
+  EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 2u);
   EXPECT_NE(browser(), app_browser_);
   EXPECT_TRUE(browser()->is_type_normal());
   EXPECT_EQ(browser()->tab_strip_model()->count(), 2);
@@ -290,7 +291,7 @@ IN_PROC_BROWSER_TEST_F(AppBrowserControllerBrowserTestCrOs,
 
   // Second tab keeps dynamic theme until loaded.
   LoadFinishedWaiter load_waiter(app_browser_);
-  chrome::NewTab(app_browser_);
+  chrome::NewTab(app_browser_, NewTabTypes::kNoUserAction);
   load_waiter.Wait();
   EXPECT_EQ(app_browser_->tab_strip_model()->count(), 2);
   EXPECT_EQ(load_waiter.GetColorAtNavigation(), SK_ColorYELLOW);
@@ -329,9 +330,9 @@ IN_PROC_BROWSER_TEST_F(AppBrowserControllerBrowserTestCrOs,
                        ReuseBrowserForSystemAppPopup) {
   InstallAndLaunchMockPopup();
   // We should have the original browser for this BrowserTest, plus new popup.
-  EXPECT_EQ(chrome::GetTotalBrowserCount(), 2u);
+  EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 2u);
   InstallAndLaunchMockPopup();
-  EXPECT_EQ(chrome::GetTotalBrowserCount(), 2u);
+  EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 2u);
 }
 
 IN_PROC_BROWSER_TEST_F(AppBrowserControllerBrowserTestCrOs,
@@ -340,13 +341,13 @@ IN_PROC_BROWSER_TEST_F(AppBrowserControllerBrowserTestCrOs,
   // We should have the original browser for this BrowserTest, plus a new one,
   // offset by a tasteful amount.
   EXPECT_NE(nullptr, first_browser);
-  EXPECT_EQ(chrome::GetTotalBrowserCount(), 2u);
+  EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 2u);
   Browser* second_browser = LaunchMockSWA();
   EXPECT_NE(nullptr, second_browser);
-  EXPECT_EQ(chrome::GetTotalBrowserCount(), 3u);
+  EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 3u);
 
-  auto bounds1 = first_browser->window()->GetRestoredBounds();
-  auto bounds2 = second_browser->window()->GetRestoredBounds();
+  auto bounds1 = first_browser->GetWindow()->GetRestoredBounds();
+  auto bounds2 = second_browser->GetWindow()->GetRestoredBounds();
   // We've already hit the bottom bounds, so the y axis didn't move.
   EXPECT_EQ(bounds1.x() + WindowSizer::kWindowTilePixels, bounds2.x());
 
@@ -355,11 +356,11 @@ IN_PROC_BROWSER_TEST_F(AppBrowserControllerBrowserTestCrOs,
   gfx::Rect previous_bounds = bounds2;
   for (int i = 0; i < 10; i++) {
     Browser* next_browser = LaunchMockSWA();
-    if (previous_bounds == next_browser->window()->GetRestoredBounds()) {
+    if (previous_bounds == next_browser->GetWindow()->GetRestoredBounds()) {
       hit_the_bottom_right = true;
       break;
     }
-    previous_bounds = next_browser->window()->GetRestoredBounds();
+    previous_bounds = next_browser->GetWindow()->GetRestoredBounds();
   }
 
   EXPECT_TRUE(hit_the_bottom_right);

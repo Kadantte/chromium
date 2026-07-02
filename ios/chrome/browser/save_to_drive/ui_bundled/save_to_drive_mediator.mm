@@ -9,10 +9,12 @@
 #import "base/strings/sys_string_conversions.h"
 #import "components/policy/core/common/policy_pref_names.h"
 #import "components/prefs/pref_service.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/account_picker/ui_bundled/account_picker_coordinator.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
 #import "ios/chrome/browser/download/model/download_manager_tab_helper.h"
 #import "ios/chrome/browser/download/model/download_mimetype_util.h"
 #import "ios/chrome/browser/drive/model/drive_file_uploader.h"
@@ -116,8 +118,11 @@ void StorageQuotaCompletionHelper(__weak SaveToDriveMediator* mediator,
                            ? FileDestination::kDrive
                            : FileDestination::kFiles;
 
-    CHECK(_identityManager->HasPrimaryAccount(signin::ConsentLevel::kSignin),
-          base::NotFatalUntil::M152);
+    CHECK(
+        base::FeatureList::IsEnabled(kIOSSaveToDriveSignedOut) ||
+            _identityManager->HasPrimaryAccount(signin::ConsentLevel::kSignin),
+        base::NotFatalUntil::M152);
+
     _identityManagerObserver =
         std::make_unique<signin::IdentityManagerObserverBridge>(
             _identityManager, self);
@@ -216,6 +221,15 @@ void StorageQuotaCompletionHelper(__weak SaveToDriveMediator* mediator,
   [_accountPickerHandler hideAccountPickerAnimated:YES];
 }
 
+- (BOOL)selectedFileDestinationRequiresSignin {
+  return _fileDestination == FileDestination::kDrive && ![self isSignedIn];
+}
+
+- (BOOL)hasIdentitiesOnDevice {
+  return [signin::GetIdentitiesOnDevice(_identityManager,
+                                        _accountManagerService) count] > 0;
+}
+
 #pragma mark - Properties getters/setters
 
 - (void)setAccountPickerConsumer:(id<AccountPickerConsumer>)consumer {
@@ -275,6 +289,12 @@ void StorageQuotaCompletionHelper(__weak SaveToDriveMediator* mediator,
 
 #pragma mark - Private
 
+// Returns true if the user is signed in to a primary account.
+- (bool)isSignedIn {
+  return _identityManager &&
+         _identityManager->HasPrimaryAccount(signin::ConsentLevel::kSignin);
+}
+
 // Updates consumers.
 - (void)updateConsumersAnimated:(BOOL)animated {
   if (_accountPickerConsumer && _destinationPickerConsumer && !_prefsLoaded) {
@@ -282,8 +302,11 @@ void StorageQuotaCompletionHelper(__weak SaveToDriveMediator* mediator,
     _prefsLoaded = YES;
   }
 
-  bool destinationIsFiles = _fileDestination == FileDestination::kFiles;
-  [self.accountPickerConsumer setIdentityButtonHidden:destinationIsFiles
+  bool signedIn = [self isSignedIn];
+  bool identityButtonHidden =
+      _fileDestination == FileDestination::kFiles ||
+      (base::FeatureList::IsEnabled(kIOSSaveToDriveSignedOut) && !signedIn);
+  [self.accountPickerConsumer setIdentityButtonHidden:identityButtonHidden
                                              animated:animated];
   [self.destinationPickerConsumer setSelectedDestination:_fileDestination];
 }
@@ -336,8 +359,7 @@ void StorageQuotaCompletionHelper(__weak SaveToDriveMediator* mediator,
   // upload the file, add the download task to the Drive tab helper, start the
   // task through the Download Manager tab helper and hide the account picker
   // view.
-  DriveTabHelper* driveTabHelper =
-      DriveTabHelper::GetOrCreateForWebState(_webState);
+  DriveTabHelper* driveTabHelper = DriveTabHelper::FromWebState(_webState);
   driveTabHelper->AddDownloadToSaveToDrive(_downloadTask,
                                            _fileUploader->GetIdentity());
   DownloadManagerTabHelper* downloadManagerTabHelper =

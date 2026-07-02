@@ -28,6 +28,7 @@ class EmptyWebMediaPlayer : public WebMediaPlayer {
                   const WebMediaPlayerSource&,
                   CorsMode,
                   bool is_cache_disabled) override;
+  void Shutdown() override { weak_ptr_factory_.InvalidateWeakPtrsAndDoom(); }
   void Play() override {}
   void Pause(PauseReason pause_reason) override {}
   void Seek(double seconds) override {}
@@ -74,7 +75,8 @@ class EmptyWebMediaPlayer : public WebMediaPlayer {
           auto_picture_in_picture_info) override {}
   void Paint(cc::PaintCanvas*,
              const gfx::Rect&,
-             const cc::PaintFlags&) override {}
+             const cc::PaintFlags&,
+             bool force_pixel_readback) override {}
   scoped_refptr<media::VideoFrame> GetCurrentFrameThenUpdate() override;
   std::optional<media::VideoFrame::ID> CurrentFrameId() const override;
   bool HasAvailableVideoFrame() const override { return false; }

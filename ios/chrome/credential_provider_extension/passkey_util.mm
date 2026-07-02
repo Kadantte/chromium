@@ -27,9 +27,7 @@ namespace {
 
 // Appends "data" at the end of "container".
 void Append(std::vector<uint8_t>& container, NSData* data) {
-  base::span<const uint8_t> span = base::apple::NSDataToSpan(data);
-  // Use append_range when C++23 is available.
-  container.insert(container.end(), span.begin(), span.end());
+  container.append_range(base::apple::NSDataToSpan(data));
 }
 
 // Creates an ExtensionInputData structure from the prf inputs provided in the
@@ -204,6 +202,10 @@ PasskeyCreationOutput PerformPasskeyCreation(
                                              user_name_str),
           std::move(trusted_vault_keys[0]), /*trusted_vault_key_version=*/0,
           extension_input_data, &extension_output_data);
+
+  if (!webauthn::passkey_model_utils::IsPasskeyValid(passkey)) {
+    return {};
+  }
 
   base::span<const uint8_t> cred_id =
       base::as_byte_span(passkey.credential_id());

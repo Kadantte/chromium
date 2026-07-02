@@ -20,13 +20,12 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/singleton_tabs.h"
 #include "chrome/browser/ui/tabs/back_to_opener/back_to_opener_controller.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/url_constants.h"
 #include "components/favicon_base/favicon_types.h"
 #include "components/feature_engagement/public/feature_constants.h"
@@ -185,8 +184,8 @@ ui::ImageModel BackForwardMenuModel::GetIconAt(size_t index) const {
       return ui::ImageModel();
     case MenuSection::kShowFullHistory:
       return ui::ImageModel::FromVectorIcon(
-          kHistoryIcon, ui::kColorMenuIcon,
-          ui::SimpleMenuModel::kDefaultIconSize);
+          features::IsRoundedIconsEnabled() ? kHistoryIcon : kHistoryOldIcon,
+          ui::kColorMenuIcon, ui::SimpleMenuModel::kDefaultIconSize);
   }
 }
 

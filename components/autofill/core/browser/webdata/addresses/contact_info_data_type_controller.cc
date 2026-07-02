@@ -4,13 +4,16 @@
 
 #include "components/autofill/core/browser/webdata/addresses/contact_info_data_type_controller.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/functional/bind.h"
 #include "components/autofill/core/browser/webdata/addresses/contact_info_precondition_checker.h"
 #include "components/sync/base/data_type.h"
+#include "components/sync/base/sync_mode.h"
 #include "components/sync/base/sync_stop_metadata_fate.h"
 #include "components/sync/service/configure_context.h"
+#include "components/sync/service/data_type_controller.h"
 #include "components/sync/service/sync_service.h"
 
 namespace autofill {
@@ -44,12 +47,13 @@ void ContactInfoDataTypeController::LoadModels(
 }
 
 syncer::DataTypeController::PreconditionState
-ContactInfoDataTypeController::GetPreconditionState() const {
-  return precondition_checker_.GetPreconditionState();
+ContactInfoDataTypeController::GetPreconditionState(
+    const PreconditionContext& context) const {
+  return precondition_checker_.GetPreconditionState(context);
 }
 
 void ContactInfoDataTypeController::Stop(syncer::SyncStopMetadataFate fate,
-                                          StopCallback callback) {
+                                         StopCallback callback) {
   // In transport-only mode, storage is scoped to the Gaia account. That means
   // it should be cleared if Sync is stopped for any reason (other than browser
   // shutdown).

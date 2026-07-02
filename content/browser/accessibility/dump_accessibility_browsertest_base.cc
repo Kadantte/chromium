@@ -18,9 +18,11 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_command_line.h"
+#include "base/test/test_timeouts.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "content/browser/accessibility/browser_accessibility_state_impl.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_view_child_frame.h"
 #include "content/public/browser/ax_inspect_factory.h"
 #include "content/public/common/content_features.h"
@@ -46,6 +48,10 @@
 #include "ui/accessibility/platform/browser_accessibility.h"
 #include "ui/accessibility/platform/browser_accessibility_manager.h"
 #include "ui/base/ui_base_features.h"
+
+#if BUILDFLAG(IS_MAC)
+#include "ui/accessibility/platform/browser_accessibility_cocoa_test_helpers.h"
+#endif
 
 #if BUILDFLAG(IS_ANDROID)
 #include "ui/accessibility/android/accessibility_state.h"
@@ -221,6 +227,16 @@ void DumpAccessibilityTestBase::SetUp() {
   // AccessibilityInputColorWithPopupOpen requires the ability to read pixels
   // from a Canvas, so we need to be able to produce pixel output.
   EnablePixelOutput();
+
+#if BUILDFLAG(IS_MAC)
+  // Opt the dump-test infrastructure into the AXCustomActionNamesForTesting
+  // projection attribute on BrowserAccessibilityCocoa, so cross-process
+  // AXUIElementCopyAttributeValue queries can observe aria-actions custom
+  // action names (NSAccessibilityCustomAction objects do not marshal
+  // across the AX bridge). Without this opt-in the attribute is invisible
+  // to AT (not enumerated, and direct queries return nil).
+  ui::EnableAXCustomActionNamesForTestingProjection();
+#endif
 
   ContentBrowserTest::SetUp();
 }
@@ -535,9 +551,19 @@ void DumpAccessibilityTestBase::RunTestForPlatform(
     accessibility_mode.emplace(ax_mode_for_test);
     BrowserAccessibilityStateImpl::GetInstance()->SetAXModeChangeAllowed(false);
     EXPECT_TRUE(NavigateToURL(shell(), url));
-    // TODO(crbug.com/40844856): Investigate why this does not return
-    // true.
-    ASSERT_TRUE(accessibility_waiter.WaitForNotification());
+
+    if (!accessibility_waiter.WaitForNotificationWithTimeout(
+            TestTimeouts::action_timeout())) {
+      // crbug.com/40844856: the first SetMode call to a new RenderFrameHost can
+      // be silently dropped if its RenderAccessibility isn't bound yet. If that
+      // happens, resend SetMode on every frame via UpdateAccessibilityMode,
+      // then call ResetAccessibility so kLoadComplete is emitted.
+      web_contents->GetPrimaryMainFrame()->ForEachRenderFrameHostImpl(
+          [](RenderFrameHostImpl* rfh) { rfh->UpdateAccessibilityMode(); });
+      web_contents->ResetAccessibility();
+      ASSERT_TRUE(accessibility_waiter.WaitForNotificationWithTimeout(
+          TestTimeouts::action_max_timeout()));
+    }
   }
 
   WaitForAllFramesLoaded();
@@ -667,8 +693,8 @@ ui::BrowserAccessibility* DumpAccessibilityTestBase::FindNode(
   }
 
   CHECK(search_root);
-  ui::BrowserAccessibility* node = FindNodeInSubtree(*search_root, name);
-  return node;
+  return FindFirstAccessibilityNodeWithStringAttribute(
+      *search_root, ax::mojom::StringAttribute::kName, name);
 }
 
 ui::BrowserAccessibilityManager* DumpAccessibilityTestBase::GetManager() const {
@@ -731,8 +757,7 @@ DumpAccessibilityTestBase::CaptureEvents(InvokeAction invoke_action) {
   // wait for at least one event. This may unblock either when |waiter|
   // observes either an ax::mojom::Event or ui::AXEventGenerator::Event, or
   // when |event_recorder| records a platform event.
-  // TODO(crbug.com/40844856): Investigate why this does not return
-  // true.
+  // TODO(crbug.com/40844856): May time out if SetMode was silently dropped.
   if (scenario_.default_action_on.empty()) {
     EXPECT_TRUE(waiter.WaitForNotification());
   }
@@ -758,48 +783,13 @@ DumpAccessibilityTestBase::CaptureEvents(InvokeAction invoke_action) {
   return std::make_pair(std::move(action_result), std::move(event_logs));
 }
 
-ui::BrowserAccessibility* DumpAccessibilityTestBase::FindNodeInSubtree(
-    ui::BrowserAccessibility& node,
-    const std::string& name) const {
-  if (node.GetStringAttribute(ax::mojom::StringAttribute::kName) == name) {
-    return &node;
-  }
-
-  for (unsigned int i = 0; i < node.PlatformChildCount(); ++i) {
-    ui::BrowserAccessibility* result =
-        FindNodeInSubtree(*node.PlatformGetChild(i), name);
-    if (result) {
-      return result;
-    }
-  }
-  return nullptr;
-}
-
 ui::BrowserAccessibility* DumpAccessibilityTestBase::FindNodeByStringAttribute(
     const ax::mojom::StringAttribute attr,
     const std::string& value) const {
   ui::BrowserAccessibility* root = GetManager()->GetBrowserAccessibilityRoot();
 
   CHECK(root);
-  return FindNodeByStringAttributeInSubtree(*root, attr, value);
-}
-
-ui::BrowserAccessibility*
-DumpAccessibilityTestBase::FindNodeByStringAttributeInSubtree(
-    ui::BrowserAccessibility& node,
-    const ax::mojom::StringAttribute attr,
-    const std::string& value) const {
-  if (node.GetStringAttribute(attr) == value) {
-    return &node;
-  }
-
-  for (unsigned int i = 0; i < node.PlatformChildCount(); ++i) {
-    if (ui::BrowserAccessibility* result = FindNodeByStringAttributeInSubtree(
-            *node.PlatformGetChild(i), attr, value)) {
-      return result;
-    }
-  }
-  return nullptr;
+  return FindFirstAccessibilityNodeWithStringAttribute(*root, attr, value);
 }
 
 bool DumpAccessibilityTestBase::IsTestingExternalTree() const {
@@ -808,6 +798,11 @@ bool DumpAccessibilityTestBase::IsTestingExternalTree() const {
   // what assistive technologies operates with. Other platforms
   // test the internal accessibility tree except the Android one which tests
   // both.
+  //
+  // TODO(crbug.com/407816615): AXUIElementCopyAttributeValue cannot observe
+  // NSAccessibilityCustomAction values across the cross-process AX boundary;
+  // such attributes must be covered in-process. See
+  // BrowserAccessibilityCocoaAriaActionsBrowserTest.
   return GetParam() == ui::AXApiType::kMac;
 #else
   return false;

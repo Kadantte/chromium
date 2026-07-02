@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ash/browser_delegate/browser_delegate_impl.h"
 
+#include "ash/wm/window_pin_util.h"
 #include "base/check_deref.h"
 #include "base/check_is_test.h"
 #include "chrome/app/chrome_command_ids.h"
@@ -12,11 +13,12 @@
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
@@ -62,7 +64,7 @@ bool BrowserDelegateImpl::IsOffTheRecord() const {
 }
 
 gfx::Rect BrowserDelegateImpl::GetBounds() const {
-  return browser_->window()->GetBounds();
+  return browser_->GetWindow()->GetBounds();
 }
 
 content::WebContents* BrowserDelegateImpl::GetActiveWebContents() const {
@@ -92,11 +94,11 @@ content::WebContents* BrowserDelegateImpl::GetInspectedWebContents() const {
 }
 
 ui::BaseWindow* BrowserDelegateImpl::GetWindow() const {
-  return browser_->window();
+  return browser_->GetWindow();
 }
 
 aura::Window* BrowserDelegateImpl::GetNativeWindow() const {
-  return browser_->window()->GetNativeWindow();
+  return browser_->GetWindow()->GetNativeWindow();
 }
 
 std::optional<webapps::AppId> BrowserDelegateImpl::GetAppId() const {
@@ -116,39 +118,39 @@ bool BrowserDelegateImpl::IsAttemptingToClose() const {
 }
 
 bool BrowserDelegateImpl::IsClosing() const {
-  return browser_->is_delete_scheduled();
+  return browser_->IsDeleteScheduled();
 }
 
 bool BrowserDelegateImpl::IsActive() const {
-  return browser_->window()->IsActive();
+  return browser_->GetWindow()->IsActive();
 }
 
 bool BrowserDelegateImpl::IsMinimized() const {
-  return browser_->window()->IsMinimized();
+  return browser_->GetWindow()->IsMinimized();
 }
 
 bool BrowserDelegateImpl::IsVisible() const {
-  return browser_->window()->IsVisible();
+  return browser_->GetWindow()->IsVisible();
 }
 
 void BrowserDelegateImpl::Show() {
-  browser_->window()->Show();
+  browser_->GetWindow()->Show();
 }
 
 void BrowserDelegateImpl::ShowInactive() {
-  browser_->window()->ShowInactive();
+  browser_->GetWindow()->ShowInactive();
 }
 
 void BrowserDelegateImpl::Activate() {
-  browser_->window()->Activate();
+  browser_->GetWindow()->Activate();
 }
 
 void BrowserDelegateImpl::Minimize() {
-  browser_->window()->Minimize();
+  browser_->GetWindow()->Minimize();
 }
 
 void BrowserDelegateImpl::Close() {
-  browser_->window()->Close();
+  browser_->GetWindow()->Close();
 }
 
 void BrowserDelegateImpl::AddTab(const GURL& url,
@@ -166,8 +168,10 @@ void BrowserDelegateImpl::CloseWebContentsAt(size_t index,
                  : TabCloseTypes::CLOSE_NONE);
 }
 
-content::WebContents* BrowserDelegateImpl::NavigateWebApp(const GURL& url,
-                                                          TabPinning pin_tab) {
+content::WebContents* BrowserDelegateImpl::NavigateWebApp(
+    const GURL& url,
+    TabPinning pin_tab,
+    std::optional<webapps::LaunchParams> launch_params) {
   CHECK(GetType() == BrowserType::kApp || GetType() == BrowserType::kAppPopup)
       << "Unexpected browser type " << static_cast<int>(GetType()) << "("
       << browser_->type() << ")";
@@ -176,6 +180,11 @@ content::WebContents* BrowserDelegateImpl::NavigateWebApp(const GURL& url,
                             ui::PAGE_TRANSITION_AUTO_BOOKMARK);
   if (pin_tab == TabPinning::kYes) {
     nav_params.tabstrip_add_types |= AddTabTypes::ADD_PINNED;
+  }
+  if (launch_params) {
+    nav_params.web_app_navigation_data.emplace();
+    nav_params.web_app_navigation_data->SetLaunchParams(
+        *std::move(launch_params));
   }
 
   return web_app::NavigateWebAppUsingParams(nav_params);
@@ -221,7 +230,56 @@ bool BrowserDelegateImpl::CreateWebAppFromActiveWebContents() {
 }
 
 void BrowserDelegateImpl::ResetLocationBar() {
-  browser_->window()->GetLocationBar()->Revert();
+  BrowserWindow::FromBrowser(&*browser_)->GetLocationBar()->Revert();
+}
+
+void BrowserDelegateImpl::EnterLockedFullscreen(bool focus_toolbar) {
+  CHECK(!IsLockedFullscreen());
+  ash::PinWindow(GetNativeWindow(), /*trusted=*/true);
+  browser_->command_controller()->LockedFullscreenStateChanged();
+  if (focus_toolbar) {
+    BrowserWindow::FromBrowser(&*browser_)->FocusToolbar();
+  }
+}
+
+void BrowserDelegateImpl::LeaveLockedFullscreen() {
+  CHECK(IsLockedFullscreen());
+  ash::UnpinWindow(GetNativeWindow());
+  browser_->command_controller()->LockedFullscreenStateChanged();
+}
+
+bool BrowserDelegateImpl::IsLockedFullscreen() const {
+  return ash::GetWindowPinType(GetNativeWindow()) ==
+         chromeos::WindowPinType::kLockedFullscreen;
+}
+
+void BrowserDelegateImpl::SetDevToolsCommandsEnabled(bool enabled) {
+  chrome::BrowserCommandController* const command_controller =
+      browser_->command_controller();
+  command_controller->UpdateCommandEnabled(IDC_DEV_TOOLS, enabled);
+  command_controller->UpdateCommandEnabled(IDC_DEV_TOOLS_CONSOLE, enabled);
+  command_controller->UpdateCommandEnabled(IDC_DEV_TOOLS_DEVICES, enabled);
+  command_controller->UpdateCommandEnabled(IDC_DEV_TOOLS_INSPECT, enabled);
+  command_controller->UpdateCommandEnabled(IDC_DEV_TOOLS_TOGGLE, enabled);
+}
+
+void BrowserDelegateImpl::SetTabSwitchCommandsEnabled(bool enabled) {
+  chrome::BrowserCommandController* const command_controller =
+      browser_->command_controller();
+  command_controller->UpdateCommandEnabled(IDC_SELECT_NEXT_TAB, enabled);
+  command_controller->UpdateCommandEnabled(IDC_SELECT_PREVIOUS_TAB, enabled);
+  command_controller->UpdateCommandEnabled(IDC_SELECT_TAB_0, enabled);
+  command_controller->UpdateCommandEnabled(IDC_SELECT_TAB_1, enabled);
+  command_controller->UpdateCommandEnabled(IDC_SELECT_TAB_2, enabled);
+  command_controller->UpdateCommandEnabled(IDC_SELECT_TAB_3, enabled);
+  command_controller->UpdateCommandEnabled(IDC_SELECT_TAB_4, enabled);
+  command_controller->UpdateCommandEnabled(IDC_SELECT_TAB_5, enabled);
+  command_controller->UpdateCommandEnabled(IDC_SELECT_TAB_6, enabled);
+  command_controller->UpdateCommandEnabled(IDC_SELECT_TAB_7, enabled);
+}
+
+void BrowserDelegateImpl::ActivateWebContentsAt(size_t index) {
+  browser_->tab_strip_model()->ActivateTabAt(static_cast<int>(index));
 }
 
 }  // namespace ash

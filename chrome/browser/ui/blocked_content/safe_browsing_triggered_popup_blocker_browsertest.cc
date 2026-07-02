@@ -229,7 +229,7 @@ class SafeBrowsingTriggeredInterceptingBrowserTest
     threat_match.set_threat_entry_type(safe_browsing::URL);
 
     safe_browsing::FullHashStr enforce_full_hash =
-        safe_browsing::V4ProtocolManagerUtil::GetFullHash(url);
+        safe_browsing::SBProtocolManagerUtil::GetFullHash(url);
     threat_match.mutable_threat()->set_hash(enforce_full_hash);
     threat_match.mutable_cache_duration()->set_seconds(300);
 
@@ -315,7 +315,7 @@ IN_PROC_BROWSER_TEST_F(SafeBrowsingTriggeredPopupBlockerBrowserTest,
 
   // Open a new tab to make sure the SafeBrowsingTriggeredPopupBlocker gets
   // created for the new tab.
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
 
   // Navigate to a_url, should trigger the popup blocker.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), a_url));

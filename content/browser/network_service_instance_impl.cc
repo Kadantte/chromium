@@ -22,10 +22,12 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/message_loop/message_pump_type.h"
+#include "base/message_loop/message_pump_wakeup_counter.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/no_destructor.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/sequence_checker.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -35,16 +37,21 @@
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/platform_thread_metrics.h"
+#include "base/threading/scoped_thread_priority.h"
 #include "base/threading/sequence_local_storage_slot.h"
 #include "base/threading/thread.h"
+#include "base/threading/thread_checker.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#include "components/performance_manager/scenario_api/performance_scenario_observer.h"
+#include "components/performance_manager/scenario_api/performance_scenarios.h"
 #include "content/browser/browser_main_loop.h"
 #include "content/browser/first_party_sets/first_party_sets_handler_impl.h"
 #include "content/browser/network/http_cache_backend_file_operations_factory.h"
 #include "content/browser/network_sandbox_grant_result.h"
+#include "content/browser/network_sandbox_grant_result_helper.h"
 #include "content/browser/network_service_client.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -60,6 +67,8 @@
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "net/base/features.h"
 #include "net/base/network_change_notifier.h"
+#include "net/base/scheduler/sequence_manager_configurator.h"
+#include "net/base/switches.h"
 #include "net/first_party_sets/global_first_party_sets.h"
 #include "net/log/file_net_log_observer.h"
 #include "net/log/net_log_util.h"
@@ -69,7 +78,6 @@
 #include "services/network/network_service.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/network_switches.h"
-#include "services/network/public/cpp/sequence_manager_configurator.h"
 #include "services/network/public/mojom/net_log.mojom.h"
 #include "services/network/public/mojom/network_change_manager.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
@@ -125,6 +133,110 @@ mojo::Remote<network::mojom::NetworkService>* g_network_service_remote =
 network::NetworkConnectionTracker* g_network_connection_tracker;
 bool g_network_service_is_responding = false;
 
+// When enabled, sets the in-process network service thread to
+// base::ThreadType::kPresentation during startup.
+BASE_FEATURE(kNetworkServiceIncreasedPriorityDuringStartup,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// When enabled, sets the in-process network service thread to
+// base::ThreadType::kPresentation when the scenario indicates that the user is
+// actively loading the visible page and not scrolling.
+BASE_FEATURE(kNetworkServiceIncreasedPriorityWhileLoading,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Boosts the priority of the network service thread depending on the feature
+// that is enabled. If `kNetworkServiceIncreasedPriorityDuringStartup` is
+// enabled, the network service thread will be boosted until the startup is
+// completed. If `kNetworkServiceIncreasedPriorityWhileLoading` is enabled, the
+// network service thread will be boosted when the scenario indicates that the
+// user is actively loading a page.
+class BoostNetworkThreadPriority
+    : public performance_scenarios::MatchingScenarioObserver {
+ public:
+  static BoostNetworkThreadPriority& GetInstance() {
+    static base::NoDestructor<BoostNetworkThreadPriority> instance{
+        base::ThreadType::kPresentation, kBoostScenarioPattern};
+    return *instance;
+  }
+
+  void Initialize() {
+    DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+
+    // If there is no observer list, return before checking the feature list to
+    // prevent the client from entering any arm of the experiment.
+    auto observer_list =
+        performance_scenarios::PerformanceScenarioObserverList::GetForScope(
+            performance_scenarios::ScenarioScope::kGlobal);
+    if (!observer_list) {
+      return;
+    }
+
+    if (base::FeatureList::IsEnabled(
+            kNetworkServiceIncreasedPriorityDuringStartup)) {
+      startup_boost_.emplace(boosted_thread_type_);
+
+      // Unretained is safe here because this object is a singleton.
+      GetContentClient()->browser()->PostAfterStartupTask(
+          FROM_HERE, base::SequencedTaskRunner::GetCurrentDefault(),
+          base::BindOnce(&BoostNetworkThreadPriority::OnStartupComplete,
+                         base::Unretained(this)));
+    }
+
+    if (base::FeatureList::IsEnabled(
+            kNetworkServiceIncreasedPriorityWhileLoading)) {
+      // Add to the global scope since the goal is to boost the network thread
+      // while any page is loading.
+      observer_list->AddMatchingObserver(this);
+    }
+  }
+
+  void OnStartupComplete() {
+    DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+    startup_boost_.reset();
+  }
+
+  // performance_scenarios::MatchingScenarioObserver::OnScenarioMatchChanged
+  void OnScenarioMatchChanged(performance_scenarios::ScenarioScope scope,
+                              bool matches_pattern) override {
+    // Callbacks must be received on the thread the object was created on.
+    DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+
+    if (matches_pattern) {
+      performance_scenario_boost_.emplace(boosted_thread_type_);
+    } else {
+      performance_scenario_boost_.reset();
+    }
+  }
+
+ private:
+  friend class base::NoDestructor<BoostNetworkThreadPriority>;
+
+  // Boost the network service thread when loading the visible page and not
+  // scrolling, since the higher thread priority of the network service thread
+  // can take cycles away from threads that are critical to smooth scrolling.
+  static constexpr performance_scenarios::ScenarioPattern
+      kBoostScenarioPattern = {
+          .loading =
+              {performance_scenarios::LoadingScenario::kVisiblePageLoading},
+          .input = {performance_scenarios::InputScenario::kNoInput,
+                    performance_scenarios::InputScenario::kTyping,
+                    performance_scenarios::InputScenario::kTap}};
+
+  BoostNetworkThreadPriority(base::ThreadType boosted_thread_type,
+                             performance_scenarios::ScenarioPattern pattern)
+      : performance_scenarios::MatchingScenarioObserver(pattern),
+        boosted_thread_type_(boosted_thread_type) {}
+
+  ~BoostNetworkThreadPriority() override = default;
+
+  THREAD_CHECKER(thread_checker_);
+
+  const base::ThreadType boosted_thread_type_;
+  std::optional<base::PlatformThreadBase::RaiseThreadTypeLease> startup_boost_;
+  std::optional<base::PlatformThreadBase::RaiseThreadTypeLease>
+      performance_scenario_boost_;
+};
+
 std::unique_ptr<network::NetworkService>& GetLocalNetworkService() {
   static base::SequenceLocalStorageSlot<
       std::unique_ptr<network::NetworkService>>
@@ -152,129 +264,8 @@ void CreateInProcessNetworkServiceOnThread(
       true /* delay_initialization_until_set_client */);
 }
 
-// A utility function to make it clear what behavior is expected by the network
-// context instance depending on the various errors that can happen during data
-// migration.
-//
-// If this function returns 'true' then the `data_directory` should be used (if
-// specified in the network context params). If this function returns 'false'
-// then the `unsandboxed_data_path` should be used.
-bool IsSafeToUseDataPath(SandboxGrantResult result) {
-  switch (result) {
-    case SandboxGrantResult::kSuccess:
-      // A migration occurred, and it was successful.
-      return true;
-    case SandboxGrantResult::kFailedToGrantSandboxAccessToCache:
-    case SandboxGrantResult::kFailedToCreateCacheDirectory:
-      // A failure to grant create or grant access to the cache dir does not
-      // affect the providence of the data contained in `data_directory` as the
-      // migration could have still occurred.
-      //
-      // These cases are handled internally and so this case should never be
-      // hit. It is undefined behavior to proceed in this case so CHECK here.
-      base::ImmediateCrash();
-    case SandboxGrantResult::kFailedToCreateDataDirectory:
-      // A failure to create the `data_directory` is fatal, and the
-      // `unsandboxed_data_path` should be used.
-      return false;
-    case SandboxGrantResult::kFailedToCopyData:
-      // A failure to copy the data from `unsandboxed_data_path` to the
-      // `data_directory` is fatal, and the `unsandboxed_data_path` should be
-      // used.
-      return false;
-    case SandboxGrantResult::kFailedToDeleteOldData:
-      // This is not fatal, as the new data has been correctly migrated, and the
-      // deletion will be retried at a later time.
-      return true;
-    case SandboxGrantResult::kFailedToGrantSandboxAccessToData:
-      // If the sandbox could not be granted access to the new data dir, then
-      // don't attempt to migrate. This means that the old
-      // `unsandboxed_data_path` should be used.
-      return false;
-    case SandboxGrantResult::kDidNotAttemptToGrantSandboxAccess:
-      // No migration was attempted either because of platform constraints or
-      // because the network context had no valid data paths (e.g. in-memory or
-      // incognito), or `unsandboxed_data_path` was not specified.
-      // `data_directory` should be used in this case (if present).
-      return true;
-    case SandboxGrantResult::kFailedToCreateCheckpointFile:
-      // This is fatal, as a failure to create the checkpoint file means that
-      // the next time the same network context is used, the data in
-      // `unsandboxed_data_path` will be re-copied to the new `data_directory`
-      // and thus any changes to the data will be discarded. So in this case,
-      // `unsandboxed_data_path` should be used.
-      return false;
-    case SandboxGrantResult::kNoMigrationRequested:
-      // The caller supplied an `unsandboxed_data_path` but did not trigger a
-      // migration so the data should be read from the `unsandboxed_data_path`.
-      return false;
-    case SandboxGrantResult::kMigrationAlreadySucceeded:
-      // Migration has already taken place, so `data_directory` contains the
-      // valid data.
-      return true;
-    case SandboxGrantResult::kMigrationAlreadySucceededWithNoAccess:
-      // If the sandbox could not be granted access to the new data dir, but the
-      // migration has already happened to `data_directory`. This means that the
-      // sandbox might not have access to the data but `data_directory` should
-      // still be used because it's been migrated.
-      return true;
-  }
-}
-
-void CreateNetworkContextInternal(
-    mojo::PendingReceiver<network::mojom::NetworkContext> context,
-    network::mojom::NetworkContextParamsPtr params,
-    SandboxGrantResult grant_access_result) {
-  TRACE_EVENT0("loading", "CreateNetworkContextInternal");
-  // These two histograms are logged from elsewhere, so don't log them twice.
-  DCHECK(grant_access_result !=
-         SandboxGrantResult::kFailedToCreateCacheDirectory);
-  DCHECK(grant_access_result !=
-         SandboxGrantResult::kFailedToGrantSandboxAccessToCache);
-  base::UmaHistogramEnumeration("NetworkService.GrantSandboxResult",
-                                grant_access_result);
-
-  if (grant_access_result != SandboxGrantResult::kSuccess &&
-      grant_access_result !=
-          SandboxGrantResult::kDidNotAttemptToGrantSandboxAccess &&
-      grant_access_result != SandboxGrantResult::kNoMigrationRequested &&
-      grant_access_result != SandboxGrantResult::kMigrationAlreadySucceeded) {
-    PLOG(ERROR) << "Encountered error while migrating network context data or "
-                   "granting sandbox access for "
-                << (params->file_paths
-                        ? params->file_paths->data_directory.path()
-                        : base::FilePath())
-                << ". Result: " << static_cast<int>(grant_access_result);
-  }
-
-  if (!IsSafeToUseDataPath(grant_access_result)) {
-    // Unsafe to use new `data_directory`. This means that a migration was
-    // attempted, and `unsandboxed_data_path` contains the still-valid set of
-    // data. Swap the parameters to instruct the network service to use this
-    // path for the network context. This of course will mean that if the
-    // network service is running sandboxed then this data might not be
-    // accessible, but does provide a pathway to user recovery, as the sandbox
-    // can just be disabled in this case.
-    DCHECK(params->file_paths->unsandboxed_data_path.has_value());
-    params->file_paths->data_directory =
-        *params->file_paths->unsandboxed_data_path;
-  }
-
-  if (network::TransferableDirectory::IsOpenForTransferRequired()) {
-    if (params->file_paths) {
-      if (params->file_paths->http_cache_directory) {
-        params->file_paths->http_cache_directory->OpenForTransfer();
-      }
-      if (params->file_paths->shared_dictionary_directory) {
-        params->file_paths->shared_dictionary_directory->OpenForTransfer();
-      }
-      params->file_paths->data_directory.OpenForTransfer();
-    }
-  }
-
-  // This might recreate g_client if the network service needed to be restarted.
-  auto* network_service = GetNetworkService();
-
+void MaybeInitializeSocketBrokers(
+    network::mojom::NetworkContextParams* params) {
 #if BUILDFLAG(IS_WIN)
   // If the browser has started shutting down, it is possible that either a)
   // `g_client` was never created if shutdown started before the network service
@@ -291,6 +282,18 @@ void CreateNetworkContextInternal(
     params->socket_brokers->server = g_client->BindSocketBroker();
   }
 #endif  // BUILDFLAG(IS_WIN)
+}
+
+void CreateNetworkContextInternal(
+    mojo::PendingReceiver<network::mojom::NetworkContext> context,
+    network::mojom::NetworkContextParamsPtr params,
+    SandboxGrantResult grant_access_result) {
+  TRACE_EVENT("loading", "CreateNetworkContextInternal");
+  ProcessSandboxGrantResult(*params.get(), grant_access_result);
+
+  // This might recreate g_client if the network service needed to be restarted.
+  auto* network_service = GetNetworkService();
+  MaybeInitializeSocketBrokers(params.get());
 
   network_service->CreateNetworkContext(std::move(context), std::move(params));
 }
@@ -300,15 +303,16 @@ scoped_refptr<base::SequencedTaskRunner>& GetNetworkTaskRunnerStorage() {
   return *storage;
 }
 
+const char kNetworkServiceSuffix[] = "NetworkService";
+
 void CreateInProcessNetworkService(
     mojo::PendingReceiver<network::mojom::NetworkService> receiver) {
   TRACE_EVENT0("loading", "CreateInProcessNetworkService");
   scoped_refptr<base::SingleThreadTaskRunner> task_runner;
   if (base::FeatureList::IsEnabled(kNetworkServiceDedicatedThread)) {
     base::Thread::Options options(base::MessagePumpType::IO, 0);
-    if (base::FeatureList::IsEnabled(
-            network::features::kNetworkServiceTaskScheduler)) {
-      network::ConfigureSequenceManager(options);
+    if (base::FeatureList::IsEnabled(net::features::kNetTaskScheduler)) {
+      net::ConfigureSequenceManager(options);
     }
 #if BUILDFLAG(IS_ANDROID)
     // Local testing shows that when priority inheritance (PI) locks are enabled
@@ -328,10 +332,12 @@ void CreateInProcessNetworkService(
     task_runner->PostTask(
         FROM_HERE, base::BindOnce([]() {
           mojo::InterfaceEndpointClient::SetThreadNameSuffixForMetrics(
-              "NetworkService");
+              kNetworkServiceSuffix);
+          base::MessagePumpWakeupCounter::InitializeForCurrentThread(
+              kNetworkServiceSuffix);
 #if BUILDFLAG(IS_ANDROID)
           base::PlatformThreadPriorityMonitor::Get().RegisterCurrentThread(
-              "NetworkService");
+              kNetworkServiceSuffix);
 #endif  // BUILDFLAG(IS_ANDROID)
         }));
   } else {
@@ -343,6 +349,10 @@ void CreateInProcessNetworkService(
   GetNetworkTaskRunner()->PostTask(
       FROM_HERE, base::BindOnce(&CreateInProcessNetworkServiceOnThread,
                                 std::move(receiver)));
+  GetNetworkTaskRunner()->PostTask(
+      FROM_HERE, base::BindOnce([]() {
+        BoostNetworkThreadPriority::GetInstance().Initialize();
+      }));
 }
 
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_LINUX)
@@ -564,7 +574,7 @@ uint64_t GetNetLogMaximumFileSizeFromCommandLineForTesting(  // IN-TEST
 class NetworkServiceInstancePrivate {
  public:
   // Opens the specified file, blocking until the file is open. Used to open
-  // files specified by network::switches::kLogNetLog or
+  // files specified by net::switches::kLogNetLog or
   // network::switches::kSSLKeyLogFile. Since these arguments can be used to
   // debug startup behavior, asynchronously opening the file on another thread
   // would result in losing data, hence the need for blocking open operations.
@@ -649,9 +659,9 @@ network::mojom::NetworkService* GetNetworkService() {
 
       const base::CommandLine* command_line =
           base::CommandLine::ForCurrentProcess();
-      if (command_line->HasSwitch(network::switches::kLogNetLog)) {
+      if (command_line->HasSwitch(net::switches::kLogNetLog)) {
         base::FilePath log_path =
-            command_line->GetSwitchValuePath(network::switches::kLogNetLog);
+            command_line->GetSwitchValuePath(net::switches::kLogNetLog);
         if (log_path.empty()) {
           log_path = GetContentClient()->browser()->GetNetLogDefaultDirectory();
           if (!log_path.empty())
@@ -1004,6 +1014,19 @@ void CreateNetworkContextInNetworkService(
   CreateNetworkContextInternal(std::move(context), std::move(params),
                                grant_result);
 #else
+  if (base::FeatureList::IsEnabled(
+          network::features::kCreateNetworkContextNonBlocking)) {
+    // This might recreate g_client if the network service needed to be
+    // restarted.
+    GetNetworkService();
+    MaybeInitializeSocketBrokers(params.get());
+    mojo::PendingRemote<network::mojom::NetworkContextCreator> context_creator;
+    GetNetworkService()->BindNetworkContextCreator(
+        context_creator.InitWithNewPipeAndPassReceiver());
+    GrantSandboxAccessAndCreateNetworkContextOnThreadPool(
+        std::move(context_creator), std::move(context), std::move(params));
+    return;
+  }
   // Restrict disk access to a certain path (on another thread) and continue
   // with network context creation.
   GrantSandboxAccessOnThreadPool(

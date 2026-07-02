@@ -54,29 +54,7 @@ bool NameMatches(const ComputedStyle& style,
         container_name->GetNames();
     for (const auto& scoped_name : names) {
       if (scoped_name->GetName() == name) {
-        const TreeScope* name_tree_scope = scoped_name->GetTreeScope();
-        if (!name_tree_scope || !selector_tree_scope) {
-          // Either the container-name or @container have a UA or User origin.
-          // In that case always match the name regardless of the other one's
-          // origin.
-          return true;
-        }
-        // Match a tree-scoped container name if the container-name
-        // declaration's tree scope is an inclusive ancestor of the @container
-        // rule's tree scope.
-        for (const TreeScope* match_scope = selector_tree_scope; match_scope;
-             match_scope = match_scope->ParentTreeScope()) {
-          if (match_scope == name_tree_scope) {
-            return true;
-          }
-        }
-        // Keeping the TreeScope matching above to be able to count when this
-        // is a behavioral change.
-        selector_tree_scope->GetDocument().CountUse(
-            WebFeature::kContainerNameQueryFailedTreeScope);
-        if (RuntimeEnabledFeatures::CSSContainerNameNotTreeScopedEnabled()) {
-          return true;
-        }
+        return true;
       }
     }
   }
@@ -231,7 +209,7 @@ void ContainerQueryEvaluator::SetDependencyFlags(const ContainerQuery& query,
   if (selector.SelectsSizeContainers()) {
     match_result.SetDependsOnSizeContainerQueries();
   }
-  if (selector.SelectsStyleContainers()) {
+  if (selector.SelectsStyleOrNameOnlyContainers()) {
     match_result.SetDependsOnStyleContainerQueries();
   }
   if (selector.SelectsScrollStateContainers()) {
@@ -325,7 +303,7 @@ bool ContainerQueryEvaluator::EvalAndAdd(const ContainerQuery& query,
     depends_on_size_ = query.Selector().SelectsSizeContainers();
   }
   if (!depends_on_style_) {
-    depends_on_style_ = query.Selector().SelectsStyleContainers();
+    depends_on_style_ = query.Selector().SelectsStyleOrNameOnlyContainers();
   }
   if (!depends_on_stuck_) {
     depends_on_stuck_ = query.Selector().SelectsStickyContainers();
@@ -781,7 +759,7 @@ void ContainerQueryEvaluator::ClearResults(Change change,
          (container_type == kAnchoredContainer &&
           pair.key->Selector().SelectsAnchoredContainers()) ||
          (container_type == kStyleContainer &&
-          pair.key->Selector().SelectsStyleContainers()))) {
+          pair.key->Selector().SelectsStyleOrNameOnlyContainers()))) {
       continue;
     }
     new_results.Set(pair.key, pair.value);
@@ -814,7 +792,7 @@ ContainerQueryEvaluator::Change ContainerQueryEvaluator::ComputeStyleChange()
 
   for (const auto& result : results_) {
     const ContainerQuery& query = *result.key;
-    if (!query.Selector().SelectsStyleContainers()) {
+    if (!query.Selector().SelectsStyleOrNameOnlyContainers()) {
       continue;
     }
     if (Eval(query).value == result.value.value) {
@@ -920,7 +898,7 @@ void ContainerQueryEvaluator::UpdateContainerValuesFromUnitChanges(
     StyleRecalcChange change) {
   CHECK(media_query_evaluator_);
   unsigned changed_flags = 0;
-  if (change.RemUnitsMaybeChanged()) {
+  if (change.RootRelativeUnitsMaybeChanged()) {
     changed_flags |= MediaQueryExpValue::kRootFontRelative;
   }
   if (change.ContainerRelativeUnitsMaybeChanged()) {
@@ -1026,9 +1004,10 @@ StyleRecalcChange ContainerQueryEvaluator::ApplyScrollStateAndStyleChanges(
         break;
     }
   }
-  if (old_style.InheritedVariables() != new_style.InheritedVariables() ||
+  if (invalidate_for_font || DependsOnTreeCounting() ||
+      old_style.InheritedVariables() != new_style.InheritedVariables() ||
       old_style.NonInheritedVariables() != new_style.NonInheritedVariables() ||
-      DependsOnTreeCounting()) {
+      old_style.InitialData() != new_style.InitialData()) {
     switch (StyleContainerChanged()) {
       case ContainerQueryEvaluator::Change::kNone:
         break;

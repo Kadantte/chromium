@@ -12,6 +12,8 @@ android_library("java") {
     "android/java/src/org/chromium/chrome/browser/preferences/ChromeSharedPreferences.java",
     "android/java/src/org/chromium/chrome/browser/preferences/DeprecatedChromePreferenceKeys.java",
     "android/java/src/org/chromium/chrome/browser/preferences/LegacyChromePreferenceKeys.java",
+    "android/java/src/org/chromium/chrome/browser/preferences/MultiInstancePreferenceKeys.java",
+    "android/java/src/org/chromium/chrome/browser/preferences/MultiInstanceSharedPreferences.java",
   ]
 
   public_deps = [ "//base:base_shared_preferences_java" ]
@@ -48,7 +50,8 @@ android_library("pref_service_java") {
   ]
 }
 
-# TODO(chouinard,estade): Consider breaking this target up into a different target for each pref file.
+# TODO(chouinard,estade): Consider breaking this target up into a different
+# target for each pref file.
 java_cpp_strings("java_pref_names_srcjar") {
   sources = [
     "//chrome/browser/enterprise/reporting/prefs.cc",

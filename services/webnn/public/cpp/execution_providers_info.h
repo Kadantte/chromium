@@ -7,27 +7,29 @@
 
 #include <appmodel.h>
 
+#include <string_view>
+
 #include "base/containers/fixed_flat_map.h"
 #include "base/memory/raw_span.h"
 #include "base/strings/cstring_view.h"
 
 namespace webnn {
 
-inline constexpr base::cstring_view kCpuExecutionProvider =
+inline constexpr std::string_view kCPUExecutionProvider =
     "CPUExecutionProvider";
-inline constexpr base::cstring_view kDmlExecutionProvider =
+inline constexpr std::string_view kDmlExecutionProvider =
     "DmlExecutionProvider";
-inline constexpr base::cstring_view kMIGraphXExecutionProvider =
+inline constexpr std::string_view kMIGraphXExecutionProvider =
     "MIGraphXExecutionProvider";
-inline constexpr base::cstring_view kNvTensorRTRTXExecutionProvider =
+inline constexpr std::string_view kNvTensorRTRTXExecutionProvider =
     "NvTensorRTRTXExecutionProvider";
-inline constexpr base::cstring_view kOpenVINOExecutionProvider =
+inline constexpr std::string_view kOpenVINOExecutionProvider =
     "OpenVINOExecutionProvider";
-inline constexpr base::cstring_view kQNNExecutionProvider =
+inline constexpr std::string_view kQNNExecutionProvider =
     "QNNExecutionProvider";
-inline constexpr base::cstring_view kVitisAIExecutionProvider =
+inline constexpr std::string_view kVitisAIExecutionProvider =
     "VitisAIExecutionProvider";
-inline constexpr base::cstring_view kWebGpuExecutionProvider =
+inline constexpr std::string_view kWebGpuExecutionProvider =
     "WebGpuExecutionProvider";
 
 // Describes the workarounds needed for execution provider limitations.
@@ -46,6 +48,10 @@ struct EpWorkarounds {
   // It is unnecessary to compute `|=` operation result across EP devices,
   // because there will be only one NPU device EP.
   std::optional<uint32_t> npu_batched_matmul_k_dimension_limit;
+
+  // Whether the EP may report the NPU driver version in legacy concatenated
+  // format (e.g., "1004404") instead of 4-part dot-separated format.
+  bool npu_concatenated_driver_version = false;
 
   EpWorkarounds& operator|=(const EpWorkarounds& other) {
     resample2d_limit_to_nchw |= other.resample2d_limit_to_nchw;
@@ -71,12 +77,15 @@ struct EpInfo {
   bool enabled;
   EpWorkarounds workarounds;
   base::raw_span<const SessionConfigEntry> config_entries;
+  // The minimum driver versions required by the NPU device for this EP to work.
+  // Empty value means no version check is needed (default allow).
+  std::string_view min_npu_driver_version;
 };
 
 // The listed EPs must match the names of the histogram variants
 // WebNNOrtExecutionProvider in
 // tools/metrics/histograms/metadata/webnn/histograms.xml.
-inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<base::cstring_view,
+inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<std::string_view,
                                                          EpInfo>({
     // AMD
     {
@@ -86,7 +95,7 @@ inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<base::cstring_view,
                 {
                     .Major = 1,
                     .Minor = 8,
-                    .Build = 35,
+                    .Build = 53,
                     .Revision = 0,
                 },
             .vendor_id = 0x1002,
@@ -99,9 +108,9 @@ inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<base::cstring_view,
         {
             .min_package_version =
                 {
-                    .Major = 1,
-                    .Minor = 8,
-                    .Build = 14,
+                    .Major = 0,
+                    .Minor = 0,
+                    .Build = 26,
                     .Revision = 0,
                 },
             .vendor_id = 0x10de,
@@ -112,11 +121,13 @@ inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<base::cstring_view,
     {
         kOpenVINOExecutionProvider,
         {
+            // The package version 1.8.69.0 maps to the EP
+            // version 1.3.0+b130ce1.
             .min_package_version =
                 {
                     .Major = 1,
                     .Minor = 8,
-                    .Build = 15,
+                    .Build = 69,
                     .Revision = 0,
                 },
             .vendor_id = 0x8086,
@@ -129,6 +140,9 @@ inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<base::cstring_view,
                     // For more details, see GraphBuilderOrt::AddMatMulOperation
                     // in src/services/webnn/graph_builder_ort.cc.
                     .npu_batched_matmul_k_dimension_limit = 8192,
+                    // The OpenVINO EP currently reports NPU driver versions in
+                    // legacy concatenated format (e.g., "1004404").
+                    .npu_concatenated_driver_version = true,
                 },
             // OpenVINO EP configuration. Keys and values must align with the
             // ORT OpenVINO EP implementation. See:
@@ -161,6 +175,8 @@ inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<base::cstring_view,
                             }
                         })"},
                 },
+            // The minimum NPU driver version in 4-part dot-separated format.
+            .min_npu_driver_version = "32.0.100.4404",
         },
     },
     // Qualcomm
@@ -169,9 +185,9 @@ inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<base::cstring_view,
         {
             .min_package_version =
                 {
-                    .Major = 1,
-                    .Minor = 8,
-                    .Build = 13,
+                    .Major = 2,
+                    .Minor = 2420,
+                    .Build = 40,
                     .Revision = 0,
                 },
             .vendor_id = 0x4d4f4351,
@@ -186,7 +202,7 @@ inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<base::cstring_view,
                 {
                     .Major = 1,
                     .Minor = 8,
-                    .Build = 31,
+                    .Build = 57,
                     .Revision = 0,
                 },
             .vendor_id = 0x1022,

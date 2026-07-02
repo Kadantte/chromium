@@ -211,6 +211,8 @@ class FamilyLinkSettingsService : public KeyedService,
   HostExceptions GetHostExceptions() const;
   UrlExceptions GetUrlExceptions() const;
 
+  bool IsSafeSitesEnabled() const;
+
  private:
   // Returns parsed logical value for the default filtering behavior setting,
   // considering its default value.
@@ -238,6 +240,8 @@ class FamilyLinkSettingsService : public KeyedService,
   // Sends the settings to all subscribers if settings have changed since the
   // last time a notification was sent.
   void InformSubscribers();
+
+  void ClearWaitUntilReadyToSyncTrap();
 
   // Used for persisting the settings. Unlike other PrefStores, this one is not
   // directly hooked up to the PrefService.

@@ -45,6 +45,10 @@ class CORE_EXPORT HTMLIFrameElement : public HTMLFrameElementBase,
   explicit HTMLIFrameElement(Document&);
   ~HTMLIFrameElement() override;
 
+  ElementType GetElementType() const final {
+    return ElementType::kHTMLIFrameElement;
+  }
+
   DOMTokenList* sandbox() const;
   // Support JS introspection of frame policy (e.g. permissions policy)
   DOMFeaturePolicy* featurePolicy();
@@ -64,8 +68,9 @@ class CORE_EXPORT HTMLIFrameElement : public HTMLFrameElementBase,
   void CheckPotentialPermissionsPolicyViolation() override;
 
   void NaturalSizingInfoChanged() override;
+  void ClearLastNaturalSizingInfo() override;
 
-  const V8UnionStringOrTrustedHTML* srcdoc() const;
+  String srcdoc() const;
   void setSrcdoc(const V8UnionStringOrTrustedHTML*, ExceptionState&);
 
  private:

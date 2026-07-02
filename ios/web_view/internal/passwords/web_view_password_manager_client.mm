@@ -17,6 +17,7 @@
 #import "components/password_manager/core/common/password_manager_pref_names.h"
 #import "components/password_manager/ios/password_manager_ios_util.h"
 #import "ios/web_view/internal/app/application_context.h"
+#import "ios/web_view/internal/metrics/web_view_profile_metrics_service_factory.h"
 #import "ios/web_view/internal/passwords/web_view_account_password_store_factory.h"
 #import "ios/web_view/internal/passwords/web_view_password_manager_log_router_factory.h"
 #import "ios/web_view/internal/passwords/web_view_password_requirements_service_factory.h"
@@ -176,6 +177,12 @@ PrefService* WebViewPasswordManagerClient::GetLocalStatePrefs() const {
   return ApplicationContext::GetInstance()->GetLocalState();
 }
 
+metrics::ProfileMetricsService*
+WebViewPasswordManagerClient::GetProfileMetricsService() {
+  return WebViewProfileMetricsServiceFactory::GetForBrowserState(
+      static_cast<WebViewBrowserState*>(web_state_->GetBrowserState()));
+}
+
 const syncer::SyncService* WebViewPasswordManagerClient::GetSyncService()
     const {
   return sync_service_;
@@ -251,10 +258,11 @@ void WebViewPasswordManagerClient::NotifyUserCredentialsWereLeaked(
 void WebViewPasswordManagerClient::NotifyKeychainError() {}
 
 bool WebViewPasswordManagerClient::IsSavingAndFillingEnabled(
-    const GURL& url) const {
+    const url::Origin& origin,
+    base::optional_ref<const GURL> url) const {
   return *saving_passwords_enabled_ && !IsOffTheRecord() &&
          !net::IsCertStatusError(GetMainFrameCertStatus()) &&
-         IsFillingEnabled(url);
+         IsFillingEnabled(origin, url);
 }
 
 bool WebViewPasswordManagerClient::IsCommittedMainFrameSecure() const {

@@ -10,6 +10,7 @@
 
 #include "ash/public/cpp/app_list/app_list_config.h"
 #include "ash/public/cpp/app_list/app_list_types.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/containers/to_vector.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback_helpers.h"
@@ -50,10 +51,7 @@
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/common/chrome_constants.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/extensions/extension_constants.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
@@ -89,6 +87,7 @@
 #include "ui/display/test/test_screen.h"
 #include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/image/image_skia_operations.h"
+#include "ui/gfx/image/image_skia_rep.h"
 #include "ui/gfx/image/image_unittest_util.h"
 
 using crostini::CrostiniTestHelper;
@@ -363,7 +362,7 @@ class WebAppBuilderTest : public AppServiceAppModelBuilderTest {
         .ReadTrustedIconsWithFallbackToManifestIcons(
             app_id, icon_sizes_in_px, web_app::IconPurpose::ANY,
             read_icons_future.GetCallback());
-    web_app::SizeToBitmap icon_bitmaps =
+    web_app::OrderedSizeToBitmap icon_bitmaps =
         std::move(read_icons_future.Take().icons_map);
     for (auto [scale, size_px] : scale_to_size_in_px) {
       output_image_skia.AddRepresentation(

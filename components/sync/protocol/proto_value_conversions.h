@@ -82,8 +82,9 @@ class SharingMessageSpecifics;
 class SyncCycleCompletedEventInfo;
 class SyncEntity;
 class TabNavigation;
+class ThemeAndroidSpecifics;
+class ThemeIosSpecifics;
 class ThemeSpecifics;
-class ThemeSpecificsIos;
 class TimeRangeDirective;
 class TypedUrlSpecifics;
 class UnencryptedSharingMessage;
@@ -308,11 +309,14 @@ base::Value SyncCycleCompletedEventInfoToValue(
 
 base::Value TabNavigationToValue(const sync_pb::TabNavigation& tab_navigation);
 
+base::Value ThemeAndroidSpecificsToValue(
+    const sync_pb::ThemeAndroidSpecifics& theme_android_specifics);
+
+base::Value ThemeIosSpecificsToValue(
+    const sync_pb::ThemeIosSpecifics& theme_ios_specifics);
+
 base::Value ThemeSpecificsToValue(
     const sync_pb::ThemeSpecifics& theme_specifics);
-
-base::Value ThemeSpecificsIosToValue(
-    const sync_pb::ThemeSpecificsIos& theme_specifics_ios);
 
 base::Value TimeRangeDirectiveToValue(
     const sync_pb::TimeRangeDirective& time_range_directive);

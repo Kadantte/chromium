@@ -11,6 +11,7 @@
 #include <string>
 
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
 #include "base/observer_list_types.h"
 #include "components/contextual_search/contextual_search_types.h"
 #include "components/lens/lens_bitmap_processing.h"
@@ -19,6 +20,7 @@
 #include "third_party/lens_server_proto/aim_query.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_client_context.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_cluster_info.pb.h"
+#include "third_party/lens_server_proto/lens_overlay_request_id.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_selection_type.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_server.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_service_deps.pb.h"
@@ -72,17 +74,19 @@ class ContextualSearchContextController {
     bool attach_page_title_and_url_to_suggest_requests = false;
   };
 
-  // Observer interface for the Page Handler to get updates on file upload
-  class FileUploadStatusObserver : public base::CheckedObserver {
+  // Observer interface for the Page Handler to get updates on context upload
+  class ContextUploadStatusObserver : public base::CheckedObserver {
    public:
-    virtual void OnFileUploadStatusChanged(
-        const base::UnguessableToken& file_token,
+    virtual void OnContextUploadStatusChanged(
+        const base::UnguessableToken& context_token,
         lens::MimeType mime_type,
-        FileUploadStatus file_upload_status,
-        const std::optional<FileUploadErrorType>& error_type) = 0;
+        ContextUploadStatus context_upload_status,
+        const std::optional<ContextUploadErrorType>& error_type) = 0;
+
+    virtual void OnControllerDestroyed() {}
 
    protected:
-    ~FileUploadStatusObserver() override = default;
+    ~ContextUploadStatusObserver() override = default;
   };
 
   // The possible search url types.
@@ -115,10 +119,6 @@ class ContextualSearchContextController {
     // The tokens of the contextual inputs to attach to the search url.
     std::vector<base::UnguessableToken> file_tokens;
 
-    // The currently active model.
-    omnibox::ModelMode active_model =
-        omnibox::ModelMode::MODEL_MODE_UNSPECIFIED;
-
     // Additional params to attach to the search url.
     std::map<std::string, std::string> additional_params;
 
@@ -141,6 +141,9 @@ class ContextualSearchContextController {
     // The callback to run when the interaction response is received.
     base::OnceCallback<void(lens::LensOverlayInteractionResponse)>
         interaction_response_callback;
+
+    // Whether the query originated from voice search.
+    bool is_voice_search = false;
   };
 
   // Struct containing information needed to create a ClientToAimMessage.
@@ -179,12 +182,26 @@ class ContextualSearchContextController {
     // Metadata for context that is turn-specific. There is at most one entry
     // per context id.
     std::vector<lens::ContextTurnMetadata> context_turn_metadata;
+
+    // The token corresponding to the Lens Overlay instance, if one was active
+    // during the query submission.
+    std::optional<base::UnguessableToken> overlay_token;
+
+    // List of request IDs of removed contexts to be sent to the server.
+    // Populated by ContextualSearchSessionHandle.
+    std::vector<lens::LensOverlayRequestId> removed_contexts;
   };
 
   virtual ~ContextualSearchContextController() = default;
 
   // Called when a UI is associated with the context controller.
   virtual void InitializeIfNeeded() = 0;
+
+  // Triggers a fetch for the sticky cluster info if needed.
+  virtual void TriggerFetchClusterInfo() = 0;
+
+  // Set whether or not the context controller is backgrounded.
+  virtual void SetIsBackgrounded(bool backgrounded) = 0;
 
   // Called when a query has been submitted. `query_start_time` is the time
   // that the user clicked the submit button.
@@ -199,8 +216,8 @@ class ContextualSearchContextController {
           create_client_to_aim_request_info) = 0;
 
   // Observer management.
-  virtual void AddObserver(FileUploadStatusObserver* obs) = 0;
-  virtual void RemoveObserver(FileUploadStatusObserver* obs) = 0;
+  virtual void AddObserver(ContextUploadStatusObserver* obs) = 0;
+  virtual void RemoveObserver(ContextUploadStatusObserver* obs) = 0;
 
   // Triggers upload of the file with data and stores the file info in the
   // internal map. Call after setting the file info fields.
@@ -222,7 +239,7 @@ class ContextualSearchContextController {
       const base::UnguessableToken& file_token) = 0;
 
   // Return the file infos for all files in the request.
-  virtual std::vector<const FileInfo*> GetFileInfoList() = 0;
+  virtual std::vector<raw_ptr<const FileInfo>> GetFileInfoList() = 0;
 
   // Returns a weak pointer to the context controller.
   virtual base::WeakPtr<ContextualSearchContextController> AsWeakPtr() = 0;

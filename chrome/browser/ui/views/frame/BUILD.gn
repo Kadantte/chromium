@@ -4,12 +4,18 @@
 
 assert(!is_android)
 
-source_set("immersive_mode_controller") {
-  sources = [ "immersive_mode_controller.h" ]
+source_set("shadow") {
+  public = [ "shadow_frame_view.h" ]
+
+  sources = [ "shadow_frame_view.cc" ]
 
   deps = [
     "//base",
-    "//ui/base/unowned_user_data",
+    "//chrome/browser/ui/animation",
+    "//chrome/browser/ui/color:color_headers",
+    "//ui/compositor_extra",
+    "//ui/gfx:color_utils",
+    "//ui/views",
   ]
 }
 
@@ -21,21 +27,26 @@ static_library("test_support") {
     "mock_immersive_mode_controller.h",
   ]
   deps = [
-    ":immersive_mode_controller",
     "//base",
     "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/immersive:immersive_mode_controller",
     "//testing/gmock",
   ]
 }
 
 source_set("toolbar_button_provider") {
-  sources = [ "toolbar_button_provider.h" ]
+  public = [ "toolbar_button_provider.h" ]
+
+  sources = [ "toolbar_button_provider.cc" ]
 
   public_deps = [
     "//chrome/browser/ui/page_action:icon_type",
     "//ui/actions:actions_headers",
+    "//ui/base/unowned_user_data",
     "//ui/views",
   ]
+
+  deps = [ "//chrome/browser/ui/browser_window" ]
 }
 
 source_set("frame") {

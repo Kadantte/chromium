@@ -22,7 +22,6 @@
 #include "ui/aura/env.h"
 #include "ui/aura/test/test_windows.h"
 #include "ui/aura/window_event_dispatcher.h"
-#include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/display/display.h"
 #include "ui/display/manager/display_manager.h"
 #include "ui/display/screen.h"
@@ -130,13 +129,13 @@ const int kDesktopBorderSize = WindowSizerChromeOS::kDesktopBorderSize;
 const int kMaximumWindowWidth = WindowSizerChromeOS::kMaximumWindowWidth;
 const int kWindowTilePixels = WindowSizer::kWindowTilePixels;
 
-std::unique_ptr<Browser> CreateTestBrowser(aura::Window* window,
+std::unique_ptr<Browser> CreateTestBrowser(std::unique_ptr<aura::Window> window,
                                            Browser::CreateParams* params) {
   std::unique_ptr<Browser> browser =
-      chrome::CreateBrowserWithAuraTestWindowForParams(base::WrapUnique(window),
+      chrome::CreateBrowserWithAuraTestWindowForParams(std::move(window),
                                                        params);
   if (browser->is_type_normal()) {
-    browser->window()->GetNativeWindow()->SetProperty(
+    browser->GetWindow()->GetNativeWindow()->SetProperty(
         ash::kWindowPositionManagedTypeKey, true);
   }
   return browser;
@@ -401,7 +400,7 @@ TEST_F(WindowSizerChromeOSTest, DISABLED_PlaceNewWindows) {
   std::unique_ptr<Browser> browser2 = (CreateTestBrowser(
       CreateTestWindowInShell({.bounds = {16, 32, 640, 320}, .window_id = 0}),
       &params2));
-  BrowserWindow* browser_window = browser2->window();
+  ui::BaseWindow* browser_window = browser2->GetWindow();
 
   // Creating a popup to make sure it does not interfere with the positioning.
   Browser::CreateParams params_popup(Browser::TYPE_POPUP, &profile_, true);
@@ -535,7 +534,7 @@ TEST_F(WindowSizerChromeOSTest, DISABLED_PlaceNewWindowsOnMultipleDisplays) {
   std::unique_ptr<Browser> browser(CreateTestBrowser(
       CreateTestWindowInShell({.bounds = {10, 10, 200, 200}, .window_id = 0}),
       &params));
-  BrowserWindow* browser_window = browser->window();
+  ui::BaseWindow* browser_window = browser->GetWindow();
   gfx::NativeWindow native_window = browser_window->GetNativeWindow();
   browser_window->Show();
   EXPECT_EQ(native_window->GetRootWindow(),
@@ -545,7 +544,7 @@ TEST_F(WindowSizerChromeOSTest, DISABLED_PlaceNewWindowsOnMultipleDisplays) {
   std::unique_ptr<Browser> another_browser(CreateTestBrowser(
       CreateTestWindowInShell({.bounds = {400, 10, 300, 300}, .window_id = 1}),
       &another_params));
-  BrowserWindow* another_browser_window = another_browser->window();
+  ui::BaseWindow* another_browser_window = another_browser->GetWindow();
   gfx::NativeWindow another_native_window =
       another_browser_window->GetNativeWindow();
   another_browser_window->Show();
@@ -800,25 +799,4 @@ TEST_F(WindowSizerChromeOSTest, DefaultBoundsInTargetDisplay) {
                                                     &bounds, &show_state);
     EXPECT_TRUE(second_root->GetBoundsInScreen().Contains(bounds));
   }
-}
-
-TEST_F(WindowSizerChromeOSTest, TrustedPopupBehavior) {
-  Browser::CreateParams trusted_popup_create_params(Browser::TYPE_POPUP,
-                                                    &profile_, true);
-  trusted_popup_create_params.trusted_source = true;
-
-  auto trusted_popup = CreateWindowlessBrowser(trusted_popup_create_params);
-  // Trusted popup windows should follow the saved show state and ignore the
-  // last show state.
-  EXPECT_EQ(
-      ui::mojom::WindowShowState::kDefault,
-      GetBrowserWindowShowState(ui::mojom::WindowShowState::kDefault,
-                                ui::mojom::WindowShowState::kNormal, BOTH,
-                                trusted_popup.get(), p1280x1024, p1600x1200));
-  // A popup that is sized to occupy the whole work area has default state.
-  EXPECT_EQ(
-      ui::mojom::WindowShowState::kDefault,
-      GetBrowserWindowShowState(ui::mojom::WindowShowState::kDefault,
-                                ui::mojom::WindowShowState::kNormal, BOTH,
-                                trusted_popup.get(), p1600x1200, p1600x1200));
 }

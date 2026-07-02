@@ -22,16 +22,21 @@
 #include "chrome/browser/autocomplete/tab_matcher_desktop.h"
 #endif
 
-class Profile;
-class TabMatcher;
+class AiModeButtonService;
+class AimEligibilityService;
 class AutocompleteScoringModelService;
 class OnDeviceTailModelService;
-class AimEligibilityService;
+class Profile;
+class TabMatcher;
 
 namespace content {
 class StoragePartition;
 class WebContents;
 }  // namespace content
+
+namespace sync_sessions {
+class SessionSyncService;
+}  // namespace sync_sessions
 
 namespace unified_consent {
 class UrlKeyedDataCollectionConsentHelper;
@@ -69,6 +74,7 @@ class ChromeAutocompleteProviderClient : public AutocompleteProviderClient {
   InMemoryURLIndex* GetInMemoryURLIndex() override;
   TemplateURLService* GetTemplateURLService() override;
   const TemplateURLService* GetTemplateURLService() const override;
+  GeolocationHeaderService* GetGeolocationHeaderService() const override;
   DocumentSuggestionsService* GetDocumentSuggestionsService() const override;
   RemoteSuggestionsService* GetRemoteSuggestionsService(
       bool create_if_necessary) const override;
@@ -96,7 +102,9 @@ class ChromeAutocompleteProviderClient : public AutocompleteProviderClient {
   OnDeviceTailModelService* GetOnDeviceTailModelService() const override;
   ProviderStateService* GetProviderStateService() const override;
   tab_groups::TabGroupSyncService* GetTabGroupSyncService() const override;
+  sync_sessions::SessionSyncService* GetSessionSyncService() const override;
   AimEligibilityService* GetAimEligibilityService() const override;
+  AiModeButtonService* GetAiModeButtonService() const override;
 
   bool IsOffTheRecord() const override;
   bool IsIncognitoProfile() const override;
@@ -106,11 +114,10 @@ class ChromeAutocompleteProviderClient : public AutocompleteProviderClient {
   bool IsUrlDataCollectionActive() const override;
   bool IsPersonalizedUrlDataCollectionActive() const override;
   bool IsAuthenticated() const override;
-  bool IsSyncActive() const override;
   std::string ProfileUserName() const override;
   void Classify(
       const std::u16string& text,
-      bool prefer_keyword,
+      bool in_keyword_mode,
       bool allow_exact_keyword_match,
       metrics::OmniboxEventProto::PageClassification page_classification,
       AutocompleteMatch* match,
@@ -132,6 +139,7 @@ class ChromeAutocompleteProviderClient : public AutocompleteProviderClient {
   bool ShouldSendPageTitleSuggestParam() const override;
   bool IsOmniboxNextLensSearchChipEnabled() const override;
   bool IsOmniboxNextAimPopupEnabled() const override;
+  bool IsGeminiStarterPackEnabled() const override;
   base::CallbackListSubscription GetLensSuggestInputsWhenReady(
       LensOverlaySuggestInputsCallback callback) const override;
   base::WeakPtr<AutocompleteProviderClient> GetWeakPtr() override;
@@ -144,6 +152,8 @@ class ChromeAutocompleteProviderClient : public AutocompleteProviderClient {
   void PromptPageTranslation() override;
   bool OpenJourneys(const std::string& query) override;
   void OpenLensOverlay(bool show) override;
+  bool ShouldOpenCoBrowsePanel() const override;
+  void OpenCoBrowsePanel() override;
   void IssueContextualSearchRequest(const GURL& destination_url,
                                     AutocompleteMatchType::Type match_type,
                                     bool is_zero_prefix_suggestion) override;

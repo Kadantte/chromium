@@ -23,6 +23,7 @@
 class AppMenuIconController;
 class BookmarkSubMenuModel;
 class Browser;
+class BrowserWindowInterface;
 
 // Values should correspond to 'WrenchMenuAction' enum in enums.xml.
 //
@@ -112,7 +113,7 @@ enum AppMenuAction {
   MENU_ACTION_SHOW_LENS_OVERLAY = 90,
   MENU_ACTION_SAFETY_HUB_MANAGE_EXTENSIONS = 91,
   MENU_ACTION_SHOW_CUSTOMIZE_CHROME_SIDE_PANEL = 92,
-  MENU_ACTION_DECLUTTER_TABS = 93,
+  // MENU_ACTION_DECLUTTER_TABS = 93, // DEPRECATED
   MENU_ACTION_OPEN_GLIC = 94,
   MENU_ACTION_FIND_EXTENSIONS = 95,
   MENU_SHOW_SIGNIN = 96,
@@ -199,6 +200,7 @@ class AppMenuModel : public ui::SimpleMenuModel,
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kDownloadsMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kHistoryMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kExtensionsMenuItem);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kClearBrowsingDataMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kMoreToolsMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kIncognitoMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kPasswordAndAutofillMenuItem);
@@ -230,6 +232,13 @@ class AppMenuModel : public ui::SimpleMenuModel,
   static constexpr int kMinOtherProfileCommandId = kMinRecentTabsCommandId + 1;
   static constexpr int kMinTabGroupsCommandId = kMinOtherProfileCommandId + 1;
   static constexpr int kMinCompareCommandId = kMinTabGroupsCommandId + 1;
+
+  // TODO(mickeyburks): Highlight menu items dynamically through
+  // TutorialDescription instead of hardcoding specific tutorials here.
+  // Returns the alert menu item that should be highlighted if a tutorial
+  // is currently running in the given browser.
+  static AlertMenuItem GetAlertItemForRunningTutorial(
+      BrowserWindowInterface* browser);
 
   // Creates an app menu model for the given browser. Init() must be called
   // before passing this to an AppMenu. |app_menu_icon_controller|, if provided,

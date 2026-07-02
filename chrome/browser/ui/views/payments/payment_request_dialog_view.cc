@@ -10,9 +10,11 @@
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notimplemented.h"
+#include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/desktop_browser_window_capabilities.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/browser/ui/views/extensions/security_dialog_tracker.h"
 #include "chrome/browser/ui/views/payments/contact_info_editor_view_controller.h"
@@ -30,6 +32,7 @@
 #include "components/payments/content/payment_request.h"
 #include "components/payments/core/error_strings.h"
 #include "components/payments/core/features.h"
+#include "components/payments/core/journey_logger.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/browser_thread.h"
@@ -113,7 +116,9 @@ void PaymentRequestDialogView::OnDialogClosed() {
   }
   RemoveChildViewT(view_stack_.get());
   controller_map_.clear();
-  request_->OnUserCancelled();
+  if (request_) {
+    request_->OnUserCancelled();
+  }
 
   if (observer_for_testing_) {
     observer_for_testing_->OnDialogClosed();
@@ -132,9 +137,8 @@ bool PaymentRequestDialogView::ShouldShowCloseButton() const {
 
 void PaymentRequestDialogView::ShowDialog() {
   if (!DialogFitsInBrowserWindow()) {
-    base::UmaHistogramEnumeration(
-        "PaymentRequest.WindowSizeCheckRejectionReason",
-        WindowSizeCheckRejectionReason::kRejectedAtShow);
+    request_->SetWindowSizeCheckRejectionReason(
+        JourneyLogger::WindowSizeCheckRejectionReason::kRejectedAtShow);
 
     // To avoid tearing down the PaymentRequest class in the middle of showing
     // the dialog, we post this call asynchronously.
@@ -162,9 +166,19 @@ void PaymentRequestDialogView::ShowDialog() {
 
 void PaymentRequestDialogView::CloseDialog() {
   if (GetWidget()) {
-    // This calls PaymentRequestDialogView::Cancel() before closing.
-    // ViewHierarchyChanged() also gets called after Cancel().
-    GetWidget()->Close();
+    if (base::FeatureList::IsEnabled(
+            features::kPaymentRequestMandatoryPaymentAppUi)) {
+      // To avoid deleting the PaymentRequest and ChromePaymentRequestDelegate
+      // while their methods are on the call stack, we post a task to close the
+      // widget.
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE,
+          base::BindOnce(&views::Widget::Close, GetWidget()->GetWeakPtr()));
+    } else {
+      // This calls PaymentRequestDialogView::Cancel() before closing.
+      // ViewHierarchyChanged() also gets called after Cancel().
+      GetWidget()->Close();
+    }
   }
 }
 
@@ -212,9 +226,10 @@ void PaymentRequestDialogView::ShowPaymentHandlerScreen(
   is_showing_large_payment_handler_window_ = true;
 
   // Calculate |payment_handler_window_height_|
-  auto* browser = chrome::FindBrowserWithTab(request_->web_contents());
+  auto* browser = GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+      request_->web_contents());
   int browser_window_content_height =
-      browser->window()->GetContentsSize().height();
+      browser->capabilities()->GetContentsSize().height();
   payment_handler_window_height_ =
       std::max(kDialogHeight, std::min(kPreferredPaymentHandlerDialogHeight,
                                        browser_window_content_height));
@@ -224,9 +239,9 @@ void PaymentRequestDialogView::ShowPaymentHandlerScreen(
   // Once we have resized the dialog, re-check that it still fits in the
   // available window space.
   if (!DialogFitsInBrowserWindow()) {
-    base::UmaHistogramEnumeration(
-        "PaymentRequest.WindowSizeCheckRejectionReason",
-        WindowSizeCheckRejectionReason::kRejectedAtPaymentHandlerTransition);
+    request_->SetWindowSizeCheckRejectionReason(
+        JourneyLogger::WindowSizeCheckRejectionReason::
+            kRejectedAtPaymentHandlerTransition);
     std::move(callback).Run(false, 0, 0);
     request_->OnInternalError(errors::kBrowserWindowTooSmall);
     return;
@@ -754,9 +769,8 @@ void PaymentRequestDialogView::ResizeDialogWindow() {
 void PaymentRequestDialogView::CheckIfDialogFitsInBrowserWindow() {
   last_check_for_too_small_window_time_ = base::TimeTicks::Now();
   if (!DialogFitsInBrowserWindow()) {
-    base::UmaHistogramEnumeration(
-        "PaymentRequest.WindowSizeCheckRejectionReason",
-        WindowSizeCheckRejectionReason::kRejectedAtResize);
+    request_->SetWindowSizeCheckRejectionReason(
+        JourneyLogger::WindowSizeCheckRejectionReason::kRejectedAtResize);
     request_->OnInternalError(errors::kBrowserWindowTooSmall);
   }
 }
@@ -764,6 +778,12 @@ void PaymentRequestDialogView::CheckIfDialogFitsInBrowserWindow() {
 bool PaymentRequestDialogView::DialogFitsInBrowserWindow() const {
   if (!base::FeatureList::IsEnabled(
           features::kPaymentRequestRejectTooSmallWindows)) {
+    return true;
+  }
+
+  // This method may trigger from the timer after our PaymentRequest is no
+  // longer valid but before we ourselves have been torn down.
+  if (!request_) {
     return true;
   }
 

@@ -75,7 +75,7 @@ class TestLayoutDelegate : public OpaqueBrowserFrameViewLayoutDelegate {
   bool IsMinimized() const override { return false; }
   bool IsFullscreen() const override { return false; }
   bool IsTabStripVisible() const override { return window_title_.empty(); }
-  bool GetBorderlessModeEnabled() const override { return false; }
+  bool GetUnframedModeEnabled() const override { return false; }
   bool IsToolbarVisible() const override { return true; }
   int GetTopAreaHeight() const override { return 0; }
   bool UseCustomFrame() const override { return true; }
@@ -118,7 +118,7 @@ class OpaqueBrowserFrameViewLayoutTest
     layout->set_delegate(delegate_.get());
     layout->set_forced_window_caption_spacing_for_test(0);
     widget_ =
-        CreateTestWidget(views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET);
+        CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
     root_view_ = widget_->GetRootView();
     root_view_->SetSize(gfx::Size(kWindowWidth, kWindowWidth));
     layout_manager_ = root_view_->SetLayoutManager(std::move(layout));

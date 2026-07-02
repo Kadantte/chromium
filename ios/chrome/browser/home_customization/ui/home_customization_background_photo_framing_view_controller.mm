@@ -200,9 +200,7 @@ const CGFloat kGradientSpacingAboveInstructions = 150;
   UIView* logoView = searchEngineLogoMediator.view;
   logoView.translatesAutoresizingMaskIntoConstraints = NO;
 
-  searchEngineLogoMediator.usesMonochromeLogo = YES;
-  // Real logo is always white, even in dark mode.
-  logoView.tintColor = UIColor.whiteColor;
+  [searchEngineLogoMediator setLogoTintColor:UIColor.whiteColor];
   [topSection addArrangedSubview:logoView];
 
   [NSLayoutConstraint activateConstraints:@[
@@ -543,8 +541,10 @@ const CGFloat kGradientSpacingAboveInstructions = 150;
                           std::fmax(0, _originalImage.size.height -
                                            visibleRectInOriginal.size.height));
 
-  return [[HomeCustomizationFramingCoordinates alloc]
-      initWithVisibleRect:visibleRectInOriginal];
+  HomeCustomizationFramingCoordinates* coordinates =
+      [[HomeCustomizationFramingCoordinates alloc]
+          initWithVisibleRect:visibleRectInOriginal];
+  return coordinates;
 }
 
 @end

@@ -19,6 +19,7 @@ import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 import androidx.browser.customtabs.CustomTabsIntent;
 
+import org.chromium.base.Callback;
 import org.chromium.base.CommandLine;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.RequiredCallback;
@@ -31,6 +32,7 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.IntentHandler;
+import org.chromium.chrome.browser.actor.ui.ActorUiTabController;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsVisibilityManager;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.CustomTabsUiType;
@@ -107,6 +109,7 @@ public class ReaderModeManager extends EmptyTabObserver
         EntryPoint.MESSAGE,
         EntryPoint.APP_MENU,
         EntryPoint.TOOLBAR_BUTTON,
+        EntryPoint.CONTEXT_MENU,
         EntryPoint.MAX_VALUE
     })
     @Retention(RetentionPolicy.SOURCE)
@@ -122,7 +125,10 @@ public class ReaderModeManager extends EmptyTabObserver
         /** The user opened reader mode through the toolbar button. */
         int TOOLBAR_BUTTON = 3;
 
-        int MAX_VALUE = TOOLBAR_BUTTON;
+        /** The user opened reader mode through the context menu. */
+        int CONTEXT_MENU = 4;
+
+        int MAX_VALUE = CONTEXT_MENU;
     }
 
     // LINT.ThenChange(//tools/metrics/histograms/metadata/accessibility/enums.xml:DomDistillerEntryPoint)
@@ -733,28 +739,44 @@ public class ReaderModeManager extends EmptyTabObserver
     }
 
     public void activateReaderMode(@EntryPoint int entryPoint) {
-        // Contextual page action buttons can't be dismissed, instead we consider a shown but unused
-        // button as "dismissed" and mute the site on setReaderModeUiShown(). When the button gets
-        // clicked we un-mute the site to prevent the rate limiting logic from showing the CPA
-        // button for this site on other tabs.
-        removeUrlFromMutedSites(mDistillerUrl);
+        Callback<Boolean> activateCallback =
+                (confirmed) -> {
+                    if (!confirmed) return;
+                    // Contextual page action buttons can't be dismissed, instead we consider a
+                    // shown but unused
+                    // button as "dismissed" and mute the site on setReaderModeUiShown(). When the
+                    // button gets
+                    // clicked we un-mute the site to prevent the rate limiting logic from showing
+                    // the CPA
+                    // button for this site on other tabs.
+                    removeUrlFromMutedSites(mDistillerUrl);
 
-        if (shouldDistillInCustomTab()) {
-            distillInCustomTab();
-        } else {
-            navigateToReaderMode();
+                    if (shouldDistillInCustomTab()) {
+                        distillInCustomTab();
+                    } else {
+                        navigateToReaderMode();
+                    }
+                    RecordUserAction.record("MobileReaderModeActivated");
+                    boolean isCpaFallbackMessage =
+                            !ChromeFeatureList.getFieldTrialParamByFeatureAsBoolean(
+                                    ChromeFeatureList.CCT_ADAPTIVE_BUTTON,
+                                    CPA_FALLBACK_MENU_PARAM,
+                                    false);
+                    if (mHasBeenNotifiedOfCpa
+                            && !mIsReaderModeButtonShowingOnToolbar
+                            && isCpaFallbackMessage) {
+                        RecordHistogram.recordEnumeratedHistogram(
+                                "CustomTab.AdaptiveToolbarButton.FallbackUi",
+                                AdaptiveToolbarButtonVariant.READER_MODE,
+                                AdaptiveToolbarButtonVariant.MAX_VALUE);
+                    }
+                    recordEntryPointMetric(entryPoint);
+                };
+
+        ActorUiTabController controller = ActorUiTabController.from(mTab);
+        if (controller == null || !controller.showTaskAbortConfirmationDialog(activateCallback)) {
+            activateCallback.onResult(true);
         }
-        RecordUserAction.record("MobileReaderModeActivated");
-        boolean isCpaFallbackMessage =
-                !ChromeFeatureList.getFieldTrialParamByFeatureAsBoolean(
-                        ChromeFeatureList.CCT_ADAPTIVE_BUTTON, CPA_FALLBACK_MENU_PARAM, false);
-        if (mHasBeenNotifiedOfCpa && !mIsReaderModeButtonShowingOnToolbar && isCpaFallbackMessage) {
-            RecordHistogram.recordEnumeratedHistogram(
-                    "CustomTab.AdaptiveToolbarButton.FallbackUi",
-                    AdaptiveToolbarButtonVariant.READER_MODE,
-                    AdaptiveToolbarButtonVariant.MAX_VALUE);
-        }
-        recordEntryPointMetric(entryPoint);
     }
 
     private void recordEntryPointMetric(@EntryPoint int entryPoint) {
@@ -805,8 +827,9 @@ public class ReaderModeManager extends EmptyTabObserver
         }
 
         // RenderWidgetHostViewAndroid hides the controls after transitioning to reader mode.
-        // See the long history of the issue in https://crbug.com/825765, https://crbug.com/853686,
-        // https://crbug.com/861618, https://crbug.com/922388.
+        // See the long history of the issue in https://crbug.com/41378906,
+        // https://crbug.com/41395138,
+        // https://crbug.com/40584047, https://crbug.com/41435871.
         // TODO(pshmakov): find a proper solution instead of this workaround.
         BrowserControlsVisibilityManager browserControlsVisibilityManager =
                 getBrowserControlsVisibilityManager();
@@ -954,16 +977,21 @@ public class ReaderModeManager extends EmptyTabObserver
 
     /**
      * Returns whether reader mode should trigger through messages. This happens for CCTs and
-     * incognito tabs.
+     * incognito tabs (except when in-app distillation is enabled).
      *
      * @param tab The tab where Reader Mode is active.
      * @return Whether reader mode should trigger through messages.
      */
-    public static boolean shouldUseReaderModeMessages(Tab tab) {
-        // Messages are explicitly disabled for in-app distillation.
-        return !DomDistillerFeatures.sReaderModeDistillInApp.isEnabled()
-                && tab != null
-                && (tab.isCustomTab() || tab.isIncognito());
+    public static boolean shouldUseReaderModeMessages(@Nullable Tab tab) {
+        if (tab == null) {
+            return false;
+        }
+
+        // For in-app distillation, messages are only used for CCTs.
+        if (DomDistillerFeatures.sReaderModeDistillInApp.isEnabled()) {
+            return tab.isCustomTab();
+        }
+        return tab.isCustomTab() || tab.isIncognito();
     }
 
     /**
@@ -1045,10 +1073,13 @@ public class ReaderModeManager extends EmptyTabObserver
 
     /**
      * Determine if Reader Mode created the intent for a tab being created.
+     *
      * @param intent The Intent creating a new tab.
      * @return True whether the intent was created by Reader Mode.
      */
     public static boolean isReaderModeCreatedIntent(Intent intent) {
+        // Ensure that the intent is from a trusted intent.
+        if (!IntentHandler.wasIntentSenderChrome(intent)) return false;
         int readerParentId =
                 IntentUtils.safeGetIntExtra(
                         intent, ReaderModeManager.EXTRA_READER_MODE_PARENT, Tab.INVALID_TAB_ID);

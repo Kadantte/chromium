@@ -23,6 +23,7 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.CallbackUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.OneshotSupplierImpl;
@@ -39,7 +40,7 @@ import org.chromium.chrome.browser.browsing_data.BrowsingDataType;
 import org.chromium.chrome.browser.browsing_data.TimePeriod;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.omnibox.LocationBarDataProvider;
-import org.chromium.chrome.browser.omnibox.UrlBarEditingTextStateProvider;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator;
 import org.chromium.chrome.browser.omnibox.status.PageInfoIphController;
 import org.chromium.chrome.browser.omnibox.status.PermissionStatusHandler;
 import org.chromium.chrome.browser.omnibox.status.StatusMediator;
@@ -122,7 +123,7 @@ public class PageInfoDiscoverabilityTest {
             parameters.add(
                     new ParameterSet()
                             .name("RequestType.kGeolocation")
-                            .value(ContentSettingsType.GEOLOCATION, true));
+                            .value(ContentSettingsType.GEOLOCATION_WITH_OPTIONS, true));
             parameters.add(
                     new ParameterSet()
                             .name("RequestType.kHandTracking")
@@ -138,10 +139,6 @@ public class PageInfoDiscoverabilityTest {
                                     ContentSettingsType
                                             .FEDERATED_IDENTITY_IDENTITY_PROVIDER_REGISTRATION,
                                     false));
-            parameters.add(
-                    new ParameterSet()
-                            .name("RequestType.kLocalNetworkAccess")
-                            .value(ContentSettingsType.LOCAL_NETWORK_ACCESS, true));
             parameters.add(
                     new ParameterSet()
                             .name("RequestType.kLocalNetwork")
@@ -175,6 +172,10 @@ public class PageInfoDiscoverabilityTest {
                     new ParameterSet()
                             .name("RequestType.kProtectedMediaIdentifier")
                             .value(ContentSettingsType.PROTECTED_MEDIA_IDENTIFIER, true));
+            parameters.add(
+                    new ParameterSet()
+                            .name("RequestType.kSensors")
+                            .value(ContentSettingsType.SENSORS, true));
             parameters.add(
                     new ParameterSet()
                             .name("RequestType.kStorageAccess")
@@ -220,7 +221,6 @@ public class PageInfoDiscoverabilityTest {
     }
 
     @Mock LocationBarDataProvider mLocationBarDataProvider;
-    @Mock UrlBarEditingTextStateProvider mUrlBarEditingTextStateProvider;
     @Mock Profile mProfile;
     @Mock TemplateUrlService mTemplateUrlService;
     @Mock PageInfoIphController mPageInfoIphController;
@@ -247,16 +247,20 @@ public class PageInfoDiscoverabilityTest {
                             new StatusMediator(
                                     mModel,
                                     mContext,
-                                    mUrlBarEditingTextStateProvider,
-                                    /* isTablet= */ false,
                                     mLocationBarDataProvider,
                                     mPermissionDialogController,
                                     mTemplateUrlServiceSupplier,
                                     ObservableSuppliers.createNonNull(mProfile),
                                     mPageInfoIphController,
                                     sPermissionTestRule.getActivity().getWindowAndroid(),
-                                    null);
-                    mPermissionStatusHandler = mMediator.getPermissionStatusHandler();
+                                    /* pageInfoAction= */ null,
+                                    ObservableSuppliers.createNonNull(
+                                            FuseboxCoordinator.FuseboxState.DISABLED),
+                                    ObservableSuppliers.createNonNull(
+                                            FuseboxCoordinator.FuseboxLayoutMode.TOOLBAR),
+                                    CallbackUtils.emptyRunnable(),
+                                    ObservableSuppliers.createNullable());
+                    mPermissionStatusHandler = mMediator.getPermissionStatusHandlerForTesting();
                 });
     }
 
@@ -264,6 +268,16 @@ public class PageInfoDiscoverabilityTest {
     public void tearDown() throws Exception {
         LocationUtils.setFactory(null);
         LocationProviderOverrider.setLocationProviderImpl(null);
+
+        // Tear down the StatusMediator created in setUp so it removes its observers and
+        // cancels any pending Handler callbacks posted by PermissionStatusHandler (which
+        // would otherwise retain the destroyed Activity via mContext).
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    if (mMediator != null) {
+                        mMediator.destroy();
+                    }
+                });
 
         // Reset content settings.
         CallbackHelper helper = new CallbackHelper();

@@ -11,6 +11,7 @@
 #include "chrome/grit/generated_resources.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/ui_base_features.h"
 
 WindowControlsOverlayToggleButton::WindowControlsOverlayToggleButton(
     BrowserView* browser_view)
@@ -34,11 +35,17 @@ void WindowControlsOverlayToggleButton::UpdateState() {
   // Use app_controller's IsWindowControlsOverlayEnabled rather than
   // browser_view's to avoid this returning false at startup due to the CCT
   // displaying momentarily.
-  bool enabled = browser_view_->browser()
-                     ->app_controller()
-                     ->IsWindowControlsOverlayEnabled();
-
-  SetVectorIcon(enabled ? kKeyboardArrowDownIcon : kKeyboardArrowUpIcon);
+  auto* const app_controller =
+      web_app::AppBrowserController::From(browser_view_->browser());
+  bool enabled = app_controller->IsWindowControlsOverlayEnabled();
+  // If you update the features::IsRoundedIconsEnabled() ?
+  // kKeyboardArrowDownIcon : kKeyboardArrowDownOldIcon, please update
+  // kKeyboardArrowLeftIcon defined in `ash/resources/vector_icons` as well.
+  SetVectorIcon(enabled ? features::IsRoundedIconsEnabled()
+                              ? kKeyboardArrowDownIcon
+                              : kKeyboardArrowDownOldIcon
+                : features::IsRoundedIconsEnabled() ? kKeyboardArrowUpIcon
+                                                    : kKeyboardArrowUpOldIcon);
   SetTooltipText(l10n_util::GetStringUTF16(
       enabled ? IDS_WEB_APP_DISABLE_WINDOW_CONTROLS_OVERLAY_TOOLTIP
               : IDS_WEB_APP_ENABLE_WINDOW_CONTROLS_OVERLAY_TOOLTIP));

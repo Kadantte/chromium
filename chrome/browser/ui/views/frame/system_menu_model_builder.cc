@@ -9,13 +9,17 @@
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/app/vector_icons/vector_icons.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
 #include "chrome/browser/ui/ui_features.h"
-#include "chrome/browser/ui/views/frame/immersive_mode_controller.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/user_education/user_education_service.h"
 #include "chrome/common/chrome_features.h"
@@ -26,12 +30,12 @@
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/models/menu_model.h"
 #include "ui/menus/simple_menu_model.h"
+#include "ui/views/window/vector_icons/vector_icons.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/multi_user/multi_user_window_manager.h"
 #include "ash/shell.h"
 #include "chrome/browser/ash/boca/on_task/on_task_locked_controller.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/settings_window_manager_chromeos.h"
@@ -50,12 +54,31 @@
 #include "ui/ozone/public/ozone_platform.h"
 #endif
 
-#if BUILDFLAG(ENABLE_GLIC)
-#include "chrome/browser/glic/public/glic_enabling.h"
-#endif
+namespace {
+
+#if !BUILDFLAG(IS_MAC)
+void AddItemWithIconMaybe(ui::SimpleMenuModel* model,
+                          int command_id,
+                          int string_id,
+                          const gfx::VectorIcon& icon) {
+  if (features::IsMenuSimplificationEnabled()) {
+    model->AddItemWithStringIdAndIcon(
+        command_id, string_id,
+        ui::ImageModel::FromVectorIcon(icon, ui::kColorMenuIcon,
+                                       ui::SimpleMenuModel::kDefaultIconSize));
+  } else {
+    model->AddItemWithStringId(command_id, string_id);
+  }
+}
+#endif  // !BUILDFLAG(IS_MAC)
+
+}  // namespace
 
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(SystemMenuModelBuilder,
                                       kToggleVerticalTabsElementId);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(
+    SystemMenuModelBuilder,
+    kToggleVerticalTabsExpandOnHoverElementId);
 
 SystemMenuModelBuilder::SystemMenuModelBuilder(
     ui::AcceleratorProvider* provider,
@@ -71,8 +94,10 @@ void SystemMenuModelBuilder::Init() {
 #if BUILDFLAG(IS_WIN)
   // On Windows we put the menu items in the system menu (not at the end). Doing
   // this necessitates adding a trailing separator.
-  model->AddSeparator(ui::NORMAL_SEPARATOR);
-#endif
+  if (!features::IsMenuSimplificationEnabled()) {
+    model->AddSeparator(ui::NORMAL_SEPARATOR);
+  }
+#endif  // BUILDFLAG(IS_WIN)
 }
 
 void SystemMenuModelBuilder::BuildMenu(ui::SimpleMenuModel* model) {
@@ -87,44 +112,74 @@ void SystemMenuModelBuilder::BuildMenu(ui::SimpleMenuModel* model) {
 
 void SystemMenuModelBuilder::BuildSystemMenuForBrowserWindow(
     ui::SimpleMenuModel* model) {
+#if BUILDFLAG(IS_WIN)
+  if (features::IsMenuSimplificationEnabled()) {
+    AddItemWithIconMaybe(model, IDC_RESTORE_WINDOW, IDS_RESTORE_WINDOW_MENU_WIN,
+                         views::kChromeRestoreIcon);
+    model->SetElementIdentifierAt(
+        model->GetIndexOfCommandId(IDC_RESTORE_WINDOW).value(),
+        kSystemMenuRestoreItemElementId);
+    model->AddItemWithStringId(IDC_MOVE_WINDOW, IDS_MOVE_WINDOW_MENU_WIN);
+    model->AddItemWithStringId(IDC_SIZE_WINDOW, IDS_SIZE_WINDOW_MENU_WIN);
+    AddItemWithIconMaybe(model, IDC_MINIMIZE_WINDOW,
+                         IDS_MINIMIZE_WINDOW_MENU_WIN,
+                         views::kChromeMinimizeIcon);
+    AddItemWithIconMaybe(model, IDC_MAXIMIZE_WINDOW,
+                         IDS_MAXIMIZE_WINDOW_MENU_WIN,
+                         views::kChromeMaximizeIcon);
+    model->AddSeparator(ui::NORMAL_SEPARATOR);
+  }
+#endif  // BUILDFLAG(IS_WIN)
+
 #if BUILDFLAG(IS_LINUX)
-  model->AddItemWithStringId(IDC_MINIMIZE_WINDOW, IDS_MINIMIZE_WINDOW_MENU);
-  model->AddItemWithStringId(IDC_MAXIMIZE_WINDOW, IDS_MAXIMIZE_WINDOW_MENU);
-  model->AddItemWithStringId(IDC_RESTORE_WINDOW, IDS_RESTORE_WINDOW_MENU);
+  AddItemWithIconMaybe(model, IDC_MINIMIZE_WINDOW, IDS_MINIMIZE_WINDOW_MENU,
+                       views::kChromeMinimizeIcon);
+  AddItemWithIconMaybe(model, IDC_MAXIMIZE_WINDOW, IDS_MAXIMIZE_WINDOW_MENU,
+                       views::kChromeMaximizeIcon);
+  AddItemWithIconMaybe(model, IDC_RESTORE_WINDOW, IDS_RESTORE_WINDOW_MENU,
+                       views::kChromeRestoreIcon);
   model->AddSeparator(ui::NORMAL_SEPARATOR);
 #endif
   model->AddItemWithStringId(IDC_NEW_TAB, IDS_NEW_TAB);
+  model->SetElementIdentifierAt(model->GetIndexOfCommandId(IDC_NEW_TAB).value(),
+                                kSystemMenuNewTabElementId);
   model->AddItemWithStringId(IDC_RESTORE_TAB, IDS_RESTORE_TAB);
+  model->SetElementIdentifierAt(
+      model->GetIndexOfCommandId(IDC_RESTORE_TAB).value(),
+      kSystemMenuRestoreTabElementId);
 
   if (features::IsTabGroupMenuMoreEntryPointsEnabled()) {
     model->AddItemWithStringId(IDC_GROUP_UNGROUPED_TABS,
                                IDS_GROUP_UNGROUPED_TABS);
   }
 
+#if BUILDFLAG(IS_MAC)
   model->AddItemWithStringId(IDC_BOOKMARK_ALL_TABS, IDS_BOOKMARK_ALL_TABS);
   model->AddItemWithStringId(IDC_NAME_WINDOW, IDS_NAME_WINDOW);
-#if BUILDFLAG(ENABLE_GLIC)
+#else
+  AddItemWithIconMaybe(model, IDC_BOOKMARK_ALL_TABS, IDS_BOOKMARK_ALL_TABS,
+                       kBookmarkAllTabsChromeRefreshOldIcon);
+  AddItemWithIconMaybe(model, IDC_NAME_WINDOW, IDS_NAME_WINDOW,
+                       kNameWindowOldIcon);
+#endif  // BUILDFLAG(IS_MAC)
+  model->AddSeparator(ui::NORMAL_SEPARATOR);
+  model->AddItemWithStringId(IDC_TAB_SEARCH_TOGGLE_PIN,
+                             IDS_TAB_STRIP_PIN_TAB_SEARCH);
+
 #if BUILDFLAG(IS_WIN)
   // On Windows we can not remove an item when showing the menu. So only add
   // the glic toggle option if glic is enabled when building the menu.
   if (glic::GlicEnabling::IsEnabledForProfile(browser()->profile())) {
 #endif  // BUILDFLAG(IS_WIN)
-    model->AddSeparator(ui::NORMAL_SEPARATOR);
     model->AddItemWithStringId(IDC_GLIC_TOGGLE_PIN, IDS_GLIC_PIN);
 #if BUILDFLAG(IS_WIN)
   }
 #endif  // BUILDFLAG(IS_WIN)
-#endif  // BUILDFLAG(ENABLE_GLIC)
 
   if (auto* controller =
           tabs::VerticalTabStripStateController::From(browser())) {
-    // TODO(crbug.com/475222200): When in immersive, swapping between tab
-    // strip types create duplicate tab strips. Until that is resolved, disable
-    // the ability to swap between tab strips while in immersive.
-    if (ImmersiveModeController::From(browser())->IsEnabled()) {
-      return;
-    }
     model->AddSeparator(ui::NORMAL_SEPARATOR);
+
     if (controller->ShouldDisplayVerticalTabs()) {
       model->AddItemWithStringId(IDC_TOGGLE_VERTICAL_TABS,
                                  IDS_SWITCH_TO_HORIZONTAL_TAB);
@@ -148,6 +203,22 @@ void SystemMenuModelBuilder::BuildSystemMenuForBrowserWindow(
     model->SetElementIdentifierAt(
         model->GetIndexOfCommandId(IDC_TOGGLE_VERTICAL_TABS).value(),
         kToggleVerticalTabsElementId);
+
+    const bool show_expand_on_hover =
+        tabs::IsVerticalTabsExpandOnHoverFeatureEnabled() &&
+        controller->ShouldDisplayVerticalTabs();
+    if (show_expand_on_hover) {
+      model->AddItemWithStringId(
+          IDC_TOGGLE_VERTICAL_TABS_EXPAND_ON_HOVER,
+          controller->IsExpandOnHoverEnabled()
+              ? IDS_VERTICAL_TABS_DISABLE_EXPAND_ON_HOVER
+              : IDS_VERTICAL_TABS_ENABLE_EXPAND_ON_HOVER);
+      model->SetElementIdentifierAt(
+          model->GetIndexOfCommandId(IDC_TOGGLE_VERTICAL_TABS_EXPAND_ON_HOVER)
+              .value(),
+          kToggleVerticalTabsExpandOnHoverElementId);
+    }
+
     model->AddItemWithStringId(IDC_VERTICAL_TABS_SEND_FEEDBACK,
                                IDS_VERTICAL_TABS_SEND_FEEDBACK);
   }
@@ -164,17 +235,26 @@ void SystemMenuModelBuilder::BuildSystemMenuForBrowserWindow(
       ui::OzonePlatform::GetInstance()
           ->GetPlatformRuntimeProperties()
           .supports_server_side_window_decorations;
-#endif
+#endif  // BUILDFLAG(IS_OZONE) && !BUILDFLAG(IS_CHROMEOS)
   if (supports_server_side_decorations) {
     model->AddCheckItemWithStringId(IDC_USE_SYSTEM_TITLE_BAR,
                                     IDS_SHOW_WINDOW_DECORATIONS_MENU);
   }
   model->AddSeparator(ui::NORMAL_SEPARATOR);
   model->AddItemWithStringId(IDC_CLOSE_WINDOW, IDS_CLOSE_WINDOW_MENU);
-#endif
+#endif  // BUILDFLAG(IS_LINUX)
+
+#if BUILDFLAG(IS_WIN)
+  if (features::IsMenuSimplificationEnabled()) {
+    model->AddSeparator(ui::NORMAL_SEPARATOR);
+    AddItemWithIconMaybe(model, IDC_CLOSE_WINDOW, IDS_CLOSE_WINDOW_MENU_WIN,
+                         kCloseChromeRefreshOldIcon);
+  }
+#endif  // BUILDFLAG(IS_WIN)
+
 #if BUILDFLAG(IS_CHROMEOS)
   AppendMoveToDesksMenu(model);
-#endif
+#endif  // BUILDFLAG(IS_CHROMEOS)
   AppendTeleportMenu(model);
   // If it's a regular browser window with tabs, we don't add any more items,
   // since it already has menus (Page, Chrome).
@@ -256,7 +336,7 @@ void SystemMenuModelBuilder::AppendMoveToDesksMenu(ui::SimpleMenuModel* model) {
   move_to_desks_model_ = std::make_unique<chromeos::MoveToDesksMenuModel>(
       std::make_unique<chromeos::MoveToDesksMenuDelegate>(
           views::Widget::GetWidgetForNativeWindow(
-              browser->window()->GetNativeWindow())));
+              browser->GetWindow()->GetNativeWindow())));
   model->AddSubMenuWithStringId(chromeos::MoveToDesksMenuModel::kMenuCommandId,
                                 IDS_MOVE_TO_DESKS_MENU,
                                 move_to_desks_model_.get());
@@ -265,7 +345,7 @@ void SystemMenuModelBuilder::AppendMoveToDesksMenu(ui::SimpleMenuModel* model) {
 
 void SystemMenuModelBuilder::AppendTeleportMenu(ui::SimpleMenuModel* model) {
 #if BUILDFLAG(IS_CHROMEOS)
-  DCHECK(browser()->window());
+  DCHECK(browser()->GetWindow());
 
   // Avoid appending the teleport menu for the settings window.  This window's
   // presentation is unique: it's a normal browser window with an app-like
@@ -295,7 +375,7 @@ void SystemMenuModelBuilder::AppendTeleportMenu(ui::SimpleMenuModel* model) {
   auto* window_manager = ash::Shell::Get()->multi_user_window_manager();
   const AccountId account_id =
       multi_user_util::GetAccountIdFromProfile(browser()->profile());
-  aura::Window* window = browser()->window()->GetNativeWindow();
+  aura::Window* window = browser()->GetWindow()->GetNativeWindow();
   if (!account_id.is_valid() || !window ||
       !window_manager->GetWindowOwner(window).is_valid()) {
     return;

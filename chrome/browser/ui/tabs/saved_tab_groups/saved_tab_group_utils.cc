@@ -25,10 +25,9 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/browser_list.h"
-#include "chrome/browser/ui/browser_navigator.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_metrics.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_action_context_desktop.h"
 #include "chrome/browser/ui/tabs/tab_group_deletion_dialog_controller.h"
@@ -36,13 +35,13 @@
 #include "chrome/browser/ui/tabs/tab_group_theme.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/data_sharing/collaboration_controller_delegate_desktop.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/tabs/recent_activity_bubble_dialog_view.h"
+#include "chrome/browser/ui/views/tabs/groups/recent_activity_bubble_dialog_view.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/collaboration/public/collaboration_service.h"
+#include "components/collaboration/public/messaging/messaging_backend_service.h"
 #include "components/data_sharing/public/data_sharing_service.h"
 #include "components/data_sharing/public/features.h"
 #include "components/data_sharing/public/group_data.h"
@@ -60,6 +59,7 @@
 #include "components/tab_groups/tab_group_id.h"
 #include "components/user_education/common/help_bubble/help_bubble_params.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/base_window.h"
 #include "ui/gfx/range/range.h"
 #include "url/gurl.h"
 
@@ -365,7 +365,7 @@ void SavedTabGroupUtils::MaybeShowSavedTabGroupDeletionDialog(
       reason == GroupDeletionReason::ClosedLastTab
           ? DeletionDialogController::DialogType::CloseTabAndDelete
           : DeletionDialogController::DialogType::RemoveTabAndDelete;
-  std::optional<base::OnceCallback<void()>> keep_callback = std::nullopt;
+  std::optional<base::OnceCallback<void()>> keep_callback;
 
   if (tab_groups::SavedTabGroupUtils::SupportsSharedTabGroups() &&
       saved_group.collaboration_id()) {
@@ -450,6 +450,44 @@ void SavedTabGroupUtils::ToggleGroupPinState(
   CHECK(group.has_value());
   tab_group_service->UpdateGroupPosition(saved_group_guid, !group->is_pinned(),
                                          std::nullopt);
+}
+
+// static
+std::optional<tab_groups::LocalTabGroupID>
+SavedTabGroupUtils::OpenSavedTabGroup(BrowserWindowInterface* browser,
+                                      const base::Uuid& saved_group_guid,
+                                      OpeningSource opening_source,
+                                      TabGroupSyncService* tab_group_service) {
+  if (!tab_group_service) {
+    if (!browser) {
+      return std::nullopt;
+    }
+    tab_group_service =
+        TabGroupSyncServiceFactory::GetForProfile(browser->GetProfile());
+    if (!tab_group_service) {
+      return std::nullopt;
+    }
+  }
+
+  Browser* browser_ptr =
+      browser ? browser->GetBrowserForMigrationOnly() : nullptr;
+
+  std::optional<LocalTabGroupID> opened_group_id =
+      tab_group_service->OpenTabGroup(
+          saved_group_guid, std::make_unique<TabGroupActionContextDesktop>(
+                                browser_ptr, opening_source));
+
+  if (opened_group_id.has_value() &&
+      base::FeatureList::IsEnabled(features::kTabGroupsFocusing) &&
+      features::kTabGroupsFocusingDefaultToFocused.Get()) {
+    if (browser) {
+      if (auto* model = browser->GetTabStripModel()) {
+        model->SetFocusedGroup(opened_group_id.value());
+      }
+    }
+  }
+
+  return opened_group_id;
 }
 
 // static
@@ -597,7 +635,7 @@ void SavedTabGroupUtils::FocusFirstTabOrWindowInOpenGroup(
 
   if (active_index >= static_cast<int>(tab_group_index_range.GetMin()) &&
       active_index < static_cast<int>(tab_group_index_range.GetMax())) {
-    browser_for_activation->window()->Activate();
+    browser_for_activation->GetWindow()->Activate();
     return;
   }
 
@@ -836,9 +874,7 @@ void SavedTabGroupUtils::PerformTabGroupMenuAction(
                                  saved_group->is_shared_tab_group();
       }
 
-      tab_group_service->OpenTabGroup(
-          uuid, std::make_unique<TabGroupActionContextDesktop>(
-                    browser, OpeningSource::kOpenedFromRevisitUi));
+      OpenSavedTabGroup(browser, uuid, OpeningSource::kOpenedFromRevisitUi);
 
       if (will_open_shared_group) {
         RecordOpenSharedGroupMetrics(context);

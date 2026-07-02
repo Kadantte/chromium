@@ -10,10 +10,11 @@
 #include <memory>
 #include <optional>
 #include <string_view>
-#include <unordered_set>
+#include <vector>
 
 #include "base/byte_count.h"
 #include "base/pickle.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
@@ -898,6 +899,43 @@ const ContentTypeTestData kMimeTypeTests[] = {
      "", false,
      "", false,
      "*/*" },
+    // Cross-header quoting with backslash-escaped quote.
+    {R"(HTTP/1.1 200 OK
+Content-Type: text/javascript;charset=windows-1252;"
+Content-Type: \"
+Content-Type: x/x
+)",
+     "text/javascript", true,
+     "windows-1252", true,
+     R"(text/javascript;charset=windows-1252;", \", x/x)" },
+    // Multiple headers with escaped quotes where type change resets charset.
+    {R"(HTTP/1.1 200 OK
+Content-Type: x/x;"
+Content-Type: x/y;\"
+Content-Type: text/javascript;charset=windows-1252;"
+Content-Type: text/javascript
+)",
+     "text/javascript", true,
+     "", false,
+     R"(x/x;", x/y;\", text/javascript;charset=windows-1252;", )"
+     "text/javascript" },
+    // Single header equivalent to cross-header quoting with backslash-escaped
+    // quote.
+    {R"(HTTP/1.1 200 OK
+Content-Type: text/javascript;charset=windows-1252;",\",x/x
+)",
+     "text/javascript", true,
+     "windows-1252", true,
+     R"(text/javascript;charset=windows-1252;",\",x/x)" },
+    // Single header equivalent to multiple headers with escaped quotes where
+    // type change resets charset.
+    {R"(HTTP/1.1 200 OK
+Content-Type: x/x;",x/y;\",text/javascript;)"
+     R"(charset=windows-1252;",text/javascript
+)",
+     "text/javascript", true,
+     "", false,
+     R"(x/x;",x/y;\",text/javascript;charset=windows-1252;",text/javascript)" },
 };
 // clang-format on
 
@@ -2214,10 +2252,10 @@ TEST_P(RemoveHeadersTest, RemoveHeaders) {
   HeadersToRaw(&orig_headers);
   auto parsed = base::MakeRefCounted<HttpResponseHeaders>(orig_headers);
 
-  std::unordered_set<std::string> to_remove;
+  std::vector<std::string> to_remove;
   for (auto* header : test.to_remove) {
     if (header)
-      to_remove.insert(header);
+      to_remove.push_back(header);
   }
   parsed->RemoveHeaders(to_remove);
 
@@ -2913,6 +2951,24 @@ TEST(HttpResponseHeadersTest, StrictlyEqualsRawMismatch) {
   const auto parsed2 = base::MakeRefCounted<HttpResponseHeaders>(raw2);
   EXPECT_FALSE(parsed1->StrictlyEquals(*parsed2));
   EXPECT_FALSE(parsed2->StrictlyEquals(*parsed1));
+}
+
+TEST(HttpResponseHeadersTest, SerializeForMojoIpcDropsCookieHeaders) {
+  std::string raw_headers =
+      "HTTP/1.1 200 OK\n"
+      "Set-Cookie: foo=bar; httponly\n"
+      "Set-Cookie: bar=foo\n"
+      "Bar: 1\n"
+      "Set-Cookie2: bar2=foo2\n";
+  HeadersToRaw(&raw_headers);
+  const auto original = base::MakeRefCounted<HttpResponseHeaders>(raw_headers);
+
+  const auto actual = base::MakeRefCounted<HttpResponseHeaders>(
+      base::as_string_view(original->SerializeForMojoIpc()));
+  EXPECT_EQ(
+      "HTTP/1.1 200 OK\n"
+      "Bar: 1\n",
+      ToSimpleString(actual));
 }
 
 // There's no known way to produce an HttpResponseHeaders object with the same

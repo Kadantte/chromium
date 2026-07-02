@@ -7,6 +7,8 @@
 
 #import <UIKit/UIKit.h>
 
+#import <optional>
+#import <string>
 #import <utility>
 
 #import "base/functional/callback.h"
@@ -32,7 +34,6 @@ enum class ProfileSignout;
 }  // namespace signin_metrics
 
 namespace base {
-class TimeDelta;
 class Version;
 }  // namespace base
 
@@ -44,14 +45,20 @@ class SyncService;
 
 namespace signin {
 
+// Callback to create a snackbar message to display after sign-out.
+using SnackbarMessageBuilder =
+    base::OnceCallback<SnackbarMessage*(Browser* browser)>;
+
+// Completion block called after a sign-out.
+// `scene_state` is the scene state from the window that requested the sign-out
+// after the profile switching it was needed, otherwise, the profile didn't
+// change, the value is the same as the one when the sign-out was requested.
+using SignoutCompletion = base::OnceCallback<void(SceneState* scene_state)>;
+
 class IdentityManager;
 
 using UnsyncedDataForSignoutOrProfileSwitchingCallback =
     base::OnceCallback<void(syncer::DataTypeSet data_type_set)>;
-
-inline constexpr std::pair<base::TimeDelta, base::TimeDelta> kPromoTriggerRange(
-    base::Days(53),
-    base::Days(68));
 
 // Represents a request to sign-out.
 class ProfileSignoutRequest {
@@ -70,10 +77,10 @@ class ProfileSignoutRequest {
 
   ~ProfileSignoutRequest();
 
-  // Configures the snackbar message to display and whether it should be
-  // forced over the toolbar or not.
-  ProfileSignoutRequest&& SetSnackbarMessage(
-      SnackbarMessage* snackbar_message,
+  // Configures the builder used to create the snackbar message to display after
+  // sign-out and whether it should be forced over the toolbar or not.
+  ProfileSignoutRequest&& SetSnackbarMessageBuilder(
+      SnackbarMessageBuilder snackbar_message_builder,
       bool force_snackbar_over_toolbar) &&;
 
   // Configures the callback invoked before starting the request.
@@ -96,7 +103,7 @@ class ProfileSignoutRequest {
   const signin_metrics::ProfileSignout source_;
   PrepareCallback prepare_callback_;
   CompletionCallback completion_callback_;
-  SnackbarMessage* snackbar_message_;
+  SnackbarMessageBuilder snackbar_message_builder_;
   bool force_snackbar_over_toolbar_ = false;
   bool should_record_metrics_ = true;
   bool run_has_been_called_ = false;
@@ -144,13 +151,20 @@ std::optional<AccountInfo> GetAccountInfoOnDeviceWithEmail(
     std::string email);
 
 // Switch profile if needed in all windows then sign out from the current
-// profile, but switches to personal profile in all. This also skips
-// recording metrics for single profile signout as policies have their
-// own metrics for signout.
+// profile, but switches to personal profile in all.
+// `trigger_scene_session_id` is the scene session identifier from the window
+// that requested the sign-out. This parameter is used to ensure that
+// `signout_completion_closure` receives the `scene_state` corresponding to the
+// same window.
+// If the string is empty (or invalid), `signout_completion_closure` will
+// receive nullptr.
+// This also skips recording metrics for single profile signout as policies
+// have their own metrics for signout.
 void MultiProfileSignOutForProfile(
     ProfileIOS* profile,
+    std::string trigger_scene_session_id,
     signin_metrics::ProfileSignout signout_source,
-    base::OnceClosure signout_completion_closure);
+    SignoutCompletion signout_completion_closure);
 
 // Returns whether the sign-in fullscreen promo migration is done.
 bool IsFullscreenSigninPromoManagerMigrationDone();

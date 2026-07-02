@@ -37,8 +37,8 @@ class LensOverlayWebUIBrowserTest : public WebUIMochaBrowserTest {
     set_test_loader_host(chrome::kChromeUILensOverlayHost);
     scoped_feature_list_.InitWithFeatures(
         /*enabled_features=*/{lens::features::kLensOverlay},
-        /*disabled_features=*/{lens::features::kLensOverlayContextualSearchbox,
-                               lens::features::kLensSearchZeroStateCsb});
+        /*disabled_features=*/{
+            lens::features::kLensOverlayContextualSearchbox});
   }
 
   void SetUp() override {
@@ -144,10 +144,6 @@ IN_PROC_BROWSER_TEST_F(LensOverlayTest, OverlayScreenshot) {
   RunOverlayTest("lens/overlay/overlay_screenshot_test.js", "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(LensOverlayTest, OverlayTheme) {
-  RunOverlayTest("lens/overlay/overlay_theme_test.js", "mocha.run()");
-}
-
 // TODO(crbug.com/414207670): Test is failing on Linux and Win bot.
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
 #define MAYBE_ManualRegionSelection DISABLED_ManualRegionSelection
@@ -162,8 +158,16 @@ IN_PROC_BROWSER_TEST_F(LensOverlayTest, ObjectSelection) {
   RunOverlayTest("lens/overlay/object_selection_test.js", "mocha.run()");
 }
 
+// TODO(crbug.com/502264102): Test is failing on Windows.
+#if BUILDFLAG(IS_WIN)
+#define MAYBE_SelectionOverlayWithoutWordsOrObjects \
+  DISABLED_SelectionOverlayWithoutWordsOrObjects
+#else
+#define MAYBE_SelectionOverlayWithoutWordsOrObjects \
+  SelectionOverlayWithoutWordsOrObjects
+#endif
 IN_PROC_BROWSER_TEST_F(LensOverlayTest,
-                       SelectionOverlayWithoutWordsOrObjects) {
+                       MAYBE_SelectionOverlayWithoutWordsOrObjects) {
   RunOverlayTest(
       "lens/overlay/selection_overlay_test.js",
       "runMochaSuite('SelectionOverlay WithoutWordsOrObjects')");
@@ -197,6 +201,13 @@ IN_PROC_BROWSER_TEST_F(LensOverlayTest,
       "runMochaSuite('SelectionOverlay InvocationSourceContextMenuImage')");
 }
 
+IN_PROC_BROWSER_TEST_F(LensOverlayTest,
+                       SelectionOverlayLineSelectionToggleShortcuts) {
+  RunOverlayTest(
+      "lens/overlay/selection_overlay_test.js",
+      "runMochaSuite('SelectionOverlay LineSelectionToggleShortcuts')");
+}
+
 IN_PROC_BROWSER_TEST_F(LensOverlayTest, SelectionOverlaySimplifiedSelection) {
   RunOverlayTest("lens/overlay/selection_overlay_test.js",
                  "runMochaSuite('SelectionOverlay SimplifiedSelection')");
@@ -208,6 +219,14 @@ IN_PROC_BROWSER_TEST_F(LensOverlayTest, SimplifiedSelection) {
 
 IN_PROC_BROWSER_TEST_F(LensOverlayTest, PostSelectionRenderer) {
   RunOverlayTest("lens/overlay/post_selection_renderer_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(LensOverlayTest, MultiRegionSelection) {
+  RunOverlayTest("lens/overlay/multi_region_selection_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(LensOverlayTest, LineSelection) {
+  RunOverlayTest("lens/overlay/line_selection_test.js", "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(LensOverlayTest, FindWordsInRegion) {

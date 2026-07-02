@@ -216,6 +216,10 @@ typedef NS_ENUM(NSUInteger, LensOverlayFilterState) {
 }
 
 - (void)omniboxDidResignFirstResponder {
+  // NO-OP
+}
+
+- (void)omniboxDidEndEditing {
   [self defocusOmnibox];
 }
 
@@ -317,6 +321,9 @@ typedef NS_ENUM(NSUInteger, LensOverlayFilterState) {
 
 - (void)lensOverlay:(id<ChromeLensOverlay>)lensOverlay
     didRequestToOpenURL:(GURL)URL {
+  if (!URL.SchemeIsHTTPOrHTTPS()) {
+    return;
+  }
   [self.resultConsumer loadResultsURL:URL httpHeaders:nil];
 }
 

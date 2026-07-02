@@ -149,16 +149,19 @@ void DiskCacheTestWithCache::LoadInMemoryIndex() {
   ASSERT_EQ(backend_to_test_, BackendToTest::kSql);
   CHECK(sql_cache_impl_);
   base::test::TestFuture<disk_cache::SqlPersistentStore::Error> future;
-  ASSERT_TRUE(sql_cache_impl_->GetSqlStoreForTest()->MaybeLoadInMemoryIndex(
-      future.GetCallback()));
+  sql_cache_impl_->GetSqlStoreForTest()->MaybeLoadInMemoryIndex(
+      future.GetCallback());
   ASSERT_EQ(future.Get(), disk_cache::SqlPersistentStore::Error::kOk);
 }
 #endif  // ENABLE_DISK_CACHE_SQL_BACKEND
 
 void DiskCacheTestWithCache::SetMaxSize(int64_t size) {
   size_ = size;
-  // Cache size should not generally be changed dynamically; it takes
-  // backend-specific knowledge to make it even semi-reasonable to do.
+  // Cache size should not generally be changed dynamically.
+  // This method only changes the initial size when creating a backend.
+  //
+  // To change the size after initialization, see the backend's SetMaxBytes
+  // method (which may not be supported by all backends).
   DCHECK(!cache_);
 }
 
@@ -279,9 +282,7 @@ void DiskCacheTestWithCache::FlushQueueForTest() {
 
 #if BUILDFLAG(ENABLE_DISK_CACHE_SQL_BACKEND)
   if (sql_cache_impl_) {
-    net::TestCompletionCallback cb;
-    int rv = sql_cache_impl_->FlushQueueForTest(cb.callback());
-    EXPECT_THAT(cb.GetResult(rv), IsOk());
+    sql_cache_impl_->RunUntilAllTasksCompleteForTest();
     return;
   }
 #endif  // ENABLE_DISK_CACHE_SQL_BACKEND

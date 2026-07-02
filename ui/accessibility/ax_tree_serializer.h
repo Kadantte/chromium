@@ -726,14 +726,16 @@ bool AXTreeSerializer<AXSourceNode,
       // subtrees for both the old and new parent.
       if (!lca) {
         // TODO(442619489) Fix the root cause of this issue, replacing the
-        // DUMP_WILL_BE_NOTREACHED with a CHECK once we have ensured this
+        // DCHECK with a CHECK once we have ensured this
         // can no longer occur.
-        DUMP_WILL_BE_NOTREACHED()
+        DCHECK(false)
             << "We should not have a null LCA when ComputeReparentingLCA "
                "returns with 'true'.";
-      } else {
-        out_update->node_id_to_clear = tree_->GetId(lca);
+        // In this path, our assumptions in the rest of this method are no
+        // longer valid. Abort now so we can recover.
+        return false;
       }
+      out_update->node_id_to_clear = tree_->GetId(lca);
     }
   } else {
     // First serialization for this tree, after a changed root, or after a
@@ -742,6 +744,7 @@ bool AXTreeSerializer<AXSourceNode,
     CreateClientRoot(lca);
   }
 
+  CHECK(lca);
   CHECK(tree_->GetId(lca) != kInvalidAXNodeID);
   if (!SerializeChangedNodes(lca, out_update, out_error)) {
     return false;

@@ -24,7 +24,13 @@
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "base/uuid.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
+#include "components/accessibility_annotator/core/annotation_reducer/memory_data_provider.h"
+#include "components/accessibility_annotator/core/annotation_reducer/memory_search_result.h"
+#include "components/accessibility_annotator/core/at_memory_query_service.h"
+#include "components/accessibility_annotator/core/at_memory_query_service_delegate.h"
+#include "components/accessibility_annotator/core/mock_at_memory_query_service.h"
 #include "components/autofill/core/browser/autofill_trigger_source.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
@@ -32,6 +38,7 @@
 #include "components/autofill/core/browser/data_manager/test_personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/browser/filling/autofill_ai/autofill_ai_access_manager_test_api.h"
 #include "components/autofill/core/browser/filling/autofill_ai/field_filling_entity_util.h"
 #include "components/autofill/core/browser/filling/field_filling_util.h"
 #include "components/autofill/core/browser/filling/form_filler.h"
@@ -42,18 +49,19 @@
 #include "components/autofill/core/browser/foundations/test_autofill_driver.h"
 #include "components/autofill/core/browser/foundations/test_browser_autofill_manager.h"
 #include "components/autofill/core/browser/foundations/with_test_autofill_client_driver_manager.h"
+#include "components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h"
 #include "components/autofill/core/browser/integrators/autofill_ai/mock_autofill_ai_manager.h"
 #include "components/autofill/core/browser/integrators/compose/autofill_compose_delegate.h"
 #include "components/autofill/core/browser/integrators/compose/mock_autofill_compose_delegate.h"
 #include "components/autofill/core/browser/integrators/identity_credential/mock_identity_credential_delegate.h"
 #include "components/autofill/core/browser/integrators/one_time_tokens/mock_otp_manager.h"
-#include "components/autofill/core/browser/integrators/plus_addresses/autofill_plus_address_delegate.h"
-#include "components/autofill/core/browser/integrators/plus_addresses/mock_autofill_plus_address_delegate.h"
 #include "components/autofill/core/browser/metrics/autofill_in_devtools_metrics.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
+#include "components/autofill/core/browser/metrics/autofill_metrics_utils.h"
 #include "components/autofill/core/browser/metrics/log_event.h"
 #include "components/autofill/core/browser/metrics/payments/save_and_fill_metrics.h"
 #include "components/autofill/core/browser/metrics/suggestions_list_metrics.h"
+#include "components/autofill/core/browser/network/autofill_ai/mock_personal_context_access_manager.h"
 #include "components/autofill/core/browser/network/autofill_ai/mock_wallet_pass_access_manager.h"
 #include "components/autofill/core/browser/payments/constants.h"
 #include "components/autofill/core/browser/payments/credit_card_access_manager.h"
@@ -72,7 +80,8 @@
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
 #include "components/autofill/core/browser/test_utils/entity_data_test_utils.h"
 #include "components/autofill/core/browser/test_utils/valuables_data_test_utils.h"
-#include "components/autofill/core/browser/ui/suggestion_button_action.h"
+#include "components/autofill/core/browser/ui/tabbed_pane_enums.h"
+#include "components/autofill/core/browser/webdata/autocomplete/autocomplete_entry.h"
 #include "components/autofill/core/browser/webdata/autofill_ai/entity_table.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service_test_helper.h"
 #include "components/autofill/core/common/aliases.h"
@@ -85,11 +94,11 @@
 #include "components/autofill/core/common/form_field_data.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
 #include "components/autofill/core/common/password_form_fill_data.h"
-#include "components/autofill/core/common/plus_address_survey_type.h"
 #include "components/device_reauth/mock_device_authenticator.h"
 #include "components/strings/grit/components_strings.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
@@ -122,7 +131,9 @@ using ::testing::Return;
 using ::testing::SaveArg;
 using ::testing::SizeIs;
 using ::testing::StartsWith;
+using ::testing::Values;
 using ::testing::VariantWith;
+using ::testing::WithParamInterface;
 
 // Action `SaveArgElementsTo<k>(pointer)` saves the value pointed to by the
 // `k`th (0-based) argument of the mock function by moving it to `*pointer`.
@@ -198,7 +209,7 @@ class MockAutofillDriver : public TestAutofillDriver {
                const FillId& fill_id,
                bool supports_refill,
                const url::Origin& triggered_origin,
-               (const base::flat_map<FieldGlobalId, FieldType>&),
+               (const absl::flat_hash_map<FieldGlobalId, FieldType>&),
                (const Section&)),
               (override));
   MOCK_METHOD(void,
@@ -255,28 +266,25 @@ class MockAutofillClient : public TestAutofillClient {
               (base::span<const SelectOption> options),
               (override));
   MOCK_METHOD(void,
-              HideAutofillSuggestions,
-              (SuggestionHidingReason),
+              HideSuggestions,
+              (SuggestionHidingReason, std::optional<FillingProduct>),
               (override));
+  MOCK_METHOD(void, OpenGeminiInSidebar, (const std::u16string&), (override));
   MOCK_METHOD(void, ShowAutofillSettings, (SuggestionType), (override));
   MOCK_METHOD(AutofillComposeDelegate*, GetComposeDelegate, (), (override));
-  MOCK_METHOD(void,
-              TriggerPlusAddressUserPerceptionSurvey,
-              (plus_addresses::hats::SurveyType),
-              (override));
   MOCK_METHOD(IdentityCredentialDelegate*,
               GetIdentityCredentialDelegate,
               (),
               (override));
   MOCK_METHOD(void,
-              ShowAutofillAiFailureNotification,
-              (std::u16string),
+              ShowAutofillAiFetchFromWalletFailureNotification,
+              (),
               (override));
 
   MOCK_METHOD(std::unique_ptr<device_reauth::DeviceAuthenticator>,
               GetDeviceAuthenticator,
               (std::string),
-              (override));
+              (const, override));
 
 #if BUILDFLAG(IS_IOS)
   // Mock the client query ID check.
@@ -299,6 +307,10 @@ class TestCreditCardAccessManager : public CreditCardAccessManager {
   void PrepareToFetchCreditCard() override {
     // Do nothing for testing.
   }
+  MOCK_METHOD(void,
+              FetchCreditCard,
+              (const CreditCard*, OnCreditCardFetchedCallback),
+              (override));
 };
 
 class MockBrowserAutofillManager : public TestBrowserAutofillManager {
@@ -317,25 +329,26 @@ class MockBrowserAutofillManager : public TestBrowserAutofillManager {
   MOCK_METHOD(void,
               UndoAutofill,
               (mojom::ActionPersistence action_persistence,
-               const FormData& form,
-               const FormFieldData& trigger_field),
+               const FormGlobalId& form_id,
+               const FieldGlobalId& trigger_field_id),
               (override));
   MOCK_METHOD(void,
               FillOrPreviewForm,
               (mojom::ActionPersistence,
-               const FormData&,
+               const FormGlobalId&,
                const FieldGlobalId&,
                const FillingPayload&,
-               AutofillTriggerSource),
+               AutofillTriggerSource,
+               const base::flat_set<FieldGlobalId>&),
               (override));
   MOCK_METHOD(void,
               FillOrPreviewField,
               (mojom::ActionPersistence,
                mojom::FieldActionType,
-               const FormData&,
-               const FormFieldData&,
+               const FormGlobalId&,
+               const FieldGlobalId&,
                const std::u16string&,
-               SuggestionType,
+               FillingProduct,
                std::optional<FieldType>),
               (override));
   MOCK_METHOD(void,
@@ -352,6 +365,19 @@ class MockBrowserAutofillManager : public TestBrowserAutofillManager {
                FieldType,
                const std::string&),
               (override));
+
+  MOCK_METHOD(void, OnSuggestionsHidden, (SuggestionHidingReason), (override));
+};
+
+class StubAtMemoryQueryServiceDelegate
+    : public accessibility_annotator::AtMemoryQueryServiceDelegate {
+ public:
+  void RetrieveLiveTabContext(
+      accessibility_annotator::LiveTabContextQuery query,
+      base::OnceCallback<void(accessibility_annotator::LiveTabContextResponse)>
+          callback) override {
+    std::move(callback).Run({});
+  }
 };
 
 class AutofillExternalDelegateTest : public testing::Test,
@@ -370,6 +396,7 @@ class AutofillExternalDelegateTest : public testing::Test,
             autofill_client().GetSyncService(),
             webdata_helper_.autofill_webdata_service(),
             /*history_service=*/nullptr,
+            /*pcontext_manager=*/nullptr,
             /*strike_database=*/nullptr,
             /*variation_country_code=*/GeoIpCountryCode("US")));
     CreateAutofillDriver();
@@ -379,12 +406,11 @@ class AutofillExternalDelegateTest : public testing::Test,
   void IssueOnQuery(FormData form_data,
                     const gfx::Rect& caret_bounds = gfx::Rect(),
                     AutofillSuggestionTriggerSource trigger_source =
-                        kDefaultSuggestionTriggerSource,
-                    bool update_datalist = false) {
+                        kDefaultSuggestionTriggerSource) {
     queried_form_ = std::move(form_data);
     autofill_manager().OnFormsSeen({queried_form()}, {});
     external_delegate().OnQuery(queried_form(), queried_field(), caret_bounds,
-                                trigger_source, update_datalist);
+                                trigger_source);
   }
 
   void IssueOnQuery(test::FormDescription form_description) {
@@ -393,8 +419,7 @@ class AutofillExternalDelegateTest : public testing::Test,
                                    test::GetHeuristicTypes(form_description),
                                    test::GetServerTypes(form_description));
     external_delegate().OnQuery(queried_form(), queried_field(), gfx::Rect(),
-                                kDefaultSuggestionTriggerSource,
-                                /*update_datalist=*/false);
+                                kDefaultSuggestionTriggerSource);
   }
 
   void IssueOnQuery(const gfx::Rect& caret_bounds,
@@ -437,8 +462,7 @@ class AutofillExternalDelegateTest : public testing::Test,
             .host_frame = form_id.frame_token,
             .renderer_id = form_id.renderer_id,
         }),
-        /*caret_bounds=*/gfx::Rect(), kDefaultSuggestionTriggerSource,
-        /*update_datalist=*/true);
+        /*caret_bounds=*/gfx::Rect(), kDefaultSuggestionTriggerSource);
   }
 
   // Returns the triggering `AutofillField`. This is the only field in the form
@@ -457,12 +481,49 @@ class AutofillExternalDelegateTest : public testing::Test,
     webdata_helper().WaitUntilIdle();
   }
 
-  Matcher<const FormData&> HasQueriedFormId() {
-    return Property(&FormData::global_id, queried_form().global_id());
+  Matcher<const Suggestion&> HasMainText(const std::u16string& text) {
+    return testing::Field(&Suggestion::main_text,
+                          testing::Field(&Suggestion::Text::value, text));
   }
 
-  Matcher<const FormFieldData&> HasQueriedFieldId() {
-    return Property(&FormFieldData::global_id, queried_field().global_id());
+  Matcher<const Suggestion&> HasLabel(const std::u16string& label) {
+    return testing::Field(
+        &Suggestion::labels,
+        testing::ElementsAre(testing::ElementsAre(
+            testing::Field(&Suggestion::Text::value, label))));
+  }
+
+  // Set up the mock AtMemoryQueryService to return the provided results
+  // for a specific query.
+  void SetupMockAtMemoryQueryService(
+      const std::u16string& query,
+      accessibility_annotator::MemorySearchResults results) {
+    auto mock_service = std::make_unique<
+        testing::NiceMock<accessibility_annotator::MockAtMemoryQueryService>>();
+    EXPECT_CALL(*mock_service, Query(Eq(query), _))
+        .WillOnce(base::test::RunOnceCallback<1>(std::move(results)));
+    // Inject the mock service into the client.
+    autofill_client().set_at_memory_query_service(std::move(mock_service));
+  }
+
+  void StartAtMemorySession(AutofillSuggestionTriggerSource trigger_source =
+                                AutofillSuggestionTriggerSource::kAtMemory) {
+    // Initialize the delegate's query form and field state.
+    IssueOnQuery(trigger_source);
+    // Assign a valid session ID to enable suggestion update callbacks.
+    autofill_client().set_suggestion_ui_session_id(
+        AutofillClient::SuggestionUiSessionId(1));
+    // Simulate that the popup is displayed to set up the session and its
+    // callbacks.
+    external_delegate().OnSuggestionsShown({});
+  }
+
+  Matcher<const FormGlobalId&> HasQueriedFormId() {
+    return Eq(queried_form().global_id());
+  }
+
+  Matcher<const FieldGlobalId&> HasQueriedFieldId() {
+    return Eq(queried_field().global_id());
   }
 
   Matcher<const FieldGlobalId&> IsQueriedFieldId() {
@@ -485,9 +546,28 @@ class AutofillExternalDelegateTest : public testing::Test,
     return queried_form().fields().front();
   }
 
-  void OnSuggestionsReturned(FieldGlobalId field_id,
+  void OnSuggestionsReturned(const FormFieldData& field,
                              const std::vector<Suggestion>& input_suggestions) {
-    external_delegate().OnSuggestionsReturned(field_id, input_suggestions);
+    external_delegate().OnSuggestionsReturned(field, input_suggestions);
+  }
+
+  FormData CreateTestFormWithBounds(
+      const gfx::RectF& bounds = gfx::RectF(0, 0, 100, 20)) {
+    test::FieldDescription field_desc = {
+        .role = NAME_FIRST,
+        .autocomplete_attribute = "given-name",
+    };
+
+    test::FormDescription form_desc;
+    form_desc.fields.push_back(field_desc);
+
+    FormData form = test::GetFormData(form_desc);
+    std::vector<FormFieldData> fields = form.ExtractFields();
+    if (!fields.empty()) {
+      fields[0].set_bounds(bounds);
+      form.set_fields(std::move(fields));
+    }
+    return form;
   }
 
   AutofillWebDataServiceTestHelper& webdata_helper() { return webdata_helper_; }
@@ -513,27 +593,16 @@ TEST_F(AutofillExternalDelegateTest, GetMainFillingProduct) {
 
   // Show address suggestion in the popup.
   OnSuggestionsReturned(
-      queried_field().global_id(),
-      {CreateAutofillSuggestion(SuggestionType::kAddressEntry,
-                                u"address suggestion"),
-       CreateAutofillSuggestion(SuggestionType::kManageAddress,
-                                u"manage addresses")});
+      queried_field(), {CreateAutofillSuggestion(SuggestionType::kAddressEntry,
+                                                 u"address suggestion"),
+                        CreateAutofillSuggestion(SuggestionType::kManageAddress,
+                                                 u"manage addresses")});
   EXPECT_EQ(external_delegate().GetMainFillingProduct(),
             FillingProduct::kAddress);
 
-  // Show fill plus address suggestion in the popup.
-  OnSuggestionsReturned(
-      queried_field().global_id(),
-      {CreateAutofillSuggestion(SuggestionType::kFillExistingPlusAddress,
-                                u"fill existing plus address"),
-       CreateAutofillSuggestion(SuggestionType::kManagePlusAddress,
-                                u"manage address methods")});
-  EXPECT_EQ(external_delegate().GetMainFillingProduct(),
-            FillingProduct::kPlusAddresses);
-
   // Show credit card suggestion in the popup.
   OnSuggestionsReturned(
-      queried_field().global_id(),
+      queried_field(),
       {CreateAutofillSuggestion(SuggestionType::kCreditCardEntry,
                                 u"credit card suggestion"),
        CreateAutofillSuggestion(SuggestionType::kManageCreditCard,
@@ -542,7 +611,7 @@ TEST_F(AutofillExternalDelegateTest, GetMainFillingProduct) {
             FillingProduct::kCreditCard);
 
   // Show BNPL suggestion in the popup.
-  OnSuggestionsReturned(queried_field().global_id(),
+  OnSuggestionsReturned(queried_field(),
                         {CreateAutofillSuggestion(SuggestionType::kBnplEntry,
                                                   u"BNPL suggestion")});
   EXPECT_EQ(external_delegate().GetMainFillingProduct(),
@@ -550,7 +619,7 @@ TEST_F(AutofillExternalDelegateTest, GetMainFillingProduct) {
 
   // Show merchant promo code suggestion in the popup.
   OnSuggestionsReturned(
-      queried_field().global_id(),
+      queried_field(),
       {CreateAutofillSuggestion(SuggestionType::kMerchantPromoCodeEntry,
                                 u"promo code")});
   EXPECT_EQ(external_delegate().GetMainFillingProduct(),
@@ -558,61 +627,787 @@ TEST_F(AutofillExternalDelegateTest, GetMainFillingProduct) {
 
   // Show IBAN suggestion in the popup.
   OnSuggestionsReturned(
-      queried_field().global_id(),
+      queried_field(),
       {CreateAutofillSuggestion(SuggestionType::kIbanEntry, u"fill IBAN")});
   EXPECT_EQ(external_delegate().GetMainFillingProduct(), FillingProduct::kIban);
 
   // Show password suggestion in the popup.
   OnSuggestionsReturned(
-      queried_field().global_id(),
+      queried_field(),
       {CreateAutofillSuggestion(SuggestionType::kPasswordEntry, u"password")});
   EXPECT_EQ(external_delegate().GetMainFillingProduct(),
             FillingProduct::kPassword);
 
   // Show compose suggestion in the popup.
   OnSuggestionsReturned(
-      queried_field().global_id(),
+      queried_field(),
       {CreateAutofillSuggestion(SuggestionType::kComposeResumeNudge,
                                 u"generated text")});
   EXPECT_EQ(external_delegate().GetMainFillingProduct(),
             FillingProduct::kCompose);
 
   // Show only autocomplete suggestion in the popup.
-  OnSuggestionsReturned(
-      queried_field().global_id(),
-      {CreateAutofillSuggestion(SuggestionType::kAutocompleteEntry,
-                                u"autocomplete")});
+  OnSuggestionsReturned(queried_field(), {CreateAutofillSuggestion(
+                                             SuggestionType::kAutocompleteEntry,
+                                             u"autocomplete")});
   EXPECT_EQ(external_delegate().GetMainFillingProduct(),
             FillingProduct::kAutocomplete);
 
   // Show only datalist suggestion in the popup.
   OnSuggestionsReturned(
-      queried_field().global_id(),
+      queried_field(),
       {CreateAutofillSuggestion(SuggestionType::kDatalistEntry, u"datalist")});
   EXPECT_EQ(external_delegate().GetMainFillingProduct(),
             FillingProduct::kDataList);
 
   // Show auxiliary helper suggestion in the popup.
   OnSuggestionsReturned(
-      queried_field().global_id(),
+      queried_field(),
       {CreateAutofillSuggestion(SuggestionType::kUndoOrClear, u"undo")});
   EXPECT_EQ(external_delegate().GetMainFillingProduct(), FillingProduct::kNone);
 
   // Show auxiliary helper suggestion in the popup.
-  OnSuggestionsReturned(
-      queried_field().global_id(),
-      {CreateAutofillSuggestion(SuggestionType::kMixedFormMessage,
-                                u"no autofill available")});
+  OnSuggestionsReturned(queried_field(), {CreateAutofillSuggestion(
+                                             SuggestionType::kMixedFormMessage,
+                                             u"no autofill available")});
   EXPECT_EQ(external_delegate().GetMainFillingProduct(), FillingProduct::kNone);
 
   // Show save and fill suggestion in the popup.
   OnSuggestionsReturned(
-      queried_field().global_id(),
+      queried_field(),
       {CreateAutofillSuggestion(SuggestionType::kSaveAndFillCreditCardEntry,
                                 u"save and fill suggestion")});
   EXPECT_EQ(external_delegate().GetMainFillingProduct(),
             FillingProduct::kCreditCard);
 }
+
+// Test that accepting the Autocomplete AtMemory button triggers AtMemory
+// dialog.
+TEST_F(AutofillExternalDelegateTest, SelectAutocompleteAtMemoryButton) {
+  IssueOnQuery();
+  EXPECT_CALL(autofill_driver(),
+              RendererShouldTriggerSuggestions(
+                  queried_field().global_id(),
+                  AutofillSuggestionTriggerSource::kAtMemory));
+  external_delegate().DidAcceptSuggestion(
+      Suggestion(SuggestionType::kAutocompleteAtMemoryButton),
+      SuggestionPosition{.row = 0});
+}
+
+TEST_F(AutofillExternalDelegateTest, AtMemoryDoesNotHideOnEmptySuggestions) {
+  IssueOnQuery(AutofillSuggestionTriggerSource::kAtMemory);
+
+  EXPECT_CALL(autofill_client(), HideSuggestions).Times(0);
+
+  // Return empty suggestions.
+  OnSuggestionsReturned(queried_field(), {});
+}
+
+// Tests that accepting the AtMemory search affordance suggestion does not
+// hide the popup.
+TEST_F(AutofillExternalDelegateTest,
+       AtMemorySearchAffordanceAcceptanceDoesNotHidePopup) {
+  IssueOnQuery(AutofillSuggestionTriggerSource::kAtMemory);
+
+  EXPECT_CALL(autofill_client(), HideSuggestions).Times(0);
+
+  external_delegate().DidAcceptSuggestion(
+      Suggestion(u"some query", SuggestionType::kAtMemorySearchAffordance),
+      SuggestionPosition{.row = 0});
+}
+
+// Tests that accessibility annotator trigger source uses the caret anchor
+// type when valid caret bounds are available.
+TEST_F(AutofillExternalDelegateTest, AtMemoryUsesCaretAnchorWithValidCaret) {
+  gfx::RectF field_bounds(0, 0, 100, 20);
+  gfx::Rect caret_bounds(10, 10, 1, 1);
+  FormData form = CreateTestFormWithBounds(field_bounds);
+
+  IssueOnQuery(form, caret_bounds, AutofillSuggestionTriggerSource::kAtMemory);
+
+  const PopupAnchorType expected_anchor_type =
+#if BUILDFLAG(IS_ANDROID)
+      PopupAnchorType::kAtMemoryBottomSheet;
+#else
+      PopupAnchorType::kCaret;
+#endif
+
+  EXPECT_CALL(autofill_client(),
+              ShowAutofillSuggestions(
+                  AllOf(Field(&AutofillClient::PopupOpenArgs::element_bounds,
+                              gfx::RectF(caret_bounds)),
+                        Field(&AutofillClient::PopupOpenArgs::anchor_type,
+                              expected_anchor_type)),
+                  _));
+
+  OnSuggestionsReturned(
+      queried_field(),
+      {CreateAutofillSuggestion(SuggestionType::kAddressEntry, u"suggestion")});
+}
+
+// Tests that @memory trigger source uses the bottom sheet anchor type.
+TEST_F(AutofillExternalDelegateTest, AtMemoryUsesBottomSheetAnchor) {
+  gfx::RectF field_bounds(0, 0, 100, 20);
+  gfx::Rect empty_caret_bounds;
+  FormData form = CreateTestFormWithBounds(field_bounds);
+
+  IssueOnQuery(form, empty_caret_bounds,
+               AutofillSuggestionTriggerSource::kAtMemory);
+
+  const PopupAnchorType expected_anchor_type =
+#if BUILDFLAG(IS_ANDROID)
+      PopupAnchorType::kAtMemoryBottomSheet;
+#else
+      PopupAnchorType::kField;
+#endif
+
+  EXPECT_CALL(autofill_client(),
+              ShowAutofillSuggestions(
+                  AllOf(Field(&AutofillClient::PopupOpenArgs::element_bounds,
+                              field_bounds),
+                        Field(&AutofillClient::PopupOpenArgs::anchor_type,
+                              expected_anchor_type)),
+                  _));
+
+  OnSuggestionsReturned(
+      queried_field(),
+      {CreateAutofillSuggestion(SuggestionType::kAddressEntry, u"suggestion")});
+}
+
+// Tests that accessibility annotator context menu trigger source uses the
+// caret anchor type.
+TEST_F(AutofillExternalDelegateTest, AtMemoryContextMenuUsesCaretAnchor) {
+  gfx::RectF field_bounds(0, 0, 100, 20);
+  gfx::Rect caret_bounds(10, 10, 1, 1);
+  FormData form = CreateTestFormWithBounds(field_bounds);
+
+  IssueOnQuery(form, caret_bounds,
+               AutofillSuggestionTriggerSource::kAtMemoryContextMenu);
+
+  const PopupAnchorType expected_anchor_type =
+#if BUILDFLAG(IS_ANDROID)
+      PopupAnchorType::kAtMemoryBottomSheet;
+#else
+      PopupAnchorType::kCaret;
+#endif
+
+  EXPECT_CALL(autofill_client(),
+              ShowAutofillSuggestions(
+                  AllOf(Field(&AutofillClient::PopupOpenArgs::element_bounds,
+                              gfx::RectF(caret_bounds)),
+                        Field(&AutofillClient::PopupOpenArgs::anchor_type,
+                              expected_anchor_type)),
+                  _));
+
+  OnSuggestionsReturned(
+      queried_field(),
+      {CreateAutofillSuggestion(SuggestionType::kAddressEntry, u"suggestion")});
+}
+
+TEST_F(AutofillExternalDelegateTest, AtMemoryPopupDisplayed_TypedTrigger) {
+  base::HistogramTester histogram_tester;
+  StartAtMemorySession(AutofillSuggestionTriggerSource::kAtMemory);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.AtMemory.Funnel.PopupDisplayed",
+      AutofillMetrics::AtMemoryTriggerSource::kTypedTrigger, 1);
+}
+
+TEST_F(AutofillExternalDelegateTest, AtMemoryPopupDisplayed_ContextMenu) {
+  base::HistogramTester histogram_tester;
+  StartAtMemorySession(AutofillSuggestionTriggerSource::kAtMemoryContextMenu);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.AtMemory.Funnel.PopupDisplayed",
+      AutofillMetrics::AtMemoryTriggerSource::kContextMenu, 1);
+}
+
+TEST_F(AutofillExternalDelegateTest, AtMemoryMetricsRecorder_QuerySubmitted) {
+  base::HistogramTester histogram_tester;
+  StartAtMemorySession();
+
+  external_delegate().OnSearchSubmitted(u"some query");
+  external_delegate().OnSuggestionsHidden(SuggestionHidingReason::kTabGone);
+
+  histogram_tester.ExpectUniqueSample("Autofill.AtMemory.Funnel.QuerySubmitted",
+                                      true, 1);
+}
+
+TEST_F(AutofillExternalDelegateTest, AtMemoryMetricsRecorder_NoQuerySubmitted) {
+  base::HistogramTester histogram_tester;
+  StartAtMemorySession();
+
+  external_delegate().OnSuggestionsHidden(SuggestionHidingReason::kTabGone);
+
+  histogram_tester.ExpectUniqueSample("Autofill.AtMemory.Funnel.QuerySubmitted",
+                                      false, 1);
+}
+
+// Tests that @memory search results from first-party sources include metadata
+// as child suggestions with source attribution in the flyout menu.
+TEST_F(AutofillExternalDelegateTest, AtMemoryFlyoutChildrenFirstPartySources) {
+  StartAtMemorySession();
+
+  std::vector<accessibility_annotator::MemorySearchResult> entries;
+  accessibility_annotator::MemorySearchResult entry(
+      accessibility_annotator::MemoryDataType::kUnknown, u"Shoe size", u"42");
+  entry.metadata_list.emplace_back(
+      accessibility_annotator::MemoryDataType::kUnknown, u"Store",
+      u"example.com");
+  entry.metadata_list.emplace_back(
+      accessibility_annotator::MemoryDataType::kNameFull, u"Name",
+      u"Marian Paździoch");
+  entry.sources.emplace_back(
+      accessibility_annotator::MemoryEntrySourceType::kGmail);
+  entries.push_back(std::move(entry));
+
+  accessibility_annotator::MemorySearchResults search_results(
+      accessibility_annotator::MemorySearchStatus::kFinalResponseSuccess,
+      std::move(entries));
+
+  SetupMockAtMemoryQueryService(u"shoe size", std::move(search_results));
+
+  std::u16string expected_label = l10n_util::GetStringFUTF16(
+      IDS_AUTOFILL_AT_MEMORY_SOURCE_ATTRIBUTION_DESCRIPTION,
+      l10n_util::GetStringUTF16(IDS_AUTOFILL_AT_MEMORY_SOURCE_GMAIL));
+
+  auto matcher = testing::ElementsAre(testing::AllOf(
+      HasMainText(u"42"),
+      testing::Field(
+          &Suggestion::children,
+          testing::ElementsAre(
+              testing::AllOf(HasMainText(u"example.com"), HasLabel(u"Store")),
+              testing::AllOf(HasMainText(u"Marian Paździoch"),
+                             HasLabel(u"Name")),
+              testing::Field(&Suggestion::type, SuggestionType::kSeparator),
+              testing::AllOf(HasMainText(u"About"),
+                             HasLabel(expected_label))))));
+
+  // The first call notifies the UI that search has started (clearing current
+  // suggestions). The second call provides the actual results.
+  EXPECT_CALL(autofill_client(),
+              UpdateAutofillSuggestions(testing::IsEmpty(), _, _, _));
+  EXPECT_CALL(autofill_client(), UpdateAutofillSuggestions(matcher, _, _, _));
+
+  external_delegate().OnSearchSubmitted(u"shoe size");
+}
+
+// Tests that @memory search results from the Autofill source show a management
+// option in the flyout menu.
+TEST_F(AutofillExternalDelegateTest, AtMemoryFlyoutChildrenAutofillSource) {
+  StartAtMemorySession();
+
+  std::vector<accessibility_annotator::MemorySearchResult> entries;
+  accessibility_annotator::MemorySearchResult entry(
+      accessibility_annotator::MemoryDataType::kAddressFull, u"Address",
+      u"1600 Amphitheatre Pkwy");
+  entry.metadata_list.emplace_back(
+      accessibility_annotator::MemoryDataType::kAddressCity, u"City",
+      u"Mountain View");
+  entry.metadata_list.emplace_back(
+      accessibility_annotator::MemoryDataType::kAddressState, u"State", u"CA");
+  entry.sources.emplace_back(
+      accessibility_annotator::MemoryEntrySourceType::kAutofill);
+  entries.push_back(std::move(entry));
+
+  accessibility_annotator::MemorySearchResults search_results(
+      accessibility_annotator::MemorySearchStatus::kFinalResponseSuccess,
+      std::move(entries));
+
+  SetupMockAtMemoryQueryService(u"addr", std::move(search_results));
+
+  auto matcher = testing::ElementsAre(testing::AllOf(
+      HasMainText(u"1600 Amphitheatre Pkwy"),
+      testing::Field(
+          &Suggestion::children,
+          testing::ElementsAre(
+              testing::AllOf(HasMainText(u"Mountain View"), HasLabel(u"City")),
+              testing::AllOf(HasMainText(u"CA"), HasLabel(u"State")),
+              testing::Field(&Suggestion::type, SuggestionType::kSeparator),
+              testing::AllOf(
+                  HasMainText(u"Manage information"),
+                  testing::Field(&Suggestion::type,
+                                 SuggestionType::kManageAddress))))));
+
+  // The first call notifies the UI that search has started (clearing current
+  // suggestions). The second call provides the actual results.
+  EXPECT_CALL(autofill_client(),
+              UpdateAutofillSuggestions(testing::IsEmpty(), _, _, _));
+  EXPECT_CALL(autofill_client(), UpdateAutofillSuggestions(matcher, _, _, _));
+
+  external_delegate().OnSearchSubmitted(u"addr");
+}
+
+// Tests that when a new search is triggered while a previous one is still
+// running, the current suggestions are cleared before showing the new search
+// results.
+TEST_F(AutofillExternalDelegateTest,
+       AtMemorySubsequentSearchClearsPreviousSuggestions) {
+  IssueOnQuery(AutofillSuggestionTriggerSource::kAtMemory);
+
+  autofill_client().set_suggestion_ui_session_id(
+      AutofillClient::SuggestionUiSessionId(1));
+  external_delegate().OnSuggestionsShown({});
+
+  std::vector<accessibility_annotator::MemorySearchResult> entries1;
+  accessibility_annotator::MemorySearchResult entry(
+      accessibility_annotator::MemoryDataType::kAddressFull, u"Address",
+      u"1600 Amphitheatre Pkwy");
+  entries1.push_back(std::move(entry));
+
+  accessibility_annotator::MemorySearchResults search_results1(
+      accessibility_annotator::MemorySearchStatus::kFinalResponseSuccess,
+      std::move(entries1));
+
+  auto mock_service = std::make_unique<
+      testing::NiceMock<accessibility_annotator::MockAtMemoryQueryService>>();
+  accessibility_annotator::MockAtMemoryQueryService* mock_service_ptr =
+      mock_service.get();
+  autofill_client().set_at_memory_query_service(std::move(mock_service));
+
+  EXPECT_CALL(*mock_service_ptr, Query(std::u16string_view(u"addr"), _))
+      .WillOnce(base::test::RunOnceCallback<1>(std::move(search_results1)));
+
+  EXPECT_CALL(autofill_client(),
+              UpdateAutofillSuggestions(testing::IsEmpty(), _, _, _));
+  EXPECT_CALL(autofill_client(),
+              UpdateAutofillSuggestions(testing::SizeIs(1), _, _, _));
+
+  external_delegate().OnSearchSubmitted(u"addr");
+
+  std::vector<Suggestion> suggestions1 = {Suggestion(
+      u"1600 Amphitheatre Pkwy", SuggestionType::kAtMemorySearchResult)};
+  ON_CALL(autofill_client(), GetAutofillSuggestions)
+      .WillByDefault(testing::Return(suggestions1));
+
+  // Second query. We use SaveArg to capture the callback and prevent it from
+  // running immediately.
+  base::RepeatingCallback<void(accessibility_annotator::MemorySearchResults)>
+      received_callback;
+  EXPECT_CALL(*mock_service_ptr, Query(std::u16string_view(u"addr2"), _))
+      .WillOnce(testing::SaveArg<1>(&received_callback));
+
+  // We expect that UpdateAutofillSuggestions IS called when the second search
+  // starts, which clears the suggestions list.
+  EXPECT_CALL(autofill_client(),
+              UpdateAutofillSuggestions(testing::IsEmpty(), _, _, _));
+
+  external_delegate().OnSearchSubmitted(u"addr2");
+
+  // Verify that expectations are met before we proceed.
+  testing::Mock::VerifyAndClearExpectations(&autofill_client());
+
+  // Now simulate results arriving for the second query.
+  std::vector<accessibility_annotator::MemorySearchResult> entries2;
+  entries2.emplace_back(accessibility_annotator::MemoryDataType::kAddressFull,
+                        u"Address", u"1600 Amphitheatre Pkwy NW");
+  accessibility_annotator::MemorySearchResults search_results2(
+      accessibility_annotator::MemorySearchStatus::kFinalResponseSuccess,
+      std::move(entries2));
+
+  EXPECT_CALL(autofill_client(),
+              UpdateAutofillSuggestions(testing::SizeIs(1), _, _, _));
+  received_callback.Run(std::move(search_results2));
+}
+
+// Tests that when a partial response is received, the controller continues
+// to accept subsequent responses for the same query.
+TEST_F(AutofillExternalDelegateTest, AtMemoryPartialResponseKeepsSearching) {
+  IssueOnQuery(AutofillSuggestionTriggerSource::kAtMemory);
+
+  autofill_client().set_suggestion_ui_session_id(
+      AutofillClient::SuggestionUiSessionId(1));
+  external_delegate().OnSuggestionsShown({});
+
+  auto mock_service = std::make_unique<
+      testing::NiceMock<accessibility_annotator::MockAtMemoryQueryService>>();
+  accessibility_annotator::MockAtMemoryQueryService* mock_service_ptr =
+      mock_service.get();
+  autofill_client().set_at_memory_query_service(std::move(mock_service));
+
+  base::RepeatingCallback<void(accessibility_annotator::MemorySearchResults)>
+      received_callback;
+  EXPECT_CALL(*mock_service_ptr, Query(std::u16string_view(u"addr"), _))
+      .WillOnce(testing::SaveArg<1>(&received_callback));
+
+  // Trigger the search, which clears suggestions.
+  EXPECT_CALL(autofill_client(),
+              UpdateAutofillSuggestions(testing::IsEmpty(), _, _, _));
+  external_delegate().OnSearchSubmitted(u"addr");
+
+  // Simulate first result arriving with kPartialResponseSuccess.
+  std::vector<accessibility_annotator::MemorySearchResult> entries1;
+  entries1.emplace_back(accessibility_annotator::MemoryDataType::kAddressFull,
+                        u"Address", u"1600 Amphitheatre Pkwy");
+  accessibility_annotator::MemorySearchResults search_results1(
+      accessibility_annotator::MemorySearchStatus::kPartialResponseSuccess,
+      std::move(entries1));
+
+  // We expect that UpdateAutofillSuggestions IS called with these results.
+  EXPECT_CALL(autofill_client(),
+              UpdateAutofillSuggestions(testing::SizeIs(1), _, _, _));
+
+  received_callback.Run(std::move(search_results1));
+
+  // Verify expectations so far.
+  testing::Mock::VerifyAndClearExpectations(&autofill_client());
+
+  // Simulate second results arriving for the same query (e.g. final results).
+  std::vector<accessibility_annotator::MemorySearchResult> entries2;
+  entries2.emplace_back(accessibility_annotator::MemoryDataType::kAddressFull,
+                        u"Address", u"1600 Amphitheatre Pkwy NW");
+  accessibility_annotator::MemorySearchResults search_results2(
+      accessibility_annotator::MemorySearchStatus::kFinalResponseSuccess,
+      std::move(entries2));
+
+  // We expect that UpdateAutofillSuggestions IS called AGAIN with the new
+  // results, because the previous response was only a partial success.
+  EXPECT_CALL(autofill_client(),
+              UpdateAutofillSuggestions(testing::SizeIs(1), _, _, _));
+
+  received_callback.Run(std::move(search_results2));
+}
+
+// Tests that when a non-partial response (e.g., final success) is received,
+// the controller stops accepting subsequent responses for the same query.
+TEST_F(AutofillExternalDelegateTest, AtMemoryFinalResponseStopsSearching) {
+  IssueOnQuery(AutofillSuggestionTriggerSource::kAtMemory);
+
+  autofill_client().set_suggestion_ui_session_id(
+      AutofillClient::SuggestionUiSessionId(1));
+  external_delegate().OnSuggestionsShown({});
+
+  auto mock_service = std::make_unique<
+      testing::NiceMock<accessibility_annotator::MockAtMemoryQueryService>>();
+  accessibility_annotator::MockAtMemoryQueryService* mock_service_ptr =
+      mock_service.get();
+  autofill_client().set_at_memory_query_service(std::move(mock_service));
+
+  base::RepeatingCallback<void(accessibility_annotator::MemorySearchResults)>
+      received_callback;
+  EXPECT_CALL(*mock_service_ptr, Query(std::u16string_view(u"addr"), _))
+      .WillOnce(testing::SaveArg<1>(&received_callback));
+
+  // Trigger the search, which clears suggestions.
+  EXPECT_CALL(autofill_client(),
+              UpdateAutofillSuggestions(testing::IsEmpty(), _, _, _));
+  external_delegate().OnSearchSubmitted(u"addr");
+
+  // Simulate first result arriving with kFinalResponseSuccess.
+  std::vector<accessibility_annotator::MemorySearchResult> entries1;
+  entries1.emplace_back(accessibility_annotator::MemoryDataType::kAddressFull,
+                        u"Address", u"1600 Amphitheatre Pkwy");
+  accessibility_annotator::MemorySearchResults search_results1(
+      accessibility_annotator::MemorySearchStatus::kFinalResponseSuccess,
+      std::move(entries1));
+
+  // We expect that UpdateAutofillSuggestions IS called with these results.
+  EXPECT_CALL(autofill_client(),
+              UpdateAutofillSuggestions(testing::SizeIs(1), _, _, _));
+
+  received_callback.Run(std::move(search_results1));
+
+  // Verify expectations so far.
+  testing::Mock::VerifyAndClearExpectations(&autofill_client());
+
+  // Simulate second results arriving for the same query.
+  std::vector<accessibility_annotator::MemorySearchResult> entries2;
+  entries2.emplace_back(accessibility_annotator::MemoryDataType::kAddressFull,
+                        u"Address", u"1600 Amphitheatre Pkwy NW");
+  accessibility_annotator::MemorySearchResults search_results2(
+      accessibility_annotator::MemorySearchStatus::kFinalResponseSuccess,
+      std::move(entries2));
+
+  // We expect that UpdateAutofillSuggestions is NOT called because the
+  // previous response was a final success and stopped the search.
+  EXPECT_CALL(autofill_client(), UpdateAutofillSuggestions).Times(0);
+
+  received_callback.Run(std::move(search_results2));
+}
+
+// Tests that if the user clears the filter, any late arriving responses from
+// previous queries are ignored.
+TEST_F(AutofillExternalDelegateTest,
+       AtMemoryLateResponseIgnoredIfFilterCleared) {
+  IssueOnQuery(AutofillSuggestionTriggerSource::kAtMemory);
+
+  autofill_client().set_suggestion_ui_session_id(
+      AutofillClient::SuggestionUiSessionId(1));
+  external_delegate().OnSuggestionsShown({});
+
+  auto mock_service = std::make_unique<
+      testing::NiceMock<accessibility_annotator::MockAtMemoryQueryService>>();
+  accessibility_annotator::MockAtMemoryQueryService* mock_service_ptr =
+      mock_service.get();
+  autofill_client().set_at_memory_query_service(std::move(mock_service));
+
+  base::RepeatingCallback<void(accessibility_annotator::MemorySearchResults)>
+      received_callback;
+  EXPECT_CALL(*mock_service_ptr, Query(std::u16string_view(u"addr"), _))
+      .WillOnce(testing::SaveArg<1>(&received_callback));
+
+  EXPECT_CALL(autofill_client(),
+              UpdateAutofillSuggestions(testing::IsEmpty(), _, _, _));
+  external_delegate().OnSearchSubmitted(u"addr");
+
+  // Now user clears the filter.
+  EXPECT_CALL(autofill_client(),
+              UpdateAutofillSuggestions(testing::IsEmpty(), _, _, _));
+  external_delegate().OnFilterChanged(u"");
+
+  // Now simulate late results arriving for the first query.
+  std::vector<accessibility_annotator::MemorySearchResult> entries;
+  entries.emplace_back(accessibility_annotator::MemoryDataType::kAddressFull,
+                       u"Address", u"1600 Amphitheatre Pkwy");
+  accessibility_annotator::MemorySearchResults search_results(
+      accessibility_annotator::MemorySearchStatus::kFinalResponseSuccess,
+      std::move(entries));
+
+  // We expect that UpdateAutofillSuggestions is NOT called with these results.
+  EXPECT_CALL(autofill_client(), UpdateAutofillSuggestions).Times(0);
+
+  received_callback.Run(std::move(search_results));
+}
+
+// Tests that results from a stale query (interrupted by a new query) are
+// ignored and do not update the suggestions.
+TEST_F(AutofillExternalDelegateTest, AtMemoryStaleResponseIgnored) {
+  IssueOnQuery(AutofillSuggestionTriggerSource::kAtMemory);
+
+  autofill_client().set_suggestion_ui_session_id(
+      AutofillClient::SuggestionUiSessionId(1));
+  external_delegate().OnSuggestionsShown({});
+
+  auto mock_service = std::make_unique<
+      testing::NiceMock<accessibility_annotator::MockAtMemoryQueryService>>();
+  accessibility_annotator::MockAtMemoryQueryService* mock_service_ptr =
+      mock_service.get();
+  autofill_client().set_at_memory_query_service(std::move(mock_service));
+
+  base::RepeatingCallback<void(accessibility_annotator::MemorySearchResults)>
+      received_callback1;
+  EXPECT_CALL(*mock_service_ptr, Query(std::u16string_view(u"addr1"), _))
+      .WillOnce(testing::SaveArg<1>(&received_callback1));
+
+  EXPECT_CALL(autofill_client(),
+              UpdateAutofillSuggestions(testing::IsEmpty(), _, _, _));
+  external_delegate().OnSearchSubmitted(u"addr1");
+
+  // Trigger second search before first one completes.
+  base::RepeatingCallback<void(accessibility_annotator::MemorySearchResults)>
+      received_callback2;
+  EXPECT_CALL(*mock_service_ptr, Query(std::u16string_view(u"addr2"), _))
+      .WillOnce(testing::SaveArg<1>(&received_callback2));
+
+  EXPECT_CALL(autofill_client(),
+              UpdateAutofillSuggestions(testing::IsEmpty(), _, _, _));
+
+  external_delegate().OnSearchSubmitted(u"addr2");
+
+  // Now simulate results arriving for the FIRST query.
+  std::vector<accessibility_annotator::MemorySearchResult> entries1;
+  entries1.emplace_back(accessibility_annotator::MemoryDataType::kAddressFull,
+                        u"Address", u"1600 Amphitheatre Pkwy");
+  accessibility_annotator::MemorySearchResults search_results1(
+      accessibility_annotator::MemorySearchStatus::kFinalResponseSuccess,
+      std::move(entries1));
+
+  // We expect that UpdateAutofillSuggestions is NOT called with results from
+  // query 1.
+  EXPECT_CALL(autofill_client(), UpdateAutofillSuggestions).Times(0);
+
+  received_callback1.Run(std::move(search_results1));
+
+  // Verify expectations before we proceed.
+  testing::Mock::VerifyAndClearExpectations(&autofill_client());
+
+  // Now simulate results arriving for the SECOND query.
+  std::vector<accessibility_annotator::MemorySearchResult> entries2;
+  entries2.emplace_back(accessibility_annotator::MemoryDataType::kAddressFull,
+                        u"Address", u"1600 Amphitheatre Pkwy NW");
+  accessibility_annotator::MemorySearchResults search_results2(
+      accessibility_annotator::MemorySearchStatus::kFinalResponseSuccess,
+      std::move(entries2));
+
+  EXPECT_CALL(autofill_client(),
+              UpdateAutofillSuggestions(testing::SizeIs(1), _, _, _));
+  received_callback2.Run(std::move(search_results2));
+}
+
+class AutofillExternalDelegateAutoSuggestInactivityTest
+    : public AutofillExternalDelegateTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  AutofillExternalDelegateAutoSuggestInactivityTest() {
+    feature_list_.InitWithFeatureState(
+        features::kAutofillNewSuggestionGeneration, GetParam());
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         AutofillExternalDelegateAutoSuggestInactivityTest,
+                         testing::Bool());
+
+// Test that selecting the AutoSuggest inactivity triggers the AtMemory dialog.
+TEST_P(AutofillExternalDelegateAutoSuggestInactivityTest,
+       SelectAutoSuggestInactivity) {
+  IssueOnQuery();
+  EXPECT_CALL(autofill_driver(),
+              RendererShouldTriggerSuggestions(
+                  queried_field().global_id(),
+                  AutofillSuggestionTriggerSource::kAtMemory));
+  external_delegate().DidAcceptSuggestion(
+      Suggestion(SuggestionType::kAtMemoryInactivityNudge),
+      SuggestionPosition{.row = 0});
+}
+
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+// Tests that when a remote query returns kUnsupportedQuery, the delegate shows
+// a specific suggestion offering to open Gemini.
+TEST_F(AutofillExternalDelegateTest, AtMemoryRemoteQuery_UnsupportedQuery) {
+  autofill_client().set_is_glic_enabled(true);
+  StartAtMemorySession();
+
+  SetupMockAtMemoryQueryService(
+      u"shoe size",
+      {accessibility_annotator::MemorySearchStatus::kUnsupportedQuery, {}});
+
+  EXPECT_CALL(autofill_client(), UpdateAutofillSuggestions)
+      .WillOnce(testing::Return())
+      .WillOnce([this](const std::vector<Suggestion>& suggestions,
+                       FillingProduct product,
+                       AutofillSuggestionTriggerSource source,
+                       AutofillSuggestionsIgnoreFocusLoss ignore) {
+        EXPECT_THAT(
+            suggestions,
+            testing::ElementsAre(testing::AllOf(
+                HasMainText(l10n_util::GetStringUTF16(
+                    IDS_AUTOFILL_AT_MEMORY_UNSUPPORTED_QUERY_TITLE)),
+                HasLabel(l10n_util::GetStringUTF16(
+                    IDS_AUTOFILL_AT_MEMORY_UNSUPPORTED_QUERY_DESCRIPTION)),
+                testing::Field(&Suggestion::type, SuggestionType::kOpenGemini),
+                testing::Field(&Suggestion::icon, Suggestion::Icon::kSpark))));
+      });
+
+  external_delegate().OnSearchSubmitted(u"shoe size");
+}
+#endif
+
+// Tests that when a remote query returns no entries and status
+// kFinalResponseSuccess, the delegate shows a "No data" suggestion.
+TEST_F(AutofillExternalDelegateTest, AtMemoryRemoteQuery_NoData) {
+  StartAtMemorySession();
+
+  SetupMockAtMemoryQueryService(
+      u"shoe size",
+      {accessibility_annotator::MemorySearchStatus::kFinalResponseSuccess, {}});
+
+  EXPECT_CALL(autofill_client(), UpdateAutofillSuggestions)
+      .WillOnce(testing::Return())
+      .WillOnce([this](const std::vector<Suggestion>& suggestions,
+                       FillingProduct product,
+                       AutofillSuggestionTriggerSource source,
+                       AutofillSuggestionsIgnoreFocusLoss ignore) {
+        EXPECT_THAT(
+            suggestions,
+            testing::ElementsAre(testing::AllOf(
+                HasMainText(
+                    l10n_util::GetStringUTF16(IDS_AUTOFILL_AT_MEMORY_NO_DATA)),
+                testing::Field(&Suggestion::type,
+                               SuggestionType::kAtMemorySearchResult),
+                testing::Field(&Suggestion::icon, Suggestion::Icon::kSadTab),
+                testing::Field(&Suggestion::acceptability,
+                               Suggestion::Acceptability::kUnacceptable))));
+      });
+
+  external_delegate().OnSearchSubmitted(u"shoe size");
+}
+
+TEST_F(AutofillExternalDelegateTest, AtMemoryRemoteQuery_NoConnection) {
+  StartAtMemorySession();
+
+  SetupMockAtMemoryQueryService(
+      u"shoe size",
+      {accessibility_annotator::MemorySearchStatus::kNoConnectionFailure, {}});
+
+  EXPECT_CALL(autofill_client(), UpdateAutofillSuggestions)
+      .WillOnce(Return())
+      .WillOnce([this](const std::vector<Suggestion>& suggestions,
+                       FillingProduct product,
+                       AutofillSuggestionTriggerSource source,
+                       AutofillSuggestionsIgnoreFocusLoss ignore) {
+        EXPECT_THAT(
+            suggestions,
+            ElementsAre(AllOf(
+                HasMainText(l10n_util::GetStringUTF16(
+                    IDS_AUTOFILL_AT_MEMORY_NO_CONNECTION)),
+                Field(&Suggestion::type, SuggestionType::kAtMemoryNoConnection),
+                Field(&Suggestion::icon, Suggestion::Icon::kSadTab),
+                Field(&Suggestion::acceptability,
+                      Suggestion::Acceptability::kUnacceptable))));
+      });
+
+  external_delegate().OnSearchSubmitted(u"shoe size");
+}
+
+class AutofillExternalDelegateAtMemoryGenericErrorTest
+    : public AutofillExternalDelegateTest,
+      public WithParamInterface<accessibility_annotator::MemorySearchStatus> {};
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    AutofillExternalDelegateAtMemoryGenericErrorTest,
+    Values(accessibility_annotator::MemorySearchStatus::kInferenceFailure,
+           accessibility_annotator::MemorySearchStatus::kInternalFailure));
+
+// Tests that when a remote query returns no entries and an internal or
+// inference failure status, the delegate shows a generic error suggestion.
+TEST_P(AutofillExternalDelegateAtMemoryGenericErrorTest,
+       AtMemoryRemoteQuery_GenericError) {
+  StartAtMemorySession();
+
+  SetupMockAtMemoryQueryService(u"shoe size", {GetParam(), {}});
+
+  EXPECT_CALL(autofill_client(), UpdateAutofillSuggestions)
+      .WillOnce(Return())
+      .WillOnce([this](const std::vector<Suggestion>& suggestions,
+                       FillingProduct product,
+                       AutofillSuggestionTriggerSource source,
+                       AutofillSuggestionsIgnoreFocusLoss ignore) {
+        EXPECT_THAT(
+            suggestions,
+            ElementsAre(AllOf(
+                HasMainText(l10n_util::GetStringUTF16(
+                    IDS_AUTOFILL_AT_MEMORY_GENERIC_ERROR)),
+                Field(&Suggestion::type, SuggestionType::kAtMemoryGenericError),
+                Field(&Suggestion::icon, Suggestion::Icon::kSadTab),
+                Field(&Suggestion::acceptability,
+                      Suggestion::Acceptability::kUnacceptable))));
+      });
+
+  external_delegate().OnSearchSubmitted(u"shoe size");
+}
+
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+// Tests that when the "Open Gemini" suggestion is accepted, it triggers
+// opening Gemini in the sidebar.
+TEST_F(AutofillExternalDelegateTest, AtMemoryAcceptOpenGeminiSuggestion) {
+  IssueOnQuery();
+
+  Suggestion suggestion(SuggestionType::kOpenGemini);
+  suggestion.payload = Suggestion::OpenGeminiPayload(u"test prompt");
+
+  EXPECT_CALL(autofill_client(),
+              OpenGeminiInSidebar(std::u16string(u"test prompt")));
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              Eq(std::nullopt)));
+
+  external_delegate().DidAcceptSuggestion(suggestion,
+                                          SuggestionPosition{.row = 0});
+}
+#endif
 
 // Test that our external delegate called the virtual methods at the right time.
 TEST_F(AutofillExternalDelegateTest, TestExternalDelegateVirtualCalls) {
@@ -631,15 +1426,15 @@ TEST_F(AutofillExternalDelegateTest, TestExternalDelegateVirtualCalls) {
       Suggestion(SuggestionType::kAddressEntry)};
   autofill_item[0].payload =
       Suggestion::AutofillProfilePayload(Suggestion::Guid(profile.guid()));
-  OnSuggestionsReturned(queried_field().global_id(), autofill_item);
+  OnSuggestionsReturned(queried_field(), autofill_item);
 
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
-                        IsQueriedFieldId(), HasFillingPayload(profile), _));
-  EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
+                        IsQueriedFieldId(), HasFillingPayload(profile), _, _));
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              Eq(std::nullopt)));
 
   // This should trigger a call to hide the popup since we've selected an
   // option.
@@ -667,7 +1462,7 @@ TEST_F(AutofillExternalDelegateTest, ExternalDelegateDataList) {
       ShowAutofillSuggestions(PopupOpenArgsAre(kExpectedSuggestions), _));
   std::vector<Suggestion> autofill_item;
   autofill_item.emplace_back(/*main_text=*/u"", SuggestionType::kAddressEntry);
-  OnSuggestionsReturned(queried_field().global_id(), autofill_item);
+  OnSuggestionsReturned(queried_field(), autofill_item);
 
   // Try calling OnSuggestionsReturned with no Autofill values and ensure
   // the datalist items are still shown.
@@ -676,7 +1471,7 @@ TEST_F(AutofillExternalDelegateTest, ExternalDelegateDataList) {
                                           SuggestionType::kDatalistEntry)),
                                       _));
   autofill_item.clear();
-  OnSuggestionsReturned(queried_field().global_id(), autofill_item);
+  OnSuggestionsReturned(queried_field(), autofill_item);
 }
 
 // Test that datalist values can get updated while a popup is showing.
@@ -703,7 +1498,7 @@ TEST_F(AutofillExternalDelegateTest, UpdateDataListWhileShowingPopup) {
       ShowAutofillSuggestions(PopupOpenArgsAre(kExpectedSuggestions), _));
   std::vector<Suggestion> autofill_item;
   autofill_item.emplace_back(SuggestionType::kAddressEntry);
-  OnSuggestionsReturned(queried_field().global_id(), autofill_item);
+  OnSuggestionsReturned(queried_field(), autofill_item);
 
   // This would normally get called from ShowAutofillSuggestions, but it is
   // mocked so we need to call OnSuggestionsShown ourselves.
@@ -745,7 +1540,7 @@ TEST_F(AutofillExternalDelegateTest, DuplicateAutofillDatalistValues) {
   autofill_item[0].main_text =
       Suggestion::Text(u"Rick", Suggestion::Text::IsPrimary(true));
   autofill_item[0].labels = {{Suggestion::Text(u"Deckard")}};
-  OnSuggestionsReturned(queried_field().global_id(), autofill_item);
+  OnSuggestionsReturned(queried_field(), autofill_item);
 }
 
 // Test that we de-dupe autocomplete values against datalist values, keeping the
@@ -781,16 +1576,17 @@ TEST_F(AutofillExternalDelegateTest, DuplicateAutocompleteDatalistValues) {
   autocomplete_items.emplace_back(SuggestionType::kAutocompleteEntry);
   autocomplete_items[1].main_text =
       Suggestion::Text(u"Cain", Suggestion::Text::IsPrimary(true));
-  OnSuggestionsReturned(queried_field().global_id(), autocomplete_items);
+  OnSuggestionsReturned(queried_field(), autocomplete_items);
 }
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
     BUILDFLAG(IS_CHROMEOS)
-// Test that `BnplManager::OnSuggestionsShown` will not be called if the
-// suggestion list doesn't contain a credit card entry.
+// Test that `BnplManager::OnCreditCardSuggestionsShown` will not be called if
+// the suggestion list doesn't contain a credit card entry.
 TEST_F(AutofillExternalDelegateTest,
        BnplSuggestionsNotShownWithoutCreditCardEntry) {
-  EXPECT_CALL(*autofill_manager().GetPaymentsBnplManager(), OnSuggestionsShown)
+  EXPECT_CALL(*autofill_manager().GetPaymentsBnplManager(),
+              OnCreditCardSuggestionsShown)
       .Times(0);
 
   const std::vector<Suggestion> suggestions = {
@@ -801,10 +1597,11 @@ TEST_F(AutofillExternalDelegateTest,
   external_delegate().OnSuggestionsShown(suggestions);
 }
 
-// Test that `BnplManager::OnSuggestionsShown` will be called if the
+// Test that `BnplManager::OnCreditCardSuggestionsShown` will be called if the
 // suggestion list contains a credit card entry.
 TEST_F(AutofillExternalDelegateTest, BnplSuggestionsShownWithCreditCardEntry) {
-  EXPECT_CALL(*autofill_manager().GetPaymentsBnplManager(), OnSuggestionsShown);
+  EXPECT_CALL(*autofill_manager().GetPaymentsBnplManager(),
+              OnCreditCardSuggestionsShown);
 
   const std::vector<Suggestion> suggestions = {
       CreateAutofillSuggestion(SuggestionType::kCreditCardEntry),
@@ -812,6 +1609,19 @@ TEST_F(AutofillExternalDelegateTest, BnplSuggestionsShownWithCreditCardEntry) {
       CreateAutofillSuggestion(SuggestionType::kManageCreditCard)};
 
   external_delegate().OnSuggestionsShown(suggestions);
+}
+
+// Tests that when suggestions are hidden, the reason is correctly forwarded to
+// the autofill manager.
+TEST_F(AutofillExternalDelegateTest,
+       OnSuggestionsHidden_NotifiesAutofillManager) {
+  IssueOnQuery();
+
+  SuggestionHidingReason reason = SuggestionHidingReason::kFocusChanged;
+
+  EXPECT_CALL(autofill_manager(), OnSuggestionsHidden(reason));
+
+  external_delegate().OnSuggestionsHidden(reason);
 }
 
 // Tests that the Autofill delegate fills a form with a VCN when a suggestion
@@ -824,13 +1634,13 @@ TEST_F(AutofillExternalDelegateTest, AcceptedBnplEntry_FormIsFilled) {
   const std::optional<int64_t> expected_amount = 50'000'000;
 
   EXPECT_CALL(*autofill_manager().GetPaymentsBnplManager(),
-              OnDidAcceptBnplSuggestion(expected_amount, _))
+              OnUserDecisionToUseBnpl(expected_amount, _))
       .WillOnce(RunOnceCallback<1>(card));
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
                         IsQueriedFieldId(), HasFillingPayload(card),
-                        AutofillTriggerSource::kPopup));
+                        AutofillTriggerSource::kPopup, _));
 
   Suggestion::PaymentsPayload payments_payload;
   payments_payload.extracted_amount_in_micros = expected_amount;
@@ -840,6 +1650,352 @@ TEST_F(AutofillExternalDelegateTest, AcceptedBnplEntry_FormIsFilled) {
                                payments_payload),
       {});
 }
+
+// Tests that accepting a BNPL entry when PayNowPayLater tabs are enabled
+// delegates to `BnplManager::OnIssuerAccepted` and does not hide the
+// suggestions popup immediately.
+TEST_F(AutofillExternalDelegateTest,
+       AcceptedBnplEntry_PayNowPayLaterEnabled_CallsOnIssuerAccepted) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      features::kAutofillEnablePayNowPayLaterTabs};
+
+  IssueOnQuery();
+
+  Suggestion suggestion(SuggestionType::kBnplEntry);
+  BnplIssuer test_issuer = test::GetTestLinkedBnplIssuer();
+  suggestion.payload = Suggestion::BnplIssuer(test_issuer);
+
+  EXPECT_CALL(*autofill_manager().GetPaymentsBnplManager(),
+              OnIssuerAccepted(test_issuer));
+
+  EXPECT_CALL(autofill_client(), HideSuggestions).Times(0);
+
+  external_delegate().DidAcceptSuggestion(suggestion,
+                                          SuggestionPosition{.row = 0});
+}
+
+// Tests that accepting a BNPL entry when PayNowPayLater tabs are disabled
+// delegates to `BnplManager::OnUserDecisionToUseBnpl` and hides the suggestions
+// popup.
+TEST_F(AutofillExternalDelegateTest,
+       AcceptedBnplEntry_PayNowPayLaterEnabled_CallsOnUserDecisionToUseBnpl) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kAutofillEnablePayNowPayLaterTabs);
+
+  IssueOnQuery();
+
+  const std::optional<int64_t> expected_amount = 50'000'000;
+  EXPECT_CALL(*autofill_manager().GetPaymentsBnplManager(),
+              OnUserDecisionToUseBnpl(expected_amount, _));
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              Eq(std::nullopt)));
+
+  Suggestion::PaymentsPayload payments_payload;
+  payments_payload.extracted_amount_in_micros = expected_amount;
+  Suggestion suggestion = CreateAutofillSuggestion(
+      SuggestionType::kBnplEntry, /*main_text_value=*/u"BNPL suggestion",
+      payments_payload);
+
+  external_delegate().DidAcceptSuggestion(suggestion,
+                                          SuggestionPosition{.row = 0});
+}
+
+// Tests that `prefer_prev_arrow_side_on_suggestions_update` is true when
+// tabbed popup is shown.
+TEST_F(AutofillExternalDelegateTest, ShowTabbedPopup_PreferPrevArrowSide) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kAutofillEnableAmountExtraction,
+                            features::kAutofillEnableBuyNowPayLaterSyncing,
+                            features::kAutofillEnableBuyNowPayLater,
+                            features::kAutofillEnableAiBasedAmountExtraction,
+                            features::kAutofillEnablePayNowPayLaterTabs},
+      /*disabled_features=*/{});
+
+  TestPaymentsDataManager& paydm =
+      static_cast<TestPaymentsDataManager&>(pdm().payments_data_manager());
+  paydm.AddCreditCard(test::GetCreditCard());
+  paydm.AddBnplIssuer(test::GetTestLinkedBnplIssuer());
+
+  ON_CALL(*static_cast<MockAutofillOptimizationGuideDecider*>(
+              autofill_client().GetAutofillOptimizationGuideDecider()),
+          IsUrlEligibleForBnplIssuer)
+      .WillByDefault(Return(true));
+
+  test::FormDescription form_description = {
+      .fields = {
+          {.role = CREDIT_CARD_NUMBER, .heuristic_type = CREDIT_CARD_NUMBER}}};
+  IssueOnQuery(form_description);
+
+  EXPECT_CALL(autofill_client(),
+              ShowAutofillSuggestions(
+                  Field("prefer_prev_arrow_side_on_suggestions_update",
+                        &AutofillClient::PopupOpenArgs::
+                            prefer_prev_arrow_side_on_suggestions_update,
+                        true),
+                  _));
+
+  OnSuggestionsReturned(queried_field(),
+                        {Suggestion(SuggestionType::kCreditCardEntry)});
+}
+
+// Tests that `show_tabbed_popup` is not present when the main filling
+// product is not a credit card (e.g., an Address field).
+TEST_F(AutofillExternalDelegateTest, ShowTabbedPopup_NotCreditCard) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kAutofillEnableAmountExtraction,
+                            features::kAutofillEnableBuyNowPayLaterSyncing,
+                            features::kAutofillEnableBuyNowPayLater,
+                            features::kAutofillEnableAiBasedAmountExtraction,
+                            features::kAutofillEnablePayNowPayLaterTabs},
+      /*disabled_features=*/{});
+
+  TestPaymentsDataManager& paydm =
+      static_cast<TestPaymentsDataManager&>(pdm().payments_data_manager());
+  paydm.AddCreditCard(test::GetCreditCard());
+  paydm.AddBnplIssuer(test::GetTestLinkedBnplIssuer());
+
+  ON_CALL(*static_cast<MockAutofillOptimizationGuideDecider*>(
+              autofill_client().GetAutofillOptimizationGuideDecider()),
+          IsUrlEligibleForBnplIssuer)
+      .WillByDefault(Return(true));
+
+  test::FormDescription form_description = {
+      .fields = {{.role = NAME_FIRST, .heuristic_type = NAME_FIRST}}};
+  IssueOnQuery(form_description);
+
+  EXPECT_CALL(autofill_client(),
+              ShowAutofillSuggestions(
+                  AllOf(PopupOpenArgsAre(SuggestionVectorIdsAre(
+                            SuggestionType::kAddressEntry)),
+                        Field("show_tabbed_popup",
+                              &AutofillClient::PopupOpenArgs::show_tabbed_popup,
+                              false)),
+                  _));
+
+  OnSuggestionsReturned(queried_field(),
+                        {Suggestion(SuggestionType::kAddressEntry)});
+}
+
+// Tests that `show_tabbed_popup` is `kBnpl` when the main filling
+// product is a credit card and the field is a credit card number field.
+TEST_F(AutofillExternalDelegateTest, ShowTabbedPopup_EligibleFieldType) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kAutofillEnableAmountExtraction,
+                            features::kAutofillEnableBuyNowPayLaterSyncing,
+                            features::kAutofillEnableBuyNowPayLater,
+                            features::kAutofillEnableAiBasedAmountExtraction,
+                            features::kAutofillEnablePayNowPayLaterTabs},
+      /*disabled_features=*/{});
+
+  TestPaymentsDataManager& paydm =
+      static_cast<TestPaymentsDataManager&>(pdm().payments_data_manager());
+  paydm.AddCreditCard(test::GetCreditCard());
+  paydm.AddBnplIssuer(test::GetTestLinkedBnplIssuer());
+
+  ON_CALL(*static_cast<MockAutofillOptimizationGuideDecider*>(
+              autofill_client().GetAutofillOptimizationGuideDecider()),
+          IsUrlEligibleForBnplIssuer)
+      .WillByDefault(Return(true));
+
+  test::FormDescription form_description = {
+      .fields = {
+          {.role = CREDIT_CARD_NUMBER, .heuristic_type = CREDIT_CARD_NUMBER}}};
+  IssueOnQuery(form_description);
+
+  EXPECT_CALL(
+      autofill_client(),
+      ShowAutofillSuggestions(
+          AllOf(PopupOpenArgsAre(
+                    SuggestionVectorIdsAre(SuggestionType::kCreditCardEntry)),
+                Field("show_tabbed_popup",
+                      &AutofillClient::PopupOpenArgs::show_tabbed_popup, true)),
+          _));
+
+  OnSuggestionsReturned(queried_field(),
+                        {Suggestion(SuggestionType::kCreditCardEntry)});
+}
+
+// Tests that `show_tabbed_popup` is not present when the main filling
+// product is a credit card but the heuristic type of the field doesn't
+// trigger BNPL suggestions (e.g., CVC fields).
+TEST_F(AutofillExternalDelegateTest, ShowTabbedPopup_IneligibleFieldType_Cvc) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kAutofillEnableAmountExtraction,
+                            features::kAutofillEnableBuyNowPayLaterSyncing,
+                            features::kAutofillEnableBuyNowPayLater,
+                            features::kAutofillEnableAiBasedAmountExtraction,
+                            features::kAutofillEnablePayNowPayLaterTabs},
+      /*disabled_features=*/{});
+
+  TestPaymentsDataManager& paydm =
+      static_cast<TestPaymentsDataManager&>(pdm().payments_data_manager());
+  paydm.AddCreditCard(test::GetCreditCard());
+  paydm.AddBnplIssuer(test::GetTestLinkedBnplIssuer());
+
+  ON_CALL(*static_cast<MockAutofillOptimizationGuideDecider*>(
+              autofill_client().GetAutofillOptimizationGuideDecider()),
+          IsUrlEligibleForBnplIssuer)
+      .WillByDefault(Return(true));
+
+  test::FormDescription form_description = {
+      .fields = {{.role = CREDIT_CARD_VERIFICATION_CODE,
+                  .heuristic_type = CREDIT_CARD_VERIFICATION_CODE}}};
+  IssueOnQuery(form_description);
+
+  EXPECT_CALL(autofill_client(),
+              ShowAutofillSuggestions(
+                  AllOf(PopupOpenArgsAre(SuggestionVectorIdsAre(
+                            SuggestionType::kCreditCardEntry)),
+                        Field("show_tabbed_popup",
+                              &AutofillClient::PopupOpenArgs::show_tabbed_popup,
+                              false)),
+                  _));
+
+  OnSuggestionsReturned(queried_field(),
+                        {Suggestion(SuggestionType::kCreditCardEntry)});
+}
+
+// Tests that has seen BNPL pref is updated when the main filling
+// product is a credit card and the field is a credit card number field.
+TEST_F(AutofillExternalDelegateTest, ShowTabbedPopup_PrefUpdated) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kAutofillEnableAmountExtraction,
+                            features::kAutofillEnableBuyNowPayLaterSyncing,
+                            features::kAutofillEnableBuyNowPayLater,
+                            features::kAutofillEnableAiBasedAmountExtraction,
+                            features::kAutofillEnablePayNowPayLaterTabs},
+      /*disabled_features=*/{});
+
+  TestPaymentsDataManager& paydm =
+      static_cast<TestPaymentsDataManager&>(pdm().payments_data_manager());
+  paydm.AddCreditCard(test::GetCreditCard());
+  paydm.AddBnplIssuer(test::GetTestLinkedBnplIssuer());
+
+  ON_CALL(*static_cast<MockAutofillOptimizationGuideDecider*>(
+              autofill_client().GetAutofillOptimizationGuideDecider()),
+          IsUrlEligibleForBnplIssuer)
+      .WillByDefault(Return(true));
+
+  test::FormDescription form_description = {
+      .fields = {
+          {.role = CREDIT_CARD_NUMBER, .heuristic_type = CREDIT_CARD_NUMBER}}};
+  IssueOnQuery(form_description);
+
+  ASSERT_FALSE(paydm.IsAutofillHasSeenBnplPrefEnabled());
+
+  OnSuggestionsReturned(queried_field(),
+                        {Suggestion(SuggestionType::kCreditCardEntry)});
+
+  EXPECT_TRUE(paydm.IsAutofillHasSeenBnplPrefEnabled());
+}
+
+// Tests that `show_tabbed_popup` is not present when the flag
+// `kAutofillEnablePayNowPayLaterTabs` is disabled.
+TEST_F(AutofillExternalDelegateTest, ShowTabbedPopup_FeatureDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kAutofillEnableAmountExtraction,
+                            features::kAutofillEnableBuyNowPayLaterSyncing,
+                            features::kAutofillEnableBuyNowPayLater,
+                            features::kAutofillEnableAiBasedAmountExtraction},
+      /*disabled_features=*/{features::kAutofillEnablePayNowPayLaterTabs});
+
+  TestPaymentsDataManager& paydm =
+      static_cast<TestPaymentsDataManager&>(pdm().payments_data_manager());
+  paydm.AddCreditCard(test::GetCreditCard());
+  paydm.AddBnplIssuer(test::GetTestLinkedBnplIssuer());
+
+  ON_CALL(*static_cast<MockAutofillOptimizationGuideDecider*>(
+              autofill_client().GetAutofillOptimizationGuideDecider()),
+          IsUrlEligibleForBnplIssuer)
+      .WillByDefault(Return(true));
+
+  test::FormDescription form_description = {
+      .fields = {
+          {.role = CREDIT_CARD_NUMBER, .heuristic_type = CREDIT_CARD_NUMBER}}};
+  IssueOnQuery(form_description);
+
+  EXPECT_CALL(autofill_client(),
+              ShowAutofillSuggestions(
+                  AllOf(PopupOpenArgsAre(SuggestionVectorIdsAre(
+                            SuggestionType::kCreditCardEntry)),
+                        Field("show_tabbed_popup",
+                              &AutofillClient::PopupOpenArgs::show_tabbed_popup,
+                              false)),
+                  _));
+
+  OnSuggestionsReturned(queried_field(),
+                        {Suggestion(SuggestionType::kCreditCardEntry)});
+}
+
+// Ensures the BNPL Manager is notified of the user deciding to use BNPL when a
+// pay later tab is opened.
+TEST_F(AutofillExternalDelegateTest, OnTabSelected_PayLater) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kAutofillEnableAmountExtraction,
+                            features::kAutofillEnableBuyNowPayLaterSyncing,
+                            features::kAutofillEnableBuyNowPayLater,
+                            features::kAutofillEnableAiBasedAmountExtraction,
+                            features::kAutofillEnablePayNowPayLaterTabs},
+      /*disabled_features=*/{});
+
+  base::OnceCallback<void(const CreditCard&)> captured_fill_callback;
+  EXPECT_CALL(*autofill_manager().GetPaymentsBnplManager(),
+              OnUserDecisionToUseBnpl(
+                  /*final_checkout_amount=*/testing::Eq(std::nullopt),
+                  /*on_bnpl_vcn_fetched_callback=*/testing::_))
+      .Times(1)
+      .WillOnce([&](std::optional<long>,
+                    base::OnceCallback<void(const CreditCard&)> callback) {
+        captured_fill_callback = std::move(callback);
+      });
+
+  external_delegate().OnTabSelected(TabbedPaneTabType::kPayLater);
+
+  ASSERT_FALSE(captured_fill_callback.is_null());
+
+  CreditCard test_card = test::GetCreditCard();
+
+  EXPECT_CALL(
+      autofill_manager(),
+      FillOrPreviewForm(
+          /*action_persistence=*/mojom::ActionPersistence::kFill,
+          /*form=*/testing::_,
+          /*field_id=*/testing::_,
+          /*filling_payload=*/
+          testing::VariantWith<const CreditCard*>(testing::Eq(&test_card)),
+          /*trigger_source=*/testing::_,
+          /*blocked_fields=*/testing::_))
+      .Times(1);
+
+  std::move(captured_fill_callback).Run(test_card);
+}
+
+TEST_F(AutofillExternalDelegateTest, OnTabSelected_PayNow) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kAutofillEnableAmountExtraction,
+                            features::kAutofillEnableBuyNowPayLaterSyncing,
+                            features::kAutofillEnableBuyNowPayLater,
+                            features::kAutofillEnableAiBasedAmountExtraction,
+                            features::kAutofillEnablePayNowPayLaterTabs},
+      /*disabled_features=*/{});
+
+  EXPECT_CALL(*autofill_manager().GetPaymentsBnplManager(),
+              OnUserDecisionToUseSavedCards)
+      .Times(1);
+
+  external_delegate().OnTabSelected(TabbedPaneTabType::kPayNow);
+}
+
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
         // BUILDFLAG(IS_CHROMEOS)
 
@@ -858,7 +2014,7 @@ TEST_F(AutofillExternalDelegateTest, AutofillWarnings) {
   std::vector<Suggestion> autofill_item;
   autofill_item.emplace_back(
       SuggestionType::kInsecureContextPaymentDisabledMessage);
-  OnSuggestionsReturned(queried_field().global_id(), autofill_item);
+  OnSuggestionsReturned(queried_field(), autofill_item);
 
   EXPECT_THAT(open_args.suggestions,
               SuggestionVectorIdsAre(
@@ -883,7 +2039,7 @@ TEST_F(AutofillExternalDelegateTest, AutofillWarningsNotShown_WithSuggestions) {
   suggestions.emplace_back(SuggestionType::kAutocompleteEntry);
   suggestions[1].main_text =
       Suggestion::Text(u"Rick", Suggestion::Text::IsPrimary(true));
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
+  OnSuggestionsReturned(queried_field(), suggestions);
 }
 
 // Test that the Autofill delegate doesn't try and fill a form with a
@@ -898,9 +2054,9 @@ TEST_F(AutofillExternalDelegateTest, ExternalDelegateInvalidUniqueId) {
   external_delegate().DidSelectSuggestion(suggestion);
 
   // Ensure it doesn't try to fill the form in with the negative id.
-  EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              Eq(std::nullopt)));
   EXPECT_CALL(autofill_manager(), FillOrPreviewForm).Times(0);
 
   external_delegate().DidAcceptSuggestion(suggestion,
@@ -924,26 +2080,26 @@ TEST_F(AutofillExternalDelegateTest, ExternalDelegateFillsIbanEntry) {
   suggestions[0].labels = {
       {Suggestion::Text(iban.GetIdentifierStringForAutofillDisplay())}};
   suggestions[0].payload = Suggestion::Guid(iban.guid());
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
+  OnSuggestionsReturned(queried_field(), suggestions);
 
   EXPECT_CALL(autofill_driver(), RendererShouldClearPreviewedForm());
-  EXPECT_CALL(autofill_manager(),
-              FillOrPreviewField(mojom::ActionPersistence::kPreview,
-                                 mojom::FieldActionType::kReplaceAll,
-                                 HasQueriedFormId(), HasQueriedFieldId(),
-                                 iban.GetIdentifierStringForAutofillDisplay(),
-                                 SuggestionType::kIbanEntry,
-                                 std::optional(IBAN_VALUE)));
-  external_delegate().DidSelectSuggestion(suggestions[0]);
   EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
-  EXPECT_CALL(autofill_manager(),
-              FillOrPreviewField(mojom::ActionPersistence::kFill,
-                                 mojom::FieldActionType::kReplaceAll,
-                                 HasQueriedFormId(), HasQueriedFieldId(),
-                                 iban.value(), SuggestionType::kIbanEntry,
-                                 std::optional(IBAN_VALUE)));
+      autofill_manager(),
+      FillOrPreviewField(mojom::ActionPersistence::kPreview,
+                         mojom::FieldActionType::kReplaceAll,
+                         HasQueriedFormId(), HasQueriedFieldId(),
+                         iban.GetIdentifierStringForAutofillDisplay(),
+                         FillingProduct::kIban, std::optional(IBAN_VALUE)));
+  external_delegate().DidSelectSuggestion(suggestions[0]);
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              Eq(std::nullopt)));
+  EXPECT_CALL(
+      autofill_manager(),
+      FillOrPreviewField(mojom::ActionPersistence::kFill,
+                         mojom::FieldActionType::kReplaceAll,
+                         HasQueriedFormId(), HasQueriedFieldId(), iban.value(),
+                         FillingProduct::kIban, std::optional(IBAN_VALUE)));
   Suggestion suggestion(u"My doctor's IBAN", SuggestionType::kIbanEntry);
   suggestion.payload = Suggestion::Guid(iban.guid());
   suggestion.labels = {
@@ -978,27 +2134,27 @@ TEST_F(AutofillExternalDelegateTest,
                            SuggestionType::kMerchantPromoCodeEntry);
   suggestions[0].main_text.value = promo_code_value;
   suggestions[0].labels = {{Suggestion::Text(u"12.34% off your purchase!")}};
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
+  OnSuggestionsReturned(queried_field(), suggestions);
 
   EXPECT_CALL(autofill_driver(), RendererShouldClearPreviewedForm());
-  EXPECT_CALL(autofill_manager(),
-              FillOrPreviewField(mojom::ActionPersistence::kPreview,
-                                 mojom::FieldActionType::kReplaceAll,
-                                 HasQueriedFormId(), HasQueriedFieldId(),
-                                 promo_code_value,
-                                 SuggestionType::kMerchantPromoCodeEntry,
-                                 std::optional(MERCHANT_PROMO_CODE)));
-  external_delegate().DidSelectSuggestion(suggestions[0]);
   EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
-  EXPECT_CALL(autofill_manager(),
-              FillOrPreviewField(mojom::ActionPersistence::kFill,
-                                 mojom::FieldActionType::kReplaceAll,
-                                 HasQueriedFormId(), HasQueriedFieldId(),
-                                 promo_code_value,
-                                 SuggestionType::kMerchantPromoCodeEntry,
-                                 std::optional(MERCHANT_PROMO_CODE)));
+      autofill_manager(),
+      FillOrPreviewField(mojom::ActionPersistence::kPreview,
+                         mojom::FieldActionType::kReplaceAll,
+                         HasQueriedFormId(), HasQueriedFieldId(),
+                         promo_code_value, FillingProduct::kMerchantPromoCode,
+                         std::optional(MERCHANT_PROMO_CODE)));
+  external_delegate().DidSelectSuggestion(suggestions[0]);
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              Eq(std::nullopt)));
+  EXPECT_CALL(
+      autofill_manager(),
+      FillOrPreviewField(mojom::ActionPersistence::kFill,
+                         mojom::FieldActionType::kReplaceAll,
+                         HasQueriedFormId(), HasQueriedFieldId(),
+                         promo_code_value, FillingProduct::kMerchantPromoCode,
+                         std::optional(MERCHANT_PROMO_CODE)));
 
   external_delegate().DidAcceptSuggestion(suggestions[0],
                                           SuggestionPosition{.row = 0});
@@ -1018,7 +2174,7 @@ TEST_F(AutofillExternalDelegateTest, ExternalDelegatePreviewsLoyaltyCardEntry) {
   suggestions.emplace_back(/*main_text=*/loyalty_card_value,
                            SuggestionType::kLoyaltyCardEntry);
   suggestions[0].main_text.value = loyalty_card_value;
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
+  OnSuggestionsReturned(queried_field(), suggestions);
 
   EXPECT_CALL(autofill_driver(), RendererShouldClearPreviewedForm());
   EXPECT_CALL(
@@ -1026,7 +2182,7 @@ TEST_F(AutofillExternalDelegateTest, ExternalDelegatePreviewsLoyaltyCardEntry) {
       FillOrPreviewField(mojom::ActionPersistence::kPreview,
                          mojom::FieldActionType::kReplaceAll,
                          HasQueriedFormId(), HasQueriedFieldId(),
-                         loyalty_card_value, SuggestionType::kLoyaltyCardEntry,
+                         loyalty_card_value, FillingProduct::kLoyaltyCard,
                          std::optional(LOYALTY_MEMBERSHIP_ID)));
   external_delegate().DidSelectSuggestion(suggestions[0]);
 }
@@ -1047,28 +2203,27 @@ TEST_F(AutofillExternalDelegateTest, ExternalDelegateFillsLoyaltyCardEntry) {
                            SuggestionType::kLoyaltyCardEntry);
   suggestions[0].main_text.value = full_loyalty_card_value;
   suggestions[0].payload = Suggestion::Guid(loyalty_card.id().value());
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
+  OnSuggestionsReturned(queried_field(), suggestions);
 
   EXPECT_CALL(autofill_driver(), RendererShouldClearPreviewedForm());
-  EXPECT_CALL(autofill_manager(),
-              FillOrPreviewField(mojom::ActionPersistence::kPreview,
-                                 mojom::FieldActionType::kReplaceAll,
-                                 HasQueriedFormId(), HasQueriedFieldId(),
-                                 full_loyalty_card_value,
-                                 SuggestionType::kLoyaltyCardEntry,
-                                 std::optional(LOYALTY_MEMBERSHIP_ID)));
+  EXPECT_CALL(
+      autofill_manager(),
+      FillOrPreviewField(mojom::ActionPersistence::kPreview,
+                         mojom::FieldActionType::kReplaceAll,
+                         HasQueriedFormId(), HasQueriedFieldId(),
+                         full_loyalty_card_value, FillingProduct::kLoyaltyCard,
+                         std::optional(LOYALTY_MEMBERSHIP_ID)));
   external_delegate().DidSelectSuggestion(suggestions[0]);
 
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              Eq(std::nullopt)));
   EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
-  EXPECT_CALL(autofill_manager(),
-              FillOrPreviewField(mojom::ActionPersistence::kFill,
-                                 mojom::FieldActionType::kReplaceAll,
-                                 HasQueriedFormId(), HasQueriedFieldId(),
-                                 full_loyalty_card_value,
-                                 SuggestionType::kLoyaltyCardEntry,
-                                 std::optional(LOYALTY_MEMBERSHIP_ID)));
+      autofill_manager(),
+      FillOrPreviewField(
+          mojom::ActionPersistence::kFill, mojom::FieldActionType::kReplaceAll,
+          HasQueriedFormId(), HasQueriedFieldId(), full_loyalty_card_value,
+          FillingProduct::kLoyaltyCard, std::optional(LOYALTY_MEMBERSHIP_ID)));
 
   external_delegate().DidAcceptSuggestion(suggestions[0],
                                           SuggestionPosition{.row = 0});
@@ -1112,7 +2267,7 @@ TEST_F(AutofillExternalDelegateTest, ExternalDelegateClearPreviewedForm) {
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewForm(mojom::ActionPersistence::kPreview, HasQueriedFormId(),
-                        IsQueriedFieldId(), HasFillingPayload(profile), _));
+                        IsQueriedFieldId(), HasFillingPayload(profile), _, _));
   external_delegate().DidSelectSuggestion(CreateAutofillSuggestion(
       SuggestionType::kAddressEntry, u"baz foo",
       Suggestion::AutofillProfilePayload(Suggestion::Guid(profile.guid()))));
@@ -1121,12 +2276,11 @@ TEST_F(AutofillExternalDelegateTest, ExternalDelegateClearPreviewedForm) {
   // get cleared.
   EXPECT_CALL(autofill_driver(), RendererShouldClearPreviewedForm());
   EXPECT_CALL(autofill_manager(),
-              FillOrPreviewField(mojom::ActionPersistence::kPreview,
-                                 mojom::FieldActionType::kReplaceAll,
-                                 HasQueriedFormId(), HasQueriedFieldId(),
-                                 std::u16string(u"baz foo"),
-                                 SuggestionType::kAutocompleteEntry,
-                                 std::optional<FieldType>()));
+              FillOrPreviewField(
+                  mojom::ActionPersistence::kPreview,
+                  mojom::FieldActionType::kReplaceAll, HasQueriedFormId(),
+                  HasQueriedFieldId(), std::u16string(u"baz foo"),
+                  FillingProduct::kAutocomplete, std::optional<FieldType>()));
   external_delegate().DidSelectSuggestion(
       CreateAutofillSuggestion(SuggestionType::kAutocompleteEntry, u"baz foo"));
 
@@ -1138,7 +2292,7 @@ TEST_F(AutofillExternalDelegateTest, ExternalDelegateClearPreviewedForm) {
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewForm(mojom::ActionPersistence::kPreview, HasQueriedFormId(),
-                        IsQueriedFieldId(), HasFillingPayload(card), _));
+                        IsQueriedFieldId(), HasFillingPayload(card), _, _));
   Suggestion suggestion(SuggestionType::kVirtualCreditCardEntry);
   suggestion.payload = Suggestion::Guid(card.guid());
   external_delegate().DidSelectSuggestion(suggestion);
@@ -1149,8 +2303,9 @@ TEST_F(AutofillExternalDelegateTest, ExternalDelegateHidePopupAfterEditing) {
   EXPECT_CALL(autofill_client(), ShowAutofillSuggestions);
   test::GenerateTestAutofillPopup(&external_delegate());
 
-  EXPECT_CALL(autofill_client(),
-              HideAutofillSuggestions(SuggestionHidingReason::kEndEditing));
+  EXPECT_CALL(
+      autofill_client(),
+      HideSuggestions(SuggestionHidingReason::kEndEditing, Eq(std::nullopt)));
   external_delegate().DidEndTextFieldEditing();
 }
 
@@ -1158,9 +2313,9 @@ TEST_F(AutofillExternalDelegateTest, ExternalDelegateHidePopupAfterEditing) {
 // that the user accepted the data list suggestion.
 TEST_F(AutofillExternalDelegateTest, ExternalDelegateAcceptDatalistSuggestion) {
   IssueOnQuery();
-  EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              Eq(std::nullopt)));
   std::u16string dummy_string(u"baz qux");
   EXPECT_CALL(autofill_driver(),
               RendererShouldAcceptDataListSuggestion(
@@ -1178,7 +2333,7 @@ TEST_F(AutofillExternalDelegateTest, AutofillSuggestionAvailability_Autofill) {
 
   std::vector<Suggestion> suggestions = {
       Suggestion(u"Suggestion main_text", SuggestionType::kAddressEntry)};
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
+  OnSuggestionsReturned(queried_field(), suggestions);
 
   EXPECT_CALL(autofill_driver(),
               RendererShouldSetSuggestionAvailability(
@@ -1196,7 +2351,7 @@ TEST_F(AutofillExternalDelegateTest,
 
   std::vector<Suggestion> suggestions = {
       Suggestion(u"Autofill with AI", SuggestionType::kFillAutofillAi)};
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
+  OnSuggestionsReturned(queried_field(), suggestions);
 
   EXPECT_CALL(autofill_driver(),
               RendererShouldSetSuggestionAvailability(
@@ -1214,7 +2369,7 @@ TEST_F(AutofillExternalDelegateTest,
 
   std::vector<Suggestion> suggestions = {
       Suggestion(u"Suggestion main_text", SuggestionType::kAutocompleteEntry)};
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
+  OnSuggestionsReturned(queried_field(), suggestions);
 
   EXPECT_CALL(
       autofill_driver(),
@@ -1231,13 +2386,13 @@ TEST_F(AutofillExternalDelegateTest, AcceptSuggestion) {
   pdm().address_data_manager().AddProfile(profile);
 
   IssueOnQuery();
-  EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              Eq(std::nullopt)));
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
-                        IsQueriedFieldId(), HasFillingPayload(profile), _));
+                        IsQueriedFieldId(), HasFillingPayload(profile), _, _));
 
   external_delegate().DidAcceptSuggestion(
       CreateAutofillSuggestion(
@@ -1253,7 +2408,7 @@ TEST_F(AutofillExternalDelegateTest,
   IssueOnQuery();
   std::vector<Suggestion> suggestions = {CreateAutofillSuggestion(
       SuggestionType::kDevtoolsTestAddresses, u"Devtools")};
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
+  OnSuggestionsReturned(queried_field(), suggestions);
   external_delegate().OnSuggestionsShown(suggestions);
   histogram_tester.ExpectUniqueSample(
       "Autofill.TestAddressesEvent",
@@ -1276,17 +2431,17 @@ TEST_F(AutofillExternalDelegateTest, TestAddressSuggestion_FillAndPreview) {
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewForm(mojom::ActionPersistence::kPreview, HasQueriedFormId(),
-                        IsQueriedFieldId(), HasFillingPayload(profile), _));
+                        IsQueriedFieldId(), HasFillingPayload(profile), _, _));
   external_delegate().DidSelectSuggestion(suggestion);
 
   // Test fill.
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
-                        IsQueriedFieldId(), HasFillingPayload(profile), _));
-  EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
+                        IsQueriedFieldId(), HasFillingPayload(profile), _, _));
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              Eq(std::nullopt)));
   external_delegate().DidAcceptSuggestion(suggestion,
                                           SuggestionPosition{.row = 0});
   histogram_tester.ExpectUniqueSample(
@@ -1305,9 +2460,10 @@ TEST_F(AutofillExternalDelegateTest, TestVerifiedEmailSuggestion_Preview) {
       Suggestion::IdentityCredentialPayload());
 
   // Test preview.
-  EXPECT_CALL(autofill_manager(),
-              FillOrPreviewForm(mojom::ActionPersistence::kPreview,
-                                HasQueriedFormId(), IsQueriedFieldId(), _, _));
+  EXPECT_CALL(
+      autofill_manager(),
+      FillOrPreviewForm(mojom::ActionPersistence::kPreview, HasQueriedFormId(),
+                        IsQueriedFieldId(), _, _, _));
   external_delegate().DidSelectSuggestion(suggestion);
 }
 
@@ -1325,9 +2481,10 @@ TEST_F(AutofillExternalDelegateTest, TestVerifiedEmailSuggestion_Fill) {
       .WillByDefault(Return(&mock));
 
   // Expect that the form filler gets notified.
-  EXPECT_CALL(autofill_manager(),
-              FillOrPreviewForm(mojom::ActionPersistence::kFill,
-                                HasQueriedFormId(), IsQueriedFieldId(), _, _));
+  EXPECT_CALL(
+      autofill_manager(),
+      FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
+                        IsQueriedFieldId(), _, _, _));
   // Expect that the delegate gets notified and pretend that the user has
   // accepted the prompt.
   EXPECT_CALL(mock, NotifySuggestionAccepted(_, /*show_modal=*/true, _))
@@ -1397,18 +2554,7 @@ TEST_F(AutofillExternalDelegateTest, AcceptSuggestion_TriggerSource) {
       autofill_manager(),
       FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
                         IsQueriedFieldId(), HasFillingPayload(profile),
-                        DefaultTriggerSource()));
-  external_delegate().DidAcceptSuggestion(suggestion,
-                                          SuggestionPosition{.row = 1});
-
-  // Expect that `kManualFallbackPlusAddresses` translates to the manual
-  // fallback trigger source.
-  IssueOnQuery(AutofillSuggestionTriggerSource::kManualFallbackPlusAddresses);
-  EXPECT_CALL(
-      autofill_manager(),
-      FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
-                        IsQueriedFieldId(), HasFillingPayload(profile),
-                        AutofillTriggerSource::kManualFallback));
+                        DefaultTriggerSource(), _));
   external_delegate().DidAcceptSuggestion(suggestion,
                                           SuggestionPosition{.row = 1});
 }
@@ -1435,19 +2581,19 @@ TEST_F(AutofillExternalDelegateTest, FillAutofillAiFillsFullForm) {
       autofill_manager(),
       FillOrPreviewForm(mojom::ActionPersistence::kPreview, HasQueriedFormId(),
                         IsQueriedFieldId(), HasFillingPayload(passport),
-                        DefaultTriggerSource()));
+                        DefaultTriggerSource(), _));
   external_delegate().DidSelectSuggestion(fill_suggestion);
 
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
                         IsQueriedFieldId(), HasFillingPayload(passport),
-                        DefaultTriggerSource()));
+                        DefaultTriggerSource(), _));
   external_delegate().DidAcceptSuggestion(fill_suggestion, {});
 }
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID) || \
-    BUILDFLAG(IS_CHROMEOS)
+    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_IOS)
 // Tests that when accepting a `kFillAutofillAi` suggestion that requires
 // re-authentication, the re-authentication flow is triggered and the form is
 // filled upon success.
@@ -1470,7 +2616,7 @@ TEST_F(AutofillExternalDelegateTest, AutofillAiReauthFlow_ReauthAccepted) {
   fill_suggestion.payload = Suggestion::AutofillAiPayload(passport.guid());
   std::vector<Suggestion> all_suggestions = {
       fill_suggestion, Suggestion(SuggestionType::kFillAutofillAi)};
-  OnSuggestionsReturned(queried_field().global_id(), all_suggestions);
+  OnSuggestionsReturned(queried_field(), all_suggestions);
   ON_CALL(autofill_client(), GetAutofillSuggestions)
       .WillByDefault(Return(all_suggestions));
 
@@ -1478,8 +2624,13 @@ TEST_F(AutofillExternalDelegateTest, AutofillAiReauthFlow_ReauthAccepted) {
       std::make_unique<device_reauth::MockDeviceAuthenticator>();
   EXPECT_CALL(*authenticator, CanAuthenticateWithBiometricOrScreenLock)
       .WillOnce(Return(true));
+
+  device_reauth::DeviceAuthenticator::AuthenticateCallback reauth_callback;
   EXPECT_CALL(*authenticator, AuthenticateWithMessage)
-      .WillOnce(RunOnceCallback<1>(true));
+      .WillOnce(MoveArg<1>(&reauth_callback));
+
+  test_api(autofill_manager().GetAutofillAiAccessManager())
+      .SetDeviceAuthenticator(std::move(authenticator));
 
   {
     InSequence s;
@@ -1489,23 +2640,23 @@ TEST_F(AutofillExternalDelegateTest, AutofillAiReauthFlow_ReauthAccepted) {
         AllOf(Field(&Suggestion::acceptability,
                     Suggestion::Acceptability::kUnacceptable),
               Field(&Suggestion::is_loading, Suggestion::IsLoading(false)));
+
     EXPECT_CALL(
         autofill_client(),
         UpdateAutofillSuggestions(_, FillingProduct::kAutofillAi,
                                   kDefaultSuggestionTriggerSource,
                                   AutofillSuggestionsIgnoreFocusLoss(true)));
-    EXPECT_CALL(autofill_client(),
-                GetDeviceAuthenticator("Autofill.Ai.ReauthToFill"))
-        .WillOnce(Return(std::move(authenticator)));
 
     EXPECT_CALL(
         autofill_manager(),
         FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
                           IsQueriedFieldId(), HasFillingPayload(passport),
-                          DefaultTriggerSource()));
+                          DefaultTriggerSource(), _));
   }
 
   external_delegate().DidAcceptSuggestion(fill_suggestion, {});
+  ASSERT_FALSE(reauth_callback.is_null());
+  std::move(reauth_callback).Run(true);
 }
 
 // Tests that the re-authentication message contains the origin host when
@@ -1524,6 +2675,7 @@ TEST_F(AutofillExternalDelegateTest, AutofillAiReauthFlow_ReauthMessage) {
   AddOrUpdateEntityInstance(passport);
 
   const GURL kUrl = GURL("https://acoolwebsite.test");
+  autofill_client().set_last_committed_primary_main_frame_url(kUrl);
   // Create form with a passport number, which triggers obfuscation and thus
   // re-auth.
   IssueOnQuery({.fields = {{.role = PASSPORT_NUMBER,
@@ -1535,15 +2687,17 @@ TEST_F(AutofillExternalDelegateTest, AutofillAiReauthFlow_ReauthMessage) {
       .WillOnce(Return(true));
 
   std::u16string expected_message;
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) || \
+    BUILDFLAG(IS_IOS)
   expected_message = l10n_util::GetStringFUTF16(IDS_AUTOFILL_AI_FILLING_REAUTH,
                                                 base::UTF8ToUTF16(kUrl.host()));
-#endif
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) ||
+        // BUILDFLAG(IS_IOS)
   EXPECT_CALL(*authenticator, AuthenticateWithMessage(expected_message, _))
       .WillOnce(RunOnceCallback<1>(true));
 
-  EXPECT_CALL(autofill_client(), GetDeviceAuthenticator)
-      .WillOnce(Return(std::move(authenticator)));
+  test_api(autofill_manager().GetAutofillAiAccessManager())
+      .SetDeviceAuthenticator(std::move(authenticator));
 
   EXPECT_CALL(autofill_manager(), FillOrPreviewForm);
 
@@ -1574,14 +2728,73 @@ TEST_F(AutofillExternalDelegateTest, AutofillAiReauthFlow_ReauthRejected) {
       .WillOnce(Return(true));
   EXPECT_CALL(*authenticator, AuthenticateWithMessage)
       .WillOnce(RunOnceCallback<1>(false));
-  EXPECT_CALL(autofill_client(),
-              GetDeviceAuthenticator("Autofill.Ai.ReauthToFill"))
-      .WillOnce(Return(std::move(authenticator)));
+  test_api(autofill_manager().GetAutofillAiAccessManager())
+      .SetDeviceAuthenticator(std::move(authenticator));
   EXPECT_CALL(autofill_manager(), FillOrPreviewForm).Times(0);
 
   Suggestion fill_suggestion(SuggestionType::kFillAutofillAi);
   fill_suggestion.payload = Suggestion::AutofillAiPayload(passport.guid());
   external_delegate().DidAcceptSuggestion(fill_suggestion, {});
+}
+
+// Tests that the result of the re-authentication flow is recorded per field
+// type.
+TEST_F(AutofillExternalDelegateTest, AutofillAiReauthFlow_ResultMetrics) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures({features::kAutofillAiWithDataSchema,
+                                        features::kAutofillAiReauthRequired},
+                                       {});
+  autofill_client().GetPrefs()->SetBoolean(
+      prefs::kAutofillAiReauthBeforeViewingSensitiveData, true);
+
+  EntityInstance passport = GetPassportEntityInstanceWithRandomGuid();
+  AddOrUpdateEntityInstance(passport);
+  // Create form with a passport number, which triggers obfuscation and thus
+  // re-auth.
+  IssueOnQuery({.fields = {{.role = PASSPORT_NUMBER}}});
+
+  Suggestion fill_suggestion(SuggestionType::kFillAutofillAi);
+  fill_suggestion.payload = Suggestion::AutofillAiPayload(passport.guid());
+
+  {
+    base::HistogramTester histogram_tester;
+    auto authenticator =
+        std::make_unique<device_reauth::MockDeviceAuthenticator>();
+    EXPECT_CALL(*authenticator, CanAuthenticateWithBiometricOrScreenLock)
+        .WillOnce(Return(true));
+    EXPECT_CALL(*authenticator, AuthenticateWithMessage)
+        .WillOnce(RunOnceCallback<1>(true));
+    test_api(autofill_manager().GetAutofillAiAccessManager())
+        .SetDeviceAuthenticator(std::move(authenticator));
+
+    external_delegate().DidAcceptSuggestion(fill_suggestion, {});
+
+    histogram_tester.ExpectUniqueSample(
+        "Autofill.Ai.ReauthToFill.ResultPerFieldType",
+        GetBucketForAutofillAiReauthResultByFieldType(
+            FieldType::PASSPORT_NUMBER, /*auth_succeeded=*/true),
+        1);
+  }
+
+  {
+    base::HistogramTester histogram_tester;
+    auto authenticator =
+        std::make_unique<device_reauth::MockDeviceAuthenticator>();
+    EXPECT_CALL(*authenticator, CanAuthenticateWithBiometricOrScreenLock)
+        .WillOnce(Return(true));
+    EXPECT_CALL(*authenticator, AuthenticateWithMessage)
+        .WillOnce(RunOnceCallback<1>(false));
+    test_api(autofill_manager().GetAutofillAiAccessManager())
+        .SetDeviceAuthenticator(std::move(authenticator));
+
+    external_delegate().DidAcceptSuggestion(fill_suggestion, {});
+
+    histogram_tester.ExpectUniqueSample(
+        "Autofill.Ai.ReauthToFill.ResultPerFieldType",
+        GetBucketForAutofillAiReauthResultByFieldType(
+            FieldType::PASSPORT_NUMBER, /*auth_succeeded=*/false),
+        1);
+  }
 }
 
 // Tests that when accepting a `kFillAutofillAi` suggestion that requires
@@ -1600,14 +2813,13 @@ TEST_F(AutofillExternalDelegateTest, AutofillAiReauthFlow_NoAuthenticator) {
   // re-auth.
   IssueOnQuery({.fields = {{.role = PASSPORT_NUMBER}}});
 
-  EXPECT_CALL(autofill_client(),
-              GetDeviceAuthenticator("Autofill.Ai.ReauthToFill"))
-      .WillOnce(Return(nullptr));
+  test_api(autofill_manager().GetAutofillAiAccessManager())
+      .SetDeviceAuthenticator(nullptr);
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
                         IsQueriedFieldId(), HasFillingPayload(passport),
-                        DefaultTriggerSource()));
+                        DefaultTriggerSource(), _));
 
   Suggestion fill_suggestion(SuggestionType::kFillAutofillAi);
   fill_suggestion.payload = Suggestion::AutofillAiPayload(passport.guid());
@@ -1617,8 +2829,9 @@ TEST_F(AutofillExternalDelegateTest, AutofillAiReauthFlow_NoAuthenticator) {
 // Tests that no authentication is required when filling `kFillAutofillAi` and
 // the feature flag is off.
 TEST_F(AutofillExternalDelegateTest, AutofillAiReauthFlow_FlagOff) {
-  base::test::ScopedFeatureList scoped_feature_list{
-      features::kAutofillAiWithDataSchema};
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures({features::kAutofillAiWithDataSchema},
+                                       {features::kAutofillAiReauthRequired});
   autofill_client().GetPrefs()->SetBoolean(
       prefs::kAutofillAiReauthBeforeViewingSensitiveData, true);
 
@@ -1635,7 +2848,7 @@ TEST_F(AutofillExternalDelegateTest, AutofillAiReauthFlow_FlagOff) {
       autofill_manager(),
       FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
                         IsQueriedFieldId(), HasFillingPayload(passport),
-                        DefaultTriggerSource()));
+                        DefaultTriggerSource(), _));
 
   Suggestion fill_suggestion(SuggestionType::kFillAutofillAi);
   fill_suggestion.payload = Suggestion::AutofillAiPayload(passport.guid());
@@ -1667,7 +2880,7 @@ TEST_F(AutofillExternalDelegateTest,
       autofill_manager(),
       FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
                         IsQueriedFieldId(), HasFillingPayload(passport),
-                        DefaultTriggerSource()));
+                        DefaultTriggerSource(), _));
 
   Suggestion fill_suggestion(SuggestionType::kFillAutofillAi);
   fill_suggestion.payload = Suggestion::AutofillAiPayload(passport.guid());
@@ -1694,7 +2907,7 @@ TEST_F(AutofillExternalDelegateTest, AcceptedOtpSuggestion) {
       autofill_manager(),
       FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
                         IsQueriedFieldId(), HasFillingPayload(otp_fill_data),
-                        DefaultTriggerSource()));
+                        DefaultTriggerSource(), _));
   external_delegate().DidAcceptSuggestion(
       CreateAutofillSuggestion(SuggestionType::kOneTimePasswordEntry,
                                /*main_text_value=*/otp_value),
@@ -1743,14 +2956,16 @@ TEST_F(AutofillExternalDelegateWithWalletPrivatePassesTest,
 
   IssueOnQuery({.fields = {{.role = PASSPORT_NUMBER}}});
   Suggestion fill_suggestion(SuggestionType::kFillAutofillAi);
-  fill_suggestion.payload =
-      Suggestion::AutofillAiPayload(masked_passport.guid());
+  fill_suggestion.payload = Suggestion::AutofillAiPayload(
+      masked_passport.guid(), /*requires_server_fetch=*/true);
   std::vector<Suggestion> suggestions = {fill_suggestion};
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
+  OnSuggestionsReturned(queried_field(), suggestions);
   ON_CALL(autofill_client(), GetAutofillSuggestions)
       .WillByDefault(Return(suggestions));
 
-  EXPECT_CALL(autofill_client(), ShowAutofillAiFailureNotification).Times(0);
+  EXPECT_CALL(autofill_client(),
+              ShowAutofillAiFetchFromWalletFailureNotification)
+      .Times(0);
   {
     InSequence s;
     EXPECT_CALL(wallet_manager(),
@@ -1760,10 +2975,10 @@ TEST_F(AutofillExternalDelegateWithWalletPrivatePassesTest,
         autofill_manager(),
         FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
                           IsQueriedFieldId(), HasFillingPayload(full_passport),
-                          DefaultTriggerSource()));
-    EXPECT_CALL(
-        autofill_client(),
-        HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
+                          DefaultTriggerSource(), _));
+    EXPECT_CALL(autofill_client(),
+                HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                                std::optional(FillingProduct::kAutofillAi)));
   }
 
   external_delegate().DidAcceptSuggestion(fill_suggestion, {});
@@ -1786,22 +3001,24 @@ TEST_F(AutofillExternalDelegateWithWalletPrivatePassesTest,
   fill_suggestion.payload =
       Suggestion::AutofillAiPayload(masked_passport.guid());
   std::vector<Suggestion> suggestions = {fill_suggestion};
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
+  OnSuggestionsReturned(queried_field(), suggestions);
   ON_CALL(autofill_client(), GetAutofillSuggestions)
       .WillByDefault(Return(suggestions));
 
   EXPECT_CALL(wallet_manager(),
               GetUnmaskedWalletEntityInstance(masked_passport.guid(), _))
       .Times(0);
-  EXPECT_CALL(autofill_client(), ShowAutofillAiFailureNotification).Times(0);
+  EXPECT_CALL(autofill_client(),
+              ShowAutofillAiFetchFromWalletFailureNotification)
+      .Times(0);
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
                         IsQueriedFieldId(), HasFillingPayload(masked_passport),
-                        DefaultTriggerSource()));
-  EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
+                        DefaultTriggerSource(), _));
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              std::optional(FillingProduct::kAutofillAi)));
 
   external_delegate().DidAcceptSuggestion(fill_suggestion, {});
 }
@@ -1823,10 +3040,10 @@ TEST_F(AutofillExternalDelegateWithWalletPrivatePassesTest,
 
   IssueOnQuery({.fields = {{.role = PASSPORT_NUMBER}}});
   Suggestion fill_suggestion(SuggestionType::kFillAutofillAi);
-  fill_suggestion.payload =
-      Suggestion::AutofillAiPayload(masked_passport.guid());
+  fill_suggestion.payload = Suggestion::AutofillAiPayload(
+      masked_passport.guid(), /*requires_server_fetch=*/true);
   std::vector<Suggestion> suggestions = {fill_suggestion};
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
+  OnSuggestionsReturned(queried_field(), suggestions);
   ON_CALL(autofill_client(), GetAutofillSuggestions)
       .WillByDefault(Return(suggestions));
 
@@ -1834,207 +3051,157 @@ TEST_F(AutofillExternalDelegateWithWalletPrivatePassesTest,
               GetUnmaskedWalletEntityInstance(masked_passport.guid(), _))
       .WillOnce(RunOnceCallback<1>(std::nullopt));
   EXPECT_CALL(autofill_manager(), FillOrPreviewForm).Times(0);
-  EXPECT_CALL(autofill_client(), ShowAutofillAiFailureNotification);
-  EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
+  EXPECT_CALL(autofill_client(),
+              ShowAutofillAiFetchFromWalletFailureNotification);
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              std::optional(FillingProduct::kAutofillAi)));
 
   external_delegate().DidAcceptSuggestion(fill_suggestion, {});
 }
 
-class AutofillExternalDelegatePlusAddressTest
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID) || \
+    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_IOS)
+// Tests that when attempting to fill a masked server entity and re-auth fails,
+// no failure notification is displayed.
+TEST_F(AutofillExternalDelegateWithWalletPrivatePassesTest,
+       AutofillAiFillMaskedServerEntityReauthFails) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      features::kAutofillAiReauthRequired};
+  autofill_client().GetPrefs()->SetBoolean(
+      prefs::kAutofillAiReauthBeforeViewingSensitiveData, true);
+
+  EntityInstance masked_passport = MaskEntityInstance(GetPassportEntityInstance(
+      {.record_type = EntityInstance::RecordType::kServerWallet}));
+  AddOrUpdateEntityInstance(masked_passport);
+
+  // Show suggestions for `masked_passport`.
+  IssueOnQuery({.fields = {{.role = PASSPORT_NUMBER}}});
+  Suggestion fill_suggestion(SuggestionType::kFillAutofillAi);
+  fill_suggestion.payload = Suggestion::AutofillAiPayload(
+      masked_passport.guid(), /*requires_server_fetch=*/true);
+  std::vector<Suggestion> suggestions = {fill_suggestion};
+  OnSuggestionsReturned(queried_field(), suggestions);
+  ON_CALL(autofill_client(), GetAutofillSuggestions)
+      .WillByDefault(Return(suggestions));
+
+  // Simulate a failed re-auth.
+  auto authenticator =
+      std::make_unique<device_reauth::MockDeviceAuthenticator>();
+  EXPECT_CALL(*authenticator, CanAuthenticateWithBiometricOrScreenLock)
+      .WillOnce(Return(true));
+  EXPECT_CALL(*authenticator, AuthenticateWithMessage)
+      .WillOnce(RunOnceCallback<1>(false));
+  test_api(autofill_manager().GetAutofillAiAccessManager())
+      .SetDeviceAuthenticator(std::move(authenticator));
+
+  // Expect that the `wallet_manager()` is not called and that no unmask failure
+  // notification is shown.
+  EXPECT_CALL(wallet_manager(),
+              GetUnmaskedWalletEntityInstance(masked_passport.guid(), _))
+      .Times(0);
+  EXPECT_CALL(autofill_client(),
+              ShowAutofillAiFetchFromWalletFailureNotification)
+      .Times(0);
+  EXPECT_CALL(autofill_manager(), FillOrPreviewForm).Times(0);
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              std::optional(FillingProduct::kAutofillAi)));
+
+  external_delegate().DidAcceptSuggestion(fill_suggestion, {});
+}
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) ||
+        // BUILDFLAG(IS_IOS)
+
+class AutofillExternalDelegateWithAmbientAutofillTest
     : public AutofillExternalDelegateTest {
  public:
-  AutofillExternalDelegatePlusAddressTest() = default;
+  AutofillExternalDelegateWithAmbientAutofillTest() {
+    scoped_feature_list_.InitWithFeatures({features::kAutofillAiWithDataSchema,
+                                           features::kAutofillAmbientAutofill},
+                                          {});
+  }
 
   void SetUp() override {
     AutofillExternalDelegateTest::SetUp();
-    autofill_client().set_plus_address_delegate(
-        std::make_unique<NiceMock<MockAutofillPlusAddressDelegate>>());
+    personal_context_manager_ =
+        std::make_unique<NiceMock<MockPersonalContextAccessManager>>();
+    autofill_client().set_personal_context_access_manager(
+        personal_context_manager_.get());
   }
 
- protected:
-  MockAutofillPlusAddressDelegate& plus_address_delegate() {
-    return static_cast<MockAutofillPlusAddressDelegate&>(
-        *autofill_client().GetPlusAddressDelegate());
+  void TearDown() override {
+    autofill_client().set_personal_context_access_manager(nullptr);
+    AutofillExternalDelegateTest::TearDown();
   }
+
+  MockPersonalContextAccessManager& personal_context_manager() {
+    return *personal_context_manager_;
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+  std::unique_ptr<MockPersonalContextAccessManager> personal_context_manager_;
 };
 
-// Mock out an existing plus address autofill suggestion, and ensure that
-// choosing it results in the field being filled with its value (as opposed to
-// the mocked address used in the creation flow).
-TEST_F(AutofillExternalDelegatePlusAddressTest,
-       ExternalDelegateFillsExistingPlusAddress) {
-  // Trigger the popup on an email field.
-  IssueOnQuery(kDefaultSuggestionTriggerSource, EMAIL_ADDRESS, "email");
+// Tests that when accepting a `kFillAutofillAi` suggestion for a masked
+// personal context entity, the entity is fetched and a loading state is shown
+// if it is async.
+TEST_F(AutofillExternalDelegateWithAmbientAutofillTest,
+       AutofillAiFillMaskedPersonalContextEntity) {
+  constexpr auto kPassportNumberType =
+      AttributeType(AttributeTypeName::kPassportNumber);
 
-  base::HistogramTester histogram_tester;
+  EntityInstance full_passport = GetPassportEntityInstance(
+      {.record_type = EntityInstance::RecordType::kPersonalContext});
+  EntityInstance masked_passport = MaskEntityInstance(full_passport);
+  ASSERT_NE(
+      full_passport.attribute(kPassportNumberType)->GetCompleteRawInfo(),
+      masked_passport.attribute(kPassportNumberType)->GetCompleteRawInfo());
+  autofill_client().GetEntityDataManager()->OnPrefetchContextComplete(
+      personal_context_manager(), std::vector<EntityInstance>{masked_passport});
 
-  EXPECT_CALL(
-      autofill_client(),
-      ShowAutofillSuggestions(PopupOpenArgsAre(SuggestionVectorIdsAre(
-                                  SuggestionType::kFillExistingPlusAddress)),
-                              _));
-  const std::u16string plus_address = u"test+plus@test.example";
-  std::vector<Suggestion> suggestions;
-  suggestions.emplace_back(/*main_text=*/plus_address,
-                           SuggestionType::kFillExistingPlusAddress);
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
+  IssueOnQuery({.fields = {{.role = PASSPORT_NUMBER}}});
+  Suggestion fill_suggestion(SuggestionType::kFillAutofillAi);
+  fill_suggestion.payload = Suggestion::AutofillAiPayload(
+      masked_passport.guid(), /*requires_server_fetch=*/true);
+  std::vector<Suggestion> suggestions = {fill_suggestion};
+  OnSuggestionsReturned(queried_field(), suggestions);
+  ON_CALL(autofill_client(), GetAutofillSuggestions)
+      .WillByDefault(Return(suggestions));
 
-  EXPECT_CALL(autofill_driver(), RendererShouldClearPreviewedForm());
-  EXPECT_CALL(
-      autofill_manager(),
-      FillOrPreviewField(mojom::ActionPersistence::kPreview,
-                         mojom::FieldActionType::kReplaceAll,
-                         HasQueriedFormId(), HasQueriedFieldId(), plus_address,
-                         SuggestionType::kFillExistingPlusAddress,
-                         std::optional(EMAIL_ADDRESS)));
-  external_delegate().DidSelectSuggestion(suggestions[0]);
-  EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
-  EXPECT_CALL(plus_address_delegate(),
-              RecordAutofillSuggestionEvent(
-                  MockAutofillPlusAddressDelegate::SuggestionEvent::
-                      kExistingPlusAddressChosen));
-  EXPECT_CALL(plus_address_delegate(), DidFillPlusAddress);
-  EXPECT_CALL(
-      autofill_client(),
-      TriggerPlusAddressUserPerceptionSurvey(
-          plus_addresses::hats::SurveyType::kDidChoosePlusAddressOverEmail));
-  EXPECT_CALL(
-      autofill_manager(),
-      FillOrPreviewField(mojom::ActionPersistence::kFill,
-                         mojom::FieldActionType::kReplaceAll,
-                         HasQueriedFormId(), HasQueriedFieldId(), plus_address,
-                         SuggestionType::kFillExistingPlusAddress,
-                         std::optional(EMAIL_ADDRESS)));
-  external_delegate().DidAcceptSuggestion(suggestions[0],
-                                          SuggestionPosition{.row = 0});
-}
-
-// Tests the scenario when the user chooses an email suggestion over the plus
-// address suggestion.
-TEST_F(AutofillExternalDelegatePlusAddressTest,
-       EmailSuggestionIsFilledWhenPlusAddressIsSuggested) {
-  // Trigger the popup on an email field.
-  IssueOnQuery(kDefaultSuggestionTriggerSource, EMAIL_ADDRESS, "email");
-
-  base::HistogramTester histogram_tester;
-
-  EXPECT_CALL(
-      autofill_client(),
-      ShowAutofillSuggestions(PopupOpenArgsAre(SuggestionVectorIdsAre(
-                                  SuggestionType::kAddressEntry,
-                                  SuggestionType::kFillExistingPlusAddress)),
-                              _));
-  const AutofillProfile profile = test::GetFullProfile();
-  pdm().address_data_manager().AddProfile(profile);
-  const std::u16string email = u"example@gmail.com";
-  std::vector<Suggestion> suggestions;
-  suggestions.emplace_back(/*main_text=*/email, SuggestionType::kAddressEntry);
-  suggestions[0].payload =
-      Suggestion::AutofillProfilePayload(Suggestion::Guid(profile.guid()));
-  suggestions.emplace_back(/*main_text=*/u"test+plus@test.example",
-                           SuggestionType::kFillExistingPlusAddress);
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
-
-  EXPECT_CALL(autofill_driver(), RendererShouldClearPreviewedForm());
-  EXPECT_CALL(
-      autofill_manager(),
-      FillOrPreviewForm(mojom::ActionPersistence::kPreview, HasQueriedFormId(),
-                        IsQueriedFieldId(), HasFillingPayload(profile), _));
-  external_delegate().DidSelectSuggestion(suggestions[0]);
-  EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
-  EXPECT_CALL(plus_address_delegate(),
-              RecordAutofillSuggestionEvent(
-                  MockAutofillPlusAddressDelegate::SuggestionEvent::
-                      kExistingPlusAddressChosen))
+  EXPECT_CALL(autofill_client(),
+              ShowAutofillAiFetchFromWalletFailureNotification)
       .Times(0);
-  EXPECT_CALL(
-      autofill_client(),
-      TriggerPlusAddressUserPerceptionSurvey(
-          plus_addresses::hats::SurveyType::kDidChooseEmailOverPlusAddress));
+
+  auto is_loading = Field(&Suggestion::is_loading, Suggestion::IsLoading(true));
+  auto is_unacceptable = Field(&Suggestion::acceptability,
+                               Suggestion::Acceptability::kUnacceptable);
+  EXPECT_CALL(autofill_client(),
+              UpdateAutofillSuggestions(
+                  ElementsAre(AllOf(is_loading, is_unacceptable)),
+                  FillingProduct::kAutofillAi, kDefaultSuggestionTriggerSource,
+                  AutofillSuggestionsIgnoreFocusLoss(true)));
+
+  PersonalContextAccessManager::GetUnmaskedSpiiEntityCallback callback;
+  EXPECT_CALL(personal_context_manager(),
+              GetUnmaskedSpiiEntity(masked_passport.guid(), _))
+      .WillOnce(MoveArg<1>(&callback));
+
+  external_delegate().DidAcceptSuggestion(fill_suggestion, {});
+
+  // Now simulate the async response.
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
-                        IsQueriedFieldId(), HasFillingPayload(profile), _));
-  external_delegate().DidAcceptSuggestion(suggestions[0],
-                                          SuggestionPosition{.row = 0});
-}
+                        IsQueriedFieldId(), HasFillingPayload(full_passport),
+                        DefaultTriggerSource(), _));
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              std::optional(FillingProduct::kAutofillAi)));
 
-// Tests the scenario when the user triggers plus address suggestions manually
-// from the context menu and no email suggestions are shown.
-TEST_F(AutofillExternalDelegatePlusAddressTest,
-       AcceptsManuallyTriggeredPlusAddressFillingSuggestion) {
-  // Trigger the popup on an email field.
-  IssueOnQuery(AutofillSuggestionTriggerSource::kManualFallbackPlusAddresses);
-
-  base::HistogramTester histogram_tester;
-
-  EXPECT_CALL(
-      autofill_client(),
-      ShowAutofillSuggestions(
-          PopupOpenArgsAre(
-              SuggestionVectorIdsAre(SuggestionType::kFillExistingPlusAddress),
-              AutofillSuggestionTriggerSource::kManualFallbackPlusAddresses),
-          _));
-  const std::u16string plus_address = u"test+plus@test.example";
-  std::vector<Suggestion> suggestions;
-  suggestions.emplace_back(/*main_text=*/plus_address,
-                           SuggestionType::kFillExistingPlusAddress);
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
-
-  EXPECT_CALL(autofill_driver(), RendererShouldClearPreviewedForm());
-  EXPECT_CALL(
-      autofill_manager(),
-      FillOrPreviewField(mojom::ActionPersistence::kPreview,
-                         mojom::FieldActionType::kReplaceAll,
-                         HasQueriedFormId(), HasQueriedFieldId(), plus_address,
-                         SuggestionType::kFillExistingPlusAddress,
-                         std::optional(EMAIL_ADDRESS)));
-  external_delegate().DidSelectSuggestion(suggestions[0]);
-  EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
-  EXPECT_CALL(plus_address_delegate(),
-              RecordAutofillSuggestionEvent(
-                  MockAutofillPlusAddressDelegate::SuggestionEvent::
-                      kExistingPlusAddressChosen));
-  EXPECT_CALL(plus_address_delegate(), DidFillPlusAddress);
-  EXPECT_CALL(autofill_client(), TriggerPlusAddressUserPerceptionSurvey(
-                                     plus_addresses::hats::SurveyType::
-                                         kFilledPlusAddressViaManualFallack));
-  EXPECT_CALL(
-      autofill_manager(),
-      FillOrPreviewField(mojom::ActionPersistence::kFill,
-                         mojom::FieldActionType::kReplaceAll,
-                         HasQueriedFormId(), HasQueriedFieldId(), plus_address,
-                         SuggestionType::kFillExistingPlusAddress,
-                         std::optional(EMAIL_ADDRESS)));
-  external_delegate().DidAcceptSuggestion(suggestions[0],
-                                          SuggestionPosition{.row = 0});
-}
-
-// Tests that displaying an address suggestion that contains a plus address
-// email override records the corresponding user action.
-TEST_F(AutofillExternalDelegatePlusAddressTest,
-       PlusAddressEmailOverrideUserAction) {
-  IssueOnQuery();
-  base::UserActionTester user_action_tester;
-  Suggestion suggestion(SuggestionType::kAddressEntry);
-  suggestion.payload = Suggestion::AutofillProfilePayload(
-      Suggestion::Guid("123"), u"test_override");
-
-  std::vector<Suggestion> suggestions = {suggestion};
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
-
-  external_delegate().OnSuggestionsShown(suggestions);
-  EXPECT_EQ(user_action_tester.GetActionCount(
-                "PlusAddresses.AddressFillSuggestionShown"),
-            1);
+  ASSERT_FALSE(callback.is_null());
+  std::move(callback).Run(full_passport);
 }
 
 TEST_F(AutofillExternalDelegateTest,
@@ -2070,7 +3237,7 @@ TEST_F(AutofillExternalDelegateTest,
       .WillByDefault(Return(true));
 
   // This should call ShowAutofillSuggestions.
-  OnSuggestionsReturned(queried_field().global_id(),
+  OnSuggestionsReturned(queried_field(),
                         {Suggestion(SuggestionType::kComposeProactiveNudge)});
 }
 
@@ -2110,7 +3277,7 @@ TEST_F(
       .WillByDefault(Return(false));
 
   // This should call ShowAutofillSuggestions.
-  OnSuggestionsReturned(queried_field().global_id(),
+  OnSuggestionsReturned(queried_field(),
                         {Suggestion(SuggestionType::kComposeProactiveNudge)});
 }
 
@@ -2149,7 +3316,7 @@ TEST_F(
       .WillByDefault(Return(true));
 
   // This should call ShowAutofillSuggestions.
-  OnSuggestionsReturned(queried_field().global_id(),
+  OnSuggestionsReturned(queried_field(),
                         {Suggestion(SuggestionType::kComposeProactiveNudge)});
 }
 
@@ -2178,7 +3345,7 @@ TEST_F(
       .WillByDefault(Return(true));
 
   // This should call ShowAutofillSuggestions.
-  OnSuggestionsReturned(queried_field().global_id(),
+  OnSuggestionsReturned(queried_field(),
                         {Suggestion(SuggestionType::kAutocompleteEntry)});
 }
 
@@ -2198,16 +3365,16 @@ TEST_F(AutofillExternalDelegateTest, ExternalDelegateOpensComposeAndFills) {
                                       _));
   std::vector<Suggestion> suggestions = {
       Suggestion(SuggestionType::kComposeResumeNudge)};
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
+  OnSuggestionsReturned(queried_field(), suggestions);
 
   // Simulate accepting a Compose suggestion.
   EXPECT_CALL(
       compose_delegate,
       OpenCompose(_, queried_field().global_id(),
                   AutofillComposeDelegate::UiEntryPoint::kAutofillPopup));
-  EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              Eq(std::nullopt)));
   external_delegate().DidAcceptSuggestion(suggestions[0],
                                           SuggestionPosition{.row = 0});
 }
@@ -2268,7 +3435,7 @@ TEST_F(AutofillExternalDelegateTest, AcceptedSaveAndFillEntry_FillForm) {
       autofill_manager(),
       FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
                         IsQueriedFieldId(), HasFillingPayload(card),
-                        AutofillTriggerSource::kCreditCardSaveAndFill));
+                        AutofillTriggerSource::kCreditCardSaveAndFill, _));
 
   external_delegate().DidAcceptSuggestion(
       CreateAutofillSuggestion(SuggestionType::kSaveAndFillCreditCardEntry),
@@ -2329,9 +3496,9 @@ TEST_F(AutofillExternalDelegateTest, ExternalDelegateUndoPreviewForm) {
 TEST_F(AutofillExternalDelegateTest, ScanCreditCardMenuItem) {
   IssueOnQuery();
   EXPECT_CALL(payments_autofill_client(), ScanCreditCard);
-  EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              Eq(std::nullopt)));
 
   external_delegate().DidAcceptSuggestion(
       Suggestion(SuggestionType::kScanCreditCard),
@@ -2343,7 +3510,7 @@ TEST_F(AutofillExternalDelegateTest, ScanCreditCardMetrics_SuggestionShown) {
   IssueOnQuery();
   std::vector<Suggestion> suggestions = {
       Suggestion(SuggestionType::kScanCreditCard)};
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
+  OnSuggestionsReturned(queried_field(), suggestions);
   external_delegate().OnSuggestionsShown(suggestions);
 
   histogram.ExpectUniqueSample("Autofill.ScanCreditCardPrompt",
@@ -2355,7 +3522,7 @@ TEST_F(AutofillExternalDelegateTest, ScanCreditCardMetrics_SuggestionAccepted) {
   IssueOnQuery();
   std::vector<Suggestion> suggestions = {
       Suggestion(SuggestionType::kScanCreditCard)};
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
+  OnSuggestionsReturned(queried_field(), suggestions);
   external_delegate().OnSuggestionsShown(suggestions);
 
   external_delegate().DidAcceptSuggestion(
@@ -2377,7 +3544,7 @@ TEST_F(AutofillExternalDelegateTest,
   IssueOnQuery();
   std::vector<Suggestion> suggestions = {
       Suggestion(SuggestionType::kScanCreditCard)};
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
+  OnSuggestionsReturned(queried_field(), suggestions);
   external_delegate().OnSuggestionsShown(suggestions);
 
   external_delegate().DidAcceptSuggestion(
@@ -2396,7 +3563,7 @@ TEST_F(AutofillExternalDelegateTest,
 TEST_F(AutofillExternalDelegateTest, ScanCreditCardMetrics_SuggestionNotShown) {
   base::HistogramTester histogram;
   IssueOnQuery();
-  OnSuggestionsReturned(queried_field().global_id(), {});
+  OnSuggestionsReturned(queried_field(), {});
   external_delegate().OnSuggestionsShown({});
   histogram.ExpectTotalCount("Autofill.ScanCreditCardPrompt", 0);
 }
@@ -2406,7 +3573,7 @@ TEST_F(AutofillExternalDelegateTest, AutocompleteShown_MetricsEmitted) {
   IssueOnQuery();
   std::vector<Suggestion> suggestions = {CreateAutofillSuggestion(
       SuggestionType::kAutocompleteEntry, u"autocomplete")};
-  OnSuggestionsReturned(queried_field().global_id(), suggestions);
+  OnSuggestionsReturned(queried_field(), suggestions);
   external_delegate().OnSuggestionsShown(suggestions);
   histogram.ExpectBucketCount("Autocomplete.Events3",
                               AutofillMetrics::AUTOCOMPLETE_SUGGESTIONS_SHOWN,
@@ -2414,6 +3581,7 @@ TEST_F(AutofillExternalDelegateTest, AutocompleteShown_MetricsEmitted) {
 }
 
 TEST_F(AutofillExternalDelegateTest, ScanCreditCard_FillForm) {
+  IssueOnQuery();
   CreditCard card = test::GetCreditCard();
   EXPECT_CALL(payments_autofill_client(), ScanCreditCard)
       .WillOnce(
@@ -2422,7 +3590,7 @@ TEST_F(AutofillExternalDelegateTest, ScanCreditCard_FillForm) {
           });
   EXPECT_CALL(autofill_manager(),
               FillOrPreviewForm(mojom::ActionPersistence::kFill, _, _,
-                                HasFillingPayload(card), _));
+                                HasFillingPayload(card), _, _));
   external_delegate().DidAcceptSuggestion(
       CreateAutofillSuggestion(SuggestionType::kScanCreditCard), {});
 }
@@ -2434,24 +3602,23 @@ TEST_F(AutofillExternalDelegateTest, IgnoreAutocompleteOffForAutofill) {
   field.set_should_autocomplete(false);
 
   external_delegate().OnQuery(form, field, /*caret_bounds=*/gfx::Rect(),
-                              kDefaultSuggestionTriggerSource,
-                              /*update_datalist=*/false);
+                              kDefaultSuggestionTriggerSource);
 
   std::vector<Suggestion> autofill_items;
   autofill_items.emplace_back(SuggestionType::kAutocompleteEntry);
 
   // Ensure the popup tries to show itself, despite autocomplete="off".
   EXPECT_CALL(autofill_client(), ShowAutofillSuggestions);
-  EXPECT_CALL(autofill_client(), HideAutofillSuggestions(_)).Times(0);
+  EXPECT_CALL(autofill_client(), HideSuggestions(_, _)).Times(0);
 
-  OnSuggestionsReturned(field.global_id(), autofill_items);
+  OnSuggestionsReturned(field, autofill_items);
 }
 
 TEST_F(AutofillExternalDelegateTest,
        ExternalDelegateFillFieldWithValue_Autocomplete) {
-  EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              Eq(std::nullopt)));
   IssueOnQuery();
 
   base::HistogramTester histogram_tester;
@@ -2463,7 +3630,7 @@ TEST_F(AutofillExternalDelegateTest,
       FillOrPreviewField(
           mojom::ActionPersistence::kFill, mojom::FieldActionType::kReplaceAll,
           HasQueriedFormId(), HasQueriedFieldId(), dummy_autocomplete_string,
-          SuggestionType::kAutocompleteEntry, std::optional<FieldType>()));
+          FillingProduct::kAutocomplete, std::optional<FieldType>()));
   MockAutocompleteHistoryManager* autocomplete_history_manager =
       static_cast<MockAutocompleteHistoryManager*>(
           autofill_client().GetAutocompleteHistoryManager());
@@ -2481,9 +3648,9 @@ TEST_F(AutofillExternalDelegateTest,
 
 TEST_F(AutofillExternalDelegateTest,
        ExternalDelegateFillFieldWithValue_AutofillAddressOnTyping) {
-  EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              Eq(std::nullopt)));
   const AutofillProfile profile = test::GetFullProfile();
   pdm().address_data_manager().AddProfile(profile);
   IssueOnQuery();
@@ -2504,7 +3671,7 @@ TEST_F(AutofillExternalDelegateTest,
           mojom::ActionPersistence::kFill, mojom::FieldActionType::kReplaceAll,
           HasQueriedFormId(), HasQueriedFieldId(),
           profile.GetRawInfo(*suggestion.field_by_field_filling_type_used),
-          SuggestionType::kAddressEntryOnTyping, std::optional(NAME_FULL)));
+          FillingProduct::kAddress, std::optional(NAME_FULL)));
   EXPECT_CALL(autofill_manager(), OnDidFillAddressFormFillingSuggestion)
       .Times(0);
   EXPECT_CALL(
@@ -2533,9 +3700,9 @@ TEST_F(AutofillExternalDelegateTest,
 
 TEST_F(AutofillExternalDelegateTest,
        ExternalDelegateFillFieldWithValue_MerchantPromoCode) {
-  EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              Eq(std::nullopt)));
   IssueOnQuery();
 
   std::u16string dummy_promo_code_string(u"merchant promo");
@@ -2546,7 +3713,7 @@ TEST_F(AutofillExternalDelegateTest,
                                  mojom::FieldActionType::kReplaceAll,
                                  HasQueriedFormId(), HasQueriedFieldId(),
                                  dummy_promo_code_string,
-                                 SuggestionType::kMerchantPromoCodeEntry,
+                                 FillingProduct::kMerchantPromoCode,
                                  std::optional(MERCHANT_PROMO_CODE)));
   EXPECT_CALL(*payments_autofill_client().GetMerchantPromoCodeManager(),
               OnSingleFieldSuggestionSelected(suggestion));
@@ -2558,21 +3725,21 @@ TEST_F(AutofillExternalDelegateTest,
 }
 
 TEST_F(AutofillExternalDelegateTest, ExternalDelegateFillFieldWithValue_Iban) {
-  EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              Eq(std::nullopt)));
   IssueOnQuery();
 
   Iban iban = test::GetLocalIban();
   Suggestion suggestion(SuggestionType::kIbanEntry);
   suggestion.main_text.value = iban.GetIdentifierStringForAutofillDisplay();
   suggestion.payload = Suggestion::Guid(iban.guid());
-  EXPECT_CALL(autofill_manager(),
-              FillOrPreviewField(mojom::ActionPersistence::kFill,
-                                 mojom::FieldActionType::kReplaceAll,
-                                 HasQueriedFormId(), HasQueriedFieldId(),
-                                 iban.value(), SuggestionType::kIbanEntry,
-                                 std::optional(IBAN_VALUE)));
+  EXPECT_CALL(
+      autofill_manager(),
+      FillOrPreviewField(mojom::ActionPersistence::kFill,
+                         mojom::FieldActionType::kReplaceAll,
+                         HasQueriedFormId(), HasQueriedFieldId(), iban.value(),
+                         FillingProduct::kIban, std::optional(IBAN_VALUE)));
   EXPECT_CALL(*payments_autofill_client().GetIbanManager(),
               OnSingleFieldSuggestionSelected(suggestion));
 
@@ -2597,17 +3764,16 @@ TEST_F(AutofillExternalDelegateTest,
       SuggestionType::kAddressFieldByFieldFilling, u"field by field",
       Suggestion::AutofillProfilePayload(Suggestion::Guid(profile.guid())));
   suggestion.field_by_field_filling_type_used = NAME_FIRST;
-  EXPECT_CALL(
-      autofill_client(),
-      HideAutofillSuggestions(SuggestionHidingReason::kAcceptSuggestion));
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                              Eq(std::nullopt)));
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewField(
           mojom::ActionPersistence::kFill, mojom::FieldActionType::kReplaceAll,
           HasQueriedFormId(), HasQueriedFieldId(),
           profile.GetRawInfo(*suggestion.field_by_field_filling_type_used),
-          SuggestionType::kAddressFieldByFieldFilling,
-          std::optional(NAME_FIRST)));
+          FillingProduct::kAddress, std::optional(NAME_FIRST)));
   EXPECT_CALL(autofill_manager(),
               OnDidFillAddressFormFillingSuggestion(
                   Property(&AutofillProfile::guid, profile.guid()),
@@ -2624,9 +3790,10 @@ TEST_F(AutofillExternalDelegateTest, AcceptVirtualCardOptionItem) {
   FormData form;
   CreditCard card = test::GetMaskedServerCard();
   pdm().payments_data_manager().AddCreditCard(card);
-  EXPECT_CALL(autofill_manager(),
-              FillOrPreviewForm(mojom::ActionPersistence::kFill,
-                                HasQueriedFormId(), IsQueriedFieldId(), _, _));
+  EXPECT_CALL(
+      autofill_manager(),
+      FillOrPreviewForm(mojom::ActionPersistence::kFill, HasQueriedFormId(),
+                        IsQueriedFieldId(), _, _, _));
   Suggestion suggestion(SuggestionType::kVirtualCreditCardEntry);
   suggestion.payload = Suggestion::Guid(card.guid());
   external_delegate().DidAcceptSuggestion(suggestion,
@@ -2640,7 +3807,7 @@ TEST_F(AutofillExternalDelegateTest, SelectVirtualCardOptionItem) {
   EXPECT_CALL(
       autofill_manager(),
       FillOrPreviewForm(mojom::ActionPersistence::kPreview, HasQueriedFormId(),
-                        IsQueriedFieldId(), HasFillingPayload(card), _));
+                        IsQueriedFieldId(), HasFillingPayload(card), _, _));
   Suggestion suggestion(SuggestionType::kVirtualCreditCardEntry);
   suggestion.payload = Suggestion::Guid(card.guid());
   external_delegate().DidSelectSuggestion(suggestion);
@@ -2651,11 +3818,17 @@ TEST_F(AutofillExternalDelegateTest, RemoveSuggestion_Autocomplete) {
       std::make_unique<MockSingleFieldFillRouter>(
           autofill_client().GetAutocompleteHistoryManager(), nullptr, nullptr);
   EXPECT_CALL(*mock_single_field_fill_router,
-              OnRemoveCurrentSingleFieldSuggestion);
+              OnRemoveCurrentSingleFieldSuggestion(
+                  std::u16string(u"name"), std::u16string(u"value"),
+                  SuggestionType::kAutocompleteEntry));
   autofill_client().set_single_field_fill_router(
       std::move(mock_single_field_fill_router));
-  EXPECT_TRUE(external_delegate().RemoveSuggestion(
-      Suggestion(u"autocomplete", SuggestionType::kAutocompleteEntry)));
+
+  AutocompleteEntry entry(AutocompleteKey("name", "value"), base::Time::Now(),
+                          base::Time::Now());
+  Suggestion autocomplete_suggestion(SuggestionType::kAutocompleteEntry);
+  autocomplete_suggestion.payload = std::move(entry);
+  EXPECT_TRUE(external_delegate().RemoveSuggestion(autocomplete_suggestion));
 }
 
 TEST_F(AutofillExternalDelegateTest, RemoveSuggestion_Address) {
@@ -2706,6 +3879,14 @@ TEST_F(AutofillExternalDelegateTest, RemoveSuggestion_ServerCard) {
       pdm().payments_data_manager().GetCreditCardByGUID(server_card.guid()));
 }
 
+// Tests that the personal context notice is removed and the pref is updated.
+TEST_F(AutofillExternalDelegateTest, RemoveSuggestion_PersonalContextNotice) {
+  EXPECT_FALSE(autofill_client().is_personal_context_notice_acknowledged());
+  EXPECT_TRUE(external_delegate().RemoveSuggestion(
+      Suggestion(SuggestionType::kPersonalContextNotice)));
+  EXPECT_TRUE(autofill_client().is_personal_context_notice_acknowledged());
+}
+
 TEST_F(AutofillExternalDelegateTest, RecordSuggestionTypeOnSuggestionAccepted) {
   base::HistogramTester histogram_tester;
   IssueOnQuery();
@@ -2742,10 +3923,10 @@ TEST_F(AutofillExternalDelegateTest, UpdateSuggestions) {
                                   AutofillSuggestionsIgnoreFocusLoss(false)));
   }
 
-  OnSuggestionsReturned(queried_field().global_id(), suggestions1);
+  OnSuggestionsReturned(queried_field(), suggestions1);
   external_delegate().AttemptToDisplayAutofillSuggestionsForTest(
       suggestions2, AutofillSuggestionTriggerSource::kUnspecified,
-      /*is_update=*/true);
+      std::nullopt);
 }
 
 // TODO(crbug.com/41483208): Add test case where 'Show cards from your Google
@@ -2756,13 +3937,224 @@ TEST_F(AutofillExternalDelegateTest, UpdateSuggestions) {
 // Tests that outdated returned suggestions are discarded.
 TEST_F(AutofillExternalDelegateTest, ShouldDiscardOutdatedSuggestions) {
   FieldGlobalId old_field_id = test::MakeFieldGlobalId();
+  FormFieldData old_field;
+  old_field.set_host_frame(old_field_id.frame_token);
+  old_field.set_renderer_id(old_field_id.renderer_id);
   FieldGlobalId new_field_id = test::MakeFieldGlobalId();
   autofill_client().set_last_queried_field(new_field_id);
   IssueOnQuery();
   EXPECT_CALL(autofill_client(), ShowAutofillSuggestions).Times(0);
-  OnSuggestionsReturned(old_field_id, std::vector<Suggestion>());
+  OnSuggestionsReturned(old_field, std::vector<Suggestion>());
 }
 #endif
+
+// Tests that @memory search results use the kReplaceAtMemoryTrigger action.
+TEST_F(AutofillExternalDelegateTest, AtMemorySearchResult_UsesSpecialAction) {
+  StartAtMemorySession();
+  Suggestion suggestion(u"some result", SuggestionType::kAtMemorySearchResult);
+  suggestion.payload = Suggestion::AtMemoryPayload(
+      u"pasted text", accessibility_annotator::MemoryDataType::kUnknown);
+
+  // 1. Test Preview
+  EXPECT_CALL(
+      autofill_manager(),
+      FillOrPreviewField(mojom::ActionPersistence::kPreview,
+                         mojom::FieldActionType::kReplaceAtMemoryTrigger, _, _,
+                         std::u16string(u"pasted text"),
+                         FillingProduct::kAtMemory, _));
+  external_delegate().DidSelectSuggestion(suggestion);
+
+  // 2. Test Fill
+  EXPECT_CALL(
+      autofill_manager(),
+      FillOrPreviewField(mojom::ActionPersistence::kFill,
+                         mojom::FieldActionType::kReplaceAtMemoryTrigger, _, _,
+                         std::u16string(u"pasted text"),
+                         FillingProduct::kAtMemory, _));
+  external_delegate().DidAcceptSuggestion(suggestion,
+                                          SuggestionPosition{.row = 0});
+}
+
+// Tests that accepting an AtMemory suggestion for an IBAN attempts to fetch the
+// value from the IbanAccessManager.
+TEST_F(AutofillExternalDelegateTest, AtMemorySearchResult_RevealsIban) {
+  IssueOnQuery(AutofillSuggestionTriggerSource::kAtMemory);
+
+  Iban iban = test::GetLocalIban();
+  Suggestion suggestion(u"some result", SuggestionType::kAtMemorySearchResult);
+
+  Suggestion::AtMemoryPayload at_memory_payload(
+      iban.GetIdentifierStringForAutofillDisplay(),
+      accessibility_annotator::MemoryDataType::kIban);
+  at_memory_payload.identifier = Iban::Guid(iban.guid());
+  at_memory_payload.memory_data_type =
+      accessibility_annotator::MemoryDataType::kIban;
+  suggestion.payload = std::move(at_memory_payload);
+
+  EXPECT_CALL(*payments_autofill_client().GetIbanAccessManager(), FetchValue)
+      .WillOnce([iban](const Suggestion::Payload& payload,
+                       IbanAccessManager::OnIbanFetchedCallback callback) {
+        std::move(callback).Run(iban.value());
+      });
+
+  EXPECT_CALL(
+      autofill_manager(),
+      FillOrPreviewField(mojom::ActionPersistence::kFill,
+                         mojom::FieldActionType::kReplaceAtMemoryTrigger, _, _,
+                         iban.value(), FillingProduct::kAtMemory, _));
+
+  external_delegate().DidAcceptSuggestion(suggestion,
+                                          SuggestionPosition{.row = 0});
+}
+
+// Tests that accepting an AtMemory suggestion for a Credit Card attempts to
+// fetch the value from the CreditCardAccessManager.
+TEST_F(AutofillExternalDelegateTest, AtMemorySearchResult_RevealsCreditCard) {
+  IssueOnQuery(AutofillSuggestionTriggerSource::kAtMemory);
+
+  CreditCard card = test::GetCreditCard();
+  pdm().payments_data_manager().AddCreditCard(card);
+
+  Suggestion suggestion(u"some result", SuggestionType::kAtMemorySearchResult);
+
+  Suggestion::AtMemoryPayload at_memory_payload(
+      u"some text", accessibility_annotator::MemoryDataType::kCreditCardNumber);
+  at_memory_payload.identifier = card.guid();
+  at_memory_payload.memory_data_type =
+      accessibility_annotator::MemoryDataType::kCreditCardNumber;
+  suggestion.payload = std::move(at_memory_payload);
+
+  TestCreditCardAccessManager* access_manager =
+      static_cast<TestCreditCardAccessManager*>(
+          autofill_manager().GetCreditCardAccessManager());
+
+  EXPECT_CALL(*access_manager, FetchCreditCard)
+      .WillOnce(
+          [card](
+              const CreditCard* passed_card,
+              CreditCardAccessManager::OnCreditCardFetchedCallback callback) {
+            std::move(callback).Run(card);
+          });
+
+  EXPECT_CALL(
+      autofill_manager(),
+      FillOrPreviewField(mojom::ActionPersistence::kFill,
+                         mojom::FieldActionType::kReplaceAtMemoryTrigger, _, _,
+                         card.number(), FillingProduct::kAtMemory, _));
+
+  external_delegate().DidAcceptSuggestion(suggestion,
+                                          SuggestionPosition{.row = 0});
+}
+
+// Tests that accepting an AtMemory suggestion for an AutofillAI SPII attempts
+// to fetch the value from the AutofillAiAccessManager.
+TEST_F(AutofillExternalDelegateTest, AtMemorySearchResult_RevealsAutofillAi) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      features::kAutofillAiWithDataSchema};
+
+  EntityInstance passport = GetPassportEntityInstance();
+  AddOrUpdateEntityInstance(passport);
+
+  IssueOnQuery(AutofillSuggestionTriggerSource::kAtMemory, PASSPORT_NUMBER,
+               "passport");
+
+  Suggestion suggestion(u"some result", SuggestionType::kAtMemorySearchResult);
+
+  Suggestion::AtMemoryPayload at_memory_payload(
+      u"some text", accessibility_annotator::MemoryDataType::kPassportNumber);
+  at_memory_payload.identifier = passport.guid();
+  at_memory_payload.memory_data_type =
+      accessibility_annotator::MemoryDataType::kPassportNumber;
+  suggestion.payload = std::move(at_memory_payload);
+
+  base::optional_ref<const AttributeInstance> passport_attribute =
+      passport.attribute(AttributeType(AttributeTypeName::kPassportNumber));
+  ASSERT_TRUE(passport_attribute.has_value());
+
+  EXPECT_CALL(
+      autofill_manager(),
+      FillOrPreviewField(mojom::ActionPersistence::kFill,
+                         mojom::FieldActionType::kReplaceAtMemoryTrigger, _, _,
+                         passport_attribute->GetCompleteRawInfo(),
+                         FillingProduct::kAtMemory, _));
+
+  external_delegate().DidAcceptSuggestion(suggestion,
+                                          SuggestionPosition{.row = 0});
+}
+
+// Tests that accepting an AtMemory suggestion for a masked server AutofillAI
+// private pass successfully initiates the server unmasking flow and fills the
+// unmasked value.
+TEST_F(AutofillExternalDelegateWithWalletPrivatePassesTest,
+       AtMemorySearchResult_RevealsPrivatePassAutofillAi) {
+  constexpr auto kPassportNumberType =
+      AttributeType(AttributeTypeName::kPassportNumber);
+
+  EntityInstance full_passport = GetPassportEntityInstance(
+      {.record_type = EntityInstance::RecordType::kServerWallet});
+  EntityInstance masked_passport = MaskEntityInstance(full_passport);
+  ASSERT_NE(
+      full_passport.attribute(kPassportNumberType)->GetCompleteRawInfo(),
+      masked_passport.attribute(kPassportNumberType)->GetCompleteRawInfo());
+  AddOrUpdateEntityInstance(masked_passport);
+
+  IssueOnQuery(AutofillSuggestionTriggerSource::kAtMemory, PASSPORT_NUMBER,
+               "passport");
+
+  Suggestion suggestion(u"some result", SuggestionType::kAtMemorySearchResult);
+
+  Suggestion::AtMemoryPayload at_memory_payload(
+      u"some text", accessibility_annotator::MemoryDataType::kPassportNumber);
+  at_memory_payload.identifier = masked_passport.guid();
+  at_memory_payload.memory_data_type =
+      accessibility_annotator::MemoryDataType::kPassportNumber;
+  suggestion.payload = std::move(at_memory_payload);
+
+  base::optional_ref<const AttributeInstance> passport_attribute =
+      full_passport.attribute(kPassportNumberType);
+  ASSERT_TRUE(passport_attribute.has_value());
+
+  EXPECT_CALL(wallet_manager(),
+              GetUnmaskedWalletEntityInstance(masked_passport.guid(), _))
+      .WillOnce(RunOnceCallback<1>(full_passport));
+
+  EXPECT_CALL(
+      autofill_manager(),
+      FillOrPreviewField(mojom::ActionPersistence::kFill,
+                         mojom::FieldActionType::kReplaceAtMemoryTrigger, _, _,
+                         passport_attribute->GetCompleteRawInfo(),
+                         FillingProduct::kAtMemory, _));
+
+  external_delegate().DidAcceptSuggestion(suggestion,
+                                          SuggestionPosition{.row = 0});
+}
+
+TEST_F(AutofillExternalDelegateTest,
+       ExternalDelegateHidesSuggestionsWhenNoSuggestionsReturned) {
+  IssueOnQuery();
+
+  EXPECT_CALL(autofill_client(),
+              HideSuggestions(SuggestionHidingReason::kNoSuggestions,
+                              Eq(std::nullopt)));
+
+  // Return empty suggestions.
+  OnSuggestionsReturned(queried_field(), {});
+}
+
+TEST_F(AutofillExternalDelegateTest,
+       ExternalDelegateDoesNotHideSuggestionsOnLargeFormFactor) {
+  IssueOnQuery();
+
+  autofill_client().set_is_device_large_form_factor(true);
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      features::kAutofillAndroidKeyboardAccessoryDynamicPositioning);
+
+  EXPECT_CALL(autofill_client(), HideSuggestions).Times(0);
+
+  // Return empty suggestions.
+  OnSuggestionsReturned(queried_field(), {});
+}
 
 }  // namespace
 

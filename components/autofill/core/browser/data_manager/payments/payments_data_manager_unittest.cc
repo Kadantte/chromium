@@ -27,6 +27,7 @@
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "base/uuid.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager_test_api.h"
@@ -56,6 +57,7 @@
 #include "components/autofill/core/common/autofill_switches.h"
 #include "components/autofill/core/common/credit_card_network_identifiers.h"
 #include "components/autofill/core/common/form_data.h"
+#include "components/facilitated_payments/core/features/features.h"
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/account_managed_status_finder.h"
@@ -134,10 +136,9 @@ class PaymentsDataManagerHelper : public PaymentsDataManagerTestBase {
                                 sync_service_);
     payments_data_manager_ = std::make_unique<PaymentsDataManager>(
         profile_database_service_, account_database_service_,
-        /*image_fetcher=*/nullptr, /*shared_storage_handler=*/nullptr,
-        prefs_.get(), &sync_service_, identity_test_env_.identity_manager(),
-        GeoIpCountryCode(country_code), app_locale,
-        autofill_client()->GetAutofillOptimizationGuideDecider());
+        /*image_fetcher=*/nullptr, prefs_.get(), &sync_service_,
+        identity_test_env_.identity_manager(), GeoIpCountryCode(country_code),
+        app_locale, autofill_client()->GetAutofillOptimizationGuideDecider());
     payments_data_manager_->Refresh();
     WaitForOnPaymentsDataChanged();
   }
@@ -271,8 +272,6 @@ class PaymentsDataManagerHelper : public PaymentsDataManagerTestBase {
 class PaymentsDataManagerTest : public PaymentsDataManagerHelper,
                                 public testing::Test {
  public:
-  long kClearTimestampForLocalCvcs = 1747828800;  // May 21, 2025.
-
   PaymentsDataManagerTest() {
     scoped_feature_list_.InitWithFeatures(
         /*enabled_features=*/{features::kAutofillEnableBuyNowPayLaterSyncing,
@@ -398,6 +397,28 @@ TEST_F(PaymentsDataManagerTest, OnPaymentsDataLoaded) {
   // are loaded from the WebDatabase.
   payments_data_manager().Refresh();
   WaitForOnPaymentsDataChanged();
+}
+
+// Verifies that `AddCallbackAfterRefreshCompleted` immediately triggers
+// the callback if no `Refresh()` operation is pending.
+TEST_F(PaymentsDataManagerTest, AddCallbackAfterRefreshCompleted_NoRefresh) {
+  base::test::TestFuture<void> future;
+  payments_data_manager().AddCallbackAfterRefreshCompleted(
+      future.GetCallback());
+  EXPECT_TRUE(future.IsReady());
+}
+
+// Verifies that `AddCallbackAfterRefreshCompleted` triggers the callback after
+// a `Refresh()` operation concluded.
+TEST_F(PaymentsDataManagerTest,
+       AddCallbackAfterRefreshCompleted_DuringRefresh) {
+  base::test::TestFuture<void> future;
+  payments_data_manager().Refresh();
+  payments_data_manager().AddCallbackAfterRefreshCompleted(
+      future.GetCallback());
+  EXPECT_FALSE(future.IsReady());
+  // Check that the callback is called eventually.
+  EXPECT_TRUE(future.Wait());
 }
 
 // Test that a local IBAN is removed from suggestions when it has a matching
@@ -705,9 +726,6 @@ TEST_F(PaymentsDataManagerTest, AddUpdateRemoveCreditCards) {
 // - `local_card2`'s and `server_card`'s modification dates fall in the removal
 //   range. Expect that only the local card is removed.
 TEST_F(PaymentsDataManagerTest, RemoveLocalDataModifiedBetween) {
-  base::test::ScopedFeatureList features(
-      features::kAutofillEnableCvcStorageAndFilling);
-
   AdvanceClock(kArbitraryTime - base::Time::Now());
   CreditCard local_card1 = test::GetCreditCard();
   // PaymentsAutofillTable sets modification dates when adding/updating.
@@ -764,8 +782,6 @@ TEST_F(PaymentsDataManagerTest, RecordUseOfCard) {
 
 // Test that UpdateLocalCvc function working as expected.
 TEST_F(PaymentsDataManagerTest, UpdateLocalCvc) {
-  base::test::ScopedFeatureList features(
-      features::kAutofillEnableCvcStorageAndFilling);
   CreditCard credit_card = test::GetCreditCard();
   const std::u16string kCvc = u"111";
   credit_card.set_cvc(kCvc);
@@ -781,58 +797,8 @@ TEST_F(PaymentsDataManagerTest, UpdateLocalCvc) {
   EXPECT_EQ(payments_data_manager().GetLocalCreditCards()[0]->cvc(), kNewCvc);
 }
 
-#if !BUILDFLAG(IS_IOS)
-// Test that cleanup for crbug.com/411681430 is working as expected.
-TEST_F(PaymentsDataManagerTest, ClearLocalCvcsUpToMay2025) {
-  base::test::ScopedFeatureList features(
-      features::kAutofillEnableCvcStorageAndFilling);
-
-  AdvanceClock(kArbitraryTime - base::Time::Now());
-  // Add a credit card with older timestamp to the database.
-  CreditCard credit_card_1(base::Uuid::GenerateRandomV4().AsLowercaseString(),
-                           test::kEmptyOrigin);
-  test::SetCreditCardInfo(&credit_card_1, "John Doe",
-                          "4111111111111111" /* Visa */, "01", "2999", "1",
-                          u"123");
-  payments_data_manager().AddCreditCard(credit_card_1);
-  WaitForOnPaymentsDataChanged();
-
-  AdvanceClock(
-      (base::Time::FromSecondsSinceUnixEpoch(kClearTimestampForLocalCvcs + 1)) -
-      base::Time::Now());
-  // Add another credit card with timestamp later than
-  // `kClearTimestampForLocalCvcs` timestamp to the database.
-  CreditCard credit_card_2(base::Uuid::GenerateRandomV4().AsLowercaseString(),
-                           test::kEmptyOrigin);
-  test::SetCreditCardInfo(&credit_card_2, "John Doe",
-                          "378282246310005" /* AmEx */, "01", "2999", "1",
-                          u"0000");
-  payments_data_manager().AddCreditCard(credit_card_2);
-  WaitForOnPaymentsDataChanged();
-
-  ASSERT_EQ(payments_data_manager().GetLocalCreditCards().size(), 2U);
-  EXPECT_FALSE(payments_data_manager().GetLocalCreditCards()[0]->cvc().empty());
-  EXPECT_FALSE(payments_data_manager().GetLocalCreditCards()[1]->cvc().empty());
-
-  prefs::SetPaymentCvcStorage(prefs_.get(), false);
-  ResetPaymentsDataManager();
-
-  ASSERT_EQ(payments_data_manager().GetLocalCreditCards().size(), 2U);
-  EXPECT_TRUE(payments_data_manager()
-                  .GetCreditCardByGUID(credit_card_1.guid())
-                  ->cvc()
-                  .empty());
-  EXPECT_FALSE(payments_data_manager()
-                   .GetCreditCardByGUID(credit_card_2.guid())
-                   ->cvc()
-                   .empty());
-}
-#endif  // !BUILDFLAG(IS_IOS)
-
 // Test that verify add, update, remove server cvc function working as expected.
 TEST_P(PaymentsDataManagerServerTest, ServerCvc) {
-  base::test::ScopedFeatureList features(
-      features::kAutofillEnableCvcStorageAndFilling);
   const std::u16string kCvc = u"111";
   CreditCard credit_card = test::GetMaskedServerCard();
   SetServerCards({credit_card});
@@ -866,8 +832,6 @@ TEST_P(PaymentsDataManagerServerTest, ServerCvc) {
 
 // Test that verify clear server cvc function working as expected.
 TEST_P(PaymentsDataManagerServerTest, ClearServerCvc) {
-  base::test::ScopedFeatureList features(
-      features::kAutofillEnableCvcStorageAndFilling);
   // Add a server card cvc.
   const std::u16string kCvc = u"111";
   CreditCard credit_card = test::GetMaskedServerCard();
@@ -958,7 +922,9 @@ TEST_F(PaymentsDataManagerTest, AddCreditCard_CrazyCharacters) {
   card4.SetRawInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR, u"2016");
   cards.push_back(card4);
 
-  payments_data_manager().SetCreditCards(&cards);
+  for (const CreditCard& card : cards) {
+    payments_data_manager().AddCreditCard(card);
+  }
 
   WaitForOnPaymentsDataChanged();
 
@@ -973,10 +939,9 @@ TEST_F(PaymentsDataManagerTest, AddCreditCard_CrazyCharacters) {
 TEST_F(PaymentsDataManagerTest, AddCreditCard_Invalid) {
   CreditCard card;
   card.SetRawInfo(CREDIT_CARD_NUMBER, u"Not_0123-5Checked");
+  payments_data_manager().AddCreditCard(card);
 
-  std::vector<CreditCard> cards;
-  cards.push_back(card);
-  payments_data_manager().SetCreditCards(&cards);
+  WaitForOnPaymentsDataChanged();
 
   ASSERT_EQ(1u, payments_data_manager().GetCreditCards().size());
   ASSERT_EQ(card, *payments_data_manager().GetCreditCards()[0]);
@@ -1835,8 +1800,6 @@ TEST_F(
 }
 
 TEST_F(PaymentsDataManagerTest, ClearAllCvcs) {
-  base::test::ScopedFeatureList features(
-      features::kAutofillEnableCvcStorageAndFilling);
   // Add a server card and its CVC.
   CreditCard server_card = test::GetMaskedServerCard();
   const std::u16string server_cvc = u"111";
@@ -2927,50 +2890,24 @@ TEST_F(PaymentsDataManagerTest, ProcessCardArtUrlChanges) {
   test_api(payments_data_manager()).AddServerCreditCard(card);
   wait_for_fetch_images_for_url();
 }
-#endif
 
 // Params:
 // 1. Whether the benefits toggle is turned on or off.
-// 2. Whether the American Express benefits flag is enabled.
-// 3. Whether the BMO benefits flag is enabled.
-// 4. Whether the Curinos flat rate benefits flag is enabled.
 class PaymentsDataManagerStartupBenefitsTest
     : public PaymentsDataManagerHelper,
       public testing::Test,
-      public testing::WithParamInterface<std::tuple<bool, bool, bool, bool>> {
+      public testing::WithParamInterface<bool> {
  public:
-  PaymentsDataManagerStartupBenefitsTest() {
-    feature_list_.InitWithFeatureStates(
-        /*feature_states=*/
-        {{features::kAutofillEnableCardBenefitsForAmericanExpress,
-          AreAmericanExpressBenefitsEnabled()},
-         {features::kAutofillEnableCardBenefitsForBmo, AreBmoBenefitsEnabled()},
-         {features::kAutofillEnableFlatRateCardBenefitsFromCurinos,
-          AreCurinosFlatRateBenefitsEnabled()}});
-    SetUpTest();
-  }
+  PaymentsDataManagerStartupBenefitsTest() { SetUpTest(); }
 
   ~PaymentsDataManagerStartupBenefitsTest() override = default;
 
-  bool IsBenefitsPrefTurnedOn() const { return std::get<0>(GetParam()); }
-  bool AreAmericanExpressBenefitsEnabled() const {
-    return std::get<1>(GetParam());
-  }
-  bool AreBmoBenefitsEnabled() const { return std::get<2>(GetParam()); }
-  bool AreCurinosFlatRateBenefitsEnabled() const {
-    return std::get<3>(GetParam());
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
+  bool IsBenefitsPrefTurnedOn() const { return GetParam(); }
 };
 
 INSTANTIATE_TEST_SUITE_P(,
                          PaymentsDataManagerStartupBenefitsTest,
-                         testing::Combine(testing::Bool(),
-                                          testing::Bool(),
-                                          testing::Bool(),
-                                          testing::Bool()));
+                         testing::Bool());
 
 // Tests that on startup we log the value of the card benefits pref.
 TEST_P(PaymentsDataManagerStartupBenefitsTest,
@@ -2979,16 +2916,11 @@ TEST_P(PaymentsDataManagerStartupBenefitsTest,
   prefs::SetPaymentCardBenefits(prefs_.get(), IsBenefitsPrefTurnedOn());
   base::HistogramTester histogram_tester;
   ResetPaymentsDataManager();
-  if (!AreAmericanExpressBenefitsEnabled() && !AreBmoBenefitsEnabled() &&
-      !AreCurinosFlatRateBenefitsEnabled()) {
-    histogram_tester.ExpectTotalCount(
-        "Autofill.PaymentMethods.CardBenefitsIsEnabled.Startup", 0);
-  } else {
-    histogram_tester.ExpectUniqueSample(
-        "Autofill.PaymentMethods.CardBenefitsIsEnabled.Startup",
-        IsBenefitsPrefTurnedOn(), 1);
-  }
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.PaymentMethods.CardBenefitsIsEnabled.Startup",
+      IsBenefitsPrefTurnedOn(), 1);
 }
+#endif  // !BUILDFLAG(IS_IOS)
 
 // Tests that on startup if payment methods are disabled we don't log if
 // benefits are enabled/disabled.
@@ -3010,7 +2942,6 @@ TEST_F(PaymentsDataManagerTest,
       /*profile_database=*/nullptr,
       /*account_database=*/nullptr,
       /*image_fetcher=*/nullptr,
-      /*shared_storage_handler=*/nullptr,
       /*pref_service=*/nullptr,
       /*sync_service=*/nullptr,
       /*identity_manager=*/nullptr,
@@ -3021,6 +2952,240 @@ TEST_F(PaymentsDataManagerTest,
   histogram_tester.ExpectTotalCount(
       "Autofill.PaymentMethods.CardBenefitsIsEnabled.Startup", 0);
 }
+
+// Params:
+// 1. Benefit source.
+// 2. Whether the travel category and merchant benefits experiment is enabled.
+class PaymentsDataManagerIsCardEligibleForBenefitsTest
+    : public PaymentsDataManagerHelper,
+      public testing::Test {
+ public:
+  void SetUp() override {
+    SetUpTest();
+    ResetPaymentsDataManager();
+  }
+  void TearDown() override { TearDownTest(); }
+};
+
+#if BUILDFLAG(IS_IOS)
+
+// Tests that `IsCardEligibleForBenefits` returns `false` for iOS platforms.
+TEST_F(PaymentsDataManagerIsCardEligibleForBenefitsTest, UnsupportedPlatform) {
+  CreditCard card = test::GetMaskedServerCard();
+  card.set_benefit_source(kAmexCardBenefitSource);
+  EXPECT_FALSE(payments_data_manager().IsCardEligibleForBenefits(card));
+}
+
+#endif  // BUILDFLAG(IS_IOS)
+
+#if !BUILDFLAG(IS_IOS)
+
+// Tests that `IsCardEligibleForBenefits` returns `false` when the benefit
+// source is invalid.
+TEST_F(PaymentsDataManagerIsCardEligibleForBenefitsTest, InvalidBenefitSource) {
+  CreditCard card = test::GetMaskedServerCard();
+  card.set_benefit_source("invalid");
+  EXPECT_FALSE(payments_data_manager().IsCardEligibleForBenefits(card));
+}
+
+// Tests that `IsCardEligibleForBenefits` returns `true` when the benefit
+// source is `kAmexCardBenefitSource`.
+TEST_F(PaymentsDataManagerIsCardEligibleForBenefitsTest, AmexBenefitSource) {
+  CreditCard card = test::GetMaskedServerCard();
+  card.set_benefit_source(std::string(kAmexCardBenefitSource));
+  EXPECT_TRUE(payments_data_manager().IsCardEligibleForBenefits(card));
+}
+
+// Tests that `IsCardEligibleForBenefits` returns `true` when the benefit
+// source is `kBmoCardBenefitSource`.
+TEST_F(PaymentsDataManagerIsCardEligibleForBenefitsTest, BmoBenefitSource) {
+  CreditCard card = test::GetMaskedServerCard();
+  card.set_benefit_source(std::string(kBmoCardBenefitSource));
+  EXPECT_TRUE(payments_data_manager().IsCardEligibleForBenefits(card));
+}
+
+// Tests that `IsCardEligibleForBenefits` returns `true` for flat rate benefits
+// sourced from `kCurinosCardBenefitSource`.
+TEST_F(PaymentsDataManagerIsCardEligibleForBenefitsTest,
+       CurinosBenefitSource_FlatRateBenefit) {
+  CreditCard card = test::GetMaskedServerCard();
+  card.set_benefit_source(std::string(kCurinosCardBenefitSource));
+
+  // Add a flat rate benefit to the card.
+  CreditCardFlatRateBenefit flat_rate_benefit =
+      test::GetActiveCreditCardFlatRateBenefit();
+  card.set_instrument_id(*flat_rate_benefit.linked_card_instrument_id());
+  payments_data_manager().AddCreditCardBenefitForTest(
+      std::move(flat_rate_benefit));
+
+  EXPECT_TRUE(payments_data_manager().IsCardEligibleForBenefits(card));
+}
+
+// Tests that `IsCardEligibleForBenefits` returns `true` for merchant benefits
+// sourced from `kCurinosCardBenefitSource`.
+TEST_F(PaymentsDataManagerIsCardEligibleForBenefitsTest,
+       CurinosBenefitSource_MerchantBenefit) {
+  base::test::ScopedFeatureList feature_list(
+      features::kAutofillEnableTravelCategoryAndMerchantBenefitsFromCurinos);
+
+  CreditCard card = test::GetMaskedServerCard();
+  card.set_benefit_source(std::string(kCurinosCardBenefitSource));
+
+  // Add a merchant benefit to the card.
+  CreditCardMerchantBenefit merchant_benefit =
+      test::GetActiveCreditCardMerchantBenefit();
+  card.set_instrument_id(*merchant_benefit.linked_card_instrument_id());
+  payments_data_manager().AddCreditCardBenefitForTest(
+      std::move(merchant_benefit));
+
+  EXPECT_TRUE(payments_data_manager().IsCardEligibleForBenefits(card));
+}
+
+// Tests that `IsCardEligibleForBenefits` returns `false` for merchant benefits
+// sourced from `kCurinosCardBenefitSource` when the flag is disabled.
+TEST_F(PaymentsDataManagerIsCardEligibleForBenefitsTest,
+       CurinosBenefitSource_MerchantBenefit_FlagDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kAutofillEnableTravelCategoryAndMerchantBenefitsFromCurinos);
+
+  CreditCard card = test::GetMaskedServerCard();
+  card.set_benefit_source(std::string(kCurinosCardBenefitSource));
+
+  // Add a merchant benefit to the card.
+  CreditCardMerchantBenefit merchant_benefit =
+      test::GetActiveCreditCardMerchantBenefit();
+  card.set_instrument_id(*merchant_benefit.linked_card_instrument_id());
+  payments_data_manager().AddCreditCardBenefitForTest(
+      std::move(merchant_benefit));
+
+  EXPECT_FALSE(payments_data_manager().IsCardEligibleForBenefits(card));
+}
+
+// Tests that `IsCardEligibleForBenefits` returns `true` for travel category
+// benefits sourced from `kCurinosCardBenefitSource`.
+TEST_F(PaymentsDataManagerIsCardEligibleForBenefitsTest,
+       CurinosBenefitSource_TravelCategoryBenefit) {
+  base::test::ScopedFeatureList feature_list(
+      features::kAutofillEnableTravelCategoryAndMerchantBenefitsFromCurinos);
+
+  CreditCard card = test::GetMaskedServerCard();
+  card.set_benefit_source(std::string(kCurinosCardBenefitSource));
+
+  // Add a travel category benefit to the card.
+  CreditCardCategoryBenefit category_benefit =
+      test::GetActiveCreditCardCategoryBenefit();
+  test_api(category_benefit)
+      .SetLinkedCardInstrumentId(
+          CreditCardBenefitBase::LinkedCardInstrumentId(card.instrument_id()));
+  test_api(category_benefit)
+      .SetBenefitCategory(CreditCardCategoryBenefit::BenefitCategory::kTravel);
+  payments_data_manager().AddCreditCardBenefitForTest(
+      std::move(category_benefit));
+
+  EXPECT_TRUE(payments_data_manager().IsCardEligibleForBenefits(card));
+}
+
+// Tests that `IsCardEligibleForBenefits` returns `false` for travel category
+// benefits sourced from `kCurinosCardBenefitSource` when the flag is disabled.
+TEST_F(PaymentsDataManagerIsCardEligibleForBenefitsTest,
+       CurinosBenefitSource_TravelCategoryBenefit_FlagDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kAutofillEnableTravelCategoryAndMerchantBenefitsFromCurinos);
+
+  CreditCard card = test::GetMaskedServerCard();
+  card.set_benefit_source(std::string(kCurinosCardBenefitSource));
+
+  // Add a travel category benefit to the card.
+  CreditCardCategoryBenefit category_benefit =
+      test::GetActiveCreditCardCategoryBenefit();
+  test_api(category_benefit)
+      .SetLinkedCardInstrumentId(
+          CreditCardBenefitBase::LinkedCardInstrumentId(card.instrument_id()));
+  test_api(category_benefit)
+      .SetBenefitCategory(CreditCardCategoryBenefit::BenefitCategory::kTravel);
+  payments_data_manager().AddCreditCardBenefitForTest(
+      std::move(category_benefit));
+
+  EXPECT_FALSE(payments_data_manager().IsCardEligibleForBenefits(card));
+}
+
+// Tests that `IsCardEligibleForBenefits` returns `false` for non-travel
+// category benefits sourced from `kCurinosCardBenefitSource`.
+TEST_F(PaymentsDataManagerIsCardEligibleForBenefitsTest,
+       CurinosBenefitSource_NonTravelCategoryBenefit) {
+  base::test::ScopedFeatureList feature_list(
+      features::kAutofillEnableTravelCategoryAndMerchantBenefitsFromCurinos);
+
+  CreditCard card = test::GetMaskedServerCard();
+  card.set_benefit_source(std::string(kCurinosCardBenefitSource));
+
+  // Add a non-travel category benefit to the card.
+  CreditCardCategoryBenefit category_benefit =
+      test::GetActiveCreditCardCategoryBenefit();
+  test_api(category_benefit)
+      .SetLinkedCardInstrumentId(
+          CreditCardBenefitBase::LinkedCardInstrumentId(card.instrument_id()));
+  test_api(category_benefit)
+      .SetBenefitCategory(
+          CreditCardCategoryBenefit::BenefitCategory::kOfficeSupplies);
+  payments_data_manager().AddCreditCardBenefitForTest(
+      std::move(category_benefit));
+
+  EXPECT_FALSE(payments_data_manager().IsCardEligibleForBenefits(card));
+}
+
+// Tests that `IsCardEligibleForBenefits` returns `true` for travel subcategory
+// benefits sourced from `kCurinosCardBenefitSource`.
+TEST_F(PaymentsDataManagerIsCardEligibleForBenefitsTest,
+       CurinosBenefitSource_TravelSubcategoryBenefit) {
+  base::test::ScopedFeatureList feature_list(
+      features::kAutofillEnableTravelCategoryAndMerchantBenefitsFromCurinos);
+
+  CreditCard card = test::GetMaskedServerCard();
+  card.set_benefit_source(std::string(kCurinosCardBenefitSource));
+
+  // Add travel subcategory benefit to the card.
+  CreditCardCategoryBenefit category_benefit =
+      test::GetActiveCreditCardCategoryBenefit();
+  test_api(category_benefit)
+      .SetLinkedCardInstrumentId(
+          CreditCardBenefitBase::LinkedCardInstrumentId(card.instrument_id()));
+  test_api(category_benefit)
+      .SetBenefitCategory(CreditCardCategoryBenefit::BenefitCategory::kFlights);
+  payments_data_manager().AddCreditCardBenefitForTest(
+      std::move(category_benefit));
+
+  EXPECT_TRUE(payments_data_manager().IsCardEligibleForBenefits(card));
+}
+
+// Tests that `IsCardEligibleForBenefits` returns `false` for travel subcategory
+// benefits sourced from `kCurinosCardBenefitSource` when the flag is disabled.
+TEST_F(PaymentsDataManagerIsCardEligibleForBenefitsTest,
+       CurinosBenefitSource_TravelSubcategoryBenefit_FlagDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kAutofillEnableTravelCategoryAndMerchantBenefitsFromCurinos);
+
+  CreditCard card = test::GetMaskedServerCard();
+  card.set_benefit_source(std::string(kCurinosCardBenefitSource));
+
+  // Add travel subcategory benefit to the card.
+  CreditCardCategoryBenefit category_benefit =
+      test::GetActiveCreditCardCategoryBenefit();
+  test_api(category_benefit)
+      .SetLinkedCardInstrumentId(
+          CreditCardBenefitBase::LinkedCardInstrumentId(card.instrument_id()));
+  test_api(category_benefit)
+      .SetBenefitCategory(CreditCardCategoryBenefit::BenefitCategory::kFlights);
+  payments_data_manager().AddCreditCardBenefitForTest(
+      std::move(category_benefit));
+
+  EXPECT_FALSE(payments_data_manager().IsCardEligibleForBenefits(card));
+}
+
+#endif  // !BUILDFLAG(IS_IOS)
 
 // Params:
 // 1. App Locale.
@@ -3053,7 +3218,7 @@ TEST_P(PaymentsDataManagerShouldBlockBenefitsTest, NonSupportedAppLocale) {
 TEST_P(PaymentsDataManagerShouldBlockBenefitsTest,
        BlockedUrlForFlateRateBenefit) {
   if (app_locale() != "en-US" && app_locale() != "en-GB") {
-    GTEST_SKIP() << "This test should not run for not supported app locale.";
+    GTEST_SKIP() << "This test should not run for unsupported app locales.";
   }
 
   const url::Origin origin =
@@ -3074,11 +3239,11 @@ TEST_P(PaymentsDataManagerShouldBlockBenefitsTest,
   payments_data_manager().AddCreditCardBenefitForTest(
       std::move(flat_rate_benefit));
 
-  EXPECT_TRUE(payments_data_manager()
-                  .GetApplicableBenefitDescriptionForCardAndOrigin(
-                      test::GetMaskedServerCard(), origin,
-                      autofill_client()->GetAutofillOptimizationGuideDecider())
-                  .empty());
+  EXPECT_FALSE(payments_data_manager()
+                   .GetApplicableBenefitForCardAndOrigin(
+                       test::GetMaskedServerCard(), origin,
+                       autofill_client()->GetAutofillOptimizationGuideDecider())
+                   .has_value());
 
   // Add other benefit.
   CreditCardMerchantBenefit merchant_benefit =
@@ -3089,11 +3254,14 @@ TEST_P(PaymentsDataManagerShouldBlockBenefitsTest,
   test_api(merchant_benefit).SetMerchantDomains({origin});
   payments_data_manager().AddCreditCardBenefitForTest(merchant_benefit);
 
-  EXPECT_EQ(
-      payments_data_manager().GetApplicableBenefitDescriptionForCardAndOrigin(
+  std::optional<CreditCardBenefit> benefit =
+      payments_data_manager().GetApplicableBenefitForCardAndOrigin(
           card, origin,
-          autofill_client()->GetAutofillOptimizationGuideDecider()),
-      merchant_benefit.benefit_description());
+          autofill_client()->GetAutofillOptimizationGuideDecider());
+  ASSERT_TRUE(benefit.has_value());
+  EXPECT_EQ(std::get<CreditCardMerchantBenefit>(benefit.value())
+                .benefit_description(),
+            merchant_benefit.benefit_description());
 }
 
 // Tests that card flat rate benefits should not be blocked if the given url is
@@ -3102,7 +3270,7 @@ TEST_P(PaymentsDataManagerShouldBlockBenefitsTest,
 TEST_P(PaymentsDataManagerShouldBlockBenefitsTest,
        BlockedUrlForFlateRateBenefit_BlocklistDisabled) {
   if (app_locale() != "en-US" && app_locale() != "en-GB") {
-    GTEST_SKIP() << "This test should not run for not supported app locale.";
+    GTEST_SKIP() << "This test should not run for unsupported app locales.";
   }
 
   base::test::ScopedFeatureList scoped_feature_list;
@@ -3126,11 +3294,135 @@ TEST_P(PaymentsDataManagerShouldBlockBenefitsTest,
   test_api(payments_data_manager()).AddServerCreditCard(card);
   payments_data_manager().AddCreditCardBenefitForTest(flat_rate_benefit);
 
-  EXPECT_EQ(
-      payments_data_manager().GetApplicableBenefitDescriptionForCardAndOrigin(
+  std::optional<CreditCardBenefit> benefit =
+      payments_data_manager().GetApplicableBenefitForCardAndOrigin(
           card, origin,
-          autofill_client()->GetAutofillOptimizationGuideDecider()),
-      flat_rate_benefit.benefit_description());
+          autofill_client()->GetAutofillOptimizationGuideDecider());
+  ASSERT_TRUE(benefit.has_value());
+  EXPECT_EQ(std::get<CreditCardFlatRateBenefit>(benefit.value())
+                .benefit_description(),
+            flat_rate_benefit.benefit_description());
+}
+
+// Tests that parent category travel benefit is returned when optimization guide
+// suggests a travel subcategory (e.g. flights) but no direct subcategory
+// benefit is available. Also verifies that direct subcategory benefits take
+// precedence if both are available.
+TEST_P(PaymentsDataManagerShouldBlockBenefitsTest,
+       ApplicableBenefitDescriptionForTravelSubcategoryFallback) {
+  if (app_locale() != "en-US" && app_locale() != "en-GB") {
+    GTEST_SKIP() << "This test should not run for unsupported app locales.";
+  }
+
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAutofillEnableTravelCategoryAndMerchantBenefitsFromCurinos);
+
+  const url::Origin origin =
+      url::Origin::Create(GURL("https://example-travel.com/"));
+  ON_CALL(*static_cast<MockAutofillOptimizationGuideDecider*>(
+              autofill_client()->GetAutofillOptimizationGuideDecider()),
+          AttemptToGetEligibleCreditCardBenefitCategory)
+      .WillByDefault(testing::Return(
+          CreditCardCategoryBenefit::BenefitCategory::kFlights));
+
+  // Create a card and a generic travel category benefit.
+  CreditCard card = test::GetMaskedServerCard();
+  test_api(payments_data_manager()).AddServerCreditCard(card);
+
+  CreditCardCategoryBenefit travel_benefit =
+      test::GetActiveCreditCardCategoryBenefit();
+  test_api(travel_benefit)
+      .SetLinkedCardInstrumentId(
+          CreditCardBenefitBase::LinkedCardInstrumentId(card.instrument_id()));
+  test_api(travel_benefit)
+      .SetBenefitCategory(CreditCardCategoryBenefit::BenefitCategory::kTravel);
+  std::u16string travel_description = u"5% back on Travel";
+  test_api(travel_benefit).SetBenefitDescription(travel_description);
+
+  payments_data_manager().AddCreditCardBenefitForTest(travel_benefit);
+
+  // Fallback path: returns broad travel benefit description when flight benefit
+  // is missing.
+  std::optional<CreditCardBenefit> benefit =
+      payments_data_manager().GetApplicableBenefitForCardAndOrigin(
+          card, origin,
+          autofill_client()->GetAutofillOptimizationGuideDecider());
+  ASSERT_TRUE(benefit.has_value());
+  EXPECT_EQ(std::get<CreditCardCategoryBenefit>(benefit.value())
+                .benefit_description(),
+            travel_description);
+
+  // Now add a specific flight benefit to the same card.
+  CreditCardCategoryBenefit flight_benefit =
+      test::GetActiveCreditCardCategoryBenefit();
+  test_api(flight_benefit)
+      .SetLinkedCardInstrumentId(
+          CreditCardBenefitBase::LinkedCardInstrumentId(card.instrument_id()));
+  test_api(flight_benefit)
+      .SetBenefitCategory(CreditCardCategoryBenefit::BenefitCategory::kFlights);
+  std::u16string flight_description = u"10% back on Flights";
+  test_api(flight_benefit).SetBenefitDescription(flight_description);
+  // Ensure unique benefit id to avoid overwriting or map collisions.
+  test_api(flight_benefit)
+      .SetBenefitId(CreditCardBenefitBase::BenefitId("flight_benefit_id"));
+
+  payments_data_manager().AddCreditCardBenefitForTest(flight_benefit);
+
+  // Direct path precedence: returns specific flight benefit description.
+  benefit = payments_data_manager().GetApplicableBenefitForCardAndOrigin(
+      card, origin, autofill_client()->GetAutofillOptimizationGuideDecider());
+  ASSERT_TRUE(benefit.has_value());
+  EXPECT_EQ(std::get<CreditCardCategoryBenefit>(benefit.value())
+                .benefit_description(),
+            flight_description);
+}
+
+// Tests that no category benefit is returned when optimization guide
+// suggests a travel subcategory (e.g. flights) but no direct subcategory
+// benefit is available when the Curinos category and merchant benefit flag is
+// disabled.
+TEST_P(
+    PaymentsDataManagerShouldBlockBenefitsTest,
+    ApplicableBenefitDescriptionForTravelSubcategoryFallback_CurinosCategoryBenefitDisabled) {
+  if (app_locale() != "en-US" && app_locale() != "en-GB") {
+    GTEST_SKIP() << "This test should not run for unsupported app locales.";
+  }
+
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kAutofillEnableTravelCategoryAndMerchantBenefitsFromCurinos);
+
+  const url::Origin origin =
+      url::Origin::Create(GURL("https://example-travel.com/"));
+  ON_CALL(*static_cast<MockAutofillOptimizationGuideDecider*>(
+              autofill_client()->GetAutofillOptimizationGuideDecider()),
+          AttemptToGetEligibleCreditCardBenefitCategory)
+      .WillByDefault(testing::Return(
+          CreditCardCategoryBenefit::BenefitCategory::kFlights));
+
+  // Create a card and a generic travel category benefit.
+  CreditCard card = test::GetMaskedServerCard();
+  test_api(payments_data_manager()).AddServerCreditCard(card);
+
+  CreditCardCategoryBenefit travel_benefit =
+      test::GetActiveCreditCardCategoryBenefit();
+  test_api(travel_benefit)
+      .SetLinkedCardInstrumentId(
+          CreditCardBenefitBase::LinkedCardInstrumentId(card.instrument_id()));
+  test_api(travel_benefit)
+      .SetBenefitCategory(CreditCardCategoryBenefit::BenefitCategory::kTravel);
+  std::u16string travel_description = u"5% back on Travel";
+  test_api(travel_benefit).SetBenefitDescription(travel_description);
+
+  payments_data_manager().AddCreditCardBenefitForTest(travel_benefit);
+
+  // Fallback path: returns std::nullopt when flight benefit is missing and
+  // Curinos travel benefits are disabled.
+  std::optional<CreditCardBenefit> benefit =
+      payments_data_manager().GetApplicableBenefitForCardAndOrigin(
+          card, origin,
+          autofill_client()->GetAutofillOptimizationGuideDecider());
+  EXPECT_FALSE(benefit.has_value());
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -3385,10 +3677,6 @@ TEST_F(PaymentsDataManagerSyncTransportModeTest,
       /*types=*/{syncer::UserSelectableType::kAutofill,
                  syncer::UserSelectableType::kPayments});
 
-  // The test preferences are not hooked properly into the IdentityManager,
-  // manually set the explicit signin flag.
-  prefs_->SetBoolean(::prefs::kExplicitBrowserSignin, true);
-
   // Server payment methods should be suggested.
   EXPECT_TRUE(
       test_api(payments_data_manager()).ShouldSuggestServerPaymentMethods());
@@ -3507,10 +3795,6 @@ TEST_F(
     GTEST_SKIP() << "This test should not run on automotive.";
   }
 #endif  // BUILDFLAG(IS_ANDROID)
-#if BUILDFLAG(IS_CHROMEOS)
-  base::test::ScopedFeatureList scoped_feature_list(
-      features::kAutofillEnablePaymentsMandatoryReauthChromeOs);
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
   base::HistogramTester histogram_tester;
   for (int i = 0; i < prefs::kMaxValueForMandatoryReauthPromoShownCounter;
@@ -3545,12 +3829,9 @@ TEST_F(PaymentsDataManagerTest,
     GTEST_SKIP() << "This test should not run on automotive.";
   }
 #endif  // BUILDFLAG(IS_ANDROID)
-#if BUILDFLAG(IS_CHROMEOS)
-  base::test::ScopedFeatureList scoped_feature_list(
-      features::kAutofillEnablePaymentsMandatoryReauthChromeOs);
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
   base::HistogramTester histogram_tester;
+
   // Simulate user is already opted in.
   payments_data_manager().SetPaymentMethodsMandatoryReauthEnabled(true);
 
@@ -3572,10 +3853,6 @@ TEST_F(PaymentsDataManagerTest,
     GTEST_SKIP() << "This test should not run on automotive.";
   }
 #endif  // BUILDFLAG(IS_ANDROID)
-#if BUILDFLAG(IS_CHROMEOS)
-  base::test::ScopedFeatureList scoped_feature_list(
-      features::kAutofillEnablePaymentsMandatoryReauthChromeOs);
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
   base::HistogramTester histogram_tester;
   // Simulate user is already opted out.
@@ -3588,58 +3865,6 @@ TEST_F(PaymentsDataManagerTest,
       "ReauthOfferOptInDecision2",
       autofill_metrics::MandatoryReauthOfferOptInDecision::kAlreadyOptedOut, 1);
 }
-
-#if BUILDFLAG(IS_CHROMEOS)
-// Test that
-// `PaymentsDataManager::ShouldShowPaymentMethodsMandatoryReauthPromo()`
-// returns false if the `kAutofillEnablePaymentsMandatoryReauthChromeOs` flag is
-// disabled, even if the user is otherwise eligible (below the show limit).
-TEST_F(PaymentsDataManagerTest,
-       ShouldShowPaymentMethodsMandatoryReauthPromo_ChromeOSFlagDisabled) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(
-      features::kAutofillEnablePaymentsMandatoryReauthChromeOs);
-
-  EXPECT_FALSE(
-      payments_data_manager().ShouldShowPaymentMethodsMandatoryReauthPromo());
-}
-
-// Test that
-// `PaymentsDataManager::ShouldShowPaymentMethodsMandatoryReauthPromo()`
-// returns false if the `kAutofillEnablePaymentsMandatoryReauthChromeOs` flag is
-// disabled, when the user is already opted in.
-TEST_F(
-    PaymentsDataManagerTest,
-    ShouldShowPaymentMethodsMandatoryReauthPromo_ChromeOSFlagDisabled_UserOptedIn) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(
-      features::kAutofillEnablePaymentsMandatoryReauthChromeOs);
-
-  // Simulate user is already opted in.
-  payments_data_manager().SetPaymentMethodsMandatoryReauthEnabled(true);
-
-  EXPECT_FALSE(
-      payments_data_manager().ShouldShowPaymentMethodsMandatoryReauthPromo());
-}
-
-// Test that
-// `PaymentsDataManager::ShouldShowPaymentMethodsMandatoryReauthPromo()`
-// returns false if the `kAutofillEnablePaymentsMandatoryReauthChromeOs` flag is
-// disabled, when the user has already opted out.
-TEST_F(
-    PaymentsDataManagerTest,
-    ShouldShowPaymentMethodsMandatoryReauthPromo_ChromeOSFlagDisabled_UserOptedOut) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(
-      features::kAutofillEnablePaymentsMandatoryReauthChromeOs);
-
-  // Simulate user is already opted out.
-  payments_data_manager().SetPaymentMethodsMandatoryReauthEnabled(false);
-
-  EXPECT_FALSE(
-      payments_data_manager().ShouldShowPaymentMethodsMandatoryReauthPromo());
-}
-#endif  // BUILDFLAG(IS_CHROMEOS)
 #endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID) ||
         // BUILDFLAG(IS_CHROMEOS)
 
@@ -3769,6 +3994,155 @@ TEST_F(PaymentsDataManagerTest, RecordLocalCardAdded) {
       "Autofill.PaymentsDataManager.LocalCardAdded", true, 1);
 }
 
+#if BUILDFLAG(IS_ANDROID)
+// Tests that unlinked eWallet creation options are successfully loaded from the
+// WebDatabase and cached in the PaymentsDataManager when Refresh() is called.
+TEST_P(PaymentsDataManagerServerTest,
+       GetEwalletCreationOptions_EwalletCreationOptionsCacheUpdated) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      ::payments::facilitated::kEnableEwalletNewAccountLinking);
+
+  // Create an eWallet payment creation option.
+  sync_pb::PaymentInstrumentCreationOption creation_option;
+  creation_option.set_id("1234");
+
+  sync_pb::EwalletCreationOption* ewallet_option =
+      creation_option.mutable_ewallet_creation_option();
+  ewallet_option->set_issuer_display_name("ShopeePay");
+  ewallet_option->add_supported_payment_link_uris("shopeepay://.*");
+
+  ASSERT_TRUE(GetServerDataTable()->SetPaymentInstrumentCreationOptions(
+      {creation_option}));
+
+  EXPECT_THAT(payments_data_manager().GetEwalletCreationOptions(),
+              testing::IsEmpty());
+
+  // We need to call `Refresh()` to ensure that the eWallet creation options
+  // are loaded again from the WebDatabase.
+  payments_data_manager().Refresh();
+  WaitForOnPaymentsDataChanged();
+
+  EXPECT_THAT(payments_data_manager().GetEwalletCreationOptions(),
+              testing::UnorderedElementsAre(Ewallet(
+                  /*instrument_id=*/0, /*nickname=*/u"",
+                  /*display_icon_url=*/GURL(), /*ewallet_name=*/u"ShopeePay",
+                  /*account_display_name=*/u"",
+                  /*supported_payment_link_uris=*/{u"shopeepay://.*"},
+                  /*is_fido_enrolled=*/false)));
+}
+
+// Tests that no unlinked eWallet creation options are cached in the
+// PaymentsDataManager if the eWallet sync/caching feature is disabled.
+TEST_P(PaymentsDataManagerServerTest,
+       GetEwalletCreationOptions_FlagDisabled_EwalletCreationOptionsNotCached) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      ::payments::facilitated::kEnableEwalletNewAccountLinking);
+
+  sync_pb::PaymentInstrumentCreationOption creation_option;
+  creation_option.set_id("1234");
+  creation_option.mutable_ewallet_creation_option()->set_issuer_display_name(
+      "ShopeePay");
+
+  ASSERT_TRUE(GetServerDataTable()->SetPaymentInstrumentCreationOptions(
+      {creation_option}));
+
+  payments_data_manager().Refresh();
+  WaitForOnPaymentsDataChanged();
+
+  EXPECT_THAT(payments_data_manager().GetEwalletCreationOptions(),
+              testing::IsEmpty());
+}
+
+// Tests that calling ClearAllServerDataForTesting() clears all cached unlinked
+// eWallet creation options.
+TEST_P(PaymentsDataManagerServerTest,
+       ClearAllServerData_ClearsEwalletCreationOptions) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      ::payments::facilitated::kEnableEwalletNewAccountLinking);
+
+  sync_pb::PaymentInstrumentCreationOption creation_option;
+  creation_option.set_id("1234");
+  creation_option.mutable_ewallet_creation_option()->set_issuer_display_name(
+      "ShopeePay");
+
+  ASSERT_TRUE(GetServerDataTable()->SetPaymentInstrumentCreationOptions(
+      {creation_option}));
+
+  payments_data_manager().Refresh();
+  WaitForOnPaymentsDataChanged();
+
+  ASSERT_THAT(payments_data_manager().GetEwalletCreationOptions(),
+              testing::Not(testing::IsEmpty()));
+
+  payments_data_manager().ClearAllServerDataForTesting();
+
+  EXPECT_THAT(payments_data_manager().GetEwalletCreationOptions(),
+              testing::IsEmpty());
+}
+
+// This test ensures that if the server accidentally returns duplicate unlinked
+// eWallet issuers it is handled gracefully in Chrome.
+TEST_P(PaymentsDataManagerServerTest,
+       GetEwalletCreationOptions_DuplicateIssuers) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      ::payments::facilitated::kEnableEwalletNewAccountLinking);
+
+  // Create an eWallet payment creation option.
+  sync_pb::PaymentInstrumentCreationOption creation_option;
+  creation_option.set_id("1234");
+
+  sync_pb::EwalletCreationOption* ewallet_option =
+      creation_option.mutable_ewallet_creation_option();
+  ewallet_option->set_issuer_display_name("ShopeePay");
+  ewallet_option->add_supported_payment_link_uris("shopeepay://.*");
+
+  sync_pb::PaymentInstrumentCreationOption creation_option_2 = creation_option;
+  creation_option_2.set_id("5678");
+
+  ASSERT_TRUE(GetServerDataTable()->SetPaymentInstrumentCreationOptions(
+      {creation_option, creation_option_2}));
+
+  payments_data_manager().Refresh();
+  WaitForOnPaymentsDataChanged();
+
+  EXPECT_THAT(payments_data_manager().GetEwalletCreationOptions(),
+              testing::UnorderedElementsAre(Ewallet(
+                  /*instrument_id=*/0, /*nickname=*/u"",
+                  /*display_icon_url=*/GURL(), /*ewallet_name=*/u"ShopeePay",
+                  /*account_display_name=*/u"",
+                  /*supported_payment_link_uris=*/{u"shopeepay://.*"},
+                  /*is_fido_enrolled=*/false)));
+}
+
+// Tests that eWallet creation options are not returned if the
+// overall payment methods preference is disabled.
+TEST_P(PaymentsDataManagerServerTest,
+       GetEwalletCreationOptions_PaymentMethodsDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      ::payments::facilitated::kEnableEwalletNewAccountLinking);
+
+  sync_pb::PaymentInstrumentCreationOption creation_option;
+  creation_option.set_id("1234");
+  creation_option.mutable_ewallet_creation_option()->set_issuer_display_name(
+      "ShopeePay");
+
+  ASSERT_TRUE(GetServerDataTable()->SetPaymentInstrumentCreationOptions(
+      {creation_option}));
+
+  payments_data_manager().Refresh();
+  WaitForOnPaymentsDataChanged();
+
+  ASSERT_THAT(payments_data_manager().GetEwalletCreationOptions(),
+              testing::Not(testing::IsEmpty()));
+
+  // Disable overall payment methods pref.
+  prefs::SetAutofillPaymentMethodsEnabled(prefs_.get(), false);
+
+  EXPECT_THAT(payments_data_manager().GetEwalletCreationOptions(),
+              testing::IsEmpty());
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
     BUILDFLAG(IS_CHROMEOS)
 TEST_P(
@@ -4080,16 +4454,50 @@ TEST_P(PaymentsDataManagerServerTest, AreBnplIssuersSupported_LocaleIsEnUS) {
   EXPECT_TRUE(test_api(payments_data_manager()).AreBnplIssuersSupported());
 }
 
-// Tests that BNPL issuers are not supported for "es-US" app locales.
-TEST_P(PaymentsDataManagerServerTest, AreBnplIssuersSupported_LocaleIsEsUS) {
+// Tests that BNPL issuers are not supported for "es-US" app locales when
+// internationalization flags are all disabled.
+TEST_P(PaymentsDataManagerServerTest,
+       AreBnplIssuersSupported_InternationalizationDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/
+      {features::kAutofillEnableBuyNowPayLaterSyncing},
+      /*disabled_features=*/{
+          features::kAutofillEnableBnplAffirmInternationalization,
+          features::kAutofillEnableBnplKlarnaInternationalization});
   ResetPaymentsDataManager(UseSyncTransportMode(), "es-US", "US");
   EXPECT_FALSE(test_api(payments_data_manager()).AreBnplIssuersSupported());
 }
 
+// Tests that app locale and country checks in `AreBnplIssuersSupported` are
+// skipped when internationalization flags are enabled.
+TEST_P(
+    PaymentsDataManagerServerTest,
+    AreBnplIssuersSupported_LocaleIsEsUS_CountryIsCa_WithInternationalization) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/
+      {features::kAutofillEnableBuyNowPayLaterSyncing,
+       features::kAutofillEnableBnplAffirmInternationalization,
+       features::kAutofillEnableBnplKlarnaInternationalization},
+      /*disabled_features=*/{});
+  ResetPaymentsDataManager(UseSyncTransportMode(), "es-US", "CA");
+  EXPECT_TRUE(test_api(payments_data_manager()).AreBnplIssuersSupported());
+}
+
 // Tests that Buy-now-pay-later issuer getters does not return any issuers if
-// `experiment_country_code` is not "US".
+// `experiment_country_code` is not "US" when internationalization flags are all
+// disabled.
 TEST_P(PaymentsDataManagerServerTest,
        BnplIssuerGetters_AutofillBnplCountryNotSupported) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/
+      {features::kAutofillEnableBuyNowPayLaterSyncing},
+      /*disabled_features=*/{
+          features::kAutofillEnableBnplAffirmInternationalization,
+          features::kAutofillEnableBnplKlarnaInternationalization});
+
   test_api(payments_data_manager())
       .AddBnplIssuer(test::GetTestLinkedBnplIssuer());
   test_api(payments_data_manager())

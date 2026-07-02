@@ -12,6 +12,8 @@
 #include <utility>
 #include <vector>
 
+#include "ash/constants/ash_policy_pref_names.h"
+#include "ash/constants/ash_pref_names.h"
 #include "base/compiler_specific.h"
 #include "base/environment.h"
 #include "base/functional/bind.h"
@@ -40,7 +42,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_content_client.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/dbus/cicerone/cicerone_client.h"
@@ -367,8 +368,9 @@ class ChildStatusCollectorTest : public testing::Test {
         base::OnceClosure(),
         base::BindOnce(
             [](int64_t duration, PrefService* profile_pref_service_) {
-              EXPECT_EQ(duration, profile_pref_service_->GetInteger(
-                                      prefs::kChildScreenTimeMilliseconds));
+              EXPECT_EQ(duration,
+                        profile_pref_service_->GetInteger(
+                            ash::prefs::kChildScreenTimeMilliseconds));
             },
             duration, pref_service()));
   }
@@ -379,7 +381,7 @@ class ChildStatusCollectorTest : public testing::Test {
         base::BindOnce(
             [](Time time, PrefService* profile_pref_service_) {
               EXPECT_EQ(time, profile_pref_service_->GetTime(
-                                  prefs::kLastChildScreenTimeReset));
+                                  ash::prefs::kLastChildScreenTimeReset));
             },
             time, pref_service()));
   }
@@ -437,7 +439,7 @@ TEST_F(ChildStatusCollectorTest, ReportingBootMode) {
 TEST_F(ChildStatusCollectorTest, ReportingArcStatus) {
   RestartStatusCollector(
       base::BindRepeating(&GetFakeAndroidStatus, kArcStatus, kDroidGuardInfo));
-  testing_profile_->GetPrefs()->SetBoolean(prefs::kReportArcStatusEnabled,
+  testing_profile_->GetPrefs()->SetBoolean(ash::prefs::kReportArcStatusEnabled,
                                            true);
 
   GetStatus();
@@ -530,7 +532,8 @@ TEST_F(ChildStatusCollectorTest, ReportingActivityTimesIdleTransitions) {
 }
 
 TEST_F(ChildStatusCollectorTest, ActivityKeptInPref) {
-  EXPECT_THAT(pref_service()->GetDict(prefs::kUserActivityTimes), IsEmpty());
+  EXPECT_THAT(pref_service()->GetDict(ash::prefs::kUserActivityTimes),
+              IsEmpty());
   task_environment_.AdvanceClock(kHour);
 
   DeviceStateTransitions test_states[] = {
@@ -546,7 +549,7 @@ TEST_F(ChildStatusCollectorTest, ActivityKeptInPref) {
       DeviceStateTransitions::kLeaveSessionActive};
   SimulateStateChanges(test_states,
                        sizeof(test_states) / sizeof(DeviceStateTransitions));
-  EXPECT_THAT(pref_service()->GetDict(prefs::kUserActivityTimes),
+  EXPECT_THAT(pref_service()->GetDict(ash::prefs::kUserActivityTimes),
               Not(IsEmpty()));
 
   // Process the list a second time after restarting the collector. It should be
@@ -554,7 +557,7 @@ TEST_F(ChildStatusCollectorTest, ActivityKeptInPref) {
   // the results are stored in a pref.
   RestartStatusCollector(base::BindRepeating(&GetEmptyAndroidStatus));
   // Avoid resetting to test accumulating screen time.
-  pref_service()->SetTime(prefs::kLastChildScreenTimeReset, Time::Now());
+  pref_service()->SetTime(ash::prefs::kLastChildScreenTimeReset, Time::Now());
   SimulateStateChanges(test_states,
                        sizeof(test_states) / sizeof(DeviceStateTransitions));
 
@@ -597,7 +600,8 @@ TEST_F(ChildStatusCollectorTest, BeforeDayStart) {
   Time initial_time =
       Time::Now().LocalMidnight() + base::Days(1) + base::Hours(4);
   FastForwardTo(initial_time);
-  EXPECT_THAT(pref_service()->GetDict(prefs::kUserActivityTimes), IsEmpty());
+  EXPECT_THAT(pref_service()->GetDict(ash::prefs::kUserActivityTimes),
+              IsEmpty());
 
   DeviceStateTransitions test_states[] = {
       DeviceStateTransitions::kEnterSessionActive,
@@ -755,7 +759,7 @@ TEST_F(ChildStatusCollectorTest, ReportingAppActivityNoReport) {
   {
     ash::app_time::AppTimeLimitsPolicyBuilder builder;
     builder.SetAppActivityReportingEnabled(/* enabled */ false);
-    testing_profile()->GetPrefs()->SetDict(prefs::kPerAppTimeLimitsPolicy,
+    testing_profile()->GetPrefs()->SetDict(ash::prefs::kPerAppTimeLimitsPolicy,
                                            builder.value().Clone());
   }
 

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/audio/fuchsia/audio_input_stream_fuchsia.h"
 
 #include <fuchsia/media/cpp/fidl_test_base.h>
@@ -23,6 +18,8 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace media {
+
+using Error = AudioInputStream::AudioInputCallback::Error;
 
 namespace {
 
@@ -52,7 +49,7 @@ class TestCaptureCallback final : public AudioInputStream::AudioInputCallback {
     packets_.push_back(std::move(bus));
   }
 
-  void OnError() override {
+  void OnError(Error error_code) override {
     EXPECT_FALSE(have_error_);
     have_error_ = true;
   }

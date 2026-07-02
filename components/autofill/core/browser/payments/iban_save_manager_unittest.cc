@@ -15,6 +15,7 @@
 #include "components/autofill/core/browser/data_manager/test_personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/payments/iban.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
+#include "components/autofill/core/browser/metrics/payments/iban_metrics.h"
 #include "components/autofill/core/browser/payments/iban_save_manager_test_api.h"
 #include "components/autofill/core/browser/payments/mock_test_payments_network_interface.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
@@ -86,7 +87,10 @@ class IbanSaveManagerTest : public testing::Test {
     ON_CALL(*payments_network_interface(), GetIbanUploadDetails)
         .WillByDefault(
             [is_successful, regex, includes_invalid_legal_message](
-                const std::string& app_locale, int64_t billing_customer_number,
+                const std::string& app_locale,
+                const std::vector<ClientBehaviorConstants>&
+                    client_behavior_signals,
+                int64_t billing_customer_number,
                 const std::string& country_code,
                 base::OnceCallback<void(
                     payments::PaymentsAutofillClient::PaymentsRpcResult,

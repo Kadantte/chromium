@@ -15,8 +15,14 @@ export function getHtml(this: SplitNewTabPageAppElement) {
   <cr-icon-button id="closeButton"
       iron-icon="tab-search:close"
       title="$i18n{splitViewCloseButtonAriaLabel}"
-      @click="${this.onClose_}">
+      @click="${this.onCloseClick_}"
+      @focus="${this.onCloseButtonFocus_}"
+      @blur="${this.onCloseButtonBlur_}">
   </cr-icon-button>
+  <cr-tooltip for="closeButton" position="top" offset="0"
+      fit-to-visible-bounds manual-mode>
+    $i18n{splitViewCloseButtonAriaLabel}
+  </cr-tooltip>
   ${
       this.allEligibleTabs_.length === 0 ? html`
         <picture>
@@ -48,8 +54,8 @@ export function getHtml(this: SplitNewTabPageAppElement) {
           data-index="${index}"
           @click="${this.onTabClick_}"
           @focus="${this.onTabFocus_}"
-          @focusout="${this.onTabFocusOut_}"
-          @keydown="${this.onTabKeyDown_}"
+          @focusout="${this.onTabFocusout_}"
+          @keydown="${this.onTabKeydown_}"
           role="option"
           aria-label="${ariaLabel(item)}"
           tabindex="0">

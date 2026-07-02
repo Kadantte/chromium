@@ -50,6 +50,7 @@ class MetricsRenderFrameObserver : public content::RenderFrameObserver,
   void DidChangePerformanceTiming() override;
   void DidObserveUserInteraction(base::TimeTicks max_event_start,
                                  base::TimeTicks max_event_queued_main_thread,
+                                 base::TimeTicks max_event_processing_start,
                                  base::TimeTicks max_event_commit_finish,
                                  base::TimeTicks max_event_end,
                                  uint64_t interaction_offset) override;
@@ -100,8 +101,7 @@ class MetricsRenderFrameObserver : public content::RenderFrameObserver,
   // before being destroyed.
   void WillDetach(blink::DetachReason detach_reason) override;
 
-  void OnMainFrameIntersectionChanged(
-      const gfx::Rect& main_frame_intersection_rect) override;
+  void OnMainFrameRectangleChanged(const gfx::Rect& main_frame_rect) override;
   void OnMainFrameViewportRectangleChanged(
       const gfx::Rect& main_frame_viewport_rect) override;
   void OnMainFrameAdRectangleChanged(int element_id,
@@ -109,9 +109,6 @@ class MetricsRenderFrameObserver : public content::RenderFrameObserver,
 
   // blink::WebLocalFrameObserver implementation
   void OnFrameDetached() override;
-
-  bool SetUpDroppedFramesReporting(
-      base::ReadOnlySharedMemoryRegion& shared_memory_dropped_frames) override;
 
  protected:
   // The relative and monotonic page load timings.
@@ -142,6 +139,7 @@ class MetricsRenderFrameObserver : public content::RenderFrameObserver,
   // in seconds since the Unix Epoch.
   virtual double GetNavigationStart() const;
   virtual Timing GetTiming() const;
+  virtual mojom::FontLoadingMetricsPtr GetFontLoadingMetrics() const;
   virtual mojom::CustomUserTimingMarkPtr GetCustomUserTimingMark() const;
   virtual std::unique_ptr<base::OneShotTimer> CreateTimer();
   virtual std::unique_ptr<PageTimingSender> CreatePageTimingSender(
@@ -157,15 +155,10 @@ class MetricsRenderFrameObserver : public content::RenderFrameObserver,
   // before this page loads in a new renderer).
   std::unique_ptr<PageResourceDataUse> provisional_frame_resource_data_use_;
 
-  // Handle to the shared memory for transporting dropped frame rate related ukm
-  // data.
-  base::ReadOnlySharedMemoryRegion ukm_dropped_frames_data_;
-
   // The main frame intersection rectangle signal received before
   // `page_timing_metrics_sender_` is created. The signal will be send out right
   // after `page_timing_metrics_sender_` is created.
-  std::optional<gfx::Rect>
-      main_frame_intersection_rect_before_metrics_sender_created_;
+  std::optional<gfx::Rect> main_frame_rect_before_metrics_sender_created_;
 
   // Will be null when we're not actively sending metrics.
   std::unique_ptr<PageTimingMetricsSender> page_timing_metrics_sender_;

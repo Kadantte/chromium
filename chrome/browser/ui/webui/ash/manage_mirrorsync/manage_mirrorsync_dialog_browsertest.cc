@@ -7,9 +7,11 @@
 #include <vector>
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/webui_url_constants.h"
 #include "base/files/file_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/scoped_observation.h"
 #include "base/strings/strcat.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
@@ -26,7 +28,6 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/webui/ash/manage_mirrorsync/manage_mirrorsync.mojom.h"
 #include "chrome/browser/ui/webui/ash/system_web_dialog/system_web_dialog_delegate.h"
-#include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/drive/drive_pref_names.h"
 #include "components/prefs/pref_service.h"
@@ -86,8 +87,12 @@ MATCHER_P(SyncingPaths, matcher, "") {
 class DriveMirrorSyncStatusObserver
     : public drive::DriveIntegrationService::Observer {
  public:
-  explicit DriveMirrorSyncStatusObserver(bool expected_status)
+  // `service` must not be nullptr.
+  explicit DriveMirrorSyncStatusObserver(
+      drive::DriveIntegrationService* service,
+      bool expected_status)
       : expected_status_(expected_status) {
+    observation_.Observe(service);
     quit_closure_ = run_loop_.QuitClosure();
   }
 
@@ -107,6 +112,9 @@ class DriveMirrorSyncStatusObserver
   base::RunLoop run_loop_;
   base::RepeatingClosure quit_closure_;
   bool expected_status_ = false;
+  base::ScopedObservation<drive::DriveIntegrationService,
+                          drive::DriveIntegrationService::Observer>
+      observation_{this};
 };
 
 class ManageMirrorSyncDialogTest : public InProcessBrowserTest {
@@ -149,7 +157,7 @@ class ManageMirrorSyncDialogTest : public InProcessBrowserTest {
     dialog_contents_ = observer.GetWebContents();
     EXPECT_TRUE(content::WaitForLoadStop(dialog_contents_));
     EXPECT_EQ(dialog_contents_->GetLastCommittedURL().GetHost(),
-              chrome::kChromeUIManageMirrorSyncHost);
+              ash::kChromeUIManageMirrorSyncHost);
   }
 
   void SetUpMyFilesAndDialog(std::vector<std::string> paths) {
@@ -199,11 +207,10 @@ class ManageMirrorSyncDialogTest : public InProcessBrowserTest {
 
     // Toggle the MirrorSync preference to enable / disable the feature.
     {
-      DriveMirrorSyncStatusObserver observer(enabled);
       drive::DriveIntegrationService* const service =
           drive::DriveIntegrationServiceFactory::FindForProfile(
               browser()->profile());
-      observer.Observe(service);
+      DriveMirrorSyncStatusObserver observer(service, enabled);
       // Turning on the sync will add ~/MyFiles as the sync path, which will
       // call GetSyncingPaths internally.
       if (enabled) {

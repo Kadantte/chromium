@@ -16,6 +16,7 @@
 #include "build/build_config.h"
 #include "components/viz/common/resources/shared_image_format.h"
 #include "gpu/command_buffer/common/mailbox.h"
+#include "gpu/command_buffer/common/shared_image_info.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "gpu/command_buffer/service/service_utils.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
@@ -48,7 +49,10 @@
 #if BUILDFLAG(USE_DAWN) && BUILDFLAG(DAWN_ENABLE_BACKEND_OPENGLES)
 #include <dawn/dawn_proc.h>
 #include <dawn/native/DawnNative.h>
+#include <dawn/native/OpenGLBackend.h>
 #include <dawn/webgpu_cpp.h>
+
+#include "ui/gl/gl_implementation.h"
 #endif  // BUILDFLAG(USE_DAWN) && BUILDFLAG(DAWN_ENABLE_BACKEND_OPENGLES)
 
 using testing::AtLeast;
@@ -82,8 +86,7 @@ bool IsEglImageSupported() {
 void CreateSharedContext(const GpuDriverBugWorkarounds& workarounds,
                          scoped_refptr<gl::GLSurface>& surface,
                          scoped_refptr<gl::GLContext>& context,
-                         scoped_refptr<SharedContextState>& context_state,
-                         scoped_refptr<gles2::FeatureInfo>& feature_info) {
+                         scoped_refptr<SharedContextState>& context_state) {
   surface = gl::init::CreateOffscreenGLSurface(gl::GetDefaultDisplayEGL(),
                                                gfx::Size());
   ASSERT_TRUE(surface);
@@ -94,14 +97,12 @@ void CreateSharedContext(const GpuDriverBugWorkarounds& workarounds,
   ASSERT_TRUE(result);
 
   scoped_refptr<gl::GLShareGroup> share_group = new gl::GLShareGroup();
-  feature_info =
-      base::MakeRefCounted<gles2::FeatureInfo>(workarounds, GpuFeatureInfo());
   context_state = base::MakeRefCounted<SharedContextState>(
       std::move(share_group), surface, context,
       /*use_virtualized_gl_contexts=*/false, base::DoNothing(),
       GrContextType::kGL);
   context_state->InitializeSkia(GpuPreferences(), workarounds);
-  context_state->InitializeGL(GpuPreferences(), feature_info);
+  context_state->InitializeGL(GpuPreferences(), workarounds, GpuFeatureInfo());
 }
 
 class EGLImageBackingFactoryThreadSafeTest
@@ -137,9 +138,7 @@ class EGLImageBackingFactoryThreadSafeTest
 
     GpuDriverBugWorkarounds workarounds;
 
-    scoped_refptr<gles2::FeatureInfo> feature_info;
-    CreateSharedContext(workarounds, surface_, context_, context_state_,
-                        feature_info);
+    CreateSharedContext(workarounds, surface_, context_, context_state_);
 
     GpuPreferences preferences;
     preferences.use_passthrough_cmd_decoder = use_passthrough();
@@ -151,11 +150,7 @@ class EGLImageBackingFactoryThreadSafeTest
         std::make_unique<SharedImageRepresentationFactory>(
             shared_image_manager_.get(), nullptr);
 
-    // Create 2nd context/context_state which are not part of same shared group.
-    scoped_refptr<gles2::FeatureInfo> feature_info2;
-    CreateSharedContext(workarounds, surface2_, context2_, context_state2_,
-                        feature_info2);
-    feature_info2.reset();
+    CreateSharedContext(workarounds, surface2_, context2_, context_state2_);
   }
 
   bool use_passthrough() {
@@ -399,9 +394,11 @@ TEST_P(EGLImageBackingFactoryThreadSafeTest, OneWriterOneReader) {
   EXPECT_EQ(dst_pixels[3], 255);
 }
 
+#if BUILDFLAG(USE_DAWN) && BUILDFLAG(DAWN_ENABLE_BACKEND_OPENGLES)
+
 // TODO(crbug.com/332947916): fix these tests to run on Android/GLES
-#if BUILDFLAG(USE_DAWN) && BUILDFLAG(DAWN_ENABLE_BACKEND_OPENGLES) && \
-    !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID)
+
 // Test to check interaction between Dawn and skia GL representations.
 TEST_P(EGLImageBackingFactoryThreadSafeTest, Dawn_SkiaGL) {
   // Find a Dawn GLES adapter
@@ -436,9 +433,10 @@ TEST_P(EGLImageBackingFactoryThreadSafeTest, Dawn_SkiaGL) {
   // Note that this backing is always thread safe by default even if it is not
   // requested to be.
   auto backing = backing_factory_->CreateSharedImage(
-      mailbox, format, surface_handle, size, color_space,
-      kTopLeft_GrSurfaceOrigin, kPremul_SkAlphaType, usage, "TestLabel",
-      /*is_thread_safe=*/true);
+      mailbox,
+      {format, size, color_space, kTopLeft_GrSurfaceOrigin, kPremul_SkAlphaType,
+       usage, "TestLabel"},
+      surface_handle, /*is_thread_safe=*/true);
   ASSERT_NE(backing, nullptr);
 
   std::unique_ptr<SharedImageRepresentationFactoryRef> factory_ref =
@@ -531,8 +529,9 @@ TEST_P(EGLImageBackingFactoryThreadSafeTest, Dawn_SampledTexture) {
     std::vector<uint8_t> pixel_data = {0x80, 0x40, 0x20, 0x10};
 
     auto backing = backing_factory_->CreateSharedImage(
-        mailbox, format, size, color_space, kTopLeft_GrSurfaceOrigin,
-        kPremul_SkAlphaType, usage, "Dawn_SampledTexture",
+        mailbox,
+        {format, size, color_space, kTopLeft_GrSurfaceOrigin,
+         kPremul_SkAlphaType, usage, "Dawn_SampledTexture"},
         /*is_thread_safe=*/true, pixel_data);
     ASSERT_NE(backing, nullptr);
 
@@ -647,6 +646,115 @@ return textureSample(tex, smp, tex_coord);
 
   dawnProcSetProcs(nullptr);
 }
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+// Verify that DawnEGLImageRepresentation::BeginAccess includes `internal_usage`
+// when computing the inner GL access mode.
+TEST_P(EGLImageBackingFactoryThreadSafeTest, Dawn_WriteUnderReadLock_POC) {
+  // 1) Create the backing on the original GL context BEFORE touching Dawn,
+  //    so EGLImage creation uses a known-good current context.
+  ASSERT_TRUE(context_state_->MakeCurrent(surface_.get(), /*needs_gl=*/true));
+
+  const auto mailbox = Mailbox::Generate();
+  const auto format = viz::SinglePlaneFormat::kRGBA_8888;
+  const gfx::Size size(4, 4);
+  const auto color_space = gfx::ColorSpace::CreateSRGB();
+  const gpu::SharedImageUsageSet usage =
+      SHARED_IMAGE_USAGE_WEBGPU_READ | SHARED_IMAGE_USAGE_WEBGPU_WRITE |
+      SHARED_IMAGE_USAGE_GLES2_READ | SHARED_IMAGE_USAGE_DISPLAY_READ;
+
+  auto backing = backing_factory_->CreateSharedImage(
+      mailbox,
+      {format, size, color_space, kTopLeft_GrSurfaceOrigin, kPremul_SkAlphaType,
+       usage, "POC_WriteUnderReadLock"},
+      gpu::kNullSurfaceHandle, /*is_thread_safe=*/true);
+  ASSERT_NE(backing, nullptr);
+  // Leave it uncleared so Dawn will lazy-clear (an internal write) on first
+  // sample. IsCleared()==false is what a renderer using WEBGPU_MAILBOX_DISCARD
+  // would arrange.
+  ASSERT_FALSE(backing->IsCleared());
+
+  std::unique_ptr<SharedImageRepresentationFactoryRef> factory_ref =
+      shared_image_manager_->Register(std::move(backing),
+                                      memory_type_tracker_.get());
+
+  // 2) Create a Dawn GLES device. featureLevel=Compatibility is required for
+  //    GLES adapter enumeration to succeed.
+  DawnProcTable procs = dawn::native::GetProcs();
+  dawnProcSetProcs(&procs);
+
+  dawn::native::Instance instance;
+  wgpu::RequestAdapterOptions adapter_options;
+  adapter_options.backendType = wgpu::BackendType::OpenGLES;
+  adapter_options.featureLevel = wgpu::FeatureLevel::Compatibility;
+  // Share Chrome's EGL display & GL proc loader with Dawn so the EGLImage
+  // created on Chrome's ANGLE display is importable by Dawn (this mirrors
+  // what WebGPUDecoderImpl does in production).
+  dawn::native::opengl::RequestAdapterOptionsGetGLProc get_gl_proc = {};
+  get_gl_proc.getProc = gl::GetGLProcAddress;
+  gl::GLDisplayEGL* gl_display = gl::GLSurfaceEGL::GetGLDisplayEGL();
+  get_gl_proc.display = gl_display ? gl_display->GetDisplay() : EGL_NO_DISPLAY;
+  adapter_options.nextInChain = &get_gl_proc;
+  std::vector<dawn::native::Adapter> adapters =
+      instance.EnumerateAdapters(&adapter_options);
+  ASSERT_FALSE(adapters.empty()) << "No Dawn GLES adapter";
+
+  wgpu::FeatureName dawn_internal_usage = wgpu::FeatureName::DawnInternalUsages;
+  wgpu::DeviceDescriptor device_descriptor;
+  device_descriptor.requiredFeatureCount = 1;
+  device_descriptor.requiredFeatures = &dawn_internal_usage;
+  wgpu::Device device =
+      wgpu::Device::Acquire(adapters[0].CreateDevice(&device_descriptor));
+  if (!device) {
+    GTEST_SKIP() << "Failed to create Dawn Device";
+  }
+
+  // Dawn made its own EGL context current; restore ours so ProduceDawn (which
+  // creates a GL sibling on the current context) and subsequent GL work use
+  // the original display/context.
+  ASSERT_TRUE(context_state_->MakeCurrent(surface_.get(), /*needs_gl=*/true));
+
+  // 3) Produce the DawnEGLImageRepresentation and begin a scoped access with
+  //    a read-only public `usage` but a write-capable `internal_usage`.
+  auto dawn_representation = shared_image_representation_factory_->ProduceDawn(
+      mailbox, device, wgpu::BackendType::OpenGLES, {}, context_state_);
+  ASSERT_TRUE(dawn_representation);
+
+  const wgpu::TextureUsage kReadOnlyUsage = wgpu::TextureUsage::TextureBinding;
+  const wgpu::TextureUsage kWritableInternal =
+      wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopyDst;
+
+  auto dawn_access = dawn_representation->BeginScopedAccess(
+      kReadOnlyUsage, kWritableInternal,
+      SharedImageRepresentation::AllowUnclearedAccess::kYes);
+  ASSERT_TRUE(dawn_access)
+      << "DawnEGLImageRepresentation::BeginAccess failed (egl wrap)";
+
+  // 4) While the Dawn access (which authorises internal writes) is open, a
+  //    second GL representation tries to begin READ access on the same
+  //    backing. With correct locking this MUST be rejected (concurrent
+  //    reader during a write).
+  auto gl_reader =
+      shared_image_representation_factory_->ProduceGLTexturePassthrough(
+          mailbox);
+  ASSERT_TRUE(gl_reader);
+
+  auto reader_access = gl_reader->BeginScopedAccess(
+      GL_SHARED_IMAGE_ACCESS_MODE_READ_CHROMIUM,
+      SharedImageRepresentation::AllowUnclearedAccess::kYes);
+  bool concurrent_read_admitted = (reader_access != nullptr);
+
+  EXPECT_FALSE(concurrent_read_admitted);
+  reader_access.reset();
+
+  gl_reader.reset();
+  dawn_access.reset();
+  dawn_representation.reset();
+
+  device = wgpu::Device();
+  dawnProcSetProcs(nullptr);
+  factory_ref.reset();
+}
 #endif  // BUILDFLAG(USE_DAWN) && BUILDFLAG(DAWN_ENABLE_BACKEND_OPENGLES)
 
 CreateAndValidateSharedImageRepresentations::
@@ -683,12 +791,16 @@ CreateAndValidateSharedImageRepresentations::
     size_t required_size = format.MaybeEstimatedSizeInBytes(size_).value();
     std::vector<uint8_t> initial_data(required_size);
     backing_ = backing_factory->CreateSharedImage(
-        mailbox_, format, size_, color_space, surface_origin, alpha_type, usage,
-        "TestLabel", /*is_thread_safe=*/true, initial_data);
+        mailbox_,
+        {format, size_, color_space, surface_origin, alpha_type, usage,
+         "TestLabel"},
+        /*is_thread_safe=*/true, initial_data);
   } else {
     backing_ = backing_factory->CreateSharedImage(
-        mailbox_, format, surface_handle, size_, color_space, surface_origin,
-        alpha_type, usage, "TestLabel", is_thread_safe);
+        mailbox_,
+        {format, size_, color_space, surface_origin, alpha_type, usage,
+         "TestLabel"},
+        surface_handle, is_thread_safe);
   }
 
   // As long as either |chromium_image_ar30| or |chromium_image_ab30| is

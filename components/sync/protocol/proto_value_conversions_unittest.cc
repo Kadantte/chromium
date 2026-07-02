@@ -71,7 +71,7 @@ using ::testing::Pointee;
 
 DEFINE_SPECIFICS_TO_VALUE_TEST(encrypted)
 
-static_assert(62 == syncer::GetNumDataTypes(),
+static_assert(63 == syncer::GetNumDataTypes(),
               "When adding a new field, add a DEFINE_SPECIFICS_TO_VALUE_TEST "
               "for your field below, and optionally a test for the specific "
               "conversions.");
@@ -120,6 +120,7 @@ DEFINE_SPECIFICS_TO_VALUE_TEST(session)
 DEFINE_SPECIFICS_TO_VALUE_TEST(shared_tab_group_data)
 DEFINE_SPECIFICS_TO_VALUE_TEST(sharing_message)
 DEFINE_SPECIFICS_TO_VALUE_TEST(theme)
+DEFINE_SPECIFICS_TO_VALUE_TEST(theme_android)
 DEFINE_SPECIFICS_TO_VALUE_TEST(theme_ios)
 DEFINE_SPECIFICS_TO_VALUE_TEST(typed_url)
 DEFINE_SPECIFICS_TO_VALUE_TEST(user_consent)
@@ -145,6 +146,8 @@ TEST(ProtoValueConversionsTest, AutofillWalletSpecificsToValue) {
   specifics.mutable_address()->set_recipient_name("John");
   specifics.mutable_customer_data()->set_id("123456");
   specifics.mutable_cloud_token_data()->set_masked_card_id("1111");
+  specifics.mutable_payment_instrument()->set_instrument_id(12345);
+  specifics.mutable_payment_instrument_creation_option()->set_id("def");
 
   specifics.set_type(sync_pb::AutofillWalletSpecifics::UNKNOWN);
   base::DictValue value = AutofillWalletSpecificsToValue(specifics).TakeDict();
@@ -152,6 +155,8 @@ TEST(ProtoValueConversionsTest, AutofillWalletSpecificsToValue) {
   EXPECT_FALSE(value.contains("address"));
   EXPECT_FALSE(value.contains("customer_data"));
   EXPECT_FALSE(value.contains("cloud_token_data"));
+  EXPECT_FALSE(value.contains("payment_instrument"));
+  EXPECT_FALSE(value.contains("payment_instrument_creation_option"));
 
   specifics.set_type(sync_pb::AutofillWalletSpecifics::MASKED_CREDIT_CARD);
   value = AutofillWalletSpecificsToValue(specifics).TakeDict();
@@ -159,6 +164,8 @@ TEST(ProtoValueConversionsTest, AutofillWalletSpecificsToValue) {
   EXPECT_FALSE(value.contains("address"));
   EXPECT_FALSE(value.contains("customer_data"));
   EXPECT_FALSE(value.contains("cloud_token_data"));
+  EXPECT_FALSE(value.contains("payment_instrument"));
+  EXPECT_FALSE(value.contains("payment_instrument_creation_option"));
 
   specifics.set_type(sync_pb::AutofillWalletSpecifics::POSTAL_ADDRESS);
   value = AutofillWalletSpecificsToValue(specifics).TakeDict();
@@ -166,6 +173,8 @@ TEST(ProtoValueConversionsTest, AutofillWalletSpecificsToValue) {
   EXPECT_TRUE(value.contains("address"));
   EXPECT_FALSE(value.contains("customer_data"));
   EXPECT_FALSE(value.contains("cloud_token_data"));
+  EXPECT_FALSE(value.contains("payment_instrument"));
+  EXPECT_FALSE(value.contains("payment_instrument_creation_option"));
 
   specifics.set_type(sync_pb::AutofillWalletSpecifics::CUSTOMER_DATA);
   value = AutofillWalletSpecificsToValue(specifics).TakeDict();
@@ -173,6 +182,8 @@ TEST(ProtoValueConversionsTest, AutofillWalletSpecificsToValue) {
   EXPECT_FALSE(value.contains("address"));
   EXPECT_TRUE(value.contains("customer_data"));
   EXPECT_FALSE(value.contains("cloud_token_data"));
+  EXPECT_FALSE(value.contains("payment_instrument"));
+  EXPECT_FALSE(value.contains("payment_instrument_creation_option"));
 
   specifics.set_type(
       sync_pb::AutofillWalletSpecifics::CREDIT_CARD_CLOUD_TOKEN_DATA);
@@ -181,6 +192,27 @@ TEST(ProtoValueConversionsTest, AutofillWalletSpecificsToValue) {
   EXPECT_FALSE(value.contains("address"));
   EXPECT_FALSE(value.contains("customer_data"));
   EXPECT_TRUE(value.contains("cloud_token_data"));
+  EXPECT_FALSE(value.contains("payment_instrument"));
+  EXPECT_FALSE(value.contains("payment_instrument_creation_option"));
+
+  specifics.set_type(sync_pb::AutofillWalletSpecifics::PAYMENT_INSTRUMENT);
+  value = AutofillWalletSpecificsToValue(specifics).TakeDict();
+  EXPECT_FALSE(value.contains("masked_card"));
+  EXPECT_FALSE(value.contains("address"));
+  EXPECT_FALSE(value.contains("customer_data"));
+  EXPECT_FALSE(value.contains("cloud_token_data"));
+  EXPECT_TRUE(value.contains("payment_instrument"));
+  EXPECT_FALSE(value.contains("payment_instrument_creation_option"));
+
+  specifics.set_type(
+      sync_pb::AutofillWalletSpecifics::PAYMENT_INSTRUMENT_CREATION_OPTION);
+  value = AutofillWalletSpecificsToValue(specifics).TakeDict();
+  EXPECT_FALSE(value.contains("masked_card"));
+  EXPECT_FALSE(value.contains("address"));
+  EXPECT_FALSE(value.contains("customer_data"));
+  EXPECT_FALSE(value.contains("cloud_token_data"));
+  EXPECT_FALSE(value.contains("payment_instrument"));
+  EXPECT_TRUE(value.contains("payment_instrument_creation_option"));
 }
 
 TEST(ProtoValueConversionsTest, BookmarkSpecificsData) {
@@ -401,16 +433,54 @@ TEST(ProtoValueConversionsTest, GeminiThreadSpecificsToValue) {
   sync_pb::GeminiThreadSpecifics gemini_specifics;
   gemini_specifics.set_conversation_id("my_id");
   gemini_specifics.set_title("my_title");
+  gemini_specifics.set_last_turn_time_unix_epoch_millis(1770989828);
 
   base::DictValue value =
       GeminiThreadSpecificsToValue(gemini_specifics).TakeDict();
   EXPECT_FALSE(value.empty());
   EXPECT_THAT(value.FindString("conversation_id"), Pointee(Eq("my_id")));
   EXPECT_THAT(value.FindString("title"), Pointee(Eq("my_title")));
+  EXPECT_THAT(value.FindString("last_turn_time_unix_epoch_millis"),
+              Pointee(Eq("1770989828")));
 }
 
-TEST(ProtoValueConversionsTest, ThemeSpecificsIosToValue) {
-  sync_pb::ThemeSpecificsIos specifics;
+TEST(ProtoValueConversionsTest, ThemeAndroidSpecificsToValue) {
+  sync_pb::ThemeAndroidSpecifics specifics;
+  specifics.set_use_custom_theme(true);
+
+  // Populate `ChromeColorInfo`.
+  auto* chrome_color_info = specifics.mutable_chrome_color_info();
+  chrome_color_info->set_theme_color_id(12);
+  chrome_color_info->set_last_daily_update_timestamp_unix_epoch_millis(
+      1770989828);
+
+  // Populate `NtpCustomBackground`.
+  auto* ntp_background = specifics.mutable_ntp_background();
+  ntp_background->set_url("https://example.com/img.png");
+  ntp_background->set_main_color(12345);
+  ntp_background->set_collection_id("collection_id");
+
+  base::DictValue value = ThemeAndroidSpecificsToValue(specifics).TakeDict();
+  EXPECT_FALSE(value.empty());
+
+  EXPECT_THAT(value.FindBool("use_custom_theme"), testing::Optional(true));
+
+  const base::DictValue* color_info_dict = value.FindDict("chrome_color_info");
+  ASSERT_TRUE(color_info_dict);
+  EXPECT_THAT(color_info_dict->FindString("theme_color_id"), Pointee(Eq("12")));
+  EXPECT_THAT(color_info_dict->FindString(
+                  "last_daily_update_timestamp_unix_epoch_millis"),
+              Pointee(Eq("1770989828")));
+
+  const base::DictValue* bg_dict = value.FindDict("ntp_background");
+  ASSERT_TRUE(bg_dict);
+  EXPECT_THAT(bg_dict->FindString("url"),
+              Pointee(Eq("https://example.com/img.png")));
+  EXPECT_THAT(bg_dict->FindString("main_color"), Pointee(Eq("12345")));
+}
+
+TEST(ProtoValueConversionsTest, ThemeIosSpecificsToValue) {
+  sync_pb::ThemeIosSpecifics specifics;
 
   // Populate `UserColorTheme`.
   auto* color_theme = specifics.mutable_user_color_theme();
@@ -424,7 +494,7 @@ TEST(ProtoValueConversionsTest, ThemeSpecificsIosToValue) {
   background->set_collection_id("nature_collection");
   background->set_main_color(4278190080);
 
-  base::DictValue value = ThemeSpecificsIosToValue(specifics).TakeDict();
+  base::DictValue value = ThemeIosSpecificsToValue(specifics).TakeDict();
   EXPECT_FALSE(value.empty());
 
   const base::DictValue* color_dict = value.FindDict("user_color_theme");
@@ -442,6 +512,33 @@ TEST(ProtoValueConversionsTest, ThemeSpecificsIosToValue) {
   EXPECT_THAT(bg_dict->FindString("collection_id"),
               Pointee(Eq("nature_collection")));
   EXPECT_THAT(bg_dict->FindString("main_color"), Pointee(Eq("4278190080")));
+}
+
+TEST(ProtoValueConversionsTest, SendTabToSelfSpecificsToValue) {
+  sync_pb::SendTabToSelfSpecifics specifics;
+  specifics.set_guid("guid");
+  specifics.set_url("https://foo.com");
+  specifics.set_title("foo");
+  specifics.set_shared_time_usec(12345);
+  specifics.set_current_navigation_index(0);
+  sync_pb::TabNavigation* navigation = specifics.add_navigation();
+  navigation->set_virtual_url("https://foo.com");
+  navigation->set_title("foo");
+
+  base::DictValue value = SendTabToSelfSpecificsToValue(specifics).TakeDict();
+  EXPECT_FALSE(value.empty());
+  EXPECT_THAT(value.FindString("guid"), Pointee(Eq("guid")));
+  EXPECT_THAT(value.FindString("url"), Pointee(Eq("https://foo.com")));
+  EXPECT_THAT(value.FindString("title"), Pointee(Eq("foo")));
+  EXPECT_THAT(value.FindString("shared_time_usec"), Pointee(Eq("12345")));
+  EXPECT_THAT(value.FindString("current_navigation_index"), Pointee(Eq("0")));
+  const base::ListValue* navigation_list = value.FindList("navigation");
+  ASSERT_TRUE(navigation_list);
+  EXPECT_EQ(1u, navigation_list->size());
+  EXPECT_THAT((*navigation_list)[0].GetDict().FindString("virtual_url"),
+              Pointee(Eq("https://foo.com")));
+  EXPECT_THAT((*navigation_list)[0].GetDict().FindString("title"),
+              Pointee(Eq("foo")));
 }
 
 }  // namespace

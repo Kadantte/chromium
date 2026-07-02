@@ -10,6 +10,7 @@
 #include <queue>
 #include <string_view>
 
+#include "base/memory/advanced_memory_safety_checks.h"
 #include "net/base/completion_once_callback.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_export.h"
@@ -37,6 +38,9 @@ class ProxyDelegate;
 class NET_EXPORT_PRIVATE QuicProxyDatagramClientSocket
     : public DatagramClientSocket,
       public quic::QuicSpdyStream::Http3DatagramVisitor {
+  // TODO(crbug.com/495798630): Remove this macro once it gets fixed.
+  ADVANCED_MEMORY_SAFETY_CHECKS();
+
  public:
   // Initializes a QuicProxyDatagramClientSocket with the provided network
   // log (source_net_log) and destination URL. The destination URL is
@@ -104,6 +108,12 @@ class NET_EXPORT_PRIVATE QuicProxyDatagramClientSocket
   int Read(IOBuffer* buf,
            int buf_len,
            CompletionOnceCallback callback) override;
+  base::expected<DatagramsMetadata, Error> ReadMultiple(
+      IOBuffer* buf,
+      size_t buf_len,
+      size_t maximum_packet_size,
+      base::OnceCallback<void(base::expected<DatagramsMetadata, Error>)>
+          callback) override;
   int Write(IOBuffer* buf,
             int buf_len,
             CompletionOnceCallback callback,
@@ -190,8 +200,6 @@ class NET_EXPORT_PRIVATE QuicProxyDatagramClientSocket
   // a buffer, allowing datagrams to be stored when received and processed
   // asynchronously at a later time.
   std::queue<std::string> datagrams_;
-  // Visitor on stream is registered to receive HTTP/3 datagrams.
-  bool datagram_visitor_registered_ = false;
 
   // Tracks whether the CONNECT-UDP request has been sent (even if response not
   // received yet).

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/observer_list.h"
+#include "net/base/ech_mode.h"
 #include "net/base/net_export.h"
 #include "net/cert/x509_certificate.h"
 #include "net/ssl/ssl_config.h"
@@ -28,8 +29,6 @@ struct NET_EXPORT SSLNamedGroupInfo {
   bool send_key_share = false;
 
   bool operator==(const SSLNamedGroupInfo&) const = default;
-
-  bool IsPostQuantum() const;
 };
 
 // Configuration options for SSL connections.
@@ -55,6 +54,11 @@ struct NET_EXPORT SSLContextConfig {
   // handshake. This will be false if the feature is disabled or no Trust
   // Anchor IDs are configured.
   bool ShouldAdvertiseTrustAnchorIDs() const;
+
+  // Returns the amount of bytes of padding that should be requested from the
+  // server for the TLS handshake. This will return nullopt if a padding request
+  // should not be sent.
+  std::optional<uint16_t> RequestServerPadding() const;
 
   // Helper function to select TLS Trust Anchor IDs to advertise in the TLS
   // handshake, so that the server can serve a certificate that the client
@@ -140,6 +144,12 @@ class NET_EXPORT SSLConfigService {
 
   // May not be thread-safe, should only be called on the IO thread.
   virtual SSLContextConfig GetSSLContextConfig() = 0;
+
+  // Returns the host-specific EchMode for `hostname`.
+  //
+  // NOTE: This method should only be called when `ech_enabled` is true in
+  // `SSLContextConfig`.
+  virtual EchMode GetEchMode(std::string_view hostname) const = 0;
 
   // Returns true if connections to |hostname| can reuse, or are permitted to
   // reuse, connections on which a client cert has been negotiated. Note that

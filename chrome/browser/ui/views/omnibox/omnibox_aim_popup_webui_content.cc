@@ -12,10 +12,12 @@
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_popup_state_manager.h"
+#include "chrome/browser/ui/omnibox/omnibox_tab_helper.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_context_menu.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_webui_base_content.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
 #include "chrome/browser/ui/views/omnibox/rounded_omnibox_results_frame.h"
 #include "chrome/browser/ui/webui/omnibox_popup/omnibox_popup_aim_handler.h"
 #include "chrome/browser/ui/webui/omnibox_popup/omnibox_popup_ui.h"
@@ -42,20 +44,55 @@ OmniboxAimPopupWebUIContent::OmniboxAimPopupWebUIContent(
 
 OmniboxAimPopupWebUIContent::~OmniboxAimPopupWebUIContent() = default;
 
-void OmniboxAimPopupWebUIContent::OnPopupHidden() {
-  OmniboxPopupWebUIBaseContent::OnPopupHidden();
+void OmniboxAimPopupWebUIContent::Clear() {
   auto* handler = popup_aim_handler();
   if (handler) {
-    handler->OnPopupHidden();
+    // Pass the original web contents captured during ShowUI to handle
+    // underlying changes to referenced web contents due to async events.
+    handler->ClearPopup(
+        base::BindOnce(&OmniboxAimPopupWebUIContent::OnClearCallback,
+                       weak_factory_.GetWeakPtr(), active_web_contents_));
+  } else {
+    Detach();
   }
 }
 
-void OmniboxAimPopupWebUIContent::OnPageClosedWithInput(
+void OmniboxAimPopupWebUIContent::OnContextMenuClosed() {
+  if (auto* handler = popup_aim_handler()) {
+    handler->OnContextMenuClosed();
+  }
+}
+
+void OmniboxAimPopupWebUIContent::OnClearCallback(
+    base::WeakPtr<content::WebContents> original_web_contents,
     const std::string& input) {
-  location_bar_view()->GetOmniboxView()->RevertAll();
+  // Now that the WebUI has painted, it is safe to detach and cleanup.
+  Detach();
+
+  // Check if tabs have switched due to an async event.
+  // Navigation to another tab is an async process which leads to a race
+  // condition with the cleanup of the omnibox aim webui popup and which
+  // web contents is referenced by the omnibox_edit_model.
+  if (location_bar()->GetWebContents() == original_web_contents.get()) {
+    ApplyInputAndCleanup(input);
+  } else if (original_web_contents && !input.empty()) {
+    SaveInputToBackgroundTab(original_web_contents.get(), input);
+  }
+}
+
+void OmniboxAimPopupWebUIContent::SaveInputToBackgroundTab(
+    content::WebContents* original_web_contents,
+    const std::string& input) {
+  OmniboxViewViews::SetUserTextForTab(original_web_contents,
+                                      base::UTF8ToUTF16(input));
+}
+
+void OmniboxAimPopupWebUIContent::ApplyInputAndCleanup(
+    const std::string& input) {
+  location_bar()->GetOmniboxView()->RevertAll();
   if (!input.empty()) {
-    location_bar_view()->GetOmniboxView()->SetUserText(base::UTF8ToUTF16(input),
-                                                       /*update_popup=*/false);
+    location_bar()->GetOmniboxView()->SetUserText(base::UTF8ToUTF16(input),
+                                                  /*update_popup=*/false);
   }
 }
 
@@ -72,7 +109,8 @@ void OmniboxAimPopupWebUIContent::UpdateLocationBarFocusForScreenReader() {
             ->GetAccessibilityMode()
             .has_mode(ui::AXMode::kScreenReader);
     if (is_screen_reader_enabled) {
-      location_bar_view()->FocusLocation(true);
+      location_bar()->FocusLocation(/*is_user_initiated=*/true,
+                                    /*clear_focus_if_failed=*/false);
     }
   }
 }
@@ -99,6 +137,11 @@ bool OmniboxAimPopupWebUIContent::HandleContextMenu(
 void OmniboxAimPopupWebUIContent::ShowUI() {
   OmniboxPopupWebUIBaseContent::ShowUI();
 
+  // Capture the web contents when UI is first shown.
+  active_web_contents_ = location_bar()->GetWebContents()
+                             ? location_bar()->GetWebContents()->GetWeakPtr()
+                             : nullptr;
+
   auto* handler = popup_aim_handler();
   if (!handler) {
     return;
@@ -106,14 +149,19 @@ void OmniboxAimPopupWebUIContent::ShowUI() {
 
   auto* web_contents = contents_wrapper()->web_contents();
   auto* browser_window = webui::GetBrowserWindowInterface(web_contents);
-  auto* context_data = browser_window->GetFeatures().searchbox_context_data();
-  auto context = context_data->TakePendingContext();
+  std::unique_ptr<SearchboxContextData::Context> context;
+  if (browser_window) {
+    auto* context_data = browser_window->GetFeatures().searchbox_context_data();
+    context = context_data->TakePendingContext();
+  }
   if (!context) {
     context = std::make_unique<SearchboxContextData::Context>();
   }
+  // TODO (crbug.com/502961786): Fix flickering of previous text on a new
+  // instance of composebox.
   if (!controller()->edit_model()->CurrentTextIsURL()) {
     context->text =
-        base::UTF16ToUTF8(location_bar_view()->GetOmniboxView()->GetText());
+        base::UTF16ToUTF8(location_bar()->GetOmniboxView()->GetText());
   }
   handler->OnPopupShown(std::move(context));
 }

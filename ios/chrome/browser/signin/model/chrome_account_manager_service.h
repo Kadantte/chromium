@@ -64,7 +64,7 @@ class ChromeAccountManagerService : public KeyedService,
     virtual void OnRefreshTokenUpdated(id<SystemIdentity> identity) {}
 
     // Handles access token refresh failed events.
-    // `identity` is the the identity for which the access token refresh failed.
+    // `identity` is the identity for which the access token refresh failed.
     // `error` is an opaque type containing information about the error.
     virtual void OnAccessTokenRefreshFailed(
         id<SystemIdentity> identity,
@@ -135,6 +135,13 @@ class ChromeAccountManagerService : public KeyedService,
   // profiles.
   NSArray<id<SystemIdentity>>* GetIdentitiesOnDeviceWithGaiaIDs(
       const std::vector<AccountInfo>& account_infos) const;
+
+  // Returns the SystemIdentity with the given email, or nil if no matching
+  // identity exists on the device. Similar to GetIdentityOnDeviceWithGaiaID().
+  //
+  // Use GetIdentityOnDeviceWithGaiaID() instead of this method if possible.
+  // Emails can change, while gaia ids are fixed.
+  id<SystemIdentity> GetIdentityOnDeviceWithEmail(NSString* email) const;
 
   // For use by DeviceAccountsProviderImpl only, may not be called otherwise!
   // Returns all SystemIdentity objects that are available on the device,

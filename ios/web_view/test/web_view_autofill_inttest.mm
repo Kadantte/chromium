@@ -27,15 +27,9 @@ using base::test::ios::kWaitForActionTimeout;
 using base::test::ios::kWaitForPageLoadTimeout;
 using base::test::ios::WaitUntilConditionOrTimeout;
 
-namespace {
-
-CWVEarlyInitFlags* GetInitFlags() {
-  CWVEarlyInitFlags* flags = [[CWVEarlyInitFlags alloc] init];
-  flags.autofillAcrossIframesEnabled = YES;
-  return flags;
-}
-
-}  // namespace
+@interface CWVAutofillController (Testing)
+- (void)setForceSubmittedByUserForTesting:(BOOL)force;
+@end
 
 // A stub object that observes the |webViewDidFinishNavigation| event of
 // CWVNavigationDelegate. CWVNavigationDelegate is also used as navigation
@@ -100,8 +94,7 @@ NSString* const kTestFormHtml =
 class WebViewAutofillTest : public WebViewInttestBase {
  protected:
   WebViewAutofillTest()
-      : WebViewInttestBase(GetInitFlags()),
-        autofill_controller_delegate_(
+      : autofill_controller_delegate_(
             OCMProtocolMock(@protocol(CWVAutofillControllerDelegate))) {
     data_source_ =
         OCMStrictProtocolMock(@protocol(CWVSyncControllerDataSource));
@@ -109,6 +102,7 @@ class WebViewAutofillTest : public WebViewInttestBase {
     CWVSyncController.dataSource = data_source_;
     autofill_controller_ = web_view_.autofillController;
     autofill_controller_.delegate = autofill_controller_delegate_;
+    [autofill_controller_ setForceSubmittedByUserForTesting:YES];
   }
 
   void TearDown() override {
@@ -263,8 +257,12 @@ TEST_F(WebViewAutofillTest, TestDelegateCallbacks) {
   [autofill_controller_delegate_
       verifyWithDelay:kWaitForActionTimeout.InSecondsF()];
 
-  // TODO(crbug.com/40911875): `userInitiated` flipped from `NO` in iOS 16.1 to
-  // `YES` in 16.4, so we cannot reliably verify it until the bug is fixed.
+  [[[autofill_controller_delegate_ expect] ignoringNonObjectArgs]
+         autofillController:autofill_controller_
+      didSubmitFormWithName:kTestFormName
+                    frameID:[OCMArg any]
+             perfectFilling:[OCMArg any]];
+
   [[[autofill_controller_delegate_ expect] ignoringNonObjectArgs]
          autofillController:autofill_controller_
       didSubmitFormWithName:kTestFormName
@@ -412,6 +410,12 @@ TEST_F(WebViewAutofillTest, TestChildFrameSubmission) {
   }));
 
   // Expectation:
+  [[autofill_controller_delegate_ expect]
+         autofillController:autofill_controller_
+      didSubmitFormWithName:[OCMArg any]
+                    frameID:[OCMArg any]
+             perfectFilling:[OCMArg any]];  // Relax just in case.
+
   [[autofill_controller_delegate_ expect]
          autofillController:autofill_controller_
       didSubmitFormWithName:[OCMArg any]

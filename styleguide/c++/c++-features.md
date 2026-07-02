@@ -42,6 +42,9 @@ The current status of existing standards and Abseil features is:
     dates represent the start of the two-year TBD periods for certain parts of
     Abseil:_
       * absl::linked_hash_set & map: Initially added to third_party Dec 30, 2025
+      * absl::optional_ref: Initially added to third_party Feb 25, 2026
+      * absl::SourceLocation: Initially added to third_party Mar 11, 2026
+      * absl::AnySpan: Initially added to third_party Apr 7, 2026
 
 ## Banned features and third-party code
 
@@ -1622,6 +1625,27 @@ runtime performance.
 [Discussion thread](https://groups.google.com/a/chromium.org/g/cxx/c/ZnIbkfJ0Glw)
 ***
 
+### std::ranges::operator| <sup>[banned]</sup>
+
+```c++
+constexpr int kArr[] = {6, 2, 8, 4, 4, 2};
+constexpr auto plus_one = std::views::transform([](int n){ return n + 1; });
+static_assert(std::ranges::equal(kArr | plus_one, {7, 3, 9, 5, 5, 3}));
+```
+
+**Description:** The pipe operator for chaining range adaptor closure objects.
+
+**Documentation:**
+[`std::ranges::operator|`](https://en.cppreference.com/w/cpp/named_req/RangeAdaptorClosureObject.html)
+
+**Notes:**
+*** promo
+Banned in Chromium since range factories and adapters are banned. Explicitly
+enforced by the Chromium style clang-plugin.
+
+[Discussion](https://groups.google.com/a/chromium.org/g/cxx/c/ZnIbkfJ0Glw) [threads](https://groups.google.com/a/chromium.org/g/cxx/c/ZzSLYf6-KwQ)
+***
+
 ### std::ranges::view_interface <sup>[banned]</sup>
 
 ```c++
@@ -1884,6 +1908,25 @@ std::vector<int> new_way(std::from_range, a_very_long_container_name);
 See also std::ranges::to which offers something similar.
 ***
 
+### std::ranges::to <sup>[allowed]</sup>
+
+```c++
+std::set<int> s = {1, 2, 3};
+auto u = std::ranges::to<std::vector>(s);
+```
+
+**Description:** Converts a range to a container.
+
+**Documentation:**
+[std::ranges::to](https://en.cppreference.com/w/cpp/ranges/to)
+
+**Notes:**
+*** promo
+[Discussion thread](https://groups.google.com/a/chromium.org/g/cxx/c/ZzSLYf6-KwQ).
+NOTE: `std::ranges::to` could also be used as a range adaptor, but those are
+banned in Chromium, see [here](#range-factories-and-range-adaptors-banned).
+***
+
 ### std::to_underlying <sup>[allowed]</sup>
 
 ```c++
@@ -2118,26 +2161,6 @@ std::mdspan m(ptr, 10, 10);
 *** promo
 We ban std::span in favor of base::span, which has better safety guarantees.
 If we want to support this, maybe we should implement base::mdspan.
-***
-
-### std::ranges::to <sup>[tbd]</sup>
-
-```c++
-std::set<int> s = {1, 2, 3};
-auto u = std::ranges::to<std::vector>(s);
-auto v = s | std::ranges::to<std::vector>();
-```
-
-**Description:** Converts a range to a container.
-
-**Documentation:**
-[std::ranges::to](https://en.cppreference.com/w/cpp/ranges/to)
-
-**Notes:**
-*** promo
-We should ban the 2nd case in the snippet (use as an adaptor), but might want to
-allow the 1st case (simple container conversion). Note there's also
-std::from_range for use cases like the 1st one.
 ***
 
 ### Range Formatting <sup>[tbd]</sup>
@@ -2380,16 +2403,18 @@ substantial code size increase. Until this problem can be resolved the use of
 these containers is banned. Use the standard library containers instead.
 ***
 
-### bind_front <sup>[banned]</sup>
+### bind_back and bind_front <sup>[banned]</sup>
 
 ```c++
+absl::bind_back
 absl::bind_front
 ```
 
-**Description:** Binds the first N arguments of an invocable object and stores
-them by value.
+**Description:** Binds the first (bind_front) or the last (bind_back) N arguments
+of an invocable object and stores them by value.
 
 **Documentation:**
+*   [bind_back.h](https://source.chromium.org/chromium/chromium/src/+/main:third_party/abseil-cpp/absl/functional/bind_back.h)
 *   [bind_front.h](https://source.chromium.org/chromium/chromium/src/+/main:third_party/abseil-cpp/absl/functional/bind_front.h)
 *   [Avoid std::bind](https://abseil.io/tips/108)
 
@@ -2768,6 +2793,28 @@ The following Abseil library features are not allowed in the Chromium codebase.
 See the top of this page on how to propose moving a feature from this list into
 the allowed or banned sections.
 
+### absl::AnySpan <sup>[tbd]</sup>
+
+```c++
+void MyFunction(AnySpan<const MyMessage> messages);
+
+// Invoke with container of smart pointers.
+std::deque<std::unique_ptr<MyMessage>> message_ptrs = ...;
+MyFunction(AnySpan<const MyMessage>(message_ptrs, any_span_transform::Deref()));
+
+// Invoke with a repeated proto field of type MyMessage.
+OtherMessage proto_message = ...;
+MyFunction(proto_message.repeated_field());
+```
+
+**Description:** Provides a view of a random access container, much like
+absl::Span, except it can handle more container types and perform a variety of
+useful transformations.
+
+**Documentation:**
+*  [any_span.h](https://source.chromium.org/chromium/chromium/src/+/main:third_party/abseil-cpp/absl/types/any_span.h)
+
+
 ### absl::linked_hash_set, absl::linked_hash_map <sup>[tbd]</sup>
 
 ```c++
@@ -2784,3 +2831,53 @@ amortized insertions and lookups, as well as iteration in the insertion order.
 **Documentation:**
 *   [linked_hash_set.h](https://source.chromium.org/chromium/chromium/src/+/main:third_party/abseil-cpp/absl/container/linked_hash_set.h)
 *   [linked_hash_map.h](https://source.chromium.org/chromium/chromium/src/+/main:third_party/abseil-cpp/absl/container/linked_hash_map.h)
+
+
+### absl::optional_ref <sup>[tbd]</sup>
+
+```c++
+   void ProcessT(absl::optional_ref<const T> input) {
+     if (!input.has_value()) {
+       // Handle empty case.
+       return;
+     }
+     const T& val = *input;
+     // Do something with val.
+   }
+
+   ProcessT(std::nullopt);
+   ProcessT(BuildT());
+```
+
+**Description:** A `std::optional`-like interface around `T*`.
+It is similar to C++26's `std::optional<T&>`, but with slight enhancements.
+
+**Documentation:**
+*   [optional_ref.h](https://source.chromium.org/chromium/chromium/src/+/main:third_party/abseil-cpp/absl/types/optional_ref.h)
+
+
+### absl::SourceLocation <sup>[tbd]</sup>
+
+```c++
+   void TracedAdd(int i, SourceLocation loc = SourceLocation::current()) {
+     std::cout << loc.file_name() << ":" << loc.line() << " added " << i;
+     ...
+   }
+
+   void UserCode() {
+     TracedAdd(1);
+     TracedAdd(2);
+   }
+```
+
+**Description:** provides source-code location info.
+It is similar to C++20's `std::source_location`. Unlike std::source_location,
+it is not permanently valid and must not outlive its source.
+
+**Documentation:**
+*   [source_location.h](https://source.chromium.org/chromium/chromium/src/+/main:third_party/abseil-cpp/absl/types/source_location.h)
+
+**Notes:**
+*** promo
+Overlaps with `base::Location`.
+***

@@ -85,10 +85,10 @@ void TopLevelStorageAccessPermissionContext::DecidePermission(
     return;
   }
 
-  if (!request_data->user_gesture ||
+  if (!request_data->user_gesture || !rfh->HasTransientUserActivation() ||
       !request_data->requesting_origin.is_valid() ||
       !request_data->embedding_origin.is_valid()) {
-    if (!request_data->user_gesture) {
+    if (!request_data->user_gesture || !rfh->HasTransientUserActivation()) {
       rfh->AddMessageToConsole(
           blink::mojom::ConsoleMessageLevel::kError,
           "requestStorageAccessFor: Must be handling a user gesture to use.");
@@ -190,6 +190,7 @@ void TopLevelStorageAccessPermissionContext::NotifyPermissionSet(
     const permissions::PermissionRequestData& request_data,
     permissions::BrowserPermissionCallback callback,
     bool persist,
+    const content::PermissionResult* permission_result,
     const permissions::PermissionPromptDecision& decision) {
   CHECK(decision.overall_decision != PermissionDecision::kAllowThisTime);
   CHECK(decision.is_final);
@@ -289,11 +290,10 @@ void TopLevelStorageAccessPermissionContext::NotifyPermissionSetInternal(
       ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS, top_level_grants, barrier);
 }
 
-void TopLevelStorageAccessPermissionContext::UpdateContentSetting(
+void TopLevelStorageAccessPermissionContext::UpdateSetting(
     const permissions::PermissionRequestData& request_data,
-    ContentSetting content_setting,
+    const PermissionSetting& setting,
     bool is_one_time) {
-  CHECK(!is_one_time);
   // We need to notify the network service of content setting updates before we
   // run our callback. As a result we do our updates when we're notified of a
   // permission being set and should not be called here.

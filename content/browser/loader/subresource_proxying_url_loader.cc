@@ -6,6 +6,7 @@
 
 #include "content/browser/browsing_topics/browsing_topics_url_loader_interceptor.h"
 #include "content/browser/interest_group/ad_auction_url_loader_interceptor.h"
+#include "mojo/public/cpp/bindings/message.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/mojom/early_hints.mojom.h"
 
@@ -57,20 +58,21 @@ SubresourceProxyingURLLoader::SubresourceProxyingURLLoader(
 SubresourceProxyingURLLoader::~SubresourceProxyingURLLoader() = default;
 
 void SubresourceProxyingURLLoader::FollowRedirect(
-    const std::vector<std::string>& removed_headers,
-    const net::HttpRequestHeaders& modified_headers,
-    const net::HttpRequestHeaders& modified_cors_exempt_headers,
+    network::HttpRequestHeadersUpdateParams headers_update_params,
     const std::optional<GURL>& new_url) {
-  std::vector<std::string> new_removed_headers = removed_headers;
-  net::HttpRequestHeaders new_modified_headers = modified_headers;
+  if (!redirect_pending_) {
+    mojo::ReportBadMessage("Unexpected FollowRedirect");
+    return;
+  }
+  redirect_pending_ = false;
 
   for (auto& interceptor : interceptors_) {
-    interceptor->WillFollowRedirect(new_url, new_removed_headers,
-                                    new_modified_headers);
+    interceptor->WillFollowRedirect(new_url,
+                                    headers_update_params.removed_headers,
+                                    headers_update_params.modified_headers);
   }
 
-  loader_->FollowRedirect(new_removed_headers, new_modified_headers,
-                          modified_cors_exempt_headers, new_url);
+  loader_->FollowRedirect(std::move(headers_update_params), new_url);
 }
 
 void SubresourceProxyingURLLoader::SetPriority(net::RequestPriority priority,
@@ -87,6 +89,11 @@ void SubresourceProxyingURLLoader::OnReceiveResponse(
     network::mojom::URLResponseHeadPtr head,
     mojo::ScopedDataPipeConsumerHandle body,
     std::optional<mojo_base::BigBuffer> cached_metadata) {
+  // Reset the redirect state. While it's unclear if a redirect can genuinely
+  // be pending at this point, we clear it to be robust against variations
+  // in URLLoader behavior (e.g., notifications of failures during redirects).
+  redirect_pending_ = false;
+
   for (auto& interceptor : interceptors_) {
     interceptor->OnReceiveResponse(head);
   }
@@ -98,6 +105,8 @@ void SubresourceProxyingURLLoader::OnReceiveResponse(
 void SubresourceProxyingURLLoader::OnReceiveRedirect(
     const net::RedirectInfo& redirect_info,
     network::mojom::URLResponseHeadPtr head) {
+  redirect_pending_ = true;
+
   for (auto& interceptor : interceptors_) {
     interceptor->OnReceiveRedirect(redirect_info, head);
   }
@@ -120,6 +129,11 @@ void SubresourceProxyingURLLoader::OnTransferSizeUpdated(
 
 void SubresourceProxyingURLLoader::OnComplete(
     const network::URLLoaderCompletionStatus& status) {
+  // Reset the redirect state. While it's unclear if a redirect can genuinely
+  // be pending at this point, we clear it to be robust against variations
+  // in URLLoader behavior (e.g., notifications of failures during redirects).
+  redirect_pending_ = false;
+
   forwarding_client_->OnComplete(status);
 }
 

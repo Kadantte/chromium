@@ -11,7 +11,7 @@
 
 #include "base/functional/bind.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/memory/singleton.h"
+#include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
@@ -396,21 +396,17 @@ std::u16string DevicePermissionsManager::GetPermissionMessage(
     const std::u16string& product_string,
     const std::u16string& serial_number,
     bool always_include_manufacturer) {
+  device::UsbIdNames names =
+      device::UsbIds::GetVendorAndProductName(vendor_id, product_id);
+
   std::u16string product = product_string;
-  if (product.empty()) {
-    const char* product_name =
-        device::UsbIds::GetProductName(vendor_id, product_id);
-    if (product_name) {
-      product = base::UTF8ToUTF16(product_name);
-    }
+  if (product.empty() && names.product_name) {
+    product = base::UTF8ToUTF16(names.product_name);
   }
 
   std::u16string manufacturer = manufacturer_string;
-  if (manufacturer_string.empty()) {
-    const char* vendor_name = device::UsbIds::GetVendorName(vendor_id);
-    if (vendor_name) {
-      manufacturer = base::UTF8ToUTF16(vendor_name);
-    }
+  if (manufacturer_string.empty() && names.vendor_name) {
+    manufacturer = base::UTF8ToUTF16(names.vendor_name);
   }
 
   if (serial_number.empty()) {
@@ -666,7 +662,8 @@ DevicePermissionsManager* DevicePermissionsManagerFactory::GetForBrowserContext(
 // static
 DevicePermissionsManagerFactory*
 DevicePermissionsManagerFactory::GetInstance() {
-  return base::Singleton<DevicePermissionsManagerFactory>::get();
+  static base::NoDestructor<DevicePermissionsManagerFactory> instance;
+  return instance.get();
 }
 
 DevicePermissionsManagerFactory::DevicePermissionsManagerFactory()
@@ -675,8 +672,7 @@ DevicePermissionsManagerFactory::DevicePermissionsManagerFactory()
           BrowserContextDependencyManager::GetInstance()) {
 }
 
-DevicePermissionsManagerFactory::~DevicePermissionsManagerFactory() {
-}
+DevicePermissionsManagerFactory::~DevicePermissionsManagerFactory() = default;
 
 std::unique_ptr<KeyedService>
 DevicePermissionsManagerFactory::BuildServiceInstanceForBrowserContext(

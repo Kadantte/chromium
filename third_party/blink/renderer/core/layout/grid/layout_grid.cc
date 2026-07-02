@@ -4,29 +4,13 @@
 
 #include "third_party/blink/renderer/core/layout/grid/layout_grid.h"
 
+#include "third_party/blink/renderer/core/layout/break_token_algorithm_data.h"
+#include "third_party/blink/renderer/core/layout/fragmentation_utils.h"
 #include "third_party/blink/renderer/core/layout/layout_result.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
 LayoutGrid::LayoutGrid(Element* element) : LayoutBlock(element) {}
-
-void LayoutGrid::UpdateAfterLayout() {
-  NOT_DESTROYED();
-
-  // Gap decorations depend on the position of grid tracks, which may change
-  // when a child's size changes (e.g., during animation). Trigger a full
-  // paint invalidation to ensure the gap decorations repaint correctly.
-  if (RuntimeEnabledFeatures::CSSGapDecorationEnabled() &&
-      StyleRef().HasGapRule()) {
-    // TODO(samomekarajr): Look towards scoping this "hammer" even more. For
-    // example, invalidate paint if a new track is added or maybe storing
-    // something on `GapGeometry` that can tell us if we actually need to
-    // invalidate paint.
-    SetShouldDoFullPaintInvalidation();
-  }
-  LayoutBlock::UpdateAfterLayout();
-}
 
 void LayoutGrid::MarkGridDirty() {
   NOT_DESTROYED();
@@ -139,12 +123,13 @@ bool LayoutGrid::HasCachedSubgridMinMaxSizes() const {
 
 const MinMaxSizes& LayoutGrid::CachedSubgridMinMaxSizes() const {
   DCHECK(HasCachedSubgridMinMaxSizes());
-  return **cached_subgrid_min_max_sizes_;
+  return cached_subgrid_min_max_sizes_->CachedMinMaxSizes();
 }
 
 void LayoutGrid::SetSubgridMinMaxSizesCache(MinMaxSizes&& min_max_sizes,
                                             const GridLayoutData& layout_data) {
-  cached_subgrid_min_max_sizes_.emplace(std::move(min_max_sizes), layout_data);
+  cached_subgrid_min_max_sizes_ = MakeGarbageCollected<SubgridMinMaxSizesCache>(
+      std::move(min_max_sizes), layout_data);
   SetSubgridMinMaxSizesCacheDirty(false);
 }
 
@@ -156,6 +141,23 @@ bool LayoutGrid::ShouldInvalidateSubgridMinMaxSizesCacheFor(
 
 const GridLayoutData* LayoutGrid::LayoutData() const {
   return GetGridLayoutDataFromFragments(this);
+}
+
+wtf_size_t LayoutGrid::StitchedRowGapIndex(const PhysicalBoxFragment& fragment,
+                                           wtf_size_t gap_index) const {
+  NOT_DESTROYED();
+  // This should only be reached when painting gap decorations in a fragmented
+  // context.
+  CHECK(!fragment.IsOnlyForNode());
+  const auto* previous_break_token = FindPreviousBreakToken(fragment);
+
+  // The first fragment has no previous break token, so the stitched index is
+  // just `gap_index`.
+  if (!previous_break_token) {
+    return gap_index;
+  }
+  return previous_break_token->TokenData()->GetFirstUnprocessedRowGapIndex() +
+         gap_index;
 }
 
 // static

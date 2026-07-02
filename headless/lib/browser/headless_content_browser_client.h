@@ -77,6 +77,8 @@ class HeadlessContentBrowserClient : public content::ContentBrowserClient {
   bool ShouldEnableStrictSiteIsolation() override;
   bool ShouldAllowProcessPerSiteForMultipleMainFrames(
       content::BrowserContext* context) override;
+  std::unique_ptr<content::DigitalIdentityProvider>
+  CreateDigitalIdentityProvider() override;
 
   // Returns whether |api_origin| on |top_frame_origin| can perform
   // |operation| within the interest group API.
@@ -104,10 +106,6 @@ class HeadlessContentBrowserClient : public content::ContentBrowserClient {
       const url::Origin& accessing_origin,
       std::string* out_debug_message,
       bool* out_block_is_site_setting_specific) override;
-  bool IsFencedStorageReadAllowed(content::BrowserContext* browser_context,
-                                  content::RenderFrameHost* rfh,
-                                  const url::Origin& top_frame_origin,
-                                  const url::Origin& accessing_origin) override;
   void ConfigureNetworkContextParams(
       content::BrowserContext* context,
       bool in_memory,
@@ -125,11 +123,6 @@ class HeadlessContentBrowserClient : public content::ContentBrowserClient {
   GetGeolocationSystemPermissionManager() override;
 #if BUILDFLAG(IS_WIN)
   void SessionEnding(std::optional<DWORD> control_type) override;
-#endif
-
-#if defined(HEADLESS_USE_POLICY)
-  void CreateThrottlesForNavigation(
-      content::NavigationThrottleRegistry& registry) override;
 #endif
 
   void OnNetworkServiceCreated(
@@ -164,7 +157,6 @@ class HeadlessContentBrowserClient : public content::ContentBrowserClient {
 
   void HandleExplicitlyAllowedPorts(
       ::network::mojom::NetworkService* network_service);
-  void SetEncryptionKey(::network::mojom::NetworkService* network_service);
 
   raw_ptr<HeadlessBrowserImpl> browser_;  // Not owned.
 

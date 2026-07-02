@@ -112,6 +112,7 @@ class WebViewAutofillClientIOS : public AutofillClientIOS {
   syncer::SyncService* GetSyncService() override;
   signin::IdentityManager* GetIdentityManager() override;
   const signin::IdentityManager* GetIdentityManager() const override;
+  metrics::ProfileMetricsService* GetProfileMetricsService() override;
   FormDataImporter* GetFormDataImporter() override;
   payments::PaymentsAutofillClient* GetPaymentsAutofillClient() override;
   strike_database::StrikeDatabase* GetStrikeDatabase() final;
@@ -132,11 +133,12 @@ class WebViewAutofillClientIOS : public AutofillClientIOS {
       const AutofillClient::PopupOpenArgs& open_args,
       base::WeakPtr<AutofillSuggestionDelegate> delegate) override;
   void UpdateAutofillDataListValues(
-      base::span<const autofill::SelectOption> datalist) override;
-  void HideAutofillSuggestions(SuggestionHidingReason reason) override;
+      base::span<const SelectOption> datalist) override;
+  void HideSuggestions(SuggestionHidingReason reason,
+                       std::optional<FillingProduct> product) override;
   bool IsAutofillEnabled() const override;
   bool IsAutofillProfileEnabled() const override;
-  bool IsWalletStorageEnabled() const override;
+  bool IsWalletPublicPassStorageEnabled() const override;
   bool IsAutocompleteEnabled() const override;
   bool IsPasswordManagerEnabled() const override;
   bool IsContextSecure() const override;
@@ -171,6 +173,8 @@ class WebViewAutofillClientIOS : public AutofillClientIOS {
   SingleFieldFillRouter single_field_fill_router_{
       autocomplete_history_manager_, payments_autofill_client_.GetIbanManager(),
       payments_autofill_client_.GetMerchantPromoCodeManager()};
+
+  base::WeakPtr<AutofillSuggestionDelegate> active_suggestion_delegate_;
 
   base::WeakPtrFactory<WebViewAutofillClientIOS> weak_ptr_factory_{this};
 };

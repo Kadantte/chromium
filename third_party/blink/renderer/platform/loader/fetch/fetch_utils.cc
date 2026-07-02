@@ -56,8 +56,8 @@ bool FetchUtils::IsForbiddenResponseHeaderName(const String& name) {
   // "A forbidden response header name is a header name that is one of:
   // `Set-Cookie`, `Set-Cookie2`"
 
-  return EqualIgnoringASCIICase(name, "set-cookie") ||
-         EqualIgnoringASCIICase(name, "set-cookie2");
+  return EqualIgnoringAsciiCase(name, "set-cookie") ||
+         EqualIgnoringAsciiCase(name, "set-cookie2");
 }
 
 AtomicString FetchUtils::NormalizeMethod(const AtomicString& method) {
@@ -71,7 +71,7 @@ AtomicString FetchUtils::NormalizeMethod(const AtomicString& method) {
   };
 
   for (auto* const known : kMethods) {
-    if (EqualIgnoringASCIICase(method, *known)) {
+    if (EqualIgnoringAsciiCase(method, *known)) {
       // Don't bother allocating a new string if it's already all
       // uppercase.
       return method == *known ? method : *known;
@@ -123,9 +123,10 @@ net::NetworkTrafficAnnotationTag FetchUtils::GetTrafficAnnotationTag(
     case network::mojom::RequestDestination::kEmailVerification:
     case network::mojom::RequestDestination::kSharedStorageWorklet:
       NOTREACHED();
-    case network::mojom::RequestDestination::kEmpty:
     case network::mojom::RequestDestination::kAudio:
     case network::mojom::RequestDestination::kAudioWorklet:
+    case network::mojom::RequestDestination::kDictionary:
+    case network::mojom::RequestDestination::kEmpty:
     case network::mojom::RequestDestination::kFont:
     case network::mojom::RequestDestination::kImage:
     case network::mojom::RequestDestination::kJson:
@@ -137,12 +138,12 @@ net::NetworkTrafficAnnotationTag FetchUtils::GetTrafficAnnotationTag(
     case network::mojom::RequestDestination::kSharedWorker:
     case network::mojom::RequestDestination::kSpeculationRules:
     case network::mojom::RequestDestination::kStyle:
+    case network::mojom::RequestDestination::kText:
     case network::mojom::RequestDestination::kTrack:
     case network::mojom::RequestDestination::kVideo:
     case network::mojom::RequestDestination::kWebBundle:
     case network::mojom::RequestDestination::kWorker:
     case network::mojom::RequestDestination::kXslt:
-    case network::mojom::RequestDestination::kDictionary:
       return net::DefineNetworkTrafficAnnotation("blink_resource_loader", R"(
       semantics {
         sender: "Blink Resource Loader"
@@ -223,7 +224,6 @@ void FetchUtils::LogFetchKeepAliveRequestMetric(
     case mojom::blink::RequestContextType::IMAGE:
       sample_type = FetchKeepAliveRequestMetricType::kBackgroundFetchIcon;
       break;
-    case mojom::blink::RequestContextType::UNSPECIFIED:
     case mojom::blink::RequestContextType::AUDIO:
     case mojom::blink::RequestContextType::DOWNLOAD:
     case mojom::blink::RequestContextType::EMBED:
@@ -246,10 +246,12 @@ void FetchUtils::LogFetchKeepAliveRequestMetric(
     case mojom::blink::RequestContextType::SERVICE_WORKER:
     case mojom::blink::RequestContextType::SHARED_WORKER:
     case mojom::blink::RequestContextType::SPECULATION_RULES:
+    case mojom::blink::RequestContextType::STYLE:
     case mojom::blink::RequestContextType::SUBRESOURCE:
     case mojom::blink::RequestContextType::SUBRESOURCE_WEBBUNDLE:
-    case mojom::blink::RequestContextType::STYLE:
+    case mojom::blink::RequestContextType::TEXT:
     case mojom::blink::RequestContextType::TRACK:
+    case mojom::blink::RequestContextType::UNSPECIFIED:
     case mojom::blink::RequestContextType::VIDEO:
     case mojom::blink::RequestContextType::WORKER:
     case mojom::blink::RequestContextType::XML_HTTP_REQUEST:

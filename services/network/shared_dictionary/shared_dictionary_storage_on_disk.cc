@@ -10,6 +10,8 @@
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory_coordinator/traits.h"
+#include "base/memory_coordinator/utils.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/pattern.h"
 #include "base/strings/strcat.h"
@@ -74,6 +76,9 @@ std::set<mojom::RequestDestination> ToRequestDestinationSet(
   return destinations;
 }
 
+constexpr base::MemoryConsumerTraits kSharedDictionaryStorageTraits(
+    base::MemoryConsumerTraits::ConsumerType::kPassive);
+
 }  // namespace
 
 SharedDictionaryStorageOnDisk::WrappedDictionaryInfo::WrappedDictionaryInfo(
@@ -100,12 +105,12 @@ SharedDictionaryStorageOnDisk::SharedDictionaryStorageOnDisk(
       isolation_key_(isolation_key),
       on_deleted_closure_runner_(std::move(on_deleted_closure_runner)),
       dictionary_cache_(dictionary_cache),
+      memory_consumer_registration_(
+          "SharedDictionaryStorageOnDisk",
+          kSharedDictionaryStorageTraits,
+          this,
+          base::AsyncMemoryConsumerRegistration::CheckUnregister::kDisabled),
       previous_eviction_reason_(previous_eviction_reason) {
-  memory_pressure_listener_registration_ =
-      std::make_unique<base::AsyncMemoryPressureListenerRegistration>(
-          FROM_HERE,
-          base::MemoryPressureListenerTag::kSharedDictionaryStorageOnDisk,
-          this);
   manager_->metadata_store().GetDictionaries(
       isolation_key_,
       base::BindOnce(
@@ -113,6 +118,8 @@ SharedDictionaryStorageOnDisk::SharedDictionaryStorageOnDisk(
              base::Time start_time,
              net::SQLitePersistentSharedDictionaryStore::DictionaryListOrError
                  result) {
+            TRACE_EVENT("net",
+                        "SharedDictionaryStorageOnDisk::OnGetDictionaries");
             RecordMetadataReadTimeMetrics(result,
                                           base::Time::Now() - start_time);
             if (weak_ptr) {
@@ -123,6 +130,11 @@ SharedDictionaryStorageOnDisk::SharedDictionaryStorageOnDisk(
 }
 
 SharedDictionaryStorageOnDisk::~SharedDictionaryStorageOnDisk() = default;
+
+const net::SharedDictionaryIsolationKey&
+SharedDictionaryStorageOnDisk::isolation_key() const {
+  return isolation_key_;
+}
 
 scoped_refptr<net::SharedDictionary>
 SharedDictionaryStorageOnDisk::GetDictionarySync(
@@ -254,7 +266,7 @@ SharedDictionaryStorageOnDisk::GetDictionarySyncInternal(
           weak_factory_.GetWeakPtr(), info->disk_cache_key_token())));
   dictionaries_.emplace(info->disk_cache_key_token(), shared_dictionary.get());
 
-  if (memory_pressure_level_ == base::MEMORY_PRESSURE_LEVEL_NONE) {
+  if (memory_limit() >= base::kNoMemoryPressureThreshold) {
     dictionary_cache_->Put(info->disk_cache_key_token(), destination,
                            shared_dictionary);
   }
@@ -381,16 +393,6 @@ void SharedDictionaryStorageOnDisk::OnDictionaryDeleted(
   }
   std::erase_if(dictionary_info_map_,
                 [](const auto& it) { return it.second.empty(); });
-}
-
-void SharedDictionaryStorageOnDisk::OnMemoryPressure(
-    base::MemoryPressureLevel level) {
-  // TODO(pmonette): This doesn't handle NONE notifications for historical
-  // reasons. Fix this.
-  if (level == base::MEMORY_PRESSURE_LEVEL_NONE) {
-    return;
-  }
-  memory_pressure_level_ = level;
 }
 
 }  // namespace network

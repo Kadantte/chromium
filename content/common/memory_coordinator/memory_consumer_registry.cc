@@ -7,50 +7,55 @@
 #include <algorithm>
 #include <utility>
 
+#include "base/auto_reset.h"
 #include "base/check.h"
 #include "base/check_op.h"
+#include "content/common/memory_coordinator/constants.h"
 
 namespace content {
 
 // MemoryConsumerRegistry::ConsumerGroup ---------------------------------------
 
 MemoryConsumerRegistry::ConsumerGroup::ConsumerGroup(
-    base::MemoryConsumerTraits traits)
-    : traits_(traits) {}
+    std::optional<base::MemoryConsumerTraits> traits,
+    std::string_view consumer_name)
+    : traits_(traits), consumer_name_(consumer_name) {}
 
 MemoryConsumerRegistry::ConsumerGroup::~ConsumerGroup() {
   CHECK(memory_consumers_.empty());
 }
 
 void MemoryConsumerRegistry::ConsumerGroup::ReleaseMemory() {
-  for (base::RegisteredMemoryConsumer& consumer : memory_consumers_) {
-    consumer.ReleaseMemory();
+  for (base::MemoryConsumer& consumer : memory_consumers_) {
+    base::MemoryConsumerRegistry::NotifyReleaseMemory(&consumer);
   }
 }
 
 void MemoryConsumerRegistry::ConsumerGroup::UpdateMemoryLimit(int percentage) {
   memory_limit_ = percentage;
-  for (base::RegisteredMemoryConsumer& consumer : memory_consumers_) {
-    consumer.UpdateMemoryLimit(memory_limit_);
+  for (base::MemoryConsumer& consumer : memory_consumers_) {
+    base::MemoryConsumerRegistry::NotifyUpdateMemoryLimit(&consumer,
+                                                          memory_limit_);
   }
 }
 
 void MemoryConsumerRegistry::ConsumerGroup::AddMemoryConsumer(
-    base::RegisteredMemoryConsumer consumer) {
-  CHECK(!std::ranges::contains(memory_consumers_, consumer));
-  memory_consumers_.push_back(consumer);
+    base::MemoryConsumer* consumer) {
+  CHECK(!memory_consumers_.HasObserver(consumer));
+  memory_consumers_.AddObserver(consumer);
 
   // Ensure the added consumer is up to date with the current memory limit
   // applied to this consumer group.
   if (memory_limit_ != base::MemoryConsumer::kDefaultMemoryLimit) {
-    consumer.UpdateMemoryLimit(memory_limit_);
+    base::MemoryConsumerRegistry::NotifyUpdateMemoryLimitNoNotification(
+        consumer, memory_limit_);
   }
 }
 
 void MemoryConsumerRegistry::ConsumerGroup::RemoveMemoryConsumer(
-    base::RegisteredMemoryConsumer consumer) {
-  size_t removed = std::erase(memory_consumers_, consumer);
-  CHECK_EQ(removed, 1u);
+    base::MemoryConsumer* consumer) {
+  CHECK(memory_consumers_.HasObserver(consumer));
+  memory_consumers_.RemoveObserver(consumer);
 }
 
 // MemoryConsumerRegistry ------------------------------------------------------
@@ -62,7 +67,8 @@ MemoryConsumerRegistry::MemoryConsumerRegistry(
     : process_type_(process_type),
       child_process_id_(child_process_id),
       controller_(controller) {
-  controller_->AddMemoryConsumerGroupHost(child_process_id_, this);
+  controller_->AddMemoryConsumerGroupHost(process_type_, child_process_id_,
+                                          this);
 }
 
 MemoryConsumerRegistry::~MemoryConsumerRegistry() {
@@ -71,33 +77,49 @@ MemoryConsumerRegistry::~MemoryConsumerRegistry() {
   CHECK(consumer_groups_.empty());
 }
 
-void MemoryConsumerRegistry::UpdateMemoryLimit(std::string_view consumer_id,
-                                               int percentage) {
-  auto it = consumer_groups_.find(consumer_id);
-  CHECK(it != consumer_groups_.end());
+void MemoryConsumerRegistry::UpdateConsumers(
+    std::vector<MemoryConsumerUpdate> updates) {
+  CHECK(!is_updating_);
+  base::AutoReset<bool> reset(&is_updating_, true);
 
-  it->second->UpdateMemoryLimit(percentage);
-}
+  for (const auto& update : updates) {
+    auto it = consumer_groups_.find(update.consumer_id);
+    CHECK(it != consumer_groups_.end());
+    if (update.percentage) {
+      it->second->UpdateMemoryLimit(*update.percentage);
+    }
+    if (update.release_memory) {
+      it->second->ReleaseMemory();
+    }
+  }
 
-void MemoryConsumerRegistry::ReleaseMemory(std::string_view consumer_id) {
-  auto it = consumer_groups_.find(consumer_id);
-  CHECK(it != consumer_groups_.end());
-
-  it->second->ReleaseMemory();
+  for (uint32_t consumer_id : pending_removal_groups_) {
+    auto it = consumer_groups_.find(consumer_id);
+    if (it != consumer_groups_.end() && it->second->empty()) {
+      controller_->OnConsumerGroupRemoved(consumer_id, child_process_id_);
+      consumer_groups_.erase(it);
+    }
+  }
+  pending_removal_groups_.clear();
 }
 
 void MemoryConsumerRegistry::OnMemoryConsumerAdded(
-    std::string_view consumer_id,
-    base::MemoryConsumerTraits traits,
-    base::RegisteredMemoryConsumer consumer) {
+    uint32_t consumer_id,
+    std::string_view consumer_name,
+    std::optional<base::MemoryConsumerTraits> traits,
+    base::MemoryConsumer* consumer) {
+  CHECK_LE(consumer_name.size(), kMaxMemoryConsumerNameLength);
+
   auto [it, inserted] = consumer_groups_.try_emplace(consumer_id);
   std::unique_ptr<ConsumerGroup>& consumer_group = it->second;
 
   if (inserted) {
-    // First time seeing a consumer with this ID.
-    consumer_group = std::make_unique<ConsumerGroup>(traits);
+    CHECK_LE(consumer_groups_.size(), kMaxMemoryConsumersPerProcess);
 
-    controller_->OnConsumerGroupAdded(consumer_id, traits, process_type_,
+    // First time seeing a consumer with this ID.
+    consumer_group = std::make_unique<ConsumerGroup>(traits, consumer_name);
+
+    controller_->OnConsumerGroupAdded(consumer_id, consumer_name, traits,
                                       child_process_id_);
   }
 
@@ -107,8 +129,8 @@ void MemoryConsumerRegistry::OnMemoryConsumerAdded(
 }
 
 void MemoryConsumerRegistry::OnMemoryConsumerRemoved(
-    std::string_view consumer_id,
-    base::RegisteredMemoryConsumer consumer) {
+    uint32_t consumer_id,
+    base::MemoryConsumer* consumer) {
   auto it = consumer_groups_.find(consumer_id);
   CHECK(it != consumer_groups_.end());
   ConsumerGroup& consumer_group = *it->second;
@@ -116,11 +138,17 @@ void MemoryConsumerRegistry::OnMemoryConsumerRemoved(
   consumer_group.RemoveMemoryConsumer(consumer);
 
   if (consumer_group.empty()) {
-    // Last consumer with this ID.
-    controller_->OnConsumerGroupRemoved(consumer_id, child_process_id_);
+    if (is_updating_) {
+      // Defer destruction of the empty group to avoid destroying the
+      // ObserverList we are currently iterating over in UpdateConsumers().
+      pending_removal_groups_.push_back(consumer_id);
+    } else {
+      // Last consumer with this ID.
+      controller_->OnConsumerGroupRemoved(consumer_id, child_process_id_);
 
-    // Also remove the group.
-    consumer_groups_.erase(it);
+      // Also remove the group.
+      consumer_groups_.erase(it);
+    }
   }
 }
 

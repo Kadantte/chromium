@@ -34,7 +34,7 @@ import {GeolocationAccessLevel} from './privacy_hub_geolocation_subpage.js';
 import {getTemplate} from './privacy_hub_subpage.html.js';
 
 /**
- * These values are persisted to logs and should not be renumbered or re-used.
+ * These values are persisted to logs and should not be renumbered or reused.
  * Keep in sync with PrivacyHubNavigationOrigin in
  * tools/metrics/histograms/enums.xml and
  * ash/system/privacy_hub/privacy_hub_metrics.h.
@@ -66,6 +66,14 @@ export class SettingsPrivacyHubSubpage extends SettingsPrivacyHubSubpageBase {
         readOnly: true,
         value: function() {
           return loadTimeData.getBoolean('showPrivacyHubLocationControl');
+        },
+      },
+
+      shouldUseMetricsConsentRestructure_: {
+        type: Boolean,
+        readOnly: true,
+        value: function() {
+          return loadTimeData.getBoolean('shouldUseMetricsConsentRestructure');
         },
       },
 
@@ -157,6 +165,7 @@ export class SettingsPrivacyHubSubpage extends SettingsPrivacyHubSubpageBase {
 
   private browserProxy_: PrivacyHubBrowserProxy;
   private showPrivacyHubLocationControl_: boolean;
+  private shouldUseMetricsConsentRestructure_: boolean;
   private locationSubLabel_: string;
   private cameraFallbackMechanismEnabled_: boolean;
   private cameraRowSubtext_: string;

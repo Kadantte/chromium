@@ -142,10 +142,10 @@ base::DictValue CreateDictionaryFromVerdict(
 void GeneratePathVariantsWithoutQuery(const GURL& url,
                                       std::vector<std::string>* paths) {
   std::string canonical_path;
-  V4ProtocolManagerUtil::CanonicalizeUrl(
+  SBProtocolManagerUtil::CanonicalizeUrl(
       url, /*canonicalized_hostname=*/nullptr, &canonical_path,
       /*canonicalized_query=*/nullptr);
-  V4ProtocolManagerUtil::GeneratePathVariantsToCheck(canonical_path,
+  SBProtocolManagerUtil::GeneratePathVariantsToCheck(canonical_path,
                                                      std::string(), paths);
 }
 
@@ -343,7 +343,7 @@ std::optional<base::Value> GetMostMatchingCachedVerdictEntryWithPathMatching(
   GeneratePathVariantsWithoutQuery(url, &paths);
 
   std::string root_path;
-  V4ProtocolManagerUtil::CanonicalizeUrl(
+  SBProtocolManagerUtil::CanonicalizeUrl(
       url, /*canonicalized_hostname*/ nullptr, &root_path,
       /*canonicalized_query*/ nullptr);
 
@@ -391,10 +391,10 @@ GetMostMatchingCachedVerdictEntryWithHostAndPathMatching(
   MatchParams match_params;
 
   std::string root_host, root_path;
-  V4ProtocolManagerUtil::CanonicalizeUrl(url, &root_host, &root_path,
+  SBProtocolManagerUtil::CanonicalizeUrl(url, &root_host, &root_path,
                                          /*canonicalized_query*/ nullptr);
   std::vector<std::string> host_variants;
-  V4ProtocolManagerUtil::GenerateHostVariantsToCheck(root_host, &host_variants);
+  SBProtocolManagerUtil::GenerateHostVariantsToCheck(root_host, &host_variants);
   int max_path_depth = -1;
   for (const auto& host : host_variants) {
     int depth = static_cast<int>(GetHostDepth(host));
@@ -1235,7 +1235,7 @@ void VerdictCacheManager::CacheArtificialRealTimeUrlVerdict(
   }
   threat_info->set_cache_duration_sec(3000);
   threat_info->set_cache_expression_using_match_type(
-      artificial_url.GetContent());
+      artificial_url.GetContentPiece());
   threat_info->set_cache_expression_match_type(
       RTLookupResponse::ThreatInfo::EXACT_MATCH);
   RemoveContentSettingsOnURLsDeleted(/*all_history=*/false,
@@ -1264,7 +1264,7 @@ void VerdictCacheManager::CacheArtificialUnsafePhishGuardVerdictFromSwitch() {
 
   LoginReputationClientResponse verdict;
   verdict.set_verdict_type(LoginReputationClientResponse::PHISHING);
-  verdict.set_cache_expression(artificial_unsafe_url.GetContent());
+  verdict.set_cache_expression(artificial_unsafe_url.GetContentPiece());
   verdict.set_cache_duration_sec(3000);
   CachePhishGuardVerdict(LoginReputationClientRequest::PASSWORD_REUSE_EVENT,
                          reused_password_account_type, verdict,
@@ -1286,7 +1286,7 @@ void VerdictCacheManager::CacheArtificialHashRealTimeLookupVerdict(
   has_artificial_cached_url_ = true;
 
   std::vector<FullHashStr> full_hashes;
-  V4ProtocolManagerUtil::UrlToFullHashes(artificial_unsafe_url, &full_hashes);
+  SBProtocolManagerUtil::UrlToFullHashes(artificial_unsafe_url, &full_hashes);
   std::vector<std::string> hash_prefixes;
   for (const auto& full_hash : full_hashes) {
     auto hash_prefix = hash_realtime_utils::GetHashPrefix(full_hash);

@@ -18,6 +18,7 @@
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/containers/span.h"
+#include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
@@ -41,8 +42,8 @@
 #include "base/thread_annotations.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "chrome/browser/password_manager/account_password_store_factory.h"
-#include "chrome/browser/password_manager/profile_password_store_factory.h"
+#include "chrome/browser/password_manager/factories/account_password_store_factory.h"
+#include "chrome/browser/password_manager/factories/profile_password_store_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
@@ -50,8 +51,10 @@
 #include "chrome/browser/ui/webauthn/passkey_upgrade_request_controller.h"
 #include "chrome/browser/webauthn/authenticator_request_dialog_controller.h"
 #include "chrome/browser/webauthn/authenticator_request_dialog_model.h"
+#include "chrome/browser/webauthn/change_pin_controller_impl.h"
 #include "chrome/browser/webauthn/chrome_authenticator_request_delegate.h"
 #include "chrome/browser/webauthn/enclave_authenticator_browsertest_base.h"
+#include "chrome/browser/webauthn/enclave_keys_waiter.h"
 #include "chrome/browser/webauthn/enclave_manager.h"
 #include "chrome/browser/webauthn/enclave_manager_factory.h"
 #include "chrome/browser/webauthn/fake_magic_arch.h"
@@ -67,6 +70,7 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/device_event_log/device_event_log.h"
 #include "components/password_manager/core/browser/password_form.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/prefs/pref_service.h"
@@ -74,6 +78,7 @@
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "components/signin/public/identity_manager/primary_account_mutator.h"
 #include "components/sync/protocol/webauthn_credential_specifics.pb.h"
 #include "components/trusted_vault/securebox.h"
 #include "components/trusted_vault/test/mock_trusted_vault_throttling_connection.h"
@@ -92,6 +97,7 @@
 #include "device/fido/public/features.h"
 #include "device/fido/public/fido_transport_protocol.h"
 #include "device/fido/public/fido_types.h"
+#include "google_apis/gaia/gaia_id.h"
 #include "net/http/http_status_code.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -117,7 +123,7 @@
 
 // These tests are disabled under MSAN. The enclave subprocess is written in
 // Rust and FFI from Rust to C++ doesn't work in Chromium at this time
-// (crbug.com/1369167).
+// (crbug.com/40240570).
 #if !defined(MEMORY_SANITIZER)
 
 namespace {
@@ -204,23 +210,6 @@ static constexpr char kMakeCredentialUvDiscouraged[] = R"((() => {
       userVerification: 'discouraged',
       requireResidentKey: true,
     },
-  }}).then(c => window.domAutomationController.send('webauthn: OK'),
-           e => window.domAutomationController.send('error ' + e));
-})())";
-
-static constexpr char kMakeCredentialSecurePaymentConfirmation[] = R"((() => {
-  return navigator.credentials.create({ publicKey: {
-    rp: { name: "www.example.com" },
-    user: { id: new Uint8Array([0]), name: "foo", displayName: "" },
-    pubKeyCredParams: [{type: "public-key", alg: -7}],
-    challenge: new Uint8Array([0]),
-    timeout: 10000,
-    authenticatorSelection: {
-      userVerification: 'required',
-      residentKey: 'preferred',
-      authenticatorAttachment: 'platform',
-    },
-    extensions: {payment: {isPayment: true}},
   }}).then(c => window.domAutomationController.send('webauthn: OK'),
            e => window.domAutomationController.send('error ' + e));
 })())";
@@ -719,9 +708,6 @@ class EnclaveAuthenticatorBrowserTest : public EnclaveAuthenticatorTestBase {
       ui_shown_run_loop_->QuitWhenIdle();
     }
 
-    void CableV2ExtensionSeen(
-        base::span<const uint8_t> server_link_data) override {}
-
     void AccountSelectorShown(
         const std::vector<device::AuthenticatorGetAssertionResponse>& responses)
         override {}
@@ -837,7 +823,12 @@ class EnclaveAuthenticatorBrowserTest : public EnclaveAuthenticatorTestBase {
     std::unique_ptr<base::RunLoop> run_loop_;
   };
 
-  EnclaveAuthenticatorBrowserTest() = default;
+  EnclaveAuthenticatorBrowserTest() {
+    scoped_feature_list_.InitWithFeatures(
+        {device::kWebAuthnCreatePinWhenSystemUvDisabled,
+         device::kWebAuthnEnclaveUseAuthDataFromEnclave},
+        {});
+  }
   ~EnclaveAuthenticatorBrowserTest() override = default;
 
   EnclaveAuthenticatorBrowserTest(const EnclaveAuthenticatorBrowserTest&) =
@@ -922,6 +913,7 @@ class EnclaveAuthenticatorBrowserTest : public EnclaveAuthenticatorTestBase {
   std::unique_ptr<ModelObserver> model_observer_;
   raw_ptr<ChromeAuthenticatorRequestDelegate> request_delegate_;
   base::HistogramTester histogram_tester_;
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Parses the string resulting from the Javascript snippets that exercise the
@@ -1029,38 +1021,6 @@ IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest,
   EXPECT_THAT(GetDeviceLog(), testing::HasSubstr("\"key\": \"[redacted]\""));
 }
 
-IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest, NonWebauthnRequest) {
-  if (base::FeatureList::IsEnabled(
-          blink::features::kSecurePaymentConfirmationBrowserBoundKeys)) {
-    GTEST_SKIP() << "With kSecurePaymentConfirmationBrowserBoundKeys the "
-                    "SecurePaymentConfirmationService directs the request to "
-                    "the internal authenticator.";
-  }
-  if (!base::FeatureList::IsEnabled(features::kSecurePaymentConfirmation)) {
-    // SPC is not enabled in this configuration and so the `payment` extension
-    // in the Javascript will be ignored.
-    return;
-  }
-
-  CheckRegistrationStateNotRequested();
-
-  content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
-  content::DOMMessageQueue message_queue(web_contents);
-  content::ExecuteScriptAsync(web_contents,
-                              kMakeCredentialSecurePaymentConfirmation);
-  delegate_observer()->WaitForUI();
-
-  // Non-WebAuthn requests (e.g. Secure Payment Confirmation and credit-card
-  // confirmation) must not use the enclave. In some cases, they will disable
-  // the UI, which is not simulated here.
-  EXPECT_TRUE(
-      dialog_model()->step() ==
-          AuthenticatorRequestDialogModel::Step::kChromeProfileCreatePasskey ||
-      dialog_model()->step() ==
-          AuthenticatorRequestDialogModel::Step::kErrorNoAvailableTransports);
-}
-
 // Regression test for https://crbug.com/451876194.
 // Tests a make credential operation when the enclave is already loaded and
 // ready and checking for UV takes long enough that the enclave is selected
@@ -1120,6 +1080,229 @@ IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest,
   dialog_model()->OnGPMPinEntered(u"123456");
   ASSERT_TRUE(message_queue.WaitForMessage(&script_result));
   EXPECT_EQ(script_result, "\"webauthn: uv=true\"");
+}
+
+// Regression test for crbug.com/469125044.
+// Tests that the user can set a new PIN if the user doesn't have one and
+// user-verifying keys become unavailable during make credential.
+IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest,
+                       MakeCredentialUvUnsatisfiable) {
+  // Bootstrap the user with an LSKF and UV so they don't end up with a PIN.
+  SetTrustedVaultRecoverable();
+  EnableUVKeySupport();
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::DOMMessageQueue message_queue(web_contents);
+  content::ExecuteScriptAsync(web_contents, kMakeCredentialUvRequired);
+  delegate_observer()->WaitForUI();
+
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMTrustThisComputerCreation);
+  model_observer()->WaitForStep();
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMRecoverSecurityDomain);
+  dialog_model()->OnGPMTrustThisComputer();
+  model_observer()->WaitForStep();
+
+  // The user should not be prompted for a PIN and the request should succeed.
+  SimulateTrustedVaultKeyRetrieval(/*with_store_keys_lock=*/true);
+  std::string script_result;
+  ASSERT_TRUE(message_queue.WaitForMessage(&script_result));
+  EXPECT_EQ(script_result, "\"webauthn: uv=true\"");
+
+  // Disable user verification support. This can happen e.g. if the user
+  // disables Windows Hello or Touch ID.
+  OverrideUVKeyAvailability(false);
+
+  // Try to make a new credential. The UI should go to the onboarding screen to
+  // avoid surprising the user with a gaia prompt.
+  content::ExecuteScriptAsync(web_contents, kMakeCredentialUvRequired);
+  delegate_observer()->WaitForUI();
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMTrustThisComputerCreation);
+  model_observer()->WaitForStep();
+
+  // Select GPM and go through the steps to create a new PIN.
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMReauthForPinReset);
+  dialog_model()->OnGPMTrustThisComputer();
+  model_observer()->WaitForStep();
+
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMCreatePin);
+  dialog_model()->OnGPMReauthComplete("rapt");
+  model_observer()->WaitForStep();
+
+  histogram_tester_.ExpectBucketCount(
+      "WebAuthentication.Enclave.ChangePinEventsV2",
+      EnclaveChangePinEvent::kFlowStartedFromUnsatisfiableUv, 1);
+
+  dialog_model()->OnGPMPinEntered(u"123456");
+  ASSERT_TRUE(message_queue.WaitForMessage(&script_result));
+  EXPECT_EQ(script_result, "\"webauthn: uv=true\"");
+
+  // The PIN should work fine the next time.
+  content::ExecuteScriptAsync(web_contents, kMakeCredentialUvRequired);
+  delegate_observer()->WaitForUI();
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMCreatePasskey);
+  model_observer()->WaitForStep();
+
+  dialog_model()->OnGPMCreationConfirmed();
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMEnterPin);
+  model_observer()->WaitForStep();
+
+  dialog_model()->OnGPMPinEntered(u"123456");
+  ASSERT_TRUE(message_queue.WaitForMessage(&script_result));
+  EXPECT_EQ(script_result, "\"webauthn: uv=true\"");
+}
+
+// Regression test for crbug.com/469125044.
+// Tests that the user can set a new PIN if the user doesn't have one and
+// user-verifying keys become unavailable during get assertion.
+IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest,
+                       GetAssertionUvUnsatisfiable) {
+  // Bootstrap the user with an LSKF and UV so they don't end up with a PIN.
+  SetTrustedVaultRecoverable();
+  EnableUVKeySupport();
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::DOMMessageQueue message_queue(web_contents);
+  content::ExecuteScriptAsync(web_contents, kMakeCredentialUvRequired);
+  delegate_observer()->WaitForUI();
+
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMTrustThisComputerCreation);
+  model_observer()->WaitForStep();
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMRecoverSecurityDomain);
+  dialog_model()->OnGPMTrustThisComputer();
+  model_observer()->WaitForStep();
+
+  // The user should not be prompted for a PIN and the request should succeed.
+  SimulateTrustedVaultKeyRetrieval(/*with_store_keys_lock=*/true);
+  std::string script_result;
+  ASSERT_TRUE(message_queue.WaitForMessage(&script_result));
+  EXPECT_EQ(script_result, "\"webauthn: uv=true\"");
+
+  // Disable user verification support. This can happen e.g. if the user
+  // disables Windows Hello or Touch ID.
+  OverrideUVKeyAvailability(false);
+
+  // Try to get an assertion with the credential. The UI should go to the
+  // onboarding screen to avoid surprising the user with a gaia prompt.
+  content::ExecuteScriptAsync(web_contents, kGetAssertionUvRequired);
+  delegate_observer()->WaitForUI();
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kSelectPriorityMechanism);
+  model_observer()->WaitForStep();
+
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMTrustThisComputerAssertion);
+  dialog_model()->OnUserConfirmedPriorityMechanism();
+  model_observer()->WaitForStep();
+
+  // Select GPM and go through the steps to create a new PIN.
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMReauthForPinReset);
+  dialog_model()->OnGPMTrustThisComputer();
+  model_observer()->WaitForStep();
+
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMCreatePin);
+  dialog_model()->OnGPMReauthComplete("rapt");
+  model_observer()->WaitForStep();
+
+  histogram_tester_.ExpectBucketCount(
+      "WebAuthentication.Enclave.ChangePinEventsV2",
+      EnclaveChangePinEvent::kFlowStartedFromUnsatisfiableUv, 1);
+
+  dialog_model()->OnGPMPinEntered(u"123456");
+  ASSERT_TRUE(message_queue.WaitForMessage(&script_result));
+  EXPECT_EQ(script_result, "\"webauthn: OK\"");
+
+  // The PIN should work fine the next time.
+  content::ExecuteScriptAsync(web_contents, kGetAssertionUvRequired);
+  delegate_observer()->WaitForUI();
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kSelectPriorityMechanism);
+  model_observer()->WaitForStep();
+
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMEnterPin);
+  dialog_model()->OnUserConfirmedPriorityMechanism();
+  model_observer()->WaitForStep();
+
+  dialog_model()->OnGPMPinEntered(u"123456");
+  ASSERT_TRUE(message_queue.WaitForMessage(&script_result));
+  EXPECT_EQ(script_result, "\"webauthn: OK\"");
+}
+
+// Tests an edge case where:
+// * A user bootstraps without a PIN.
+// * System user verification becomes unavailable.
+// * The user creates a PIN on a new device.
+// * The user starts a get assertion flow.
+// In this case, Chrome should not prompt the user to create a new PIN. Instead,
+// the new PIN should be used.
+IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest,
+                       GetAssertionUvUnsatisfiableDetectsChangedPin) {
+  // Bootstrap the user with an LSKF and UV so they don't end up with a PIN.
+  SetTrustedVaultRecoverable();
+  EnableUVKeySupport();
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::DOMMessageQueue message_queue(web_contents);
+  content::ExecuteScriptAsync(web_contents, kMakeCredentialUvRequired);
+  delegate_observer()->WaitForUI();
+
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMTrustThisComputerCreation);
+  model_observer()->WaitForStep();
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMRecoverSecurityDomain);
+  dialog_model()->OnGPMTrustThisComputer();
+  model_observer()->WaitForStep();
+
+  // The user should not be prompted for a PIN and the request should succeed.
+  SimulateTrustedVaultKeyRetrieval(/*with_store_keys_lock=*/true);
+  std::string script_result;
+  ASSERT_TRUE(message_queue.WaitForMessage(&script_result));
+  EXPECT_EQ(script_result, "\"webauthn: uv=true\"");
+
+  // Disable user verification support. This can happen e.g. if the user
+  // disables Windows Hello or Touch ID.
+  OverrideUVKeyAvailability(false);
+
+  // Simulate adding a PIN from another device.
+  AuthenticationFactorsResult registration_state_result;
+  registration_state_result.state =
+      AuthenticationFactorsResult::State::kRecoverable;
+  registration_state_result.key_version = kSecretVersion;
+  registration_state_result.gpm_pin_metadata = trusted_vault::GpmPinMetadata(
+      "public key", trusted_vault::UsableRecoveryPinMetadata(
+                        EnclaveManager::MakeWrappedPINForTesting(
+                            kSecurityDomainSecret, "123456"),
+                        /*expiry=*/base::Time::Now() + base::Seconds(10000)));
+  SetMockVaultConnectionOnRequestDelegate(std::move(registration_state_result));
+
+  // Try to get an assertion with the credential. The UI should go to the
+  // PIN screen, since system biometrics have been disabled.
+  content::ExecuteScriptAsync(web_contents, kGetAssertionUvRequired);
+  delegate_observer()->WaitForUI();
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kSelectPriorityMechanism);
+  model_observer()->WaitForStep();
+
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMEnterPin);
+  dialog_model()->OnUserConfirmedPriorityMechanism();
+  model_observer()->WaitForStep();
+
+  dialog_model()->OnGPMPinEntered(u"123456");
+  ASSERT_TRUE(message_queue.WaitForMessage(&script_result));
+  EXPECT_EQ(script_result, "\"webauthn: OK\"");
 }
 
 IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest, MakeCredentialWithPrf) {
@@ -1401,10 +1584,24 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_EQ(script_result, "\"webauthn: OK\"");
 }
 
+class OpportunisticKeyRetrievalEnclaveAuthenticatorBrowserTest
+    : public EnclaveAuthenticatorBrowserTest {
+ public:
+  OpportunisticKeyRetrievalEnclaveAuthenticatorBrowserTest() {
+    scoped_feature_list_.InitWithFeatures(
+        {device::kWebAuthnOpportunisticRetrieval,
+         device::kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange},
+        {});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
 // Regression test for https://crbug.com/465139934 ("Chrome crashes after
 // unlocking passkeys in a different browser tab").
 IN_PROC_BROWSER_TEST_F(
-    EnclaveAuthenticatorBrowserTest,
+    OpportunisticKeyRetrievalEnclaveAuthenticatorBrowserTest,
     MakeCredential_WhenPasskeysUnlockedViaOpportunisticFlowInOtherTab) {
   // Starting from the passkey locked state.
   SetTrustedVaultRecoverable();
@@ -1448,7 +1645,7 @@ IN_PROC_BROWSER_TEST_F(
 // unlocking passkeys and creating a GPM PIN, with concurrent unlocking of
 // passkeys during the PIN creation.
 IN_PROC_BROWSER_TEST_F(
-    EnclaveAuthenticatorBrowserTest,
+    OpportunisticKeyRetrievalEnclaveAuthenticatorBrowserTest,
     MakeCredential_AndCreateGpmPin_WhenPasskeysUnlockedViaOpportunisticFlowInOtherTab) {
   // Starting from the passkey locked state and empty security domain (for
   // ensuring that we will be prompted to create a PIN).
@@ -1492,6 +1689,70 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_EQ(script_result, "\"webauthn: OK\"");
 }
 
+// Regression test for crbug.com/389093329.
+// Tests that Chrome doesn't crash when recovering from another source during a
+// WebAuthn request if GPMEnclaveController advances a step after keys have been
+// stored but before the enclave is ready.
+IN_PROC_BROWSER_TEST_F(OpportunisticKeyRetrievalEnclaveAuthenticatorBrowserTest,
+                       MakeCredentialStoreKeysFromAnotherSource) {
+  // First, make sure we can recover from a PIN.
+  const std::string pin = "123456";
+  base::test::TestFuture<bool> setup_future;
+  enclave_manager().SetupWithPIN(pin, setup_future.GetCallback());
+  ASSERT_TRUE(setup_future.Wait());
+  ASSERT_TRUE(setup_future.Get());
+
+  // Throw away the registration so the UI wants to recover.
+  enclave_manager().ClearRegistrationForTesting();
+
+  // Start a passkey make credential and get to the "trust this device" screen.
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::DOMMessageQueue message_queue(web_contents);
+  content::ExecuteScriptAsync(web_contents, kMakeCredentialUvDiscouraged);
+  delegate_observer()->WaitForUI();
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMTrustThisComputerCreation);
+  model_observer()->WaitForStep();
+
+  // Simulate key retrieval from another source. This must not yet finish
+  // enrollment (or we are not testing the conditions that cause the crash).
+  SimulateTrustedVaultKeyRetrieval(/*with_store_keys_lock=*/true);
+  ASSERT_FALSE(enclave_manager().IsReady());
+
+  // Accepting the dialog should trigger the "trust this computer" screen again,
+  // since the dialog is reset after key retrieval made the state stale.
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMTrustThisComputerCreation);
+  dialog_model()->OnGPMTrustThisComputer();
+  model_observer()->WaitForStep();
+
+  // Now finish enrolling with the enclave.
+  base::test::TestFuture<bool> enroll_enclave_future;
+  enclave_manager().AddDeviceAndPINToAccount(
+      pin, security_domain_service_->GetPinMemberPublicKey(),
+      enroll_enclave_future.GetCallback());
+  ASSERT_TRUE(enroll_enclave_future.Wait());
+  ASSERT_TRUE(enroll_enclave_future.Get());
+  ASSERT_TRUE(enclave_manager().IsReady());
+
+  // Finally, go through recovery. This used to make Chrome crash.
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMRecoverSecurityDomain);
+  dialog_model()->OnGPMTrustThisComputer();
+  model_observer()->WaitForStep();
+
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMCreatePasskey);
+  SimulateTrustedVaultKeyRetrieval(/*with_store_keys_lock=*/true);
+  model_observer()->WaitForStep();
+  dialog_model()->OnGPMCreationConfirmed();
+
+  std::string script_result;
+  ASSERT_TRUE(message_queue.WaitForMessage(&script_result));
+  EXPECT_EQ(script_result, "\"webauthn: OK\"");
+}
+
 // Regression test for https://crbug.com/445161563 ("Chrome on Linux crashes
 // after removing passkey access in GPM settings").
 // TODO(http://crbug.com/467196933) Fix this test on Mac.
@@ -1502,7 +1763,7 @@ IN_PROC_BROWSER_TEST_F(
 #define MAYBE_MakeCredential_WhenPasskeysBecomingUnregistered \
   MakeCredential_WhenPasskeysBecomingUnregistered
 #endif
-IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest,
+IN_PROC_BROWSER_TEST_F(OpportunisticKeyRetrievalEnclaveAuthenticatorBrowserTest,
                        MAYBE_MakeCredential_WhenPasskeysBecomingUnregistered) {
   // Starting from the passkeys unlocked state.
   EnableUVKeySupport();
@@ -1543,6 +1804,109 @@ IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest,
   SimulateTrustedVaultKeyRetrieval(/*with_store_keys_lock=*/true);
   model_observer()->WaitForStep();
   // And it is expected that the passkey can be successfully created.
+  std::string script_result;
+  ASSERT_TRUE(message_queue.WaitForMessage(&script_result));
+  EXPECT_EQ(script_result, "\"webauthn: OK\"");
+}
+
+// Regression test for crbug.com/485281824.
+// Tests that after recovering via the opportunistic flow, the GPM PIN works.
+IN_PROC_BROWSER_TEST_F(OpportunisticKeyRetrievalEnclaveAuthenticatorBrowserTest,
+                       UnlockedViaOpportunisticFlowWithGpmPin) {
+  // First, register the device with a GPM PIN.
+  SetTrustedVaultEmpty();
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::DOMMessageQueue message_queue(web_contents);
+  content::ExecuteScriptAsync(web_contents, kMakeCredentialUvDiscouraged);
+  delegate_observer()->WaitForUI();
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMCreatePasskey);
+  model_observer()->WaitForStep();
+  dialog_model()->OnGPMCreationConfirmed();
+  EXPECT_EQ(dialog_model()->step(),
+            AuthenticatorRequestDialogModel::Step::kGPMCreatePin);
+  dialog_model()->OnGPMPinEntered(u"123456");
+  std::string script_result;
+  ASSERT_TRUE(message_queue.WaitForMessage(&script_result));
+  EXPECT_EQ(script_result, "\"webauthn: OK\"");
+
+  const std::optional<std::vector<uint8_t>> security_domain_secret =
+      FakeMagicArch::RecoverWithPIN("123456", *security_domain_service_,
+                                    *recovery_key_store_);
+  ASSERT_TRUE(security_domain_secret);
+
+  // Unregister the device.
+  enclave_manager().ClearRegistrationForTesting();
+
+  // Perform opportunistic key retrieval.
+  EnclaveKeysWaiter enclave_keys_waiter(&enclave_manager());
+  SimulateTrustedVaultKeyRetrieval(*security_domain_secret, kSecretVersion,
+                                   /*with_store_keys_lock=*/false);
+  ASSERT_EQ(enclave_keys_waiter.Wait(),
+            EnclaveManager::OutOfContextRecoveryOutcome::
+                kStoreKeysFromOpportunisticFlowSucceeded);
+  ASSERT_TRUE(enclave_manager().has_wrapped_pin());
+
+  // Make a credential with UV = required.
+  content::ExecuteScriptAsync(web_contents, kGetAssertionUvRequired);
+  delegate_observer()->WaitForUI();
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kSelectPriorityMechanism);
+  model_observer()->WaitForStep();
+
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMEnterPin);
+  dialog_model()->OnUserConfirmedPriorityMechanism();
+  model_observer()->WaitForStep();
+
+  dialog_model()->OnGPMPinEntered(u"123456");
+  ASSERT_TRUE(message_queue.WaitForMessage(&script_result));
+  EXPECT_EQ(script_result, "\"webauthn: OK\"");
+  EXPECT_TRUE(enclave_manager().has_wrapped_pin());
+}
+
+// Regression test for crbug.com/489315488.
+// Tests that concurrent change of Sync consent shouldn't impact the
+// opportunistic key retrieval.
+IN_PROC_BROWSER_TEST_F(
+    OpportunisticKeyRetrievalEnclaveAuthenticatorBrowserTest,
+    UnlockedViaOpportunisticFlowWithConcurrentSyncConsentChange) {
+  auto* const identity_manager =
+      IdentityManagerFactory::GetForProfile(browser()->profile());
+  SetTrustedVaultRecoverable();
+  EnableUVKeySupport();
+
+  // Loading Enclave Manager (the loaded state of Enclave Manager is helpful for
+  // reproducing the conditions for testing the aforementioned regression).
+  base::test::TestFuture<void> add_future;
+  enclave_manager().Load(add_future.GetCallback());
+  EXPECT_TRUE(add_future.Wait());
+
+  // Perform opportunistic key retrieval.
+  EnclaveKeysWaiter enclave_keys_waiter(&enclave_manager());
+  SimulateTrustedVaultKeyRetrieval(/*with_store_keys_lock=*/false);
+  // Simulate the concurrent change of Sync consent (in case of the
+  // aforementioned regression the concurrent modification of the sync consent
+  // was causing the failure of the opportunistic retrieval).
+  identity_manager->GetPrimaryAccountMutator()->RevokeSyncConsent(
+      signin_metrics::ProfileSignout::kUserTappedUndoRightAfterSignInFromNtp);
+  // The change of the Sync consent shouldn't impact the opportunistic key
+  // retrieval.
+  EXPECT_EQ(enclave_keys_waiter.Wait(),
+            EnclaveManager::OutOfContextRecoveryOutcome::
+                kStoreKeysFromOpportunisticFlowSucceeded);
+
+  // Verify that we can successfully use passkeys.
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::DOMMessageQueue message_queue(web_contents);
+  content::ExecuteScriptAsync(web_contents, kMakeCredentialUvDiscouraged);
+  delegate_observer()->WaitForUI();
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMCreatePasskey);
+  model_observer()->WaitForStep();
+  dialog_model()->OnGPMCreationConfirmed();
   std::string script_result;
   ASSERT_TRUE(message_queue.WaitForMessage(&script_result));
   EXPECT_EQ(script_result, "\"webauthn: OK\"");
@@ -2133,7 +2497,8 @@ IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest, GpmEnclaveNeedsReauth) {
       identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin);
   signin::UpdatePersistentErrorOfRefreshTokenForAccount(
       identity_manager, account,
-      GoogleServiceAuthError(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS));
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
 
   // Add a passkey to make sure it's not shown.
   AddTestPasskeyToModel();
@@ -2185,7 +2550,8 @@ IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest,
       identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin);
   signin::UpdatePersistentErrorOfRefreshTokenForAccount(
       identity_manager, account,
-      GoogleServiceAuthError(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS));
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
 
   // Add a passkey to make sure it's not shown.
   AddTestPasskeyToModel();
@@ -2257,7 +2623,8 @@ IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest,
       identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin);
   signin::UpdatePersistentErrorOfRefreshTokenForAccount(
       identity_manager, account,
-      GoogleServiceAuthError(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS));
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
 
   // Add a passkey to make sure it's not shown.
   AddTestPasskeyToModel();
@@ -2339,7 +2706,7 @@ IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest, BiometricsInPWA) {
       browser()->profile(),
       /*user_gesture=*/true));
   ASSERT_EQ(app_browser->type(), Browser::Type::TYPE_APP);
-  app_browser->window()->Show();
+  app_browser->GetWindow()->Show();
 
   ASSERT_TRUE(NavigateToURLWithDisposition(
       app_browser, https_server_.GetURL("www.example.com", "/title1.html"),
@@ -2738,16 +3105,12 @@ IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest,
   delegate_observer()->WaitForUI();
 
   model_observer()->SetStepToObserve(
-      AuthenticatorRequestDialogModel::Step::kGPMConfirmOffTheRecordCreate);
+      AuthenticatorRequestDialogModel::Step::kGPMTrustThisComputerCreation);
   model_observer()->WaitForStep();
   EXPECT_EQ(request_delegate()
                 ->enclave_controller_for_testing()
                 ->account_state_for_testing(),
             GPMEnclaveController::AccountState::kRecoverable);
-  model_observer()->SetStepToObserve(
-      AuthenticatorRequestDialogModel::Step::kGPMTrustThisComputerCreation);
-  dialog_model()->OnGPMConfirmOffTheRecordCreate();
-  model_observer()->WaitForStep();
 
   model_observer()->SetStepToObserve(
       AuthenticatorRequestDialogModel::Step::kGPMRecoverSecurityDomain);
@@ -2771,11 +3134,7 @@ IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest,
   delegate_observer()->WaitForUI();
 
   model_observer()->SetStepToObserve(
-      AuthenticatorRequestDialogModel::Step::kGPMConfirmOffTheRecordCreate);
-  model_observer()->WaitForStep();
-  model_observer()->SetStepToObserve(
       AuthenticatorRequestDialogModel::Step::kGPMCreatePasskey);
-  dialog_model()->OnGPMConfirmOffTheRecordCreate();
   model_observer()->WaitForStep();
 
   model_observer()->SetStepToObserve(
@@ -3351,12 +3710,6 @@ IN_PROC_BROWSER_TEST_P(EnclaveAuthenticatorIncognitoBrowserTest,
   // Finally, if the user manually chooses the enclave, it should be the default
   // again. Attempting to bootstrap should be enough.
   dialog_model()->OnGPMCreationSelected();
-  if (GetParam()) {
-    EXPECT_EQ(
-        dialog_model()->step(),
-        AuthenticatorRequestDialogModel::Step::kGPMConfirmOffTheRecordCreate);
-    dialog_model()->OnGPMConfirmOffTheRecordCreate();
-  }
   EXPECT_EQ(
       dialog_model()->step(),
       AuthenticatorRequestDialogModel::Step::kGPMTrustThisComputerCreation);
@@ -3428,44 +3781,17 @@ IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest,
   ASSERT_TRUE(message_queue.WaitForMessage(&script_result));
   EXPECT_EQ(script_result, "\"webauthn: uv=true\"");
 
-  {
-    Profile* const profile = browser()->profile();
-    EnclaveManager second_manager(
-        GetTempDirPath(),
-        IdentityManagerFactory::GetForProfile(browser()->profile()),
-        base::BindRepeating(
-            [](base::WeakPtr<Profile> profile)
-                -> network::mojom::NetworkContext* {
-              if (!profile) {
-                return nullptr;
-              }
-              return profile->GetDefaultStoragePartition()->GetNetworkContext();
-            },
-            profile->GetWeakPtr()),
-        url_loader_factory_.GetSafeWeakWrapper());
-
-    {
-      auto store_keys_lock = second_manager.GetStoreKeysLock();
-      second_manager.StoreKeys(kSyncGaiaId,
-                               {trusted_vault::TrustedVaultKeyAndVersion(
-                                   *security_domain_secret, kSecretVersion)},
-                               /*user_action_trigger=*/std::nullopt);
-    }
-
-    base::test::TestFuture<bool> add_future;
-    second_manager.AddDeviceToAccount(std::nullopt, add_future.GetCallback());
-    EXPECT_TRUE(add_future.Wait());
-    EXPECT_TRUE(add_future.Get());
-
-    base::test::TestFuture<bool> change_future;
-    second_manager.ChangePIN(newpin, "rapt", change_future.GetCallback());
-    EXPECT_TRUE(change_future.Wait());
-    ASSERT_TRUE(change_future.Get());
-
-    // Verify the PIN claim key was redacted.
-    EXPECT_THAT(GetDeviceLog(),
-                testing::HasSubstr("\"pin_claim_key\": \"[redacted]\""));
-  }
+  // Simulate adding a PIN from another device.
+  AuthenticationFactorsResult registration_state_result;
+  registration_state_result.state =
+      AuthenticationFactorsResult::State::kRecoverable;
+  registration_state_result.key_version = kSecretVersion;
+  registration_state_result.gpm_pin_metadata = trusted_vault::GpmPinMetadata(
+      "public key", trusted_vault::UsableRecoveryPinMetadata(
+                        EnclaveManager::MakeWrappedPINForTesting(
+                            *security_domain_secret, newpin),
+                        /*expiry=*/base::Time::Now() + base::Seconds(10000)));
+  SetMockVaultConnectionOnRequestDelegate(std::move(registration_state_result));
 
   content::ExecuteScriptAsync(web_contents, kGetAssertionUvRequired);
   delegate_observer()->WaitForUI();
@@ -3998,7 +4324,7 @@ class EnclaveAuthenticatorConditionalCreateBrowserTest
     saved_form.username_value = base::UTF8ToUTF16(std::string(kSyncEmail));
     saved_form.password_value = u"hunter1";
     saved_form.date_last_used = last_used;
-    password_store()->AddLogin(saved_form);
+    password_store()->AddLogin(password_manager::FromPasswordForm(saved_form));
   }
 
   sync_pb::WebauthnCredentialSpecifics InjectPasskey() {
@@ -4419,6 +4745,41 @@ IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest,
   // Ensure the large blob is redacted from logs.
   EXPECT_THAT(GetDeviceLog(),
               testing::HasSubstr("\"largeBlob\": \"[redacted]\""));
+}
+
+// Regression test for crbug.com/505059790.
+// Simulate MagicArch returning keys for the wrong user. This used to crash, now
+// it should result in a GPM error.
+IN_PROC_BROWSER_TEST_F(EnclaveAuthenticatorBrowserTest,
+                       RecoverSecurityDomainGaiaMismatchedFailure) {
+  SetTrustedVaultRecoverable();
+  EnableUVKeySupport();
+
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::DOMMessageQueue message_queue(web_contents);
+
+  content::ExecuteScriptAsync(web_contents, kMakeCredentialUvRequired);
+  delegate_observer()->WaitForUI();
+
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMTrustThisComputerCreation);
+  model_observer()->WaitForStep();
+
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMRecoverSecurityDomain);
+  dialog_model()->OnGPMTrustThisComputer();
+  model_observer()->WaitForStep();
+
+  model_observer()->SetStepToObserve(
+      AuthenticatorRequestDialogModel::Step::kGPMError);
+  auto store_keys_lock = enclave_manager().GetStoreKeysLock();
+  enclave_manager().StoreKeys(
+      GaiaId("mismatched_gaia_id"),
+      {trusted_vault::TrustedVaultKeyAndVersion(
+          base::ToVector(kSecurityDomainSecret), kSecretVersion)},
+      std::nullopt);
+  model_observer()->WaitForStep();
 }
 
 }  // namespace

@@ -19,6 +19,7 @@
 #include "components/safe_browsing/core/browser/db/v4_protocol_config.h"
 #include "content/public/browser/bluetooth_chooser.h"
 #include "content/public/browser/frame_tree_node_id.h"
+#include "content/public/common/child_process_id.h"
 #include "extensions/browser/extension_event_histogram_value.h"
 #include "extensions/browser/extension_prefs_observer.h"
 #include "extensions/browser/extensions_browser_api_provider.h"
@@ -34,11 +35,11 @@
 #include "url/gurl.h"
 
 class ExtensionFunctionRegistry;
-class PrefService;
 
 namespace base {
 class CommandLine;
 class FilePath;
+class Version;
 }  // namespace base
 
 namespace content {
@@ -48,6 +49,14 @@ class SiteInstance;
 class StoragePartitionConfig;
 class WebContents;
 }  // namespace content
+
+namespace download {
+class DownloadItem;
+}  // namespace download
+
+namespace image_fetcher {
+class ImageDecoder;
+}  // namespace image_fetcher
 
 namespace mojo {
 template <typename>
@@ -92,6 +101,8 @@ class SafeBrowsingDatabaseManager;
 
 namespace extensions {
 
+class Blocklist;
+class CrxInstaller;
 class ComponentExtensionResourceManager;
 class Extension;
 class ExtensionAssetsManager;
@@ -103,6 +114,9 @@ class ExtensionSet;
 class ExtensionSystem;
 class ExtensionSystemProvider;
 class ExtensionWebContentsObserver;
+class InstallStageTracker;
+class InstallTracker;
+class InstallVerifier;
 class KioskDelegate;
 class PermissionSet;
 class ProcessManagerDelegate;
@@ -111,6 +125,7 @@ class RuntimeAPIDelegate;
 class SafeBrowsingDelegate;
 class ScopedBrowserContextKeepAlive;
 class ScriptExecutor;
+class SharedModuleService;
 class SitePermissionsHelper;
 class UserScriptListener;
 
@@ -195,7 +210,18 @@ class ExtensionsBrowserClient {
   // - if `context` is a System Profile: returns null.
   // - if `context` is Original: returns itself.
   // - if `context` is OTR: returns the associated parent context.
+  // - if `context` is ash internals: returns the associated parent context.
   virtual content::BrowserContext* GetContextRedirectedToOriginal(
+      content::BrowserContext* context) = 0;
+
+  // Similar to GetContextRedirectedToOriginal(), but additionally filters out
+  // ash-internal profiles.
+  // - if `context` is a System Profile: returns null.
+  // - if `context` is Original: returns itself.
+  // - if `context` is OTR: returns the associated parent context.
+  // - if `context` is ash internals: returns null.
+  virtual content::BrowserContext*
+  GetContextRedirectedToOriginalWithoutAshInternals(
       content::BrowserContext* context) = 0;
 
   // - if `context` is a System Profile: returns null.
@@ -234,6 +260,9 @@ class ExtensionsBrowserClient {
   virtual bool IsExtensionIncognitoEnabled(
       const ExtensionId& extension_id,
       content::BrowserContext* context) const = 0;
+  virtual bool IsExtensionIncognitoEnabled(
+      const Extension* extension,
+      content::BrowserContext* context) const = 0;
 
   // Returns true if `extension` can see events and data from another
   // sub-profile (incognito to original profile, or vice versa).
@@ -265,16 +294,12 @@ class ExtensionsBrowserClient {
       const network::ResourceRequest& request,
       network::mojom::RequestDestination destination,
       ui::PageTransition page_transition,
-      int child_id,
+      content::ChildProcessId child_id,
       bool is_incognito,
       const Extension* extension,
       const ExtensionSet& extensions,
       const ProcessMap& process_map,
       const GURL& upstream_url) = 0;
-
-  // Returns the PrefService associated with `context`.
-  virtual PrefService* GetPrefServiceForContext(
-      content::BrowserContext* context) = 0;
 
   // Populates a list of ExtensionPrefs observers to be attached to each
   // BrowserContext's ExtensionPrefs upon construction. These observers
@@ -416,6 +441,9 @@ class ExtensionsBrowserClient {
   // Returns true if activity logging is enabled for the given `context`.
   virtual bool IsActivityLoggingEnabled(content::BrowserContext* context);
 
+  // Returns true if telemetry logging is enabled for the given `context`.
+  virtual bool IsTelemetryLoggingEnabled(content::BrowserContext* context);
+
   // Retrives the embedder's notion of tab and window ID for a given
   // WebContents. May return -1 for either or both values if the embedder does
   // not implement any such concepts. This is used to support the WebRequest API
@@ -464,6 +492,12 @@ class ExtensionsBrowserClient {
   // resources that are not declared as web accessible).
   virtual bool ShouldSchemeBypassNavigationChecks(
       const std::string& scheme) const;
+
+  // Checks whether the given `request_url` and `redirect_url` correspond to a
+  // Default Search Engine redirect.
+  virtual bool IsDefaultSearchEngineRedirect(content::BrowserContext* context,
+                                             const GURL& request_url,
+                                             const GURL& redirect_url) const;
 
   // Gets and sets the last save (download) path for a given context.
   virtual base::FilePath GetSaveFilePath(content::BrowserContext* context);
@@ -622,6 +656,49 @@ class ExtensionsBrowserClient {
   // On ChromeOS, this provides a platform-specific implementation, while
   // other platforms fall back to a trivial default implementation.
   virtual ExtensionAssetsManager* GetAssetsManager();
+
+  // Returns GetBlocklist associated with `context`.
+  virtual Blocklist* GetBlocklist(content::BrowserContext* context);
+
+  // Returns InstallStageTracker associated with `context`.
+  virtual InstallStageTracker* GetInstallStageTracker(
+      content::BrowserContext* context);
+
+  // Returns InstallTracker associated with `context`.
+  virtual InstallTracker* GetInstallTracker(content::BrowserContext* context);
+
+  // Returns InstallVerifier associated with `context`.
+  virtual InstallVerifier* GetInstallVerifier(content::BrowserContext* context);
+
+  // Returns SharedModuleService associated with `context`.
+  virtual SharedModuleService* GetSharedModuleService(
+      content::BrowserContext* context);
+
+  // Run an update check if the updater is enabled.
+  virtual void UpdateCheckIfEnabled(content::BrowserContext* context);
+
+  // Returns the path to the user's data directory.
+  virtual base::FilePath GetUserDataDir();
+
+  // Creates and pre-configures a CrxInstaller with an install prompt UI for a
+  // given |download_item|.
+  virtual scoped_refptr<CrxInstaller> CreateCrxInstallerFromDownloadItem(
+      content::BrowserContext* context,
+      const download::DownloadItem& download);
+
+  // Creates an implementation of image_fetcher::ImageDecoder.
+  virtual std::unique_ptr<image_fetcher::ImageDecoder> CreateImageDecoder();
+
+  // Returns whether the given browser context is allowed to use non-component
+  // extensions.
+  virtual bool CanUseNonComponentExtensions(content::BrowserContext* context);
+
+  // Checks whether the extension can be installed based on policy.
+  virtual void CanInstallExtensionByPolicy(
+      content::BrowserContext* context,
+      const ExtensionId& extension_id,
+      const base::Version& extension_version,
+      base::OnceCallback<void(bool, std::u16string)> callback);
 
  protected:
   std::unique_ptr<ExtensionAssetsManager> assets_manager_;

@@ -143,7 +143,8 @@ IN_PROC_BROWSER_TEST_P(CertVerifierServiceChromeRootStoreOptionalTest, Test) {
 
     base::RunLoop update_run_loop;
     content::GetCertVerifierServiceFactory()->UpdateChromeRootStore(
-        mojo_base::ProtoWrapper(root_store), update_run_loop.QuitClosure());
+        mojo_base::ProtoWrapper(root_store), std::nullopt,
+        update_run_loop.QuitClosure());
     update_run_loop.Run();
   }
 
@@ -747,6 +748,10 @@ class CertVerifierNSSMigrationTest : public PlatformBrowserTest {
 
  protected:
   base::HistogramTester histogram_tester_;
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_{
+      net::kEnableNSSCertMigration};
 };
 
 // Setup the NSS database before doing migration. The PRE_PRE_ test is run with

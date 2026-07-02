@@ -70,6 +70,8 @@ class PLATFORM_EXPORT PendingLayer {
   }
   bool HasText() const { return has_text_; }
 
+  bool HasVideo() const;
+
   void SetCompositingTypeToOverlap() {
     DCHECK_EQ(compositing_type_, kOther);
     compositing_type_ = kOverlap;
@@ -77,6 +79,17 @@ class PLATFORM_EXPORT PendingLayer {
 
   void SetPaintArtifact(const PaintArtifact& paint_artifact) {
     chunks_.SetPaintArtifact(paint_artifact);
+  }
+
+  std::optional<CanvasChildPaintRecord> GetCanvasChildPaintRecord() const {
+    return content_layer_client_
+               ? content_layer_client_->GetCanvasChildPaintRecord()
+               : std::nullopt;
+  }
+  const CanvasChildPaintState* canvas_child_paint_state() const {
+    return content_layer_client_
+               ? content_layer_client_->canvas_child_paint_state()
+               : nullptr;
   }
 
   using IsCompositedScrollFunction =
@@ -158,14 +171,17 @@ class PLATFORM_EXPORT PendingLayer {
   // one in |old_pending_layer|, and updates the layer according to the current
   // contents and properties of this PendingLayer.
   void UpdateCompositedLayer(PendingLayer* old_pending_layer,
+                             PropertyTreeState property_state_for_paint,
                              cc::LayerSelection&,
                              bool tracks_raster_invalidations,
                              cc::LayerTreeHost*);
 
   // A lighter version of UpdateCompositedLayer(). Called when the existing
   // composited layer has only repainted since the last update
-  void UpdateCompositedLayerForRepaint(const PaintArtifact& repainted_artifact,
-                                       cc::LayerSelection&);
+  void UpdateCompositedLayerForRepaint(
+      const PaintArtifact& repainted_artifact,
+      PropertyTreeState property_state_for_paint,
+      cc::LayerSelection&);
 
   // Another lighter version of UpdateCompositedLayers(). Called after
   // raster-inducing scrolls that don't need repaint or PaintArtifactCompositor
@@ -177,6 +193,10 @@ class PLATFORM_EXPORT PendingLayer {
   // True if a solid color chunk exists that makes this entire layer
   // draw a solid color (see comment above `solid_color_chunk_index_`).
   bool IsSolidColor() const { return solid_color_chunk_index_ != kNotFound; }
+
+  int MergedAcrossCompositingBoundaryCount() const {
+    return merged_across_compositing_boundary_count_;
+  }
 
  private:
   // Checks basic merge-ability with `guest` and calls
@@ -209,6 +229,7 @@ class PLATFORM_EXPORT PendingLayer {
   void UpdateScrollHitTestLayer(PendingLayer* old_pending_layer);
   void UpdateScrollbarLayer(PendingLayer* old_pending_layer);
   void UpdateContentLayer(PendingLayer* old_pending_layer,
+                          PropertyTreeState property_state_for_paint,
                           bool tracks_raster_invalidations);
   void UpdateSolidColorLayer(PendingLayer* old_pending_layer);
 
@@ -243,6 +264,10 @@ class PLATFORM_EXPORT PendingLayer {
   CompositingType compositing_type_ = kOther;
   cc::HitTestOpaqueness hit_test_opaqueness_ =
       cc::HitTestOpaqueness::kTransparent;
+
+  // For metrics.
+  int merged_across_compositing_boundary_count_ = 0;
+
   bool has_text_ = false;
   bool draws_content_ = false;
   bool text_known_to_be_on_opaque_background_ = false;

@@ -16,6 +16,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "components/history/core/browser/browsing_history_service.h"
+#include "components/history/core/browser/features.h"
 #include "components/keyed_service/core/service_access_type.h"
 #include "components/url_formatter/url_formatter.h"
 #include "url/android/gurl_android.h"
@@ -62,6 +63,8 @@ void BrowsingHistoryBridge::QueryHistory(
   options.policy_for_404_visits = history::VisitQuery404sPolicy::kExclude404s;
   options.duplicate_policy = history::QueryOptions::REMOVE_DUPLICATES_PER_DAY;
   options.host_only = j_host_only;
+  options.include_actor_visits =
+      history::IsBrowsingHistoryActorIntegrationM3Enabled();
   if (j_app_id) {
     options.app_id = base::android::ConvertJavaStringToUTF8(j_app_id);
   }
@@ -72,7 +75,12 @@ void BrowsingHistoryBridge::QueryHistory(
 void BrowsingHistoryBridge::QueryHistoryContinuation(
     JNIEnv* env,
     const JavaRef<jobject>& j_result_obj) {
-  DCHECK(query_history_continuation_);
+  // The Java side *should* only call this if there is actually a continuation,
+  // but if its state got out of sync for some reason, better to do nothing than
+  // to crash.
+  if (!query_history_continuation_) {
+    return;
+  }
   j_query_result_obj_.Reset(env, j_result_obj);
   std::move(query_history_continuation_).Run();
 }
@@ -118,8 +126,9 @@ void BrowsingHistoryBridge::OnQueryComplete(
     std::u16string domain = url_formatter::IDNToUnicode(entry.url.GetHost());
     // When the domain is empty, use the scheme instead. This allows for a
     // sensible treatment of e.g. file: URLs when group by domain is on.
-    if (domain.empty())
+    if (domain.empty()) {
       domain = base::UTF8ToUTF16(entry.url.GetScheme() + ":");
+    }
 
     // This relies on the list of timestamps per url in |all_timestamps| being a
     // sorted data structure.
@@ -147,7 +156,7 @@ void BrowsingHistoryBridge::OnQueryComplete(
             : nullptr,
         most_recent_java_timestamp,
         base::android::ToJavaLongArray(env, native_timestamps),
-        entry.blocked_visit);
+        entry.blocked_visit, entry.is_actor_visit);
   }
 
   Java_BrowsingHistoryBridge_onQueryHistoryComplete(
@@ -201,7 +210,8 @@ void BrowsingHistoryBridge::HistoryDeleted() {
 }
 
 void BrowsingHistoryBridge::HasOtherFormsOfBrowsingHistory(
-    bool has_other_forms, bool has_synced_results) {
+    bool has_other_forms,
+    bool has_synced_results) {
   JNIEnv* env = base::android::AttachCurrentThread();
   Java_BrowsingHistoryBridge_hasOtherFormsOfBrowsingData(
       env, j_history_service_obj_, has_other_forms);

@@ -9,6 +9,7 @@
 #import "base/functional/bind.h"
 #import "base/memory/raw_ptr.h"
 #import "base/strings/sys_string_conversions.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "components/sync/service/sync_service.h"
@@ -81,16 +82,15 @@
 }
 
 - (void)enableHistorySyncOptin {
-  id<SystemIdentity> identity =
-      _authenticationService->GetPrimaryIdentity(signin::ConsentLevel::kSignin);
+  id<SystemIdentity> identity = _authenticationService->GetPrimaryIdentity();
   bool hasPrimaryAccount =
       _identityManager->HasPrimaryAccount(signin::ConsentLevel::kSignin);
   // It is possible to have no identity from AuthenticationService here
   // (see crbug.com/366198713).
   // The mediator listens for IdentityManagerObserverBridgeDelegate to know
   // if the user is signed out. If it happens, the dialog is supposed to be
-  // dissmissed automatically.
-  // to understand if there is a difference between AuthenticationService and
+  // dismissed automatically.
+  // To understand if there is a difference between AuthenticationService and
   // IdentityManager, the CHECK logs if there is primary identity
   // from AuthenticationService and from IdentityManager.
   CHECK(identity) << "IdentityManager has primary identity: "
@@ -108,8 +108,7 @@
   if (!_consumer) {
     return;
   }
-  id<SystemIdentity> identity =
-      _authenticationService->GetPrimaryIdentity(signin::ConsentLevel::kSignin);
+  id<SystemIdentity> identity = _authenticationService->GetPrimaryIdentity();
   if (!identity) {
     // This can happen if identity is removed from the device while the history
     // sync screen is open. There is no point in updating the UI since the
@@ -145,8 +144,7 @@
 - (void)onExtendedAccountInfoUpdated:(const AccountInfo&)info {
   id<SystemIdentity> identity =
       _accountManagerService->GetIdentityOnDeviceWithGaiaID(info.gaia);
-  if ([identity isEqual:_authenticationService->GetPrimaryIdentity(
-                            signin::ConsentLevel::kSignin)]) {
+  if ([identity isEqual:_authenticationService->GetPrimaryIdentity()]) {
     [self updateAvatarImageWithIdentity:identity];
   }
 }

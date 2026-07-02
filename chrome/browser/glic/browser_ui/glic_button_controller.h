@@ -9,15 +9,14 @@
 
 #include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/glic/fre/glic_fre.mojom.h"
-#include "chrome/browser/glic/widget/glic_window_controller.h"
+#include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
 #include "components/prefs/pref_change_registrar.h"
 
 class Profile;
 
 namespace glic {
 
-class GlicButtonControllerDelegate;
+class GlicSplitButtonDelegate;
 class GlicKeyedService;
 
 // Controller class for the button entry point. Manages visibility, icon
@@ -26,17 +25,21 @@ class GlicButtonController {
  public:
   GlicButtonController(Profile* profile,
                        BrowserWindowInterface& browser,
-                       GlicButtonControllerDelegate* delegate,
+                       GlicSplitButtonDelegate* tab_strip_delegate,
+                       GlicSplitButtonDelegate* toolbar_delegate,
                        GlicKeyedService* service);
   ~GlicButtonController();
 
+  mojom::InvocationSource GetInvocationSource(bool is_showing_nudge,
+                                              bool is_toolbar) const;
+
  private:
   void UpdateButton();
-  void OnFreStateChanged(mojom::FreWebUiState);
 
   raw_ptr<Profile> profile_;
   raw_ref<BrowserWindowInterface> browser_;
-  raw_ptr<GlicButtonControllerDelegate> glic_controller_delegate_;
+  raw_ptr<GlicSplitButtonDelegate> tab_strip_glic_controller_delegate_;
+  raw_ptr<GlicSplitButtonDelegate> toolbar_glic_controller_delegate_;
   raw_ptr<GlicKeyedService> glic_keyed_service_;
   PrefChangeRegistrar pref_registrar_;
 

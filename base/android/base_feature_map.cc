@@ -22,6 +22,8 @@ const base::Feature* const kFeaturesExposedToJava[] = {
     &features::kRebindingChildServiceConnectionController,
     &features::kRebindServiceBatchApi,
     &features::kUseSharedRebindServiceConnection,
+    &features::kShutdownPreNativeThreadPoolAfterStartup,
+    &features::kVirtualKeyboardGeometryAndInsetFixes,
 };
 
 // static

@@ -26,7 +26,7 @@
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_task_environment.h"
-#include "content/test/test_content_browser_client.h"
+#include "content/public/test/test_content_browser_client.h"
 #include "net/cookies/site_for_cookies.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "net/url_request/url_request_context.h"
@@ -194,7 +194,9 @@ class ServiceWorkerControlleeRequestHandlerTest : public testing::Test {
     version_ = new ServiceWorkerVersion(
         registration_.get(), script_url_, blink::mojom::ScriptType::kClassic,
         1L, mojo::PendingRemote<storage::mojom::ServiceWorkerLiveVersionRef>(),
-        context()->AsWeakPtr());
+        context()->AsWeakPtr(),
+        /*creator_network_restrictions_id=*/std::nullopt,
+        /*network_restrictions_id=*/std::nullopt, PolicyContainerPolicies());
     version_->SetPolicyContainerHost(
         base::MakeRefCounted<PolicyContainerHost>(PolicyContainerPolicies()));
 

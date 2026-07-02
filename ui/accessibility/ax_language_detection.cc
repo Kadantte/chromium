@@ -11,9 +11,9 @@
 #include "base/command_line.h"
 #include "base/i18n/unicodestring.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/trace_event/trace_event.h"
+#include "third_party/cld_3/src/src/nnet_language_identifier.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/accessibility_switches.h"
 #include "ui/accessibility/ax_enums.mojom.h"
@@ -206,29 +206,36 @@ void AXLanguageInfoStats::ClearMetrics() {
 }
 
 AXLanguageDetectionManager::AXLanguageDetectionManager(AXTree* tree)
-    : short_text_language_identifier_(kShortTextIdentifierMinByteLength,
-                                      kShortTextIdentifierMaxByteLength),
-      tree_(tree) {}
+    : tree_(tree) {}
 
 AXLanguageDetectionManager::~AXLanguageDetectionManager() = default;
 
-bool AXLanguageDetectionManager::IsStaticLanguageDetectionEnabled() {
-  // Static language detection can be enabled by either:
-  //  1) The general language detection feature flag which gates both static and
-  //     dynamic language detection (feature flag for experiment), or
-  //  2) The Static specific flag (user controlled switch).
-  return features::IsAccessibilityLanguageDetectionEnabled() ||
-         ::switches::IsExperimentalAccessibilityLanguageDetectionEnabled();
+chrome_lang_id::NNetLanguageIdentifier&
+AXLanguageDetectionManager::GetLanguageIdentifier() {
+  if (!language_identifier_) {
+    language_identifier_ =
+        std::make_unique<chrome_lang_id::NNetLanguageIdentifier>();
+  }
+  return *language_identifier_;
 }
 
+chrome_lang_id::NNetLanguageIdentifier&
+AXLanguageDetectionManager::GetShortTextLanguageIdentifier() {
+  if (!short_text_language_identifier_) {
+    short_text_language_identifier_ =
+        std::make_unique<chrome_lang_id::NNetLanguageIdentifier>(
+            kShortTextIdentifierMinByteLength,
+            kShortTextIdentifierMaxByteLength);
+  }
+  return *short_text_language_identifier_;
+}
+
+
 bool AXLanguageDetectionManager::IsDynamicLanguageDetectionEnabled() {
-  // Dynamic language detection can be enabled by either:
-  //  1) The general language detection feature flag which gates both static and
-  //     dynamic language detection (feature flag for experiment), or
-  //  2) The Dynamic specific flag (user controlled switch).
-  return features::IsAccessibilityLanguageDetectionEnabled() ||
-         ::switches::
-             IsExperimentalAccessibilityLanguageDetectionDynamicEnabled();
+  // Dynamic language detection can be enabled by the Dynamic specific flag
+  // (user controlled switch).
+  return ::switches::
+      IsExperimentalAccessibilityLanguageDetectionDynamicEnabled();
 }
 
 void AXLanguageDetectionManager::RegisterLanguageDetectionObserver() {
@@ -243,37 +250,6 @@ void AXLanguageDetectionManager::RegisterLanguageDetectionObserver() {
       std::make_unique<AXLanguageDetectionObserver>(tree_);
 }
 
-// Detect languages for each node.
-void AXLanguageDetectionManager::DetectLanguages() {
-  TRACE_EVENT0("accessibility", "AXLanguageInfo::DetectLanguages");
-
-  if (!IsStaticLanguageDetectionEnabled()) {
-    return;
-  }
-
-  DetectLanguagesForSubtree(tree_->root());
-}
-
-// Detect languages for a subtree rooted at the given subtree_root.
-// Will not check feature flag.
-void AXLanguageDetectionManager::DetectLanguagesForSubtree(
-    AXNode* subtree_root) {
-  // Only perform detection for kStaticText nodes.
-  //
-  // Do not visit the children of kStaticText nodes as they don't have
-  // interesting children for language detection.
-  //
-  // Since kInlineTextBox(es) contain text from their parent, any detection on
-  // them is redundant. Instead they can inherit the detected language.
-  if (subtree_root->GetRole() == ax::mojom::Role::kStaticText) {
-    DetectLanguagesForNode(subtree_root);
-  } else {
-    // Otherwise, recurse into children for detection.
-    for (AXNode* child : subtree_root->children()) {
-      DetectLanguagesForSubtree(child);
-    }
-  }
-}
 
 // Detect languages for a single node.
 // Will not descend into children.
@@ -293,8 +269,8 @@ void AXLanguageDetectionManager::DetectLanguagesForNode(AXNode* node) {
   // of languages, this means we cannot rely on the results' length and we
   // have to filter the results.
   const std::vector<Result> results =
-      language_identifier_.FindTopNMostFreqLangs(text,
-                                                 kMaxDetectedLanguagesPerSpan);
+      GetLanguageIdentifier().FindTopNMostFreqLangs(
+          text, kMaxDetectedLanguagesPerSpan);
 
   std::vector<std::string> reliable_results;
 
@@ -328,37 +304,6 @@ void AXLanguageDetectionManager::DetectLanguagesForNode(AXNode* node) {
   }
 }
 
-// Label languages for each node. This relies on DetectLanguages having already
-// been run.
-void AXLanguageDetectionManager::LabelLanguages() {
-  TRACE_EVENT0("accessibility", "AXLanguageInfo::LabelLanguages");
-
-  if (!IsStaticLanguageDetectionEnabled()) {
-    return;
-  }
-
-  LabelLanguagesForSubtree(tree_->root());
-
-  // TODO(chrishall): consider refactoring to have a more clearly named entry
-  // point for static language detection.
-  //
-  // LabelLanguages is only called for the initial run of language detection for
-  // static content, this call to ReportMetrics therefore covers only the work
-  // we performed in response to a page load complete event.
-  lang_info_stats_.ReportMetrics();
-}
-
-// Label languages for each node in the subtree rooted at the given
-// subtree_root. Will not check feature flag.
-void AXLanguageDetectionManager::LabelLanguagesForSubtree(
-    AXNode* subtree_root) {
-  LabelLanguagesForNode(subtree_root);
-
-  // Recurse into children to continue labelling.
-  for (AXNode* child : subtree_root->children()) {
-    LabelLanguagesForSubtree(child);
-  }
-}
 
 // Label languages for a single node.
 // Will not descend into children.
@@ -436,7 +381,7 @@ AXLanguageDetectionManager::GetLanguageAnnotationForStringAttribute(
   // TODO(akihiroota): What's a reasonable number of languages to have
   // cld_3 find? Should vary.
   std::vector<Result> top_languages =
-      short_text_language_identifier_.FindTopNMostFreqLangs(
+      GetShortTextLanguageIdentifier().FindTopNMostFreqLangs(
           attr_value, kMaxDetectedLanguagesPerPage);
   // Create vector of AXLanguageSpans.
   for (const auto& result : top_languages) {

@@ -50,6 +50,16 @@ targets.legacy_matrix_compound_suite(
                 "CROS_LKGM",
             ],
         ),
+        "chromeos_chrome_flaky_tast_tests": targets.legacy_matrix_config(
+            mixins = [
+                # Setting smaller max_in_shard to offset tast level retries.
+                "skylab-20-tests-per-shard",
+                "skylab-rdb-tast",
+            ],
+            variants = [
+                "CROS_LKGM",
+            ],
+        ),
         "chromeos_integration_tests_suite": targets.legacy_matrix_config(
             mixins = [
                 "skylab-rdb-gtest",
@@ -66,21 +76,10 @@ targets.legacy_matrix_compound_suite(
                 "CROS_LKGM",
             ],
         ),
-        "chromeos_system_friendly_gtests_fails_vmlab": targets.legacy_matrix_config(
-            # TODO: remove experimentals after stablization.
-            mixins = [
-                "experiments",
-                "skylab-rdb-gtest",
-            ],
-            variants = [
-                "CROS_LKGM",
-            ],
-        ),
         "chromeos_vaapi_gtests": targets.legacy_matrix_config(
-            # TODO: remove experimentals after stablization.
             mixins = [
-                "experiments",
                 "skylab-rdb-gtest",
+                "vaapi_unittest_libfake_args",
             ],
             variants = [
                 "CROS_LKGM",
@@ -120,9 +119,119 @@ targets.legacy_matrix_compound_suite(
                 "CROS_LKGM",
             ],
         ),
+        "chromeos_chrome_flaky_tast_tests": targets.legacy_matrix_config(
+            mixins = [
+                # Setting smaller max_in_shard to offset tast level retries.
+                "skylab-20-tests-per-shard",
+                "skylab-rdb-tast",
+            ],
+            variants = [
+                "CROS_LKGM",
+            ],
+        ),
         "chromeos_integration_tests_suite": targets.legacy_matrix_config(
             mixins = [
                 "skylab-rdb-gtest",
+            ],
+            variants = [
+                "CROS_LKGM",
+            ],
+        ),
+    },
+)
+
+targets.legacy_matrix_compound_suite(
+    name = "chromeos_vmlab_cqtast",
+    basic_suites = {
+        "chromeos_chrome_all_tast_tests": targets.legacy_matrix_config(
+            mixins = [
+                "skylab-rdb-tast",
+                "tfc-cq-tast",
+            ],
+            variants = [
+                "CROS_LKGM",
+            ],
+        ),
+        "chromeos_chrome_flaky_tast_tests": targets.legacy_matrix_config(
+            mixins = [
+                # Setting smaller max_in_shard to offset tast level retries.
+                "skylab-20-tests-per-shard",
+                "skylab-rdb-tast",
+            ],
+            variants = [
+                "CROS_LKGM",
+            ],
+        ),
+    },
+)
+
+targets.legacy_matrix_compound_suite(
+    name = "chromeos_vmlab_tast",
+    basic_suites = {
+        "chromeos_chrome_all_tast_tests": targets.legacy_matrix_config(
+            mixins = [
+                "skylab-40-tests-per-shard",
+                "skylab-rdb-tast",
+            ],
+            variants = [
+                "CROS_LKGM",
+            ],
+        ),
+        "chromeos_chrome_criticalstaging_tast_tests": targets.legacy_matrix_config(
+            mixins = [
+                "skylab-40-tests-per-shard",
+                "skylab-rdb-tast",
+            ],
+            variants = [
+                "CROS_LKGM",
+            ],
+        ),
+        "chromeos_chrome_disabled_tast_tests": targets.legacy_matrix_config(
+            mixins = [
+                # Setting smaller max_in_shard to offset tast level retries.
+                "skylab-20-tests-per-shard",
+                "skylab-rdb-tast",
+            ],
+            variants = [
+                "CROS_LKGM",
+            ],
+        ),
+        "chromeos_chrome_flaky_tast_tests": targets.legacy_matrix_config(
+            mixins = [
+                # Setting smaller max_in_shard to offset tast level retries.
+                "skylab-20-tests-per-shard",
+                "skylab-rdb-tast",
+            ],
+            variants = [
+                "CROS_LKGM",
+            ],
+        ),
+    },
+)
+
+targets.legacy_matrix_compound_suite(
+    name = "chromeos_vmlab_gtest",
+    basic_suites = {
+        "chromeos_integration_tests_suite": targets.legacy_matrix_config(
+            mixins = [
+                "skylab-rdb-gtest",
+            ],
+            variants = [
+                "CROS_LKGM",
+            ],
+        ),
+        "chromeos_system_friendly_gtests_vmlab": targets.legacy_matrix_config(
+            mixins = [
+                "skylab-rdb-gtest",
+            ],
+            variants = [
+                "CROS_LKGM",
+            ],
+        ),
+        "chromeos_vaapi_gtests": targets.legacy_matrix_config(
+            mixins = [
+                "skylab-rdb-gtest",
+                "vaapi_unittest_libfake_args",
             ],
             variants = [
                 "CROS_LKGM",
@@ -153,6 +262,16 @@ targets.legacy_matrix_compound_suite(
             ],
         ),
         "chromeos_chrome_disabled_tast_tests": targets.legacy_matrix_config(
+            mixins = [
+                # Setting smaller max_in_shard to offset tast level retries.
+                "skylab-20-tests-per-shard",
+                "skylab-rdb-tast",
+            ],
+            variants = [
+                "CROS_LKGM",
+            ],
+        ),
+        "chromeos_chrome_flaky_tast_tests": targets.legacy_matrix_config(
             mixins = [
                 # Setting smaller max_in_shard to offset tast level retries.
                 "skylab-20-tests-per-shard",
@@ -197,6 +316,16 @@ targets.legacy_matrix_compound_suite(
             ],
         ),
         "chromeos_chrome_disabled_tast_tests": targets.legacy_matrix_config(
+            mixins = [
+                # Setting smaller max_in_shard to offset tast level retries.
+                "skylab-20-tests-per-shard",
+                "skylab-rdb-tast",
+            ],
+            variants = [
+                "CROS_LKGM",
+            ],
+        ),
+        "chromeos_chrome_flaky_tast_tests": targets.legacy_matrix_config(
             mixins = [
                 # Setting smaller max_in_shard to offset tast level retries.
                 "skylab-20-tests-per-shard",
@@ -255,6 +384,15 @@ targets.legacy_matrix_compound_suite(
             ],
         ),
         "chromeos_chrome_disabled_tast_tests": targets.legacy_matrix_config(
+            mixins = [
+                "skylab-20-tests-per-shard",
+                "skylab-rdb-tast",
+            ],
+            variants = [
+                "CROS_LKGM",
+            ],
+        ),
+        "chromeos_chrome_flaky_tast_tests": targets.legacy_matrix_config(
             mixins = [
                 "skylab-20-tests-per-shard",
                 "skylab-rdb-tast",
@@ -336,6 +474,16 @@ targets.legacy_matrix_compound_suite(
                 "CROS_LKGM",
             ],
         ),
+        "chromeos_chrome_flaky_tast_tests": targets.legacy_matrix_config(
+            mixins = [
+                # Setting smaller max_in_shard to offset tast level retries.
+                "skylab-20-tests-per-shard",
+                "skylab-rdb-tast",
+            ],
+            variants = [
+                "CROS_LKGM",
+            ],
+        ),
         "chromeos_device_only_gtests": targets.legacy_matrix_config(
             mixins = [
                 "skylab-rdb-gtest",
@@ -377,6 +525,16 @@ targets.legacy_matrix_compound_suite(
             ],
         ),
         "chromeos_chrome_disabled_tast_tests": targets.legacy_matrix_config(
+            mixins = [
+                # Setting smaller max_in_shard to offset tast level retries.
+                "skylab-20-tests-per-shard",
+                "skylab-rdb-tast",
+            ],
+            variants = [
+                "CROS_LKGM",
+            ],
+        ),
+        "chromeos_chrome_flaky_tast_tests": targets.legacy_matrix_config(
             mixins = [
                 # Setting smaller max_in_shard to offset tast level retries.
                 "skylab-20-tests-per-shard",
@@ -511,6 +669,7 @@ targets.legacy_matrix_compound_suite(
         "gpu_noop_sleep_telemetry_test": targets.legacy_matrix_config(
             mixins = [
                 "skylab-rdb-native",
+                "skylab-tauto-chromium-graphics",
             ],
             variants = [
                 "CROS_GPU_BRYA_RELEASE_LKGM",
@@ -525,6 +684,7 @@ targets.legacy_matrix_compound_suite(
         "gpu_noop_sleep_telemetry_test": targets.legacy_matrix_config(
             mixins = [
                 "skylab-rdb-native",
+                "skylab-tauto-chromium-graphics",
             ],
             variants = [
                 "CROS_GPU_CORSOLA_RELEASE_LKGM",
@@ -539,6 +699,7 @@ targets.legacy_matrix_compound_suite(
         "gpu_common_and_optional_telemetry_tests": targets.legacy_matrix_config(
             mixins = [
                 "skylab-rdb-native",
+                "skylab-tauto-chromium-graphics",
             ],
             variants = [
                 "CROS_JACUZZI_RELEASE_LKGM",
@@ -547,6 +708,7 @@ targets.legacy_matrix_compound_suite(
         "gpu_passthrough_telemetry_tests": targets.legacy_matrix_config(
             mixins = [
                 "skylab-rdb-native",
+                "skylab-tauto-chromium-graphics",
             ],
             variants = [
                 "CROS_JACUZZI_RELEASE_LKGM",
@@ -555,6 +717,7 @@ targets.legacy_matrix_compound_suite(
         "gpu_webcodecs_telemetry_test": targets.legacy_matrix_config(
             mixins = [
                 "skylab-rdb-native",
+                "skylab-tauto-chromium-graphics",
             ],
             variants = [
                 "CROS_JACUZZI_RELEASE_LKGM",
@@ -563,6 +726,7 @@ targets.legacy_matrix_compound_suite(
         "gpu_webgl_conformance_gles_passthrough_telemetry_tests": targets.legacy_matrix_config(
             mixins = [
                 "skylab-rdb-native",
+                "skylab-tauto-chromium-graphics",
             ],
             variants = [
                 "CROS_JACUZZI_RELEASE_LKGM",
@@ -571,6 +735,7 @@ targets.legacy_matrix_compound_suite(
         "gpu_webgl2_conformance_gles_passthrough_telemetry_tests": targets.legacy_matrix_config(
             mixins = [
                 "skylab-rdb-native",
+                "skylab-tauto-chromium-graphics",
             ],
             variants = [
                 "CROS_JACUZZI_RELEASE_LKGM",
@@ -585,6 +750,7 @@ targets.legacy_matrix_compound_suite(
         "gpu_noop_sleep_telemetry_test": targets.legacy_matrix_config(
             mixins = [
                 "skylab-rdb-native",
+                "skylab-tauto-chromium-graphics",
             ],
             variants = [
                 "CROS_GPU_SKYRIM_RELEASE_LKGM",
@@ -685,6 +851,12 @@ targets.legacy_matrix_compound_suite(
         # "ondevice_model_benchmark_tests_gpu_submodel_suite": None,
         # "ondevice_model_benchmark_tests_gpu_no_submodel_suite": None,
         # "ondevice_model_benchmark_tests_cpu_no_submodel_suite": None,
+        # TODO(b:484388901): Enable GPU backedn testing when the issue is fixed.
+        # "litert_e2e_tests_gpu_suite": None,
+        "litert_e2e_tests_cpu_suite": None,
+        "litert_lm_advanced_main_legacy_tests_cpu_suite": None,
+        # TODO(b:484388901): Enable GPU backedn testing when the issue is fixed.
+        # "litert_lm_advanced_main_legacy_tests_gpu_suite": None,
     },
 )
 
@@ -755,6 +927,32 @@ targets.legacy_matrix_compound_suite(
                 "non-gce",
             ],
         ),
+        # TODO(b:484388901): Enable GPU backedn testing when the issue is fixed.
+        # "litert_e2e_tests_gpu_suite": targets.legacy_matrix_config(
+        #    mixins = [
+        #         "chrome-intelligence-swarming-pool",
+        #         "non-gce",
+        #     ],
+        # ),
+        "litert_e2e_tests_cpu_suite": targets.legacy_matrix_config(
+            mixins = [
+                "chrome-intelligence-swarming-pool",
+                "non-gce",
+            ],
+        ),
+        "litert_lm_advanced_main_legacy_tests_cpu_suite": targets.legacy_matrix_config(
+            mixins = [
+                "chrome-intelligence-swarming-pool",
+                "non-gce",
+            ],
+        ),
+        # TODO(b:484388901): Enable GPU backedn testing when the issue is fixed.
+        # "litert_lm_advanced_main_legacy_tests_gpu_suite": targets.legacy_matrix_config(
+        #     mixins = [
+        #         "chrome-intelligence-swarming-pool",
+        #         "non-gce",
+        #     ],
+        # ),
     },
 )
 
@@ -836,5 +1034,31 @@ targets.legacy_matrix_compound_suite(
                 "non-gce",
             ],
         ),
+        # TODO(b:484388901): Enable GPU backedn testing when the issue is fixed.
+        # "litert_e2e_tests_gpu_suite": targets.legacy_matrix_config(
+        #     mixins = [
+        #         "chrome-intelligence-swarming-pool",
+        #         "non-gce",
+        #     ],
+        # ),
+        "litert_e2e_tests_cpu_suite": targets.legacy_matrix_config(
+            mixins = [
+                "chrome-intelligence-swarming-pool",
+                "non-gce",
+            ],
+        ),
+        "litert_lm_advanced_main_legacy_tests_cpu_suite": targets.legacy_matrix_config(
+            mixins = [
+                "chrome-intelligence-swarming-pool",
+                "non-gce",
+            ],
+        ),
+        # TODO(b:484388901): Enable GPU backedn testing when the issue is fixed.
+        # "litert_lm_advanced_main_legacy_tests_gpu_suite": targets.legacy_matrix_config(
+        #     mixins = [
+        #         "chrome-intelligence-swarming-pool",
+        #         "non-gce",
+        #     ],
+        # ),
     },
 )

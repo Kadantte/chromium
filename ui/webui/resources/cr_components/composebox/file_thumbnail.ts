@@ -6,20 +6,21 @@ import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import '//resources/cr_elements/cr_icon/cr_icon.js';
 import '//resources/cr_elements/icons.html.js';
 import './composebox_tab_favicon.js';
+import './icons.html.js';
 
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 
 import type {ComposeboxFile} from './common.js';
-import {FileUploadStatus} from './composebox_query.mojom-webui.js';
+import {ContextUploadStatus, InputType} from './composebox_query.mojom-webui.js';
 import {getCss} from './file_thumbnail.css.js';
 import {getHtml} from './file_thumbnail.html.js';
 
 export interface ComposeboxFileThumbnailElement {
   $: {
     removeImgButton: HTMLElement,
-    removePdfButton: HTMLElement,
+    removeDocumentButton: HTMLElement,
     removeTabButton: HTMLElement,
   };
 }
@@ -44,50 +45,99 @@ export class ComposeboxFileThumbnailElement extends CrLitElement {
         type: Boolean,
         reflect: true,
       },
+      tabFaviconChipsToCoinsEnabled_: {type: Boolean},
     };
   }
 
   accessor file: ComposeboxFile = {
     name: '',
     type: '',
+    inputType: InputType.kLensFile,
     objectUrl: null,
     dataUrl: null,
     uuid: '',
-    status: FileUploadStatus.kNotUploaded,
+    status: ContextUploadStatus.kNotUploaded,
     url: null,
     tabId: null,
     isDeletable: true,
+    iconName: null,
+    supportsUnimodal: true,
+    thumbnailUrl: null,
   };
 
+  getIsUploadingForTesting(): boolean {
+    return this.isUploading_;
+  }
+
+  protected lensSendRawFileMediaTypesEnabled_: boolean =
+      loadTimeData.getBoolean('lensSendRawFileMediaTypesEnabled');
+
+  protected accessor tabFaviconChipsToCoinsEnabled_: boolean =
+      loadTimeData.getBoolean('tabFaviconChipsToCoinsEnabled');
+
   protected accessor isUploading_: boolean = false;
+
+  protected shouldUsePdfIcon_(): boolean {
+    return !this.lensSendRawFileMediaTypesEnabled_ ||
+        this.file.type === 'pdf' || this.file.type === 'application/pdf';
+  }
 
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
     if (changedProperties.has('file')) {
-      this.isUploading_ = this.file.status === FileUploadStatus.kNotUploaded ||
-          this.file.status === FileUploadStatus.kProcessing ||
+      this.isUploading_ =
+          this.file.status === ContextUploadStatus.kProcessing ||
           this.file.status ===
-              FileUploadStatus.kProcessingSuggestSignalsReady ||
-          this.file.status === FileUploadStatus.kUploadStarted;
+              ContextUploadStatus.kProcessingSuggestSignalsReady ||
+          this.file.status === ContextUploadStatus.kUploadStarted;
     }
   }
 
-  protected deleteFile_() {
-    // TODO(crbug.com/422559977): Send call to handler to delete file from
-    // cache.
-    this.fire('delete-file', {uuid: this.file.uuid, fromUserAction: true});
+  override firstUpdated(changedProperties: PropertyValues<this>) {
+    super.firstUpdated(changedProperties);
+    requestAnimationFrame(() => {
+      this.classList.add('entering');
+      const animations = this.getAnimations();
+      if (animations.length > 0) {
+        Promise.allSettled(animations.map(a => a.finished)).then(() => {
+          this.classList.remove('entering');
+        });
+      } else {
+        this.classList.remove('entering');
+      }
+    });
   }
 
-  protected get deleteFileButtonTitle_(): string {
+  protected onRemoveButtonClick_() {
+    if (this.classList.contains('exiting')) {
+      return;
+    }
+
+    this.classList.add('exiting');
+    const animations = this.getAnimations();
+
+    if (animations.length === 0) {
+      this.classList.remove('exiting');
+      this.fire('delete-file', {uuid: this.file.uuid, fromUserAction: true});
+    } else {
+      Promise.allSettled(animations.map(a => a.finished)).then(() => {
+        this.classList.remove('exiting');
+        this.fire('delete-file', {uuid: this.file.uuid, fromUserAction: true});
+      });
+    }
+  }
+
+  protected getDeleteFileButtonTitle_(): string {
     return loadTimeData.getStringF('composeboxDeleteFileTitle', this.file.name);
   }
 
-  protected get formattedUrl_(): string|null {
+  protected getFormattedUrl_(): string|null {
     if (!this.file?.url) {
       return null;
     }
     const link = new URL(this.file.url);
-    return (link.host + link.pathname).replace(/\/$/, '');
+    const host = link.host.replace(/^www\./, '');
+    return (host + link.pathname).replace(/\/$/, '');
   }
 }
 

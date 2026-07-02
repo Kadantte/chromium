@@ -92,9 +92,9 @@ class AX_EXPORT AXNode final {
 
    protected:
     raw_ptr<const NodeType> parent_;
-    raw_ptr<NodeType, DanglingUntriaged> child_;
-    raw_ptr<NodeType, DanglingUntriaged> first_child_{nullptr};
-    raw_ptr<NodeType, DanglingUntriaged> last_child_{nullptr};
+    raw_ptr<NodeType> child_;
+    raw_ptr<NodeType> first_child_{nullptr};
+    raw_ptr<NodeType> last_child_{nullptr};
   };
 
   // The constructor requires a parent, id, and index in parent, but
@@ -353,6 +353,10 @@ class AX_EXPORT AXNode final {
   //
   ax::mojom::Role GetRole() const { return data().role; }
 
+  // Returns kAriaValueText if present/non-empty, otherwise falls back to
+  // kValue. Returns std::nullopt if both attributes are empty
+  std::optional<std::string> GetAriaValueTextOrValue() const;
+
   bool HasBoolAttribute(ax::mojom::BoolAttribute attribute) const {
     return data().HasBoolAttribute(attribute);
   }
@@ -474,8 +478,6 @@ class AX_EXPORT AXNode final {
   //
   // This is how displayed text and embedded objects are represented in
   // ATK and IAccessible2 APIs.
-  //
-  // TODO(nektar): Consider changing the return value to std::string.
   const std::u16string& GetHypertext() const;
 
   // Temporary accessor methods until hypertext is fully migrated to this class.
@@ -732,6 +734,12 @@ class AX_EXPORT AXNode final {
   // an editable region is synonymous to a node with the kTextField role, or a
   // contenteditable without the role, (see `AXNodeData::IsTextField()`).
   AXNode* GetTextFieldAncestor() const;
+
+  // Returns the nearest ancestor (or self) that is a block-level container
+  // (has `kIsLineBreakingObject` attribute), excluding `<br>` elements and
+  // their inline text box children. Returns nullptr if no such ancestor
+  // exists.
+  AXNode* GetParagraphContainerAncestor() const;
 
   // Get the native text field's deepest container; the lowest descendant that
   // contains all its text. Returns nullptr if the text field is empty, or if it

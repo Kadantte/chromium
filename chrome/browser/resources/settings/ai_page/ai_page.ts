@@ -42,22 +42,34 @@ export class SettingsAiPageElement extends SettingsAiPageElementBase {
         value: () => loadTimeData.getBoolean('showHistorySearchControl'),
       },
 
-      showTabOrganizationControl_: {
-        type: Boolean,
-        value: () => loadTimeData.getBoolean('showTabOrganizationControl'),
-      },
-
       showPasswordChangeControl_: {
         type: Boolean,
         value: () => loadTimeData.getBoolean('showPasswordChangeControl'),
+      },
+
+      showAiSuggestionsControl_: {
+        type: Boolean,
+        value: () => loadTimeData.getBoolean('showAiSuggestionsControl'),
+      },
+
+      showSkillsSettingPage_: {
+        type: Boolean,
+        value: () => loadTimeData.getBoolean('showSkillsSettingPage'),
+      },
+
+      showIndigoControl_: {
+        type: Boolean,
+        value: () => loadTimeData.getBoolean('showIndigoControl'),
       },
     };
   }
 
   declare private showComposeControl_: boolean;
   declare private showHistorySearchControl_: boolean;
-  declare private showTabOrganizationControl_: boolean;
   declare private showPasswordChangeControl_: boolean;
+  declare private showAiSuggestionsControl_: boolean;
+  declare private showSkillsSettingPage_: boolean;
+  declare private showIndigoControl_: boolean;
 
   private shouldRecordMetrics_: boolean = true;
   private metricsBrowserProxy_: MetricsBrowserProxy =
@@ -82,11 +94,13 @@ export class SettingsAiPageElement extends SettingsAiPageElementBase {
     this.metricsBrowserProxy_.recordBooleanHistogram(
         'Settings.AiPage.ElementVisibility.Compose', this.showComposeControl_);
     this.metricsBrowserProxy_.recordBooleanHistogram(
-        'Settings.AiPage.ElementVisibility.TabOrganization',
-        this.showTabOrganizationControl_);
-    this.metricsBrowserProxy_.recordBooleanHistogram(
         'Settings.AiPage.ElementVisibility.PasswordChange',
         this.showPasswordChangeControl_);
+    this.metricsBrowserProxy_.recordBooleanHistogram(
+        'Settings.AiPage.ElementVisibility.AiSuggestions',
+        this.showAiSuggestionsControl_);
+    this.metricsBrowserProxy_.recordBooleanHistogram(
+        'Settings.AiPage.ElementVisibility.Indigo', this.showIndigoControl_);
   }
 
   private onHistorySearchRowClick_() {
@@ -107,15 +121,6 @@ export class SettingsAiPageElement extends SettingsAiPageElementBase {
     router.navigateTo(router.getRoutes().OFFER_WRITING_HELP);
   }
 
-  private onTabOrganizationRowClick_() {
-    this.recordInteractionMetrics_(
-        AiPageInteractions.TAB_ORGANIZATION_CLICK,
-        'Settings.AiPage.TabOrganizationEntryPointClick');
-
-    const router = Router.getInstance();
-    router.navigateTo(router.getRoutes().AI_TAB_ORGANIZATION);
-  }
-
   private onPasswordChangeRowClick_() {
     this.recordInteractionMetrics_(
         AiPageInteractions.PASSWORD_CHANGE_CLICK,
@@ -124,6 +129,34 @@ export class SettingsAiPageElement extends SettingsAiPageElementBase {
     OpenWindowProxyImpl.getInstance().openUrl(
         loadTimeData.getString('passwordChangeSettingsUrl'));
   }
+
+  private onAiSuggestionsRowClick_() {
+    this.recordInteractionMetrics_(
+        AiPageInteractions.AI_SUGGESTIONS_CLICK,
+        'Settings.AiPage.AiSuggestionsEntryPointClick');
+
+    const router = Router.getInstance();
+    router.navigateTo(router.getRoutes().AI_SUGGESTIONS);
+  }
+
+  private onSkillsRowClick_() {
+    this.recordInteractionMetrics_(
+        AiPageInteractions.SKILLS_CLICK,
+        'Settings.AiPage.SkillsEntryPointClick');
+
+    const router = Router.getInstance();
+    router.navigateTo(router.getRoutes().SKILLS);
+  }
+
+  private onIndigoRowClick_() {
+    this.recordInteractionMetrics_(
+        AiPageInteractions.INDIGO_CLICK,
+        'Settings.AiPage.IndigoEntryPointClick');
+
+    OpenWindowProxyImpl.getInstance().openUrl(
+        loadTimeData.getString('indigoSavedUrl'));
+  }
+
 
   private recordInteractionMetrics_(
       interaction: AiPageInteractions, action: string) {
@@ -157,8 +190,12 @@ export class SettingsAiPageElement extends SettingsAiPageElementBase {
       map.set(routes.OFFER_WRITING_HELP.path, '#composeRowV2');
     }
 
-    if (routes.AI_TAB_ORGANIZATION) {
-      map.set(routes.AI_TAB_ORGANIZATION.path, '#tabOrganizationRowV2');
+    if (routes.AI_SUGGESTIONS) {
+      map.set(routes.AI_SUGGESTIONS.path, '#aiSuggestionsRow');
+    }
+
+    if (routes.SKILLS) {
+      map.set(routes.SKILLS.path, '#skillsRow');
     }
 
     return map;
@@ -169,7 +206,8 @@ export class SettingsAiPageElement extends SettingsAiPageElementBase {
     const ids = [
       'compose',
       'historySearch',
-      'tabOrganization',
+      'aiSuggestions',
+      'skills',
     ];
     assert(ids.includes(childViewId));
 
@@ -183,9 +221,13 @@ export class SettingsAiPageElement extends SettingsAiPageElementBase {
         assert(this.showHistorySearchControl_);
         triggerId = 'historySearchRowV2';
         break;
-      case 'tabOrganization':
-        assert(this.showTabOrganizationControl_);
-        triggerId = 'tabOrganizationRowV2';
+      case 'aiSuggestions':
+        assert(this.showAiSuggestionsControl_);
+        triggerId = 'aiSuggestionsRow';
+        break;
+      case 'skills':
+        assert(this.showSkillsSettingPage_);
+        triggerId = 'skillsRow';
         break;
       default:
         assertNotReached();
@@ -195,7 +237,9 @@ export class SettingsAiPageElement extends SettingsAiPageElementBase {
 
     const control =
         this.shadowRoot!.querySelector<HTMLElement>(`#${triggerId}`);
-    assert(control);
+    assert(
+        control,
+        `Failed to find associated control for child '${childViewId}'`);
     return control;
   }
 }

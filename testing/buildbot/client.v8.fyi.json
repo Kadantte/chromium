@@ -372,7 +372,6 @@
   },
   "Linux ASAN Builder": {
     "additional_compile_targets": [
-      "extensions_browsertests",
       "net_unittests",
       "unit_tests"
     ]
@@ -403,6 +402,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -446,6 +446,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -480,6 +481,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -514,6 +516,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -557,6 +560,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -592,6 +596,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -626,6 +631,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -669,6 +675,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -703,6 +710,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -739,6 +747,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -775,6 +784,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -814,6 +824,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -857,6 +868,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -891,6 +903,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -925,6 +938,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -968,6 +982,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1003,6 +1018,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1037,6 +1053,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1080,6 +1097,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1114,6 +1132,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1149,6 +1168,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "10de:2184-535.183.01",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -1172,7 +1192,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -1210,7 +1230,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -1248,7 +1268,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -1286,7 +1306,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
           "--dont-restore-color-profile-after-test",
@@ -1333,7 +1353,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
           "--dont-restore-color-profile-after-test",
@@ -1380,7 +1400,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
           "--dont-restore-color-profile-after-test",
@@ -1545,7 +1565,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
           "--dont-restore-color-profile-after-test",
@@ -1592,7 +1612,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
           "--dont-restore-color-profile-after-test",
@@ -1639,7 +1659,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
           "--dont-restore-color-profile-after-test",
@@ -1686,7 +1706,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite",
           "--enforce-browser-version",
           "--dont-restore-color-profile-after-test",
           "--jobs=4"
@@ -1725,7 +1745,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-skia-graphite",
           "--enforce-browser-version",
           "--dont-restore-color-profile-after-test",
           "--jobs=4"
@@ -1764,7 +1784,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite",
           "--enforce-browser-version",
           "--dont-restore-color-profile-after-test",
           "--jobs=4"
@@ -1841,7 +1861,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -1879,7 +1899,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -1917,7 +1937,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -1955,7 +1975,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite --force_high_performance_gpu",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite --force_high_performance_gpu",
           "--enforce-browser-version",
           "--webgl-conformance-version=2.0.1",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl2_conformance_mac_runtimes.json",
@@ -1996,7 +2016,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-features=SkiaGraphite --enable-features=EGLDualGPURendering,ForceHighPerformanceGPUForWebGL",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite --enable-features=EGLDualGPURendering,ForceHighPerformanceGPUForWebGL",
           "--enforce-browser-version",
           "--enable-metal-debug-layers",
           "--webgl-conformance-version=2.0.1",
@@ -2038,7 +2058,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite --force_high_performance_gpu",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite --force_high_performance_gpu",
           "--enforce-browser-version",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_mac_runtimes.json",
           "--jobs=4"
@@ -2078,7 +2098,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-features=SkiaGraphite --enable-features=EGLDualGPURendering,ForceHighPerformanceGPUForWebGL",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-skia-graphite --enable-features=EGLDualGPURendering,ForceHighPerformanceGPUForWebGL",
           "--enforce-browser-version",
           "--enable-metal-debug-layers",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_mac_runtimes.json",
@@ -2118,7 +2138,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-features=SkiaGraphite --enable-features=EGLDualGPURendering,ForceHighPerformanceGPUForWebGL",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite --enable-features=EGLDualGPURendering,ForceHighPerformanceGPUForWebGL",
           "--enforce-browser-version",
           "--enable-metal-debug-layers",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_mac_runtimes.json",
@@ -2197,7 +2217,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -2235,7 +2255,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -2273,7 +2293,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -2315,7 +2335,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -2334,7 +2354,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -2350,7 +2370,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -2369,7 +2389,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -2385,7 +2405,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -2404,7 +2424,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -2420,7 +2440,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_cr_revision}",
           "--dont-restore-color-profile-after-test",
@@ -2448,7 +2468,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -2464,7 +2484,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_cr_revision}",
           "--dont-restore-color-profile-after-test",
@@ -2492,7 +2512,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -2508,7 +2528,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_cr_revision}",
           "--dont-restore-color-profile-after-test",
@@ -2536,7 +2556,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -2571,7 +2591,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -2606,7 +2626,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -2622,7 +2642,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_cr_revision}",
           "--dont-restore-color-profile-after-test",
@@ -2650,7 +2670,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -2666,7 +2686,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_cr_revision}",
           "--dont-restore-color-profile-after-test",
@@ -2694,7 +2714,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -2710,7 +2730,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_cr_revision}",
           "--dont-restore-color-profile-after-test",
@@ -2738,7 +2758,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -2754,7 +2774,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite",
           "--enforce-browser-version",
           "--dont-restore-color-profile-after-test",
           "--jobs=4"
@@ -2774,7 +2794,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -2790,7 +2810,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-skia-graphite",
           "--enforce-browser-version",
           "--dont-restore-color-profile-after-test",
           "--jobs=4"
@@ -2810,7 +2830,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -2826,7 +2846,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite",
           "--enforce-browser-version",
           "--dont-restore-color-profile-after-test",
           "--jobs=4"
@@ -2846,7 +2866,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -2881,7 +2901,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -2897,7 +2917,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -2916,7 +2936,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -2932,7 +2952,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -2951,7 +2971,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -2967,7 +2987,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -2986,7 +3006,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -3002,7 +3022,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite --force_high_performance_gpu",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite --force_high_performance_gpu",
           "--enforce-browser-version",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_mac_runtimes.json",
           "--jobs=4"
@@ -3022,7 +3042,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
@@ -3039,7 +3059,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-features=SkiaGraphite --enable-features=EGLDualGPURendering,ForceHighPerformanceGPUForWebGL",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-skia-graphite --enable-features=EGLDualGPURendering,ForceHighPerformanceGPUForWebGL",
           "--enforce-browser-version",
           "--enable-metal-debug-layers",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_mac_runtimes.json",
@@ -3060,7 +3080,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -3076,7 +3096,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-features=SkiaGraphite --enable-features=EGLDualGPURendering,ForceHighPerformanceGPUForWebGL",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite --enable-features=EGLDualGPURendering,ForceHighPerformanceGPUForWebGL",
           "--enforce-browser-version",
           "--enable-metal-debug-layers",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_mac_runtimes.json",
@@ -3097,7 +3117,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -3133,7 +3153,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -3149,7 +3169,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -3168,7 +3188,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -3184,7 +3204,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --disable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -3203,7 +3223,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -3219,7 +3239,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=metal --enable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -3238,7 +3258,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -3984,7 +4004,6 @@
       "device_unittests",
       "display_unittests",
       "events_unittests",
-      "extensions_browsertests",
       "extensions_unittests",
       "gcm_unit_tests",
       "gfx_unittests",
@@ -4023,7 +4042,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -4093,7 +4112,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_cr_revision}",
           "--dont-restore-color-profile-after-test",
@@ -4251,7 +4270,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_cr_revision}",
           "--dont-restore-color-profile-after-test",
@@ -4339,7 +4358,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-skia-graphite",
           "--enforce-browser-version",
           "--dont-restore-color-profile-after-test",
           "--jobs=4"
@@ -4492,43 +4511,6 @@
         "module_name": "//chrome/test:telemetry_gpu_integration_test",
         "module_scheme": "flat",
         "name": "webgl_conformance_d3d11_passthrough_tests",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "dimensions": {
-            "display_attached": "1",
-            "gpu": "10de:2184-31.0.15.4601",
-            "os": "Windows-10-19045",
-            "pool": "chromium.tests.gpu"
-          },
-          "idempotent": false,
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 2
-        },
-        "test": "telemetry_gpu_integration_test",
-        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
-      },
-      {
-        "args": [
-          "webgl1_conformance",
-          "--show-stdout",
-          "--browser=release",
-          "--passthrough",
-          "-v",
-          "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=d3d9 --force_high_performance_gpu",
-          "--enforce-browser-version",
-          "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_win_runtimes.json",
-          "--jobs=4"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//chrome/test:telemetry_gpu_integration_test",
-        "module_scheme": "flat",
-        "name": "webgl_conformance_d3d9_passthrough_tests",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true

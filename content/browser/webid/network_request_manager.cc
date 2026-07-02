@@ -7,14 +7,16 @@
 #include <optional>
 #include <string>
 
+#include "base/json/json_reader.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/types/optional_ref.h"
 #include "content/browser/devtools/devtools_instrumentation.h"
 #include "content/browser/webid/flags.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
+#include "net/base/schemeful_site.h"
 #include "net/base/url_util.h"
 #include "net/http/http_status_code.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/blink/public/common/mime_util/mime_util.h"
@@ -25,6 +27,10 @@ namespace {
 constexpr char kApplicationJson[] = "application/json";
 // Body content types.
 constexpr char kUrlEncodedContentType[] = "application/x-www-form-urlencoded";
+
+// Host prefix prepended to the eTLD+1 to form the FedCM well-known host:
+// "web-identity.well-known.<eTLD+1>".
+constexpr char kWebIdentitySubdomainHostPrefix[] = "web-identity.well-known.";
 
 // 1 MiB is an arbitrary upper bound that should account for any reasonable
 // response size that is a part of this protocol.
@@ -48,25 +54,6 @@ ParseStatus GetResponseError(base::optional_ref<std::string> response_body,
   return ParseStatus::kSuccess;
 }
 
-ParseStatus GetParsingError(
-    const data_decoder::DataDecoder::ValueOrError& result) {
-  if (!result.has_value()) {
-    return ParseStatus::kInvalidResponseError;
-  }
-
-  return result->GetIfDict() ? ParseStatus::kSuccess
-                             : ParseStatus::kInvalidResponseError;
-}
-
-void OnJsonParsed(ParseJsonCallback parse_json_callback,
-                  int response_code,
-                  bool cors_error,
-                  data_decoder::DataDecoder::ValueOrError result) {
-  ParseStatus parse_status = GetParsingError(result);
-  std::move(parse_json_callback)
-      .Run({parse_status, response_code, cors_error}, std::move(result));
-}
-
 void OnDownloadedJson(ParseJsonCallback parse_json_callback,
                       std::optional<std::string> response_body,
                       int response_code,
@@ -77,15 +64,17 @@ void OnDownloadedJson(ParseJsonCallback parse_json_callback,
 
   if (parse_status != ParseStatus::kSuccess) {
     std::move(parse_json_callback)
-        .Run({parse_status, response_code, cors_error},
-             data_decoder::DataDecoder::ValueOrError());
+        .Run({parse_status, response_code, cors_error}, std::nullopt);
     return;
   }
 
-  data_decoder::DataDecoder::ParseJsonIsolated(
-      *response_body,
-      base::BindOnce(&OnJsonParsed, std::move(parse_json_callback),
-                     response_code, cors_error));
+  std::optional<base::DictValue> value =
+      base::JSONReader::ReadDict(*response_body, base::JSON_PARSE_RFC);
+
+  std::move(parse_json_callback)
+      .Run({value ? ParseStatus::kSuccess : ParseStatus::kInvalidResponseError,
+            response_code, cors_error},
+           std::move(value));
 }
 
 }  // namespace
@@ -118,6 +107,30 @@ std::optional<GURL> ComputeWellKnownUrl(const GURL& provider,
   GURL::Replacements replacements;
   replacements.SetPathStr(path);
   return well_known_url.ReplaceComponents(replacements);
+}
+
+std::optional<GURL> ComputeWebIdentitySubdomainWellKnownUrl(
+    const GURL& provider,
+    const std::string& path) {
+  // The subdomain form is only meaningful for hosts that have a registrable
+  // domain. Localhost / test ports / IP literals continue to use the apex
+  // (legacy) URL.
+  if (net::IsLocalhost(provider) || provider.HostIsIPAddress() ||
+      IsPreservePortsForTestingEnabled()) {
+    return std::nullopt;
+  }
+
+  GURL site_url = net::SchemefulSite(provider).GetURL();
+  if (!site_url.is_valid() || site_url.host().empty()) {
+    return std::nullopt;
+  }
+
+  GURL::Replacements replacements;
+  std::string subdomain_host =
+      base::StrCat({kWebIdentitySubdomainHostPrefix, site_url.host()});
+  replacements.SetHostStr(subdomain_host);
+  replacements.SetPathStr(path);
+  return site_url.ReplaceComponents(replacements);
 }
 
 NetworkRequestManager::NetworkRequestManager(

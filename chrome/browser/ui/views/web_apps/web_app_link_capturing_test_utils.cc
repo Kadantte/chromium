@@ -15,6 +15,7 @@
 #include "chrome/browser/ui/views/intent_picker_bubble_view.h"
 #include "chrome/browser/ui/views/location_bar/intent_chip_button.h"
 #include "chrome/browser/ui/views/page_action/page_action_view.h"
+#include "chrome/browser/ui/views/page_action/test_support/page_action_test_support.h"
 #include "chrome/browser/web_applications/link_capturing_features.h"
 #include "chrome/common/chrome_features.h"
 #include "ui/events/event.h"
@@ -26,18 +27,20 @@
 
 namespace web_app {
 
-IntentChipButton* GetIntentPickerIcon(Browser* browser) {
+IntentChipButton* GetIntentPickerIcon(BrowserWindowInterface* browser) {
   CHECK(apps::features::ShouldShowLinkCapturingUX());
   return BrowserView::GetBrowserViewForBrowser(browser)
       ->toolbar_button_provider()
       ->GetIntentChipButton();
 }
 
-views::Button* GetIntentPickerButton(Browser* browser) {
+views::Button* GetIntentPickerButton(BrowserWindowInterface* browser) {
   if (IsPageActionMigrated(PageActionIconType::kIntentPicker)) {
-    return BrowserView::GetBrowserViewForBrowser(browser)
-        ->toolbar_button_provider()
-        ->GetPageActionView(kActionShowIntentPicker);
+    return page_actions::GetIconLabelBubbleViewForTesting(
+        BrowserView::GetBrowserViewForBrowser(browser)
+            ->toolbar_button_provider()
+            ->GetPageActionViewInterface(kActionShowIntentPicker),
+        kActionShowIntentPicker);
   }
   return GetIntentPickerIcon(browser);
 }
@@ -59,9 +62,10 @@ testing::AssertionResult AwaitIntentPickerTabHelperIconUpdateComplete(
   return testing::AssertionSuccess();
 }
 
-testing::AssertionResult WaitForIntentPickerToShow(Browser* browser) {
+testing::AssertionResult WaitForIntentPickerToShow(
+    BrowserWindowInterface* browser) {
   auto result = AwaitIntentPickerTabHelperIconUpdateComplete(
-      browser->tab_strip_model()->GetActiveWebContents());
+      browser->GetTabStripModel()->GetActiveWebContents());
   if (!result) {
     return result;
   }
@@ -90,7 +94,8 @@ testing::AssertionResult WaitForIntentPickerToShow(Browser* browser) {
   return testing::AssertionSuccess();
 }
 
-testing::AssertionResult ClickIntentPickerChip(Browser* browser) {
+testing::AssertionResult ClickIntentPickerChip(
+    BrowserWindowInterface* browser) {
   testing::AssertionResult result = WaitForIntentPickerToShow(browser);
 
   if (!result) {
@@ -104,7 +109,8 @@ testing::AssertionResult ClickIntentPickerChip(Browser* browser) {
   return testing::AssertionSuccess();
 }
 
-testing::AssertionResult ClickIntentPickerAndWaitForBubble(Browser* browser) {
+testing::AssertionResult ClickIntentPickerAndWaitForBubble(
+    BrowserWindowInterface* browser) {
   views::NamedWidgetShownWaiter intent_picker_bubble_shown(
       views::test::AnyWidgetTestPasskey{},
       IntentPickerBubbleView::kViewClassName);

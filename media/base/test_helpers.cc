@@ -134,27 +134,31 @@ void FillFourColorsFrameYUV(VideoFrame& dest_frame,
   std::tie(yellow, red, blue, green) =
       FourColors(IsOpaque(dest_frame.format()), xor_mask);
 
+  const int half_width = (visible_size.width() / 2) & ~1;
+  const int half_height = (visible_size.height() / 2) & ~1;
+  const int remaining_width = visible_size.width() - half_width;
+  const int remaining_height = visible_size.height() - half_height;
+
   uint8_t y, u, v, a;
 
   // Yellow top left.
   std::tie(y, u, v, a) = RGBToYUV(yellow);
-  I4xxxRect(output_frame, 0, 0, visible_size.width() / 2,
-            visible_size.height() / 2, y, u, v, a);
+  I4xxxRect(output_frame, 0, 0, half_width, half_height, y, u, v, a);
 
   // Red top right.
   std::tie(y, u, v, a) = RGBToYUV(red);
-  I4xxxRect(output_frame, visible_size.width() / 2, 0, visible_size.width() / 2,
-            visible_size.height() / 2, y, u, v, a);
+  I4xxxRect(output_frame, half_width, 0, remaining_width, half_height, y, u, v,
+            a);
 
   // Blue bottom left.
   std::tie(y, u, v, a) = RGBToYUV(blue);
-  I4xxxRect(output_frame, 0, visible_size.height() / 2,
-            visible_size.width() / 2, visible_size.height() / 2, y, u, v, a);
+  I4xxxRect(output_frame, 0, half_height, half_width, remaining_height, y, u, v,
+            a);
 
   // Green bottom right.
   std::tie(y, u, v, a) = RGBToYUV(green);
-  I4xxxRect(output_frame, visible_size.width() / 2, visible_size.height() / 2,
-            visible_size.width() / 2, visible_size.height() / 2, y, u, v, a);
+  I4xxxRect(output_frame, half_width, half_height, remaining_width,
+            remaining_height, y, u, v, a);
 
   if (temp_frame) {
     ASSERT_EQ(libyuv::I420ToNV12(
@@ -198,35 +202,37 @@ void FillFourColorsFrameARGB(VideoFrame& dest_frame,
   std::tie(yellow, red, blue, green) =
       FourColors(IsOpaque(dest_frame.format()), xor_mask);
 
+  const int half_width = (visible_size.width() / 2) & ~1;
+  const int half_height = (visible_size.height() / 2) & ~1;
+  const int remaining_width = visible_size.width() - half_width;
+  const int remaining_height = visible_size.height() - half_height;
+
   // Yellow top left.
   ASSERT_EQ(libyuv::ARGBRect(
                 dest_frame.GetWritableVisibleData(VideoFrame::Plane::kARGB),
-                dest_frame.stride(VideoFrame::Plane::kARGB), 0, 0,
-                visible_size.width() / 2, visible_size.height() / 2, yellow),
+                dest_frame.stride(VideoFrame::Plane::kARGB), 0, 0, half_width,
+                half_height, yellow),
             0);
 
   // Red top right.
-  ASSERT_EQ(
-      libyuv::ARGBRect(
-          dest_frame.GetWritableVisibleData(VideoFrame::Plane::kARGB),
-          dest_frame.stride(VideoFrame::Plane::kARGB), visible_size.width() / 2,
-          0, visible_size.width() / 2, visible_size.height() / 2, red),
-      0);
+  ASSERT_EQ(libyuv::ARGBRect(
+                dest_frame.GetWritableVisibleData(VideoFrame::Plane::kARGB),
+                dest_frame.stride(VideoFrame::Plane::kARGB), half_width, 0,
+                remaining_width, half_height, red),
+            0);
 
   // Blue bottom left.
   ASSERT_EQ(libyuv::ARGBRect(
                 dest_frame.GetWritableVisibleData(VideoFrame::Plane::kARGB),
-                dest_frame.stride(VideoFrame::Plane::kARGB), 0,
-                visible_size.height() / 2, visible_size.width() / 2,
-                visible_size.height() / 2, blue),
+                dest_frame.stride(VideoFrame::Plane::kARGB), 0, half_height,
+                half_width, remaining_height, blue),
             0);
 
   // Green bottom right.
   ASSERT_EQ(libyuv::ARGBRect(
                 dest_frame.GetWritableVisibleData(VideoFrame::Plane::kARGB),
-                dest_frame.stride(VideoFrame::Plane::kARGB),
-                visible_size.width() / 2, visible_size.height() / 2,
-                visible_size.width() / 2, visible_size.height() / 2, green),
+                dest_frame.stride(VideoFrame::Plane::kARGB), half_width,
+                half_height, remaining_width, remaining_height, green),
             0);
 
   if (dest_frame.format() == PIXEL_FORMAT_XBGR ||
@@ -582,7 +588,7 @@ scoped_refptr<AudioBuffer> MakeAudioBuffer(SampleFormat format,
   //   start + (frames + 2) * increment, ...
   for (size_t ch = 0; ch < channels; ++ch) {
     T* buffer =
-        reinterpret_cast<T*>(output->channel_data()[is_planar ? ch : 0]);
+        reinterpret_cast<T*>(output->channel_data()[is_planar ? ch : 0].get());
     const T v = static_cast<T>(start + ch * frames * increment);
     for (size_t i = 0; i < frames; ++i) {
       UNSAFE_TODO(buffer[is_planar ? i : ch + i * channels]) =
@@ -621,8 +627,8 @@ scoped_refptr<AudioBuffer> MakeAudioBuffer<float>(SampleFormat format,
   //   (start + (frames + 1) * increment) / max_value
   //   (start + (frames + 2) * increment) / max_value, ...
   for (size_t ch = 0; ch < channels; ++ch) {
-    float* buffer =
-        reinterpret_cast<float*>(output->channel_data()[is_planar ? ch : 0]);
+    float* buffer = reinterpret_cast<float*>(
+        output->channel_data()[is_planar ? ch : 0].get());
     const float v = static_cast<float>(start + ch * frames * increment);
     for (size_t i = 0; i < frames; ++i) {
       UNSAFE_TODO(buffer[is_planar ? i : ch + i * channels]) =
@@ -652,7 +658,7 @@ scoped_refptr<AudioBuffer> MakeBitstreamAudioBuffer(
   //   start
   //   start + increment
   //   start + 2 * increment, ...
-  uint8_t* buffer = reinterpret_cast<uint8_t*>(output->channel_data()[0]);
+  uint8_t* buffer = reinterpret_cast<uint8_t*>(output->channel_data()[0].get());
   for (size_t i = 0; i < data_size; ++i) {
     UNSAFE_TODO(buffer[i]) = static_cast<uint8_t>(start + i * increment);
   }

@@ -9,6 +9,7 @@
 #include "base/check.h"
 #include "base/command_line.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/safety_checks.h"
 #include "base/no_destructor.h"
@@ -323,6 +324,12 @@ void RenderInputRouter::OnUnconfirmedTapConvertedToTap() {
   }
 }
 
+void RenderInputRouter::OnInputRouterActive() {
+  if (delegate_) {
+    delegate_->OnInputRouterActive();
+  }
+}
+
 blink::mojom::InputEventResultState RenderInputRouter::FilterInputEvent(
     const blink::WebInputEvent& event,
     const ui::LatencyInfo& latency_info) {
@@ -348,7 +355,6 @@ blink::mojom::InputEventResultState RenderInputRouter::FilterInputEvent(
   // confused about how many touches are active.
   if ((is_blocked_ || delegate_->IsIgnoringWebInputEvents(event)) &&
       event.GetType() != WebInputEvent::Type::kTouchCancel) {
-    delegate_->OnInputIgnored(event);
     return blink::mojom::InputEventResultState::kNoConsumerExists;
   }
 

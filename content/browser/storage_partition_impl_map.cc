@@ -10,6 +10,7 @@
 #include "base/barrier_closure.h"
 #include "base/command_line.h"
 #include "base/containers/map_util.h"
+#include "base/containers/span.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -397,8 +398,7 @@ void StoragePartitionImplMap::AsyncObliterate(
   for (auto*& active_partition : active_partitions) {
     active_partition->ClearData(
         // All except shader cache.
-        ~StoragePartition::REMOVE_DATA_MASK_SHADER_CACHE,
-        StoragePartition::QUOTA_MANAGED_STORAGE_MASK_ALL, blink::StorageKey(),
+        ~StoragePartition::REMOVE_DATA_MASK_SHADER_CACHE, blink::StorageKey(),
         base::Time(), base::Time::Max(), subtask_done_callback);
   }
 

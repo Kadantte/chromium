@@ -226,7 +226,6 @@
       name: "ClientHintUAHighEntropyValues",
       permissions_policy_name: "ch-ua-high-entropy-values",
       feature_default: "EnableForAll",
-      depends_on: ["ClientHintUAHighEntropyValuesPermissionPolicy"],
     },
     {
       name: "ClientHintUAPlatform",
@@ -326,13 +325,6 @@
     {
       name: "DirectSockets",
       permissions_policy_name: "direct-sockets",
-      depends_on: ["DirectSockets"],
-      visibility: "IsolatedContext",
-    },
-    {
-      name: "DirectSocketsPrivate",
-      permissions_policy_name: "direct-sockets-private",
-      depends_on: ["DirectSockets"],
       visibility: "IsolatedContext",
     },
     {
@@ -357,15 +349,9 @@
       depends_on: ["FreezeFramesOnVisibility"],
     },
     {
-      name: "FencedUnpartitionedStorageRead",
-      permissions_policy_name: "fenced-unpartitioned-storage-read",
-      feature_default: "EnableForAll",
-      depends_on: ["FencedFramesLocalUnpartitionedDataAccess"],
-    },
-    {
       name: "FocusWithoutUserActivation",
       permissions_policy_name: "focus-without-user-activation",
-      feature_default: "EnableForSelf",
+      feature_default: "EnableForAll",
       depends_on: ["BlockingFocusWithoutUserActivation"],
     },
     {
@@ -435,7 +421,6 @@
     {
       name: "LocalNetwork",
       permissions_policy_name: "local-network",
-      depends_on: [ "LocalNetworkAccessSplitPermissions" ],
       default_value_behind_switch: [
         ["LocalNetworkAccessPermissionsPolicyDefaultEnabled",
         "EnableForAll"]
@@ -453,7 +438,6 @@
     {
       name: "LoopbackNetwork",
       permissions_policy_name: "loopback-network",
-      depends_on: [ "LocalNetworkAccessSplitPermissions" ],
       default_value_behind_switch: [
         ["LocalNetworkAccessPermissionsPolicyDefaultEnabled",
          "EnableForAll"]
@@ -486,7 +470,6 @@
     {
       name: "MulticastInDirectSockets",
       permissions_policy_name: "direct-sockets-multicast",
-      depends_on: ["MulticastInDirectSockets"],
       visibility: "IsolatedContext",
     },
     {
@@ -643,6 +626,17 @@
       name: "WebAppInstallation",
       permissions_policy_name: "web-app-installation",
       depends_on: ["WebAppInstallation"],
+    },
+    {
+      name: "Tools",
+      permissions_policy_name: "tools",
+      depends_on: ["WebMCP"],
+      feature_default: "EnableForSelf",
+    },
+    {
+      name: "WebNN",
+      permissions_policy_name: "webnn",
+      depends_on: ["MachineLearningNeuralNetwork"],
     },
     {
       name: "WebPrinting",

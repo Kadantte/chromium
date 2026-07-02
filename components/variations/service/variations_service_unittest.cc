@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/base64.h"
+#include "base/byte_size.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
@@ -101,8 +102,6 @@ class TestVariationsServiceClient : public VariationsServiceClient {
     return true;
   }
   bool IsEnterprise() override { return false; }
-  void RemoveGoogleGroupsFromPrefsForDeletedProfiles(
-      PrefService* local_state) override {}
 
   void set_restrict_parameter(const std::string& value) {
     restrict_parameter_ = value;
@@ -135,14 +134,7 @@ class TestVariationsService : public VariationsService {
       : VariationsService(std::make_unique<TestVariationsServiceClient>(),
                           std::move(test_notifier),
                           local_state,
-                          state_manager),
-        intercepts_fetch_(true),
-        fetch_attempted_(false),
-        latest_serial_number_(""),
-        seed_stores_succeed_(true),
-        seed_stored_(false),
-        delta_compressed_seed_(false),
-        gzip_compressed_seed_(false) {
+                          state_manager) {
     interception_url_ =
         GetVariationsServerURL(use_secure_url ? USE_HTTPS : USE_HTTP);
     set_variations_server_url(interception_url_);
@@ -168,6 +160,7 @@ class TestVariationsService : public VariationsService {
   bool fetch_attempted() const { return fetch_attempted_; }
   bool seed_stored() const { return seed_stored_; }
   const std::string& stored_country() const { return stored_country_; }
+  const std::string& stored_geo_level() const { return stored_geo_level_; }
   bool delta_compressed_seed() const { return delta_compressed_seed_; }
   bool gzip_compressed_seed() const { return gzip_compressed_seed_; }
 
@@ -199,12 +192,14 @@ class TestVariationsService : public VariationsService {
   void StoreSeed(std::string seed_data,
                  std::string seed_signature,
                  std::string country_code,
+                 std::string geo_level1,
                  base::Time date_fetched,
                  bool is_delta_compressed,
                  bool is_gzip_compressed) override {
     seed_stored_ = true;
     stored_seed_data_ = seed_data;
     stored_country_ = country_code;
+    stored_geo_level_ = geo_level1;
     delta_compressed_seed_ = is_delta_compressed;
     gzip_compressed_seed_ = is_gzip_compressed;
     OnSeedStoreResult(is_delta_compressed, seed_stores_succeed_,
@@ -222,15 +217,16 @@ class TestVariationsService : public VariationsService {
 
  private:
   GURL interception_url_;
-  bool intercepts_fetch_;
-  bool fetch_attempted_;
+  bool intercepts_fetch_ = true;
+  bool fetch_attempted_ = false;
   std::string latest_serial_number_;
-  bool seed_stores_succeed_;
-  bool seed_stored_;
+  bool seed_stores_succeed_ = true;
+  bool seed_stored_ = false;
   std::string stored_seed_data_;
   std::string stored_country_;
-  bool delta_compressed_seed_;
-  bool gzip_compressed_seed_;
+  std::string stored_geo_level_;
+  bool delta_compressed_seed_ = false;
+  bool gzip_compressed_seed_ = false;
 };
 
 class TestVariationsServiceObserver : public VariationsService::Observer {
@@ -311,7 +307,7 @@ void AddOKResponseWithIM(
   if (!im.empty())
     head->headers->SetHeader("IM", im);
   network::URLLoaderCompletionStatus status;
-  status.decoded_body_length = body.size();
+  status.decoded_body_length = base::ByteSize(body.size());
   test_url_loader_factory->AddResponse(interception_url, std::move(head), body,
                                        status);
 }
@@ -653,8 +649,9 @@ TEST_F(VariationsServiceTest, CountryHeader) {
   head->headers = base::MakeRefCounted<net::HttpResponseHeaders>(
       net::HttpUtil::AssembleRawHeaders(headers));
   head->headers->SetHeader("X-Country", "test");
+  head->headers->SetHeader("X-Geo-Level-1", "test-geo-level");
   network::URLLoaderCompletionStatus status;
-  status.decoded_body_length = serialized_seed.size();
+  status.decoded_body_length = base::ByteSize(serialized_seed.size());
   service.test_url_loader_factory()->AddResponse(
       service.interception_url(), std::move(head), serialized_seed, status);
 
@@ -662,6 +659,39 @@ TEST_F(VariationsServiceTest, CountryHeader) {
 
   EXPECT_TRUE(service.seed_stored());
   EXPECT_EQ("test", service.stored_country());
+  EXPECT_EQ("test-geo-level", service.stored_geo_level());
+}
+
+TEST_F(VariationsServiceTest, CountryHeaderNotTrustedOverHTTP) {
+  std::string serialized_seed = SerializeSeed(CreateTestSeed());
+  VariationsService::EnableFetchForTesting();
+
+  TestVariationsService service(
+      std::make_unique<web_resource::TestRequestAllowedNotifier>(
+          &prefs_, network_tracker_),
+      &prefs_, GetMetricsStateManager(), /*use_secure_url=*/false);
+  EXPECT_FALSE(service.seed_stored());
+  service.set_intercepts_fetch(false);
+
+  std::string headers("HTTP/1.1 200 OK\n\n");
+  auto head = network::mojom::URLResponseHead::New();
+  head->headers = base::MakeRefCounted<net::HttpResponseHeaders>(
+      net::HttpUtil::AssembleRawHeaders(headers));
+  head->headers->SetHeader("X-Country", "test");
+  head->headers->SetHeader("X-Geo-Level-1", "test-geo-level");
+  network::URLLoaderCompletionStatus status;
+  status.decoded_body_length = base::ByteSize(serialized_seed.size());
+  service.test_url_loader_factory()->AddResponse(
+      service.interception_url(), std::move(head), serialized_seed, status);
+
+  service.set_last_request_was_retry(false);
+  service.set_insecure_url(service.interception_url());
+  EXPECT_TRUE(service.CallMaybeRetryOverHTTP());
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_TRUE(service.seed_stored());
+  EXPECT_TRUE(service.stored_country().empty());
+  EXPECT_TRUE(service.stored_geo_level().empty());
 }
 
 TEST_F(VariationsServiceTest, Observer) {
@@ -856,7 +886,7 @@ TEST_F(VariationsServiceTest, SafeMode_SuccessfulFetchClearsFailureStreaks) {
       net::HttpUtil::AssembleRawHeaders(headers));
   head->headers->SetHeader("X-Seed-Signature", kBase64SeedSignature);
   network::URLLoaderCompletionStatus status;
-  status.decoded_body_length = response.size();
+  status.decoded_body_length = base::ByteSize(response.size());
   service.test_url_loader_factory()->AddResponse(
       service.interception_url(), std::move(head), response, status);
 
@@ -989,7 +1019,7 @@ TEST_F(VariationsServiceTest, NullResponseReceivedWithHTTPOk) {
   http_response_headers->SetHeader("X-Seed-Signature", kBase64SeedSignature);
   // Set ERR_FAILED status code despite the 200 response code.
   network::URLLoaderCompletionStatus status(net::ERR_FAILED);
-  status.decoded_body_length = response.size();
+  status.decoded_body_length = base::ByteSize(response.size());
   service.test_url_loader_factory()->AddResponse(
       service.interception_url(), std::move(head), response, status,
       network::TestURLLoaderFactory::Redirects(),

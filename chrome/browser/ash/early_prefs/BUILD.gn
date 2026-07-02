@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("early_prefs") {
@@ -27,6 +25,7 @@ static_library("early_prefs") {
     "//ash/constants",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/profiles:profile_manager",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/osauth/impl",
     "//chromeos/ash/components/osauth/public",

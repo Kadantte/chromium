@@ -53,12 +53,14 @@ import org.mockito.stubbing.Answer;
 import org.robolectric.annotation.Config;
 import org.robolectric.annotation.Implementation;
 import org.robolectric.annotation.Implements;
-import org.robolectric.annotation.LooperMode;
 
 import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
+import org.chromium.base.task.PostTask;
+import org.chromium.base.task.TaskTraits;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.chrome.browser.firstrun.FirstRunStatus;
 import org.chromium.chrome.browser.init.AsyncInitTaskRunner;
@@ -97,7 +99,6 @@ import java.util.stream.Collectors;
         shadows = {
             ChromeBackupAgentTest.BackupManagerShadow.class,
         })
-@LooperMode(LooperMode.Mode.INSTRUMENTATION_TEST)
 public class ChromeBackupAgentTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Rule public TemporaryFolder mTempDir = new TemporaryFolder();
@@ -143,13 +144,13 @@ public class ChromeBackupAgentTest {
     private static final String ACCOUNT_SETTINGS_PREF_VALUE = "account_settings_pref_value";
     private static final int BACKUP_BOOL_PREF_COUNT =
             new BoolPrefBackupSerializer().getAllowlistedPrefs().size()
-                    + ChromeBackupAgentImpl.BACKUP_ANDROID_BOOL_PREFS.length;
+                    + ChromeBackupAgentImpl.BACKUP_ANDROID_BOOL_PREFS.size();
     // The 1 additional preference is the signed-in account.
     private static final int BACKUP_PREF_COUNT =
             ChromeBackupAgentImpl.NATIVE_PREFS_SERIALIZERS.stream()
                             .mapToInt(serializer -> serializer.getAllowlistedPrefs().size())
                             .sum()
-                    + ChromeBackupAgentImpl.BACKUP_ANDROID_BOOL_PREFS.length
+                    + ChromeBackupAgentImpl.BACKUP_ANDROID_BOOL_PREFS.size()
                     + 1;
     // Number of preferences that default to true in the test, see setUpPrefsToBackup().
     private static final int DEFAULT_TRUE_BOOL_PREF_COUNT = 2;
@@ -177,10 +178,12 @@ public class ChromeBackupAgentTest {
         editor.putBoolean(ChromePreferenceKeys.PRIVACY_METRICS_REPORTING_PERMITTED_BY_USER, false);
         editor.putBoolean(
                 ChromePreferenceKeys.PRIVACY_METRICS_REPORTING_PERMITTED_BY_POLICY, false);
+        editor.putBoolean(
+                ChromePreferenceKeys.PRIVACY_SHOULD_USE_METRICS_CHOICE_RESTRUCTURE, false);
 
         editor.putBoolean(SHARED_PREF_NOT_BACKED_UP, false);
 
-        doReturn(mAccountInfo).when(mIdentityManagerMock).getPrimaryAccountInfo(anyInt());
+        doReturn(mAccountInfo).when(mIdentityManagerMock).getPrimaryAccountInfo();
         editor.apply();
     }
 
@@ -251,6 +254,8 @@ public class ChromeBackupAgentTest {
      * user.
      */
     @Test
+    // ObjectInputStream.readObject() returns Object; casts to generic ArrayList are unchecked.
+    @SuppressWarnings("unchecked")
     public void testOnBackup_firstBackup_signedInNotSyncing()
             throws IOException, ClassNotFoundException {
         // Mock the backup data.
@@ -493,6 +498,14 @@ public class ChromeBackupAgentTest {
         verify(backupData, times(DEFAULT_TRUE_BOOL_PREF_COUNT)).writeEntityData(new byte[] {1}, 1);
     }
 
+    private static Pair<String, byte[]> booleanPrefPair(String prefName, boolean value) {
+        return new Pair<>("AndroidDefault." + prefName, value ? new byte[] {1} : new byte[] {0});
+    }
+
+    private static Pair<String, byte[]> stringPrefPair(String prefName, String value) {
+        return new Pair<>("AndroidDefault." + prefName, ApiCompatibilityUtils.getBytesUtf8(value));
+    }
+
     private BackupDataInput createMockBackupData(
             boolean hasSyncingUser, boolean hasSignedInUser, boolean hasAccountSettings)
             throws IOException {
@@ -502,22 +515,17 @@ public class ChromeBackupAgentTest {
         String syncingUserEmail = hasSyncingUser ? mAccountInfo.getEmail() : "";
         String signedInUserGaiaId = hasSignedInUser ? mAccountInfo.getGaiaId().toString() : "";
         ArrayList<Pair<String, byte[]>> keysAndValues =
-                new ArrayList(
+                new ArrayList<>(
                         Arrays.asList(
                                 new Pair<>("native." + NATIVE_PREF_NOT_BACKED_UP, new byte[] {1}),
-                                new Pair<>(
-                                        "AndroidDefault."
-                                                + ChromePreferenceKeys.FIRST_RUN_FLOW_COMPLETE,
-                                        new byte[] {1}),
+                                booleanPrefPair(ChromePreferenceKeys.FIRST_RUN_FLOW_COMPLETE, true),
                                 new Pair<>("AndroidDefault.junk", new byte[] {23, 42}),
-                                new Pair<>(
-                                        "AndroidDefault."
-                                                + ChromeBackupAgentImpl.SYNCING_ACCOUNT_KEY,
-                                        ApiCompatibilityUtils.getBytesUtf8(syncingUserEmail)),
-                                new Pair<>(
-                                        "AndroidDefault."
-                                                + ChromeBackupAgentImpl.SIGNED_IN_ACCOUNT_ID_KEY,
-                                        ApiCompatibilityUtils.getBytesUtf8(signedInUserGaiaId))));
+                                stringPrefPair(
+                                        ChromeBackupAgentImpl.SYNCING_ACCOUNT_KEY,
+                                        syncingUserEmail),
+                                stringPrefPair(
+                                        ChromeBackupAgentImpl.SIGNED_IN_ACCOUNT_ID_KEY,
+                                        signedInUserGaiaId)));
 
         for (Map.Entry<String, Boolean> entry : mNativeBoolPrefBackupValues.entrySet()) {
             byte[] value = entry.getValue() ? new byte[] {1} : new byte[] {0};
@@ -765,7 +773,7 @@ public class ChromeBackupAgentTest {
                 ParcelFileDescriptor.open(
                         mTempDir.newFile(), ParcelFileDescriptor.MODE_WRITE_ONLY)) {
             // Triggers a restore.
-            mAgent.onRestore(backupData, 0, newState);
+            onRestore(backupData, 0, newState);
         }
 
         SharedPreferences prefs = ContextUtils.getAppSharedPreferences();
@@ -802,7 +810,7 @@ public class ChromeBackupAgentTest {
                 ParcelFileDescriptor.open(
                         mTempDir.newFile(), ParcelFileDescriptor.MODE_WRITE_ONLY)) {
             // Do a restore.
-            mAgent.onRestore(backupData, 0, newState);
+            onRestore(backupData, 0, newState);
         }
 
         // Verify that the restore is not done since no valid account can be signed-in.
@@ -836,7 +844,7 @@ public class ChromeBackupAgentTest {
                 ParcelFileDescriptor.open(
                         mTempDir.newFile(), ParcelFileDescriptor.MODE_WRITE_ONLY)) {
             // Do a restore.
-            mAgent.onRestore(backupData, 0, newState);
+            onRestore(backupData, 0, newState);
         }
         SharedPreferences prefs = ContextUtils.getAppSharedPreferences();
         assertFalse(prefs.contains(ChromePreferenceKeys.FIRST_RUN_FLOW_COMPLETE));
@@ -861,7 +869,7 @@ public class ChromeBackupAgentTest {
                 ParcelFileDescriptor.open(
                         mTempDir.newFile(), ParcelFileDescriptor.MODE_WRITE_ONLY)) {
             // Do a restore.
-            mAgent.onRestore(backupData, 0, newState);
+            onRestore(backupData, 0, newState);
         }
         SharedPreferences prefs = ContextUtils.getAppSharedPreferences();
         assertTrue(prefs.contains(ChromePreferenceKeys.FIRST_RUN_FLOW_COMPLETE));
@@ -884,12 +892,12 @@ public class ChromeBackupAgentTest {
                         /* hasSignedInUser= */ true,
                         /* hasAccountSettings= */ true);
         mAccountManagerTestRule.addAccount(mAccountInfo);
-        doReturn(true).when(mIdentityManagerMock).hasPrimaryAccount(anyInt());
+        doReturn(true).when(mIdentityManagerMock).hasPrimaryAccount();
 
         try (ParcelFileDescriptor newState =
                 ParcelFileDescriptor.open(
                         mTempDir.newFile(), ParcelFileDescriptor.MODE_WRITE_ONLY)) {
-            mAgent.onRestore(backupData, 0, newState);
+            onRestore(backupData, 0, newState);
         }
 
         assertEquals(
@@ -960,7 +968,7 @@ public class ChromeBackupAgentTest {
 
     /**
      * Test that browser startup fails when in a child process. This is important because of
-     * https://crbug.com/718166
+     * https://crbug.com/40518724
      */
     @Test
     public void testInitializeBrowser_childProcess() {
@@ -985,7 +993,7 @@ public class ChromeBackupAgentTest {
         try (ParcelFileDescriptor newState =
                 ParcelFileDescriptor.open(
                         mTempDir.newFile(), ParcelFileDescriptor.MODE_WRITE_ONLY)) {
-            mAgent.onRestore(backupData, 0, newState);
+            onRestore(backupData, 0, newState);
         }
         SharedPreferences prefs = ContextUtils.getAppSharedPreferences();
         assertTrue(prefs.getBoolean(ChromePreferenceKeys.FIRST_RUN_FLOW_COMPLETE, false));
@@ -1061,5 +1069,19 @@ public class ChromeBackupAgentTest {
         // Verify that the account is not recorded to trigger the sign-in & sync flow later.
         SharedPreferences prefs = ContextUtils.getAppSharedPreferences();
         assertFalse(prefs.contains(ChromePreferenceKeys.BACKUP_FLOW_SIGNIN_ACCOUNT_NAME));
+    }
+
+    private void onRestore(
+            BackupDataInput data, int appVersionCode, ParcelFileDescriptor newState) {
+        PostTask.postTask(
+                TaskTraits.USER_BLOCKING,
+                () -> {
+                    try {
+                        mAgent.onRestore(data, appVersionCode, newState);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                });
+        RobolectricUtil.runAllBackgroundAndUiAllowBlocking();
     }
 }

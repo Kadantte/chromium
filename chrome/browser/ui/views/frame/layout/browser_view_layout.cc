@@ -26,6 +26,15 @@
 using web_modal::ModalDialogHostObserver;
 using web_modal::WebContentsModalDialogHost;
 
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(BrowserViewLayoutViews,
+                                      kVerticalTabStripTopCornerElementId);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(BrowserViewLayoutViews,
+                                      kVerticalTabStripBottomCornerElementId);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(BrowserViewLayoutViews,
+                                      kShadowOverlayElementId);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(BrowserViewLayoutViews,
+                                      kMainBackgroundRegionElementId);
+
 BrowserViewLayoutViews::BrowserViewLayoutViews() = default;
 BrowserViewLayoutViews::BrowserViewLayoutViews(
     BrowserViewLayoutViews&&) noexcept = default;
@@ -117,7 +126,7 @@ class BrowserViewLayout::BrowserModalDialogHostViews
   base::ScopedObservation<views::Widget, views::WidgetObserver>
       browser_widget_observation_{this};
 
-  base::ObserverList<ModalDialogHostObserver>::Unchecked observer_list_;
+  base::ObserverList<ModalDialogHostObserver> observer_list_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -179,10 +188,18 @@ void BrowserViewLayout::UpdateBubbles() {
   // the positioning of the bar.
   const gfx::Rect new_contents_bounds =
       views().contents_container->GetBoundsInScreen();
-  if (delegate().HasFindBarController() &&
-      (new_contents_bounds.width() != latest_contents_bounds_.width() ||
-       (new_contents_bounds.y() != latest_contents_bounds_.y() &&
-        new_contents_bounds.height() != latest_contents_bounds_.height()))) {
+#if BUILDFLAG(IS_CHROMEOS)
+  // On ChromeOS, unlike macOS, the find bar can be shown without revealing the
+  // immersive frame, so we should always try to update the position even if
+  // the content bounds doesn't change.
+  bool should_update_location = true;
+#else
+  bool should_update_location =
+      new_contents_bounds.width() != latest_contents_bounds_.width() ||
+      (new_contents_bounds.y() != latest_contents_bounds_.y() &&
+       new_contents_bounds.height() != latest_contents_bounds_.height());
+#endif
+  if (delegate().HasFindBarController() && should_update_location) {
     delegate().MoveWindowForFindBarIfNecessary();
   }
   latest_contents_bounds_ = new_contents_bounds;

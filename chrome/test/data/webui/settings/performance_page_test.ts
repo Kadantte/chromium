@@ -131,14 +131,15 @@ suite('PerformanceIntervention', function() {
     toggle.click();
     assertTrue(await performanceMetricsProxy.whenCalled(
         'recordPerformanceInterventionToggleButtonChanged'));
-    assertTrue(
-        performancePage.getPref(PERFORMANCE_INTERVENTION_NOTIFICATION_PREF)
-            .value);
+    assertTrue(performancePage
+                   .getPref<boolean>(PERFORMANCE_INTERVENTION_NOTIFICATION_PREF)
+                   .value);
     toggle.click();
     assertTrue(await performanceMetricsProxy.whenCalled(
         'recordPerformanceInterventionToggleButtonChanged'));
     assertFalse(
-        performancePage.getPref(PERFORMANCE_INTERVENTION_NOTIFICATION_PREF)
+        performancePage
+            .getPref<boolean>(PERFORMANCE_INTERVENTION_NOTIFICATION_PREF)
             .value);
   });
 });
@@ -428,7 +429,7 @@ suite('TabDiscardExceptionList', function() {
     addDialog.$.actionButton.click();
     flush();
 
-    assertEquals(false, exceptionList.$.collapse.opened);
+    assertFalse(exceptionList.$.collapse.opened);
     assertExceptionListEquals([existingEntry, ...entries]);
   });
 

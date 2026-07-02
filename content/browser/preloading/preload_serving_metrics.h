@@ -15,6 +15,7 @@
 #include "content/browser/preloading/prefetch/prefetch_streaming_url_loader_common_types.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/preload_serving_metrics_capsule.h"
+#include "net/http/http_no_vary_search_data.h"
 
 namespace content {
 
@@ -67,6 +68,8 @@ struct CONTENT_EXPORT PrefetchContainerMetrics final {
   std::optional<base::TimeDelta> create_stream_delay;
   std::optional<base::TimeDelta> connected_callback_delay;
   std::optional<base::TimeDelta> initialize_stream_delay;
+
+  bool is_constructed_from_pre_prefetch = false;
 };
 
 // Debug information of prefetch ahead of prerender at prefetch matching.
@@ -98,6 +101,7 @@ struct CONTENT_EXPORT PrefetchMatchPrefetchAheadOfPrerenderDebugMetrics final {
   PrefetchPotentialCandidateCollectResult collect_result;
   PrefetchKey prefetch_key_navigated;
   PrefetchKey prefetch_key_ahead_of_prerender;
+  std::optional<net::HttpNoVarySearchData> prefetch_nvs_hint_ahead_of_prerender;
 };
 
 // Debug information of prefetch ahead of prerender at prefetch matching.
@@ -186,10 +190,6 @@ struct CONTENT_EXPORT PrefetchMatchMetrics final {
   std::unique_ptr<PrefetchContainerMetrics>
       prefetch_container_metrics_ahead_of_prerender = nullptr;
 
-  // Null if `!UsePrefetchScheduler()`.
-  //
-  // TODO(crbug.com/406402069): Remove the above comment.
-  //
   // Non null if the navigation is prerender initial navigation.
   std::unique_ptr<PrefetchMatchPrerenderDebugMetrics> prerender_debug_metrics;
 };

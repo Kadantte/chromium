@@ -28,6 +28,7 @@
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
+#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/test/web_app_test_observers.h"
@@ -35,21 +36,24 @@
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/common/chrome_features.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chromeos/ash/experiences/arc/test/arc_util_test_support.h"
 #include "chromeos/ash/experiences/arc/test/connection_holder_util.h"
 #include "chromeos/ash/experiences/arc/test/fake_app_instance.h"
 #include "components/services/app_service/public/cpp/app_types.h"
+#include "components/webapps/common/web_app_id.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/views/controls/image_view.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/any_widget_observer.h"
+#include "url/gurl.h"
 
+namespace {
 class AppUninstallDialogViewBrowserTest : public DialogBrowserTest {
  public:
   AppUninstallDialogView* ActiveView() {
@@ -357,7 +361,6 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppsUninstallDialogViewBrowserTest,
         web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(start_url);
     web_app_info->parent_app_id = parent_app_id;
     web_app_info->title = sub_app_name;
-    web_app_info->parent_app_manifest_id = webapps::ManifestId(parent_app_url);
 
     web_app::test::InstallWebApp(browser()->profile(), std::move(web_app_info),
                                  /*overwrite_existing_manifest_fields=*/true,
@@ -416,3 +419,67 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppsUninstallDialogViewBrowserTest,
       GetViews(view, AppUninstallDialogView::DialogViewID::SUB_APP_LABEL);
   EXPECT_THAT(views_group, testing::IsEmpty());
 }
+
+IN_PROC_BROWSER_TEST_F(IsolatedWebAppsUninstallDialogViewBrowserTest,
+                       IwaUninstallShowsVersionSubtitle) {
+  std::unique_ptr<web_app::ScopedBundledIsolatedWebApp> app =
+      web_app::IsolatedWebAppBuilder(
+          web_app::ManifestBuilder().SetName("Test IWA").SetVersion("7.8.9"))
+          .BuildBundle();
+
+  ASSERT_OK_AND_ASSIGN(web_app::IsolatedWebAppUrlInfo url_info,
+                       app->Install(browser()->profile()));
+
+  views::NamedWidgetShownWaiter waiter(views::test::AnyWidgetTestPasskey{},
+                                       "AppUninstallDialogView");
+  EXPECT_TRUE(UninstallApp(url_info.app_id()));
+
+  waiter.WaitIfNeededAndGet();
+  ASSERT_NE(nullptr, ActiveView());
+
+  EXPECT_TRUE(
+      web_app::test::HasChildLabelWithSubstring(ActiveView(), u"7.8.9"));
+
+  ActiveView()->CancelDialog();
+}
+
+IN_PROC_BROWSER_TEST_F(IsolatedWebAppsUninstallDialogViewBrowserTest,
+                       SubAppUninstallShowsParentAppNameSubtitle) {
+  std::unique_ptr<web_app::ScopedBundledIsolatedWebApp> app =
+      web_app::IsolatedWebAppBuilder(
+          web_app::ManifestBuilder()
+              .SetName("Parent IWA Name")
+              .AddPermissionsPolicyWildcard(
+                  network::mojom::PermissionsPolicyFeature::kSubApps))
+          .BuildBundle();
+
+  ASSERT_OK_AND_ASSIGN(web_app::IsolatedWebAppUrlInfo parent_app,
+                       app->Install(browser()->profile()));
+
+  const webapps::AppId parent_app_id = parent_app.app_id();
+  const GURL parent_app_url = parent_app.origin().GetURL();
+
+  std::u16string sub_app_name = u"Sub App One";
+  GURL start_url = parent_app_url.Resolve("/sub-app-one");
+  auto web_app_info =
+      web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(start_url);
+  web_app_info->parent_app_id = parent_app_id;
+  web_app_info->title = sub_app_name;
+
+  webapps::AppId sub_app_id = web_app::test::InstallWebApp(
+      browser()->profile(), std::move(web_app_info),
+      /*overwrite_existing_manifest_fields=*/true,
+      webapps::WebappInstallSource::SUB_APP);
+
+  views::NamedWidgetShownWaiter waiter(views::test::AnyWidgetTestPasskey{},
+                                       "AppUninstallDialogView");
+  EXPECT_TRUE(UninstallApp(sub_app_id));
+  waiter.WaitIfNeededAndGet();
+  ASSERT_NE(nullptr, ActiveView());
+
+  EXPECT_TRUE(web_app::test::HasChildLabelWithSubstring(ActiveView(),
+                                                        u"Parent IWA Name"));
+
+  ActiveView()->CancelDialog();
+}
+}  // namespace

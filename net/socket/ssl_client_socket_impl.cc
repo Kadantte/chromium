@@ -31,6 +31,7 @@
 #include "base/strings/string_view_util.h"
 #include "base/synchronization/lock.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/timer/elapsed_timer.h"
 #include "base/trace_event/trace_event.h"
 #include "base/values.h"
 #include "build/build_config.h"
@@ -52,6 +53,7 @@
 #include "net/http/transport_security_state.h"
 #include "net/log/net_log_event_type.h"
 #include "net/log/net_log_values.h"
+#include "net/net_buildflags.h"
 #include "net/ssl/cert_compression.h"
 #include "net/ssl/openssl_ssl_util.h"
 #include "net/ssl/ssl_cert_request_info.h"
@@ -108,7 +110,9 @@ base::DictValue NetLogSSLInfoParams(SSLClientSocketImpl* socket) {
       .Set("key_exchange_group", ssl_info.key_exchange_group)
       .Set("peer_signature_algorithm", ssl_info.peer_signature_algorithm)
       .Set("encrypted_client_hello", ssl_info.encrypted_client_hello)
-      .Set("next_proto", NextProtoToString(socket->GetNegotiatedProtocol()));
+      .Set("next_proto", NextProtoToString(socket->GetNegotiatedProtocol()))
+      .Set("requested_server_padding", ssl_info.server_padding_requested)
+      .Set("received_server_padding", ssl_info.server_padding_received);
 }
 
 base::DictValue NetLogSSLAlertParams(const void* bytes, size_t len) {
@@ -201,6 +205,9 @@ class SSLClientSocketImpl::SSLContext {
     SSL_CTX_set_timeout(ssl_ctx_.get(), 1 * 60 * 60 /* one hour */);
 
     SSL_CTX_set_grease_enabled(ssl_ctx_.get(), 1);
+    if (base::FeatureList::IsEnabled(features::kTlsGreaseSigalgs)) {
+      SSL_CTX_set_grease_sigalgs_enabled(ssl_ctx_.get(), 1);
+    }
 
     // Deduplicate all certificates minted from the SSL_CTX in memory.
     SSL_CTX_set0_buffer_pool(ssl_ctx_.get(), x509_util::GetBufferPool());
@@ -506,10 +513,12 @@ bool SSLClientSocketImpl::GetSSLInfo(SSLInfo* ssl_info) {
   ssl_info->public_key_hashes = server_cert_verify_result_.public_key_hashes;
   ssl_info->client_cert_sent = send_client_cert_ && client_cert_.get();
   ssl_info->encrypted_client_hello = SSL_ech_accepted(ssl_.get());
-  ssl_info->ocsp_result = server_cert_verify_result_.ocsp_result;
   ssl_info->is_fatal_cert_error = is_fatal_cert_error_;
   ssl_info->signed_certificate_timestamps = server_cert_verify_result_.scts;
   ssl_info->ct_policy_compliance = server_cert_verify_result_.policy_compliance;
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+  ssl_info->crs_root_id = server_cert_verify_result_.crs_root_id;
+#endif
 
   const SSL_CIPHER* cipher = SSL_get_current_cipher(ssl_.get());
   CHECK(cipher);
@@ -528,6 +537,13 @@ bool SSLClientSocketImpl::GetSSLInfo(SSLInfo* ssl_info) {
                                  : SSLInfo::HANDSHAKE_FULL;
 
   ssl_info->early_data_accepted = SSL_early_data_accepted(ssl_.get());
+
+  ssl_info->server_padding_requested =
+      ssl_config_.server_padding_to_request.has_value();
+  if (ssl_info->server_padding_requested) {
+    ssl_info->server_padding_received =
+        SSL_server_sent_requested_padding(ssl_.get());
+  }
 
   return true;
 }
@@ -776,9 +792,29 @@ int SSLClientSocketImpl::Init() {
       SSL_SIGN_RSA_PSS_RSAE_SHA384,    SSL_SIGN_RSA_PKCS1_SHA384,
       SSL_SIGN_RSA_PSS_RSAE_SHA512,    SSL_SIGN_RSA_PKCS1_SHA512,
   };
-  if (!SSL_set_verify_algorithm_prefs(ssl_.get(), kVerifyPrefs,
-                                      std::size(kVerifyPrefs))) {
-    return ERR_UNEXPECTED;
+  static const uint16_t kVerifyPrefsWithMlDsa[] = {
+      SSL_SIGN_ML_DSA_44,
+      SSL_SIGN_ML_DSA_65,
+      SSL_SIGN_ML_DSA_87,
+      SSL_SIGN_ECDSA_SECP256R1_SHA256,
+      SSL_SIGN_RSA_PSS_RSAE_SHA256,
+      SSL_SIGN_RSA_PKCS1_SHA256,
+      SSL_SIGN_ECDSA_SECP384R1_SHA384,
+      SSL_SIGN_RSA_PSS_RSAE_SHA384,
+      SSL_SIGN_RSA_PKCS1_SHA384,
+      SSL_SIGN_RSA_PSS_RSAE_SHA512,
+      SSL_SIGN_RSA_PKCS1_SHA512,
+  };
+  if (base::FeatureList::IsEnabled(features::kTlsMldsaSignatures)) {
+    if (!SSL_set_verify_algorithm_prefs(ssl_.get(), kVerifyPrefsWithMlDsa,
+                                        std::size(kVerifyPrefsWithMlDsa))) {
+      return ERR_UNEXPECTED;
+    }
+  } else {
+    if (!SSL_set_verify_algorithm_prefs(ssl_.get(), kVerifyPrefs,
+                                        std::size(kVerifyPrefs))) {
+      return ERR_UNEXPECTED;
+    }
   }
 
   SSL_set_alps_use_new_codepoint(
@@ -860,6 +896,12 @@ int SSLClientSocketImpl::Init() {
     });
   }
 
+  // Configure BoringSSL to ask for server padding, if provided.
+  if (ssl_config_.server_padding_to_request.has_value()) {
+    SSL_set_server_padding_request(
+        ssl_.get(), ssl_config_.server_padding_to_request.value());
+  }
+
   // The compliance policy must be the last thing configured in order to have
   // defined behavior.
   if (context_->config().tls13_cipher_prefer_aes_256 &&
@@ -915,6 +957,7 @@ int SSLClientSocketImpl::DoHandshake() {
 
     OpenSSLErrorInfo error_info;
     net_error = MapLastOpenSSLError(ssl_error, err_tracer, &error_info);
+    MaybeClearEarlyDataCache(net_error);
     if (net_error == ERR_IO_PENDING) {
       // If not done, stay in this state
       next_handshake_state_ = STATE_HANDSHAKE;
@@ -1239,6 +1282,10 @@ void SSLClientSocketImpl::DoConnectCallback(int rv) {
 }
 
 void SSLClientSocketImpl::OnHandshakeIOComplete(int result) {
+  std::optional<base::ElapsedTimer> timer;
+  if (base::ShouldRecordSubsampledMetric(0.001)) {
+    timer.emplace();
+  }
   int rv = DoHandshakeLoop(result);
   if (rv != ERR_IO_PENDING) {
     if (in_confirm_handshake_) {
@@ -1248,6 +1295,11 @@ void SSLClientSocketImpl::OnHandshakeIOComplete(int result) {
       LogConnectEndEvent(rv);
     }
     DoConnectCallback(rv);
+  }
+  if (timer) {
+    base::UmaHistogramTimes(
+        "Net.SSLClientSocketImpl.OnHandshakeIOCompleteDuration",
+        timer->Elapsed());
   }
 }
 
@@ -1333,6 +1385,7 @@ int SSLClientSocketImpl::DoPayloadRead(base::span<uint8_t> buf) {
     } else {
       pending_read_error_ = MapLastOpenSSLError(
           pending_read_ssl_error_, err_tracer, &pending_read_error_info_);
+      MaybeClearEarlyDataCache(pending_read_error_);
     }
 
     // Many servers do not reliably send a close_notify alert when shutting down
@@ -1388,6 +1441,7 @@ int SSLClientSocketImpl::DoPayloadWrite() {
     return ERR_IO_PENDING;
   OpenSSLErrorInfo error_info;
   int net_error = MapLastOpenSSLError(ssl_error, err_tracer, &error_info);
+  MaybeClearEarlyDataCache(net_error);
 
   if (net_error != ERR_IO_PENDING) {
     NetLogOpenSSLError(net_log_, NetLogEventType::SSL_WRITE_ERROR, net_error,
@@ -1439,11 +1493,7 @@ void SSLClientSocketImpl::DoPeek() {
     // On early data reject, clear early data on any other sessions in the
     // cache, so retries do not get stuck attempting 0-RTT. See
     // https://crbug.com/1066623.
-    if (err == ERR_EARLY_DATA_REJECTED ||
-        err == ERR_WRONG_VERSION_ON_EARLY_DATA) {
-      context_->ssl_client_session_cache()->ClearEarlyData(
-          GetSessionCacheKey(std::nullopt));
-    }
+    MaybeClearEarlyDataCache(err);
 
     handled_early_data_result_ = true;
 
@@ -1625,6 +1675,15 @@ bool SSLClientSocketImpl::IsRenegotiationAllowed() const {
 
 bool SSLClientSocketImpl::IsCachingEnabled() const {
   return context_->ssl_client_session_cache() != nullptr;
+}
+
+void SSLClientSocketImpl::MaybeClearEarlyDataCache(int error) {
+  if ((error == ERR_EARLY_DATA_REJECTED ||
+       error == ERR_WRONG_VERSION_ON_EARLY_DATA) &&
+      IsCachingEnabled()) {
+    context_->ssl_client_session_cache()->ClearEarlyData(
+        GetSessionCacheKey(std::nullopt));
+  }
 }
 
 ssl_private_key_result_t SSLClientSocketImpl::PrivateKeySignCallback(

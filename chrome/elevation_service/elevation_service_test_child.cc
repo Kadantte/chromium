@@ -45,8 +45,9 @@ int RunTest() {
   }
 
   // A safe switch is allowed.
-  const auto udd = cmd_line->GetSwitchValuePath(::switches::kUserDataDir);
-  if (udd.empty() || !base::PathExists(udd)) {
+  const auto profile =
+      cmd_line->GetSwitchValuePath(::switches::kProfileDirectory);
+  if (profile.empty() || !base::PathExists(profile)) {
     return -4;
   }
 
@@ -56,7 +57,8 @@ int RunTest() {
   }
 
   const auto args = cmd_line->GetArgs();
-  if (args.size() != 2) {
+  // event_name another_arg /disable-component-update --disable-component-update
+  if (args.size() != 4) {
     return -6;
   }
 

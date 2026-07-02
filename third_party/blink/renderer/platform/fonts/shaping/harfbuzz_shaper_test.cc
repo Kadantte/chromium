@@ -172,7 +172,7 @@ class HarfBuzzShaperTest : public FontTestBase {
   String GetShapedFontFamilyNameForEmojiVS(Font& font, String text) {
     DCHECK(text.length() == 1 ||
            (text.length() == 2 &&
-            (text.EndsWith(u"\ufe0e") || text.EndsWith(u"\ufe0f"))));
+            (text.ends_with(u"\ufe0e") || text.ends_with(u"\ufe0f"))));
     HeapVector<ShapeResult::RunFontData> run_font_data;
     HarfBuzzShaper shaper(text);
     const ShapeResult* result = shaper.Shape(&font, TextDirection::kLtr);
@@ -475,13 +475,13 @@ TEST_F(HarfBuzzShaperTest, ShapeLatinSegment) {
   EXPECT_EQ(11u, start_index_);
   EXPECT_EQ(1u, num_characters_);
 
-  HarfBuzzShaper shaper2(string.Substring(0, 6));
+  HarfBuzzShaper shaper2(string.substr(0, 6));
   const ShapeResult* first_reference = shaper2.Shape(font, direction);
 
-  HarfBuzzShaper shaper3(string.Substring(6, 5));
+  HarfBuzzShaper shaper3(string.substr(6, 5));
   const ShapeResult* second_reference = shaper3.Shape(font, direction);
 
-  HarfBuzzShaper shaper4(string.Substring(11, 1));
+  HarfBuzzShaper shaper4(string.substr(11, 1));
   const ShapeResult* third_reference = shaper4.Shape(font, direction);
 
   // Width of each segment should be the same when shaped using start and end
@@ -1037,9 +1037,10 @@ TEST_P(GlyphDataRangeTest, Data) {
 
   const auto& run = TestInfo(result)->RunInfoForTesting(data.run_index);
   auto glyphs = run.FindGlyphDataRange(data.start_offset, data.end_offset);
-  unsigned start_glyph = std::distance(run.glyph_data_.begin(), glyphs.begin());
+  unsigned start_glyph =
+      CheckedDistance(run.glyph_data_.begin(), glyphs.begin());
   EXPECT_EQ(data.start_glyph, start_glyph);
-  unsigned end_glyph = std::distance(run.glyph_data_.begin(), glyphs.end());
+  unsigned end_glyph = CheckedDistance(run.glyph_data_.begin(), glyphs.end());
   EXPECT_EQ(data.end_glyph, end_glyph);
 }
 
@@ -1264,6 +1265,69 @@ TEST_F(HarfBuzzShaperTest, CachedOffsetPositionMappingForOffsetLatin) {
   EXPECT_EQ(10u, sr->CachedOffsetForPosition(sr->CachedPositionForOffset(10)));
   EXPECT_EQ(11u, sr->CachedOffsetForPosition(sr->CachedPositionForOffset(11)));
   EXPECT_EQ(12u, sr->CachedOffsetForPosition(sr->CachedPositionForOffset(12)));
+}
+
+TEST_F(HarfBuzzShaperTest, CachedOffsetPositionMappingConstantAdvance) {
+  Font* font = MakeGarbageCollected<Font>(font_description);
+
+  String string = To16Bit("XXXXXXXXXXXX");  // 12 identical glyphs.
+  const unsigned length = string.length();
+  TextDirection direction = TextDirection::kLtr;
+
+  HarfBuzzShaper shaper(string);
+  const ShapeResult* sr = shaper.Shape(font, direction);
+  sr->EnsurePositionData();
+
+  // offset -> position -> offset must round-trip for every offset.
+  for (unsigned i = 0; i <= length; ++i) {
+    EXPECT_EQ(i, sr->CachedOffsetForPosition(sr->CachedPositionForOffset(i)))
+        << "offset " << i;
+  }
+
+  // Positions form a strictly increasing ladder starting at 0.
+  EXPECT_EQ(LayoutUnit(), sr->CachedPositionForOffset(0));
+  LayoutUnit previous = sr->CachedPositionForOffset(0);
+  for (unsigned i = 1; i <= length; ++i) {
+    const LayoutUnit position = sr->CachedPositionForOffset(i);
+    EXPECT_GT(position, previous) << "offset " << i;
+    previous = position;
+  }
+
+  // Every character boundary in a constant-advance run is safe to break.
+  for (unsigned i = 0; i < length; ++i) {
+    EXPECT_EQ(i, sr->CachedNextSafeToBreakOffset(i)) << "next " << i;
+    EXPECT_EQ(i, sr->CachedPreviousSafeToBreakOffset(i)) << "previous " << i;
+  }
+}
+
+TEST_F(HarfBuzzShaperTest, CachedPositionForOffsetLigatureNotMonospace) {
+  FontDescription::VariantLigatures ligatures;
+  ligatures.common = FontDescription::kEnabledLigaturesState;
+
+  // MEgalopolis Extra forms an "ffi" ligature (3 characters -> 1 glyph).
+  Font* font = blink::test::CreateTestFont(
+      AtomicString("MEgalopolis"),
+      blink::test::PlatformTestDataPath(
+          "third_party/MEgalopolis/MEgalopolisExtra.woff"),
+      16, &ligatures);
+
+  String string = To16Bit("ffi");
+  HarfBuzzShaper shaper(string);
+  const ShapeResult* sr = shaper.Shape(font, TextDirection::kLtr);
+  ASSERT_EQ(3u, sr->NumCharacters());
+  sr->EnsurePositionData();
+
+  // Offsets 1 and 2 are inside the ligature, so they share the cluster's start
+  // position (0), not `advance * 1` / `advance * 2`.
+  EXPECT_EQ(LayoutUnit(), sr->CachedPositionForOffset(0));
+  EXPECT_EQ(LayoutUnit(), sr->CachedPositionForOffset(1));
+  EXPECT_EQ(LayoutUnit(), sr->CachedPositionForOffset(2));
+  EXPECT_GT(sr->CachedPositionForOffset(3), LayoutUnit());
+
+  // The interior offsets are not safe to break; the next safe break is the end
+  // of the ligature (offset 3).
+  EXPECT_EQ(3u, sr->CachedNextSafeToBreakOffset(1));
+  EXPECT_EQ(3u, sr->CachedNextSafeToBreakOffset(2));
 }
 
 TEST_F(HarfBuzzShaperTest, CachedOffsetPositionMappingArabic) {

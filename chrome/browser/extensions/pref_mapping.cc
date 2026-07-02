@@ -8,6 +8,7 @@
 #include <span>  // std::size.
 #include <string_view>
 
+#include "base/memory/singleton.h"
 #include "base/strings/stringprintf.h"
 #include "chrome/browser/extensions/pref_transformer_interface.h"
 #include "chrome/browser/prefetch/pref_names.h"
@@ -47,6 +48,8 @@ const PrefMappingEntry kMappings[] = {
     {"autofillAddressEnabled", autofill::prefs::kAutofillProfileEnabled,
      APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
     {"autofillCreditCardEnabled", autofill::prefs::kAutofillCreditCardEnabled,
+     APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
+    {"autofillSettings", autofill::prefs::kAutofillTypesBlocked,
      APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
     {"hyperlinkAuditingEnabled", prefs::kEnableHyperlinkAuditing,
      APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},

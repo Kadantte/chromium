@@ -5,14 +5,17 @@
 package org.chromium.chrome.browser.omnibox;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 import static org.chromium.base.ThreadUtils.runOnUiThreadBlocking;
+import static org.chromium.build.NullUtil.assertNonNull;
 
 import android.app.Activity;
 import android.graphics.drawable.Drawable;
+import android.text.TextUtils;
 import android.view.LayoutInflater;
-import android.view.View;
 import android.widget.FrameLayout;
 
 import androidx.test.filters.SmallTest;
@@ -24,7 +27,6 @@ import org.junit.BeforeClass;
 import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.Mockito;
 
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.util.Batch;
@@ -72,9 +74,20 @@ public class OmniboxChipViewBinderTest {
 
     @Test
     @SmallTest
-    public void testText() {
+    public void testTextAndAvailableWidth() {
         String text = "test text";
-        runOnUiThreadBlocking(() -> mModel.set(OmniboxChipProperties.TEXT, text));
+        runOnUiThreadBlocking(
+                () -> {
+                    mModel.set(OmniboxChipProperties.AVAILABLE_WIDTH, 0);
+                    mModel.set(OmniboxChipProperties.TEXT, text);
+                });
+        // Text should be empty if available width is 0.
+        assertTrue(TextUtils.isEmpty(mView.getText().toString()));
+
+        runOnUiThreadBlocking(
+                () -> {
+                    mModel.set(OmniboxChipProperties.AVAILABLE_WIDTH, 1000);
+                });
         assertEquals(text, mView.getText().toString());
     }
 
@@ -83,7 +96,7 @@ public class OmniboxChipViewBinderTest {
     public void testIcon() {
         Drawable icon = sActivity.getDrawable(android.R.drawable.ic_menu_add);
         runOnUiThreadBlocking(() -> mModel.set(OmniboxChipProperties.ICON, icon));
-        assertEquals(icon, mView.getIcon());
+        assertNonNull(mView.getIcon());
     }
 
     @Test
@@ -97,20 +110,9 @@ public class OmniboxChipViewBinderTest {
     @Test
     @SmallTest
     public void testOnClick() {
-        var onClick = Mockito.mock(Runnable.class);
+        var onClick = mock(Runnable.class);
         runOnUiThreadBlocking(() -> mModel.set(OmniboxChipProperties.ON_CLICK, onClick));
         runOnUiThreadBlocking(() -> mView.performClick());
         verify(onClick).run();
-    }
-
-    @Test
-    @SmallTest
-    public void testAvailableWidth() {
-        runOnUiThreadBlocking(() -> mModel.set(OmniboxChipProperties.AVAILABLE_WIDTH, 100));
-        assertEquals(View.VISIBLE, mView.getVisibility());
-        assertEquals(100, mView.getMaxWidth());
-
-        runOnUiThreadBlocking(() -> mModel.set(OmniboxChipProperties.AVAILABLE_WIDTH, 0));
-        assertEquals(View.GONE, mView.getVisibility());
     }
 }

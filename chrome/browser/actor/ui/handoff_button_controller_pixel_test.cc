@@ -42,11 +42,12 @@ class ActorUiHandoffButtonControllerPixelTest : public DialogBrowserTest {
   std::string GetNonDialogName() override { return "HandoffButtonWidget"; }
 
   void ShowUi(const std::string& name) override {
-    task_id_ =
-        GetActorKeyedService()->CreateTask(actor::NoEnterprisePolicyChecker());
+    task_id_ = GetActorKeyedService()->CreateTask(
+        actor::TestTaskSourceInfo(), actor::NoEnterprisePolicyChecker());
     TestFuture<actor::mojom::ActionResultPtr> future;
     GetActorKeyedService()->GetTask(task_id_)->AddTab(
-        browser()->GetActiveTabInterface()->GetHandle(), future.GetCallback());
+        browser()->GetActiveTabInterface()->GetHandle(),
+        /*stop_task_on_detach=*/true, future.GetCallback());
     ExpectOkResult(future);
     actor::PerformActionsFuture result_future;
     std::vector<std::unique_ptr<actor::ToolRequest>> actions;

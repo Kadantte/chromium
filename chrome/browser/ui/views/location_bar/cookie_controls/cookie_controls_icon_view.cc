@@ -16,8 +16,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -25,6 +23,7 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/content_settings/browser/ui/cookie_controls_controller.h"
 #include "components/content_settings/core/common/cookie_controls_state.h"
+#include "components/content_settings/core/common/features.h"
 #include "components/feature_engagement/public/event_constants.h"
 #include "components/omnibox/browser/vector_icons.h"
 #include "components/privacy_sandbox/privacy_sandbox_features.h"
@@ -34,6 +33,7 @@
 #include "cookie_controls_bubble_coordinator.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/vector_icons.h"
@@ -109,57 +109,8 @@ void CookieControlsIconView::UpdateImpl() {
               profile->IsIncognitoProfile());
       controller_observation_.Observe(controller_.get());
     }
-    // Reset animation and tracker when URL changes.
-    if (web_contents->GetVisibleURL() != last_visited_url_) {
-      last_visited_url_ = web_contents->GetVisibleURL();
-      did_animate_ = false;
-      ResetSlideAnimation(false);
-    }
     controller_->Update(web_contents);
   }
-}
-
-void CookieControlsIconView::MaybeShowIPH() {
-  CHECK(browser_->window());
-  user_education::FeaturePromoParams params(
-      feature_engagement::kIPHCookieControlsFeature);
-  params.show_promo_result_callback =
-      base::BindOnce(&CookieControlsIconView::OnShowPromoResult,
-                     weak_ptr_factory_.GetWeakPtr());
-  params.close_callback = base::BindOnce(&CookieControlsIconView::OnIPHClosed,
-                                         weak_ptr_factory_.GetWeakPtr());
-  BrowserUserEducationInterface::From(browser_)->MaybeShowFeaturePromo(
-      std::move(params));
-  // Note: originally we would animate here based on whether the promo showed,
-  // but since promos are show asynchronously, the options are:
-  //  - Always animate; if the IPH shows it shows
-  //  - Always wait until we get a yes or no answer from the promo system before
-  //    deciding whether to animate
-  // Since most of the time the result should come back quickly, and if it
-  // doesn't, it's because the user is doing something else or there is another
-  // promo showing, for now, we choose the later option.
-}
-
-void CookieControlsIconView::OnShowPromoResult(
-    user_education::FeaturePromoResult result) {
-  if (result) {
-    SetHighlighted(true);
-    return;
-  }
-  // If we attempted to show the IPH but failed, instead try animating.
-  MaybeAnimateIcon();
-}
-
-void CookieControlsIconView::OnIPHClosed() {
-  SetHighlighted(false);
-}
-
-bool CookieControlsIconView::IsManagedIPHActive() const {
-  auto* const user_ed = BrowserUserEducationInterface::From(browser_);
-  return user_ed->IsFeaturePromoActive(
-             feature_engagement::kIPHCookieControlsFeature) ||
-         user_ed->IsFeaturePromoQueued(
-             feature_engagement::kIPHCookieControlsFeature);
 }
 
 int CookieControlsIconView::GetLabelForState() const {
@@ -186,77 +137,30 @@ std::u16string CookieControlsIconView::GetAlternativeAccessibleName() const {
 
 void CookieControlsIconView::OnCookieControlsIconStatusChanged(
     bool icon_visible,
-    CookieControlsState controls_state,
-    bool should_highlight) {
+    CookieControlsState controls_state) {
   // Always respect a change to the visibility of the icon, as this may happen
   // regardless of the controls state (e.g. the omnibox having or losing focus).
   icon_visible_ = icon_visible;
   if (!ShouldBeVisible()) {
-    ResetSlideAnimation(false);
     SetVisible(false);
     return;
   }
   SetVisible(true);
 
   // If the controls state has changed in some way, update the icon.
-  if (controls_state != controls_state_ ||
-      should_highlight != should_highlight_) {
-    state_changed_ = controls_state != controls_state_;
+  if (controls_state != controls_state_) {
     controls_state_ = controls_state;
-    should_highlight_ = should_highlight;
     UpdateIcon();
   }
 }
 
-void CookieControlsIconView::MaybeAnimateIcon() {
-  if (GetAssociatedBubble() || IsManagedIPHActive() ||
-      slide_animation_.is_animating()) {
-    return;
-  }
-
-  int label = GetLabelForState();
-  AnimateIn(label);
-// VoiceOver on Mac already announces this text.
-#if !BUILDFLAG(IS_MAC)
-  GetViewAccessibility().AnnounceText(l10n_util::GetStringUTF16(label));
-#endif
-  if (controller_) {
-    controller_->OnEntryPointAnimated();
-  } else {
-    CHECK_IS_TEST();
-  }
-  did_animate_ = true;
-  base::RecordAction(
-      base::UserMetricsAction("TrackingProtection.UserBypass.Animated"));
-}
-
 void CookieControlsIconView::UpdateIcon() {
   UpdateIconImage();
-  if (state_changed_ || label()->GetText().empty()) {
-    SetLabelForState();
-  }
+  SetLabelForState();
   UpdateTooltipText();
 
-  if (controls_state_ == CookieControlsState::kBlocked3pc &&
-      should_highlight_) {
-    MaybeShowIPH();
-  } else {
-    base::RecordAction(
-        base::UserMetricsAction("TrackingProtection.UserBypass.Shown"));
-  }
-}
-
-void CookieControlsIconView::OnFinishedPageReloadWithChangedSettings() {
-  // Do not attempt to change the visibility of the icon, only animate it, as
-  // it should have already been visible for the user to have changed the
-  // setting.
-  if (ShouldBeVisible()) {
-    GetViewAccessibility().SetDescription(u"");
-    // Animate the icon to provide a visual confirmation to the user that their
-    // protection status on the site has changed.
-    AnimateIn(GetLabelForState());
-    UpdateTooltipText();
-  }
+  base::RecordAction(
+      base::UserMetricsAction("TrackingProtection.UserBypass.Shown"));
 }
 
 bool CookieControlsIconView::ShouldBeVisible() const {
@@ -294,13 +198,8 @@ void CookieControlsIconView::ShowCookieControlsBubble() {
       delegate()->GetWebContentsForPageActionIconView(), controller_.get());
   CHECK(ShouldBeVisible());
   RecordOpenedAction(icon_visible_, controls_state_);
-  if (did_animate_) {
-    base::RecordAction(base::UserMetricsAction(
-        "TrackingProtection.UserBypass.Animated.Opened"));
-  } else {
-    base::RecordAction(
-        base::UserMetricsAction("TrackingProtection.UserBypass.Shown.Opened"));
-  }
+  base::RecordAction(
+      base::UserMetricsAction("TrackingProtection.UserBypass.Shown.Opened"));
 }
 
 void CookieControlsIconView::OnExecuting(
@@ -314,8 +213,11 @@ views::BubbleDialogDelegate* CookieControlsIconView::GetBubble() const {
 
 const gfx::VectorIcon& CookieControlsIconView::GetVectorIcon() const {
   return controls_state_ == CookieControlsState::kBlocked3pc
-             ? views::kEyeCrossedRefreshIcon
-             : views::kEyeRefreshIcon;
+             ? features::IsRoundedIconsEnabled()
+                   ? views::kVisibilityOffIcon
+                   : views::kEyeCrossedRefreshOldIcon
+         : features::IsRoundedIconsEnabled() ? views::kVisibilityIcon
+                                             : views::kEyeRefreshOldIcon;
 }
 
 void CookieControlsIconView::UpdateTooltipForFocus() {}

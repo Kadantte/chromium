@@ -14,11 +14,11 @@
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
 #include "components/viz/common/resources/shared_image_format_utils.h"
+#include "gpu/command_buffer/common/shared_image_info.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "gpu/command_buffer/service/context_state.h"
 #include "gpu/command_buffer/service/gles2_cmd_decoder.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
-#include "gpu/command_buffer/service/shared_image/shared_image_backing.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_factory.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_format_service_utils.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
@@ -38,6 +38,11 @@
 
 #if BUILDFLAG(USE_DAWN) && BUILDFLAG(DAWN_ENABLE_BACKEND_OPENGLES)
 #include "gpu/command_buffer/service/shared_image/dawn_gl_texture_representation.h"
+#endif
+
+#if BUILDFLAG(SKIA_USE_DAWN)
+#include "gpu/command_buffer/service/dawn_context_provider.h"
+#include "gpu/command_buffer/service/shared_image/skia_graphite_dawn_image_representation.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -65,7 +70,7 @@ class GLTextureImageRepresentationImpl : public GLTextureImageRepresentation {
 
  private:
   // GLTextureImageRepresentation:
-  gles2::Texture* GetTexture(int plane_index) override {
+  gles2::Texture* GetTexture(size_t plane_index) override {
     DCHECK(format().IsValidPlaneIndex(plane_index));
     return textures_[plane_index];
   }
@@ -94,7 +99,7 @@ class GLTexturePassthroughImageRepresentationImpl
  private:
   // GLTexturePassthroughImageRepresentation:
   const scoped_refptr<gles2::TexturePassthrough>& GetTexturePassthrough(
-      int plane_index) override {
+      size_t plane_index) override {
     DCHECK(format().IsValidPlaneIndex(plane_index));
     return textures_[plane_index];
   }
@@ -258,28 +263,17 @@ bool GLTextureImageBacking::SupportsPixelUploadWithFormat(
 }
 
 GLTextureImageBacking::GLTextureImageBacking(const Mailbox& mailbox,
-                                             viz::SharedImageFormat format,
-                                             const gfx::Size& size,
-                                             const gfx::ColorSpace& color_space,
-                                             GrSurfaceOrigin surface_origin,
-                                             SkAlphaType alpha_type,
-                                             SharedImageUsageSet usage,
-                                             std::string debug_label,
+                                             const SharedImageInfo& si_info,
                                              bool is_passthrough)
-    : ClearTrackingSharedImageBacking(mailbox,
-                                      format,
-                                      size,
-                                      color_space,
-                                      surface_origin,
-                                      alpha_type,
-                                      usage,
-                                      std::move(debug_label),
-                                      format.EstimatedSizeInBytes(size),
-                                      /*is_thread_safe=*/false),
+    : ClearTrackingSharedImageBacking(
+          mailbox,
+          si_info,
+          si_info.format.EstimatedSizeInBytes(si_info.size),
+          /*is_thread_safe=*/false),
       is_passthrough_(is_passthrough) {
   // With validating command decoder the clear rect tracking doesn't work with
   // multi-planar textures.
-  DCHECK(is_passthrough_ || format.is_single_plane());
+  DCHECK(is_passthrough_ || si_info.format.is_single_plane());
 }
 
 GLTextureImageBacking::~GLTextureImageBacking() {
@@ -288,6 +282,34 @@ GLTextureImageBacking::~GLTextureImageBacking() {
       texture.SetContextLost();
     }
   }
+}
+
+bool GLTextureImageBacking::CheckSupportForAccessStream(
+    SharedImageAccessStream stream,
+    const AccessParams& params) {
+  // `params.context_state` is not always available for all access streams. In
+  // such cases, we default to allowing access, assuming the context is
+  // compatible. When a context is provided, we explicitly check if it's a GL
+  // context to ensure correctness.
+  if (auto context_state = params.context_state) {
+    if (context_state->GrContextIsGL()) {
+      return true;
+    }
+#if BUILDFLAG(SKIA_USE_DAWN)
+    if (context_state->gr_context_type() == GrContextType::kGraphiteDawn &&
+        context_state->dawn_context_provider()->backend_type() ==
+            wgpu::BackendType::OpenGLES) {
+      return true;
+    }
+#endif
+    return false;
+  }
+  return true;
+}
+
+bool GLTextureImageBacking::SupportsAccess(SharedImageAccessStream stream,
+                                           const AccessParams& params) const {
+  return CheckSupportForAccessStream(stream, params);
 }
 
 SharedImageBackingType GLTextureImageBacking::GetType() const {
@@ -321,7 +343,6 @@ bool GLTextureImageBacking::UploadFromMemory(
     const std::vector<SkPixmap>& pixmaps) {
   DCHECK_EQ(pixmaps.size(), textures_.size());
   DCHECK(SupportsPixelUploadWithFormat(format()));
-  DCHECK(gl::GLContext::GetCurrent());
 
   for (size_t i = 0; i < textures_.size(); ++i) {
     if (!textures_[i].UploadFromMemory(pixmaps[i])) {
@@ -334,7 +355,6 @@ bool GLTextureImageBacking::UploadFromMemory(
 bool GLTextureImageBacking::ReadbackToMemory(
     const std::vector<SkPixmap>& pixmaps) {
   DCHECK_EQ(pixmaps.size(), textures_.size());
-  DCHECK(gl::GLContext::GetCurrent());
 
   // TODO(kylechar): Ideally there would be a usage that stated readback was
   // required so support could be verified at creation time and then asserted
@@ -433,6 +453,29 @@ GLTextureImageBacking::ProduceSkiaGanesh(
       tracker);
 }
 
+std::unique_ptr<SkiaGraphiteImageRepresentation>
+GLTextureImageBacking::ProduceSkiaGraphite(
+    SharedImageManager* manager,
+    MemoryTypeTracker* tracker,
+    scoped_refptr<SharedContextState> context_state) {
+#if BUILDFLAG(SKIA_USE_DAWN)
+  auto device = context_state->dawn_context_provider()->GetDevice();
+  auto backend_type = context_state->dawn_context_provider()->backend_type();
+  auto dawn_representation = ProduceDawn(manager, tracker, device, backend_type,
+                                         /*view_formats=*/{}, context_state);
+  if (!dawn_representation) {
+    LOG(ERROR) << "Could not create Dawn Representation";
+    return nullptr;
+  }
+
+  return std::make_unique<SkiaGraphiteDawnImageRepresentation>(
+      std::move(dawn_representation), context_state,
+      context_state->gpu_main_graphite_recorder(), manager, this, tracker);
+#else
+  NOTREACHED();
+#endif
+}
+
 std::unique_ptr<VideoImageRepresentation> GLTextureImageBacking::ProduceVideo(
     SharedImageManager* manager,
     MemoryTypeTracker* tracker,
@@ -454,6 +497,14 @@ void GLTextureImageBacking::InitializeGLTexture(
     base::span<const uint8_t> pixel_data,
     gl::ProgressReporter* progress_reporter,
     bool framebuffer_attachment_angle) {
+  // Drain any pre-existing GL errors so the post-allocation check below is
+  // attributable to the storage call. Silently squelching these errors is
+  // unfortunate, but is done in order to mirror other allocation checks done in
+  // the command decoder.
+  gl::GLApi* const api = gl::g_current_gl_context;
+  while (api->glGetErrorFn() != GL_NO_ERROR) {
+  }
+
   const std::string debug_label =
       "GLSharedImage_" + SharedImageBacking::debug_label();
   int num_planes = format().NumberOfPlanes();
@@ -467,8 +518,23 @@ void GLTextureImageBacking::InitializeGLTexture(
                                 debug_label);
   }
 
-  if (!pixel_data.empty()) {
-    SetCleared();
+  // Update the cleared state for passthrough textures if the pixel data upload
+  // was successful. We don't need to update the cleared state for validating
+  // decoder textures because we track the cleared state in the decoder texture
+  // objects whose cleared state is set in TextureHolder::Initialize above.
+  if (is_passthrough_ && !pixel_data.empty()) {
+    // The storage allocation allocates undefined-content storage on a context
+    // without robust-resource-init. If the subsequent upload failed (e.g.
+    // GL_OUT_OF_MEMORY) the storage is still uninitialised; only mark the
+    // backing cleared if no GL error was raised.
+    GLenum error = api->glGetErrorFn();
+    if (error == GL_NO_ERROR) {
+      SetCleared();
+    } else {
+      LOG(ERROR)
+          << "GLTextureImageBacking: initial pixel upload failed (GL error 0x"
+          << std::hex << error << ")";
+    }
   }
 }
 

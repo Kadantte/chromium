@@ -176,8 +176,7 @@ void TestAutofillManagerWaiter::OnBeforeTextFieldValueChanged(
 void TestAutofillManagerWaiter::OnAfterTextFieldValueChanged(
     AutofillManager& manager,
     FormGlobalId form,
-    FieldGlobalId field,
-    const std::u16string& text_value) {
+    FieldGlobalId field) {
   OnAfter(Event::kTextFieldValueChanged);
 }
 
@@ -283,6 +282,20 @@ void TestAutofillManagerWaiter::OnBeforeFormSubmitted(AutofillManager& manager,
 void TestAutofillManagerWaiter::OnAfterFormSubmitted(AutofillManager& manager,
                                                      const FormData& form) {
   OnAfter(Event::kFormSubmitted);
+}
+
+void TestAutofillManagerWaiter::OnBeforeFormWithEmailVerificationTokenSubmitted(
+    AutofillManager& manager,
+    const FormData& form,
+    const FieldGlobalId& field_id) {
+  OnBefore(Event::kFormWithEmailVerificationTokenSubmitted);
+}
+
+void TestAutofillManagerWaiter::OnAfterFormWithEmailVerificationTokenSubmitted(
+    AutofillManager& manager,
+    const FormData& form,
+    const FieldGlobalId& field_id) {
+  OnAfter(Event::kFormWithEmailVerificationTokenSubmitted);
 }
 
 void TestAutofillManagerWaiter::OnBeforeLoadedServerPredictions(

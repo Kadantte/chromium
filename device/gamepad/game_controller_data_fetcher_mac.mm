@@ -27,6 +27,7 @@
 #include "device/gamepad/game_controller_gamepad.h"
 #include "device/gamepad/gamepad_pad_state_provider.h"
 #include "device/gamepad/gamepad_standard_mappings.h"
+#include "device/gamepad/gamepad_uma.h"
 #include "device/gamepad/public/cpp/gamepad.h"
 #include "device/gamepad/public/cpp/gamepad_features.h"
 #include "device/gamepad/public/mojom/gamepad.mojom.h"
@@ -122,11 +123,13 @@ namespace {
 
 const int kGCControllerPlayerIndexCount = 4;
 
-// Returns true if |controller| should be enumerated by this data fetcher.
-bool IsSupported(GCController* controller) {
+// Returns GameControllerMacOutcome::kSuccess if |controller| should be
+// enumerated by this data fetcher. Otherwise returns the reason it should not
+// be enumerated.
+GameControllerMacOutcome GetSupportOutcome(GCController* controller) {
   // We only support the extendedGamepad profile.
   if (!controller.extendedGamepad) {
-    return false;
+    return GameControllerMacOutcome::kNoExtendedGamepad;
   }
 
   // In macOS 10.15, support for some console gamepads was added to the Game
@@ -135,21 +138,29 @@ bool IsSupported(GCController* controller) {
   // supported in Chrome through other data fetchers and must be blocked here to
   // avoid double-enumeration.
   NSString* product_category = controller.productCategory;
-  if ([product_category isEqualToString:@"HID"] ||
-      [product_category isEqualToString:@"DualShock 4"] ||
-      [product_category isEqualToString:@"DualSense"] ||
-      [product_category isEqualToString:@"Switch Pro Controller"] ||
+  if ([product_category isEqualToString:@"Switch Pro Controller"] ||
       [product_category isEqualToString:@"Nintendo Switch JoyCon (L/R)"]) {
-    return false;
+    return GameControllerMacOutcome::kIsNintendoGamepad;
+  }
+
+  if ([product_category isEqualToString:@"HID"]) {
+    return GameControllerMacOutcome::kIsHidDevice;
   }
 
   if (!base::FeatureList::IsEnabled(
           features::kXboxUseGameControllerDataFetcherMac) &&
       [product_category isEqualToString:@"Xbox One"]) {
-    return false;
+    return GameControllerMacOutcome::kXboxFeatureDisabled;
   }
 
-  return true;
+  if (!base::FeatureList::IsEnabled(
+          features::kPlayStationUseGameControllerDataFetcherMac) &&
+      ([product_category isEqualToString:@"DualShock 4"] ||
+       [product_category isEqualToString:@"DualSense"])) {
+    return GameControllerMacOutcome::kPlayStationFeatureDisabled;
+  }
+
+  return GameControllerMacOutcome::kSuccess;
 }
 
 }  // namespace
@@ -157,33 +168,45 @@ bool IsSupported(GCController* controller) {
 void GameControllerDataFetcherMac::GameControllerDataFetcherMacImpl::
     OnGameControllerConnect(GCController* controller) {
   DCHECK(owner_->polling_task_runner_->RunsTasksInCurrentSequence());
-  if (!IsSupported(controller)) {
+  GameControllerMacOutcome outcome = GetSupportOutcome(controller);
+  if (outcome != GameControllerMacOutcome::kSuccess) {
+    RecordGameControllerMacOutcome(outcome);
     return;
   }
 
   // Ignore controllers that have already been connected to.
   if (controller_to_source_id_.find(controller) !=
       controller_to_source_id_.end()) {
+    RecordGameControllerMacOutcome(GameControllerMacOutcome::kAlreadyConnected);
     return;
   }
 
-  // Assign a new unique source ID
+  // Assign a new unique source ID.
   const int source_id = owner_->next_source_id_++;
   controller_to_source_id_[controller] = source_id;
 
   auto gamepad = std::make_unique<GameControllerGamepad>(controller);
 
-  // Initialize the pad state for the new gamepad
-  PadState* state = owner_->GetPadState(source_id);
-  if (!state) {
-    return;
+  if (base::FeatureList::IsEnabled(
+          features::kClaimDuplicateGamepadsProductIdentifier)) {
+    // Claim gamepads enumerated by this datafetcher to avoid
+    // double-enumeration in GamepadPlatformDataFetcherMac.
+    std::string vendor_name = base::SysNSStringToUTF8(controller.vendorName);
+    owner_->ClaimProductIdentifier(vendor_name);
   }
 
-  Gamepad& pad = state->data;
-  state->is_initialized = true;
-  gamepad->InitializeStaticData(pad);
+  // Initialize the pad state if a slot is available. If not, GetGamepadData
+  // will try again during the next polling cycle.
+  PadState* state = owner_->GetPadState(owner_->next_source_id_);
+  if (state) {
+    state->is_initialized = true;
+    gamepad->InitializeStaticData(state->data);
+    RecordGameControllerMacOutcome(GameControllerMacOutcome::kSuccess);
+  } else {
+    RecordGameControllerMacOutcome(GameControllerMacOutcome::kNoSlotAvailable);
+  }
 
-  // Store the gamepad object
+  // Store the gamepad object.
   owner_->impl_->gamepads_.emplace(source_id, std::move(gamepad));
 }
 
@@ -258,7 +281,9 @@ GameControllerDataFetcherMac::GameControllerDataFetcherMac()
 
 GameControllerDataFetcherMac::~GameControllerDataFetcherMac() {
   if (base::FeatureList::IsEnabled(
-          features::kXboxUseGameControllerDataFetcherMac)) {
+          features::kXboxUseGameControllerDataFetcherMac) ||
+      base::FeatureList::IsEnabled(
+          features::kPlayStationUseGameControllerDataFetcherMac)) {
     GameControllerNotificationHandler* handler = impl_->notification_handler_;
     impl_->notification_handler_ = nil;
     main_task_runner_->PostTask(
@@ -277,7 +302,9 @@ GameControllerDataFetcherMac::~GameControllerDataFetcherMac() {
 
 void GameControllerDataFetcherMac::OnAddedToProvider() {
   if (base::FeatureList::IsEnabled(
-          features::kXboxUseGameControllerDataFetcherMac)) {
+          features::kXboxUseGameControllerDataFetcherMac) ||
+      base::FeatureList::IsEnabled(
+          features::kPlayStationUseGameControllerDataFetcherMac)) {
     polling_task_runner_ = base::SingleThreadTaskRunner::GetCurrentDefault();
     main_task_runner_->PostTask(
         FROM_HERE,
@@ -293,7 +320,9 @@ GamepadSource GameControllerDataFetcherMac::source() {
 
 void GameControllerDataFetcherMac::GetGamepadData(bool) {
   if (base::FeatureList::IsEnabled(
-          features::kXboxUseGameControllerDataFetcherMac)) {
+          features::kXboxUseGameControllerDataFetcherMac) ||
+      base::FeatureList::IsEnabled(
+          features::kPlayStationUseGameControllerDataFetcherMac)) {
     for (const auto& entry : impl_->gamepads_) {
       const int source_id = entry.first;
 
@@ -322,8 +351,9 @@ void GameControllerDataFetcherMac::GetGamepadData(bool) {
   bool player_indices[Gamepads::kItemsLengthCap];
   std::fill(player_indices, player_indices + Gamepads::kItemsLengthCap, false);
   for (GCController* controller in controllers) {
-    if (!IsSupported(controller))
+    if (GetSupportOutcome(controller) != GameControllerMacOutcome::kSuccess) {
       continue;
+    }
 
     int player_index = controller.playerIndex;
     if (player_index != GCControllerPlayerIndexUnset)
@@ -338,8 +368,9 @@ void GameControllerDataFetcherMac::GetGamepadData(bool) {
   // In the second pass, assign indices to newly connected gamepads and fetch
   // the gamepad state.
   for (GCController* controller in controllers) {
-    if (!IsSupported(controller))
+    if (GetSupportOutcome(controller) != GameControllerMacOutcome::kSuccess) {
       continue;
+    }
 
     int player_index = controller.playerIndex;
     if (player_index == GCControllerPlayerIndexUnset) {
@@ -424,7 +455,9 @@ void GameControllerDataFetcherMac::PlayEffect(
     mojom::GamepadHapticsManager::PlayVibrationEffectOnceCallback callback,
     scoped_refptr<base::SequencedTaskRunner> callback_runner) {
   if (!base::FeatureList::IsEnabled(
-          features::kXboxUseGameControllerDataFetcherMac)) {
+          features::kXboxUseGameControllerDataFetcherMac) &&
+      !base::FeatureList::IsEnabled(
+          features::kPlayStationUseGameControllerDataFetcherMac)) {
     RunVibrationCallback(
         std::move(callback), std::move(callback_runner),
         mojom::GamepadHapticsResult::GamepadHapticsResultNotSupported);
@@ -446,7 +479,9 @@ void GameControllerDataFetcherMac::ResetVibration(
     mojom::GamepadHapticsManager::ResetVibrationActuatorCallback callback,
     scoped_refptr<base::SequencedTaskRunner> callback_runner) {
   if (!base::FeatureList::IsEnabled(
-          features::kXboxUseGameControllerDataFetcherMac)) {
+          features::kXboxUseGameControllerDataFetcherMac) &&
+      !base::FeatureList::IsEnabled(
+          features::kPlayStationUseGameControllerDataFetcherMac)) {
     RunVibrationCallback(
         std::move(callback), std::move(callback_runner),
         mojom::GamepadHapticsResult::GamepadHapticsResultNotSupported);

@@ -6,24 +6,27 @@ package org.chromium.chrome.browser.compositor.overlays.strip;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
 
+import android.content.Context;
+import android.graphics.Rect;
+import android.graphics.drawable.Drawable;
 import android.view.HapticFeedbackConstants;
 import android.view.View;
 
-import org.chromium.base.DeviceInfo;
 import org.chromium.base.MathUtils;
 import org.chromium.base.Token;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilter;
 import org.chromium.chrome.browser.tabmodel.TabModel;
+import org.chromium.chrome.browser.tasks.tab_management.TabOverflowMenuCoordinator;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiThemeUtil;
 import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
 import org.chromium.ui.base.LocalizationUtils;
+import org.chromium.ui.util.StyleUtils;
+import org.chromium.ui.widget.RectProvider;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -43,7 +46,9 @@ public class StripLayoutUtils {
     private static final float MIN_TAB_WIDTH_DESKTOP_DP = 76f;
     private static final float MIN_TAB_WIDTH_TABLET_DP = 108f;
     public static final float MIN_TAB_WIDTH_DP =
-            shouldApplyMoreDensity() ? MIN_TAB_WIDTH_DESKTOP_DP : MIN_TAB_WIDTH_TABLET_DP;
+            StyleUtils.shouldApplyDesktopDensity()
+                    ? MIN_TAB_WIDTH_DESKTOP_DP
+                    : MIN_TAB_WIDTH_TABLET_DP;
     public static final float MAX_TAB_WIDTH_DP = TabUiThemeUtil.getMaxTabStripTabWidthDp();
     public static final float TAB_OVERLAP_WIDTH_DP = 28f;
 
@@ -53,7 +58,7 @@ public class StripLayoutUtils {
     // Button size constants.
     public static final float BUTTON_BACKGROUND_SIZE_DP = 32f;
     public static final float BUTTON_TOUCH_TARGET_SIZE_DP =
-            shouldApplyMoreDensity() ? BUTTON_BACKGROUND_SIZE_DP : 48f;
+            StyleUtils.shouldApplyDesktopDensity() ? BUTTON_BACKGROUND_SIZE_DP : 48f;
 
     // Animation Constants.
     public static final int ANIM_TAB_MOVE_MS = 125;
@@ -68,55 +73,51 @@ public class StripLayoutUtils {
     // ============================================================================================
 
     /**
-     * @param modelFilter The {@link TabGroupModelFilter} that holds the given tabs.
+     * @param tabModel The {@link TabModel} that holds the given tabs.
      * @param tab1 A {@link Tab} that we're comparing.
      * @param tab2 A {@link Tab} that we're comparing.
      * @return Whether the two tabs are not related, and at least one is grouped.
      */
-    public static boolean notRelatedAndEitherTabInGroup(
-            TabGroupModelFilter modelFilter, Tab tab1, Tab tab2) {
+    public static boolean notRelatedAndEitherTabInGroup(TabModel tabModel, Tab tab1, Tab tab2) {
         return !Objects.equals(tab1.getTabGroupId(), tab2.getTabGroupId())
-                && (modelFilter.isTabInTabGroup(tab1) || modelFilter.isTabInTabGroup(tab2));
+                && (tabModel.isTabInTabGroup(tab1) || tabModel.isTabInTabGroup(tab2));
     }
 
     /**
-     * @param modelFilter The {@link TabGroupModelFilter} that holds the given group.
+     * @param tabModel The {@link TabModel} that holds the given group.
      * @param tabId The ID of the given tab.
      * @return {@code true} if the tab is grouped and is the last tab in the group. False otherwise.
      */
-    public static boolean isLastTabInGroup(TabGroupModelFilter modelFilter, int tabId) {
-        Tab tab = modelFilter.getTabModel().getTabById(tabId);
+    public static boolean isLastTabInGroup(TabModel tabModel, int tabId) {
+        Tab tab = tabModel.getTabById(tabId);
         if (tab == null) {
             return false;
         }
-        return modelFilter.isTabInTabGroup(tab)
-                && modelFilter.getTabCountForGroup(tab.getTabGroupId()) == 1;
+        return tabModel.isTabInTabGroup(tab)
+                && tabModel.getTabCountForGroup(tab.getTabGroupId()) == 1;
     }
 
     /**
-     * @param modelFilter The {@link TabGroupModelFilter} that holds the given group.
+     * @param tabModel The {@link TabModel} that holds the given group.
      * @param stripLayoutGroupTitle The {@link StripLayoutGroupTitle}
      * @return The number of tabs in the group associated with the group title.
      */
     public static int getNumOfTabsInGroup(
-            @Nullable TabGroupModelFilter modelFilter,
-            StripLayoutGroupTitle stripLayoutGroupTitle) {
-        return modelFilter == null
+            @Nullable TabModel tabModel, StripLayoutGroupTitle stripLayoutGroupTitle) {
+        return tabModel == null
                 ? 0
-                : modelFilter.getTabCountForGroup(stripLayoutGroupTitle.getTabGroupId());
+                : tabModel.getTabCountForGroup(stripLayoutGroupTitle.getTabGroupId());
     }
 
     /**
-     * @param modelFilter The {@link TabGroupModelFilter} that holds the given group.
-     * @param tabModel The {@link TabModel} that holds the give tab.
+     * @param tabModel The {@link TabModel} that holds the given group and tab.
      * @param stripTab The {@link StripLayoutTab}
      * @return Whether the given tab is at a non-last position in any group.
      */
-    public static boolean isNonTrailingTabInGroup(
-            TabGroupModelFilter modelFilter, TabModel tabModel, StripLayoutTab stripTab) {
+    public static boolean isNonTrailingTabInGroup(TabModel tabModel, StripLayoutTab stripTab) {
         Tab tab = assumeNonNull(tabModel.getTabById(stripTab.getTabId()));
-        if (modelFilter.isTabInTabGroup(tab)) {
-            List<Tab> relatedTabs = modelFilter.getRelatedTabList(tab.getId());
+        if (tabModel.isTabInTabGroup(tab)) {
+            List<Tab> relatedTabs = tabModel.getRelatedTabList(tab.getId());
             Tab lastTab = relatedTabs.get(relatedTabs.size() - 1);
             return tab.getId() != lastTab.getId();
         }
@@ -213,7 +214,7 @@ public class StripLayoutUtils {
     public static int getNumLiveGroupedTabs(
             TabModel tabModel, StripLayoutTab[] stripTabs, Token tabGroupId) {
         // TODO(crbug.com/443337907): This will be obsolete once we immediately close in the
-        //  TabModel, as we could then instead use TabGroupModelFilter#getTabCountForGroup.
+        //  TabModel, as we could then instead use TabModel#getTabCountForGroup.
         List<StripLayoutTab> groupedTabs = getGroupedTabs(tabModel, stripTabs, tabGroupId);
 
         int numLiveGroupedTabs = 0;
@@ -401,33 +402,66 @@ public class StripLayoutUtils {
      * @param tabModel The {@link TabModel}.
      */
     public static void recordTabMultiSelectionTabCount(@Nullable TabModel tabModel) {
-        if (!ChromeFeatureList.sAndroidTabHighlighting.isEnabled() || tabModel == null) return;
+        if (tabModel == null) return;
         RecordHistogram.recordCount100Histogram(
-                "Tabs.Selections.Count",tabModel.getMultiSelectedTabsCount());
+                "Tabs.Selections.Count", tabModel.getMultiSelectedTabsCount());
     }
 
     // Other methods.
 
+    /**
+     * Adjusts the anchor rect mathematically to align an Android PopupWindow across differing
+     * coordinate spaces correctly.
+     *
+     * @param context The context used to load resources.
+     * @param toolbarContainerView The parent toolbar view to anchor against.
+     * @param isIncognito Whether the current profile is Incognito.
+     * @param topPaddingDp The top padding of the strip in DP.
+     * @param anchorRectProvider The provider of the original unadjusted Rect.
+     */
+    public static void getAdjustedAnchorRect(
+            Context context,
+            View toolbarContainerView,
+            boolean isIncognito,
+            float topPaddingDp,
+            RectProvider anchorRectProvider) {
+        getAdjustedAnchorRect(
+                context,
+                toolbarContainerView,
+                isIncognito,
+                topPaddingDp,
+                anchorRectProvider,
+                /* includeTopPadding= */ true);
+    }
+
+    public static void getAdjustedAnchorRect(
+            Context context,
+            View toolbarContainerView,
+            boolean isIncognito,
+            float topPaddingDp,
+            RectProvider anchorRectProvider,
+            boolean includeTopPadding) {
+        if (toolbarContainerView == null) return;
+        int[] toolbarCoordinates = new int[2];
+        Rect backgroundPadding = new Rect();
+        toolbarContainerView.getLocationInWindow(toolbarCoordinates);
+        Drawable background = TabOverflowMenuCoordinator.getMenuBackground(context, isIncognito);
+        background.getPadding(backgroundPadding);
+
+        int xOffset =
+                MathUtils.flipSignIf(
+                        toolbarCoordinates[0] - backgroundPadding.left,
+                        LocalizationUtils.isLayoutRtl());
+        int topPaddingPx =
+                includeTopPadding
+                        ? Math.round(
+                                topPaddingDp * context.getResources().getDisplayMetrics().density)
+                        : 0;
+        anchorRectProvider.getRect().offset(xOffset, toolbarCoordinates[1] + topPaddingPx);
+    }
+
     public static void performHapticFeedback(View view) {
         if (view == null) return;
         view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-    }
-
-    public static boolean shouldApplyMoreDensity() {
-        return ChromeFeatureList.sTabStripDensityChangeAndroid.isEnabled()
-                && DeviceInfo.isDesktop();
-    }
-
-    // Testing booleans
-    public static boolean isTabHighlightingForceCtrlClick() {
-        return ChromeFeatureList.sAndroidTabHighlightingForceCtrlClick.getValue();
-    }
-
-    public static boolean isTabHighlightingForceShiftClick() {
-        return ChromeFeatureList.sAndroidTabHighlightingForceShiftClick.getValue();
-    }
-
-    public static boolean isTabPinningFromStripEnabled() {
-        return ChromeFeatureList.sAndroidPinnedTabsTabletTabStrip.isEnabled();
     }
 }

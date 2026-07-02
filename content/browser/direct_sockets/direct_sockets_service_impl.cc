@@ -17,11 +17,15 @@
 #include "content/browser/service_worker/service_worker_version.h"
 #include "content/browser/storage_partition_impl.h"
 #include "content/browser/worker_host/shared_worker_host.h"
+#include "content/common/features.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/direct_sockets_delegate.h"
 #include "content/public/browser/document_service.h"
 #include "content/public/browser/isolated_context_util.h"
+#include "content/public/browser/permission_controller.h"
+#include "content/public/browser/permission_descriptor_util.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/storage_partition.h"
@@ -87,6 +91,15 @@ network::mojom::NetworkContext*& GetNetworkContextForTesting() {
   return network_context;
 }
 
+bool AreDirectSocketsAllowedByEmbedder(RenderFrameHost* rfh) {
+  return GetContentClient()->browser()->GetDirectSocketsDelegate() &&
+         GetContentClient()
+             ->browser()
+             ->GetDirectSocketsDelegate()
+             ->AreDirectSocketsAllowed(rfh->GetBrowserContext(),
+                                       rfh->GetLastCommittedOrigin());
+}
+
 // Runs the supplied `callback` with `net_error` and default params for other
 // args.
 template <typename... Args>
@@ -144,13 +157,13 @@ bool ValidateRequest(const Context& context,
 }
 
 bool IsMulticastAllowed(const Context& context) {
-  if (!base::FeatureList::IsEnabled(
-          blink::features::kMulticastInDirectSockets)) {
-    return false;
-  }
-
   return std::visit(
       absl::Overload{[](content::RenderFrameHost* rfh) {
+                       if (AreDirectSocketsAllowedByEmbedder(rfh)) {
+                         // Embedder-allowed Direct Sockets do not need access
+                         // to multicast.
+                         return false;
+                       }
                        return rfh->IsFeatureEnabled(
                            network::mojom::PermissionsPolicyFeature::
                                kMulticastInDirectSockets);
@@ -175,13 +188,53 @@ bool IsMulticastAllowed(const Context& context) {
 bool RequiresPrivateNetworkAccess(const net::AddressList& addresses) {
   return std::ranges::any_of(
       addresses.endpoints(), [](const net::IPEndPoint& ip_endpoint) {
+        // All multicast endpoints require PNA.
         return network::IPAddressToIPAddressSpace(ip_endpoint.address()) ==
-               network::mojom::IPAddressSpace::kLocal;
+                   network::mojom::IPAddressSpace::kLocal ||
+               ip_endpoint.address().IsMulticast();
       });
 }
 
-void RequestPrivateNetworkAccess(const Context& context,
-                                 base::OnceCallback<void(bool)> callback) {
+bool RequiresLoopbackAccess(const net::AddressList& addresses) {
+  return std::ranges::any_of(
+      addresses.endpoints(), [](const net::IPEndPoint& ip_endpoint) {
+        return network::IPAddressToIPAddressSpace(ip_endpoint.address()) ==
+               network::mojom::IPAddressSpace::kLoopback;
+      });
+}
+
+std::vector<blink::PermissionType> GetRequiredPermissions(
+    const net::AddressList& addresses) {
+  std::vector<blink::PermissionType> required_permissions;
+  if (RequiresPrivateNetworkAccess(addresses)) {
+    required_permissions.push_back(blink::PermissionType::LOCAL_NETWORK);
+  }
+  if (RequiresLoopbackAccess(addresses)) {
+    required_permissions.push_back(blink::PermissionType::LOOPBACK_NETWORK);
+  }
+  return required_permissions;
+}
+
+bool ArePermissionTypesAllowedForWorker(
+    content::RenderProcessHost* rph,
+    const url::Origin& origin,
+    const std::vector<blink::PermissionType>& permission_types) {
+  CHECK(rph);
+
+  return std::ranges::all_of(permission_types, [&](blink::PermissionType type) {
+    return rph->GetBrowserContext()
+               ->GetPermissionController()
+               ->GetPermissionStatusForWorker(
+                   content::PermissionDescriptorUtil::
+                       CreatePermissionDescriptorForPermissionType(type),
+                   rph, origin) == blink::mojom::PermissionStatus::GRANTED;
+  });
+}
+
+void RequestPrivateNetworkAccess(
+    const Context& context,
+    std::vector<blink::PermissionType> required_permissions,
+    base::OnceCallback<void(bool)> callback) {
   auto* delegate = GetContentClient()->browser()->GetDirectSocketsDelegate();
   if (!delegate) {
     std::move(callback).Run(/*access_allowed=*/true);
@@ -190,34 +243,53 @@ void RequestPrivateNetworkAccess(const Context& context,
   return std::visit(
       absl::Overload{
           [&](content::RenderFrameHost* rfh) {
-            if (!rfh->IsFeatureEnabled(
-                    network::mojom::PermissionsPolicyFeature::
-                        kDirectSocketsPrivate)) {
-              std::move(callback).Run(/*access_allowed=*/false);
+            if (AreDirectSocketsAllowedByEmbedder(rfh)) {
+              std::move(callback).Run(/*access_allowed=*/true);
               return;
             }
-            delegate->RequestPrivateNetworkAccess(*rfh, std::move(callback));
+
+              rfh->GetBrowserContext()
+                  ->GetPermissionController()
+                  ->RequestPermissionsFromCurrentDocument(
+                      rfh,
+                      content::PermissionRequestDescription(
+                          content::PermissionDescriptorUtil::
+                              CreatePermissionDescriptorForPermissionTypes(
+                                  required_permissions),
+                          /*user_gesture=*/true),
+                      base::BindOnce([](const std::vector<
+                                         content::PermissionResult>&
+                                            permission_results) {
+                        return std::all_of(
+                            permission_results.begin(),
+                            permission_results.end(),
+                            [](const content::PermissionResult&
+                                   permission_result) {
+                              return permission_result.status ==
+                                     blink::mojom::PermissionStatus::GRANTED;
+                            });
+                      }).Then(std::move(callback)));
           },
           [&](base::WeakPtr<SharedWorkerHost> shared_worker) {
-            // TODO(crbug.com/393539884): Figure out the appropriate checks wrt
-            // permissions.
-            std::move(callback)
-                .Run(/*access_allowed=*/
-                     shared_worker &&
-                     delegate->IsPrivateNetworkAccessAllowedForSharedWorker(
-                         CHECK_DEREF(shared_worker->GetProcessHost())
-                             .GetBrowserContext(),
-                         shared_worker->instance().url()));
+
+              std::move(callback).Run(
+                  /*access_allowed=*/shared_worker &&
+                  ArePermissionTypesAllowedForWorker(
+                      shared_worker->GetProcessHost(),
+                      // Use the worker's own origin for permission checks. This
+                      // ensures that data: URL workers, which have opaque
+                      // origins, are denied sensitive permissions.
+                      shared_worker->instance().worker_storage_key().origin(),
+                      std::move(required_permissions)));
           },
           [&](base::WeakPtr<ServiceWorkerVersion> service_worker) {
-            // TODO(crbug.com/392843918): Figure out the appropriate checks
-            // wrt permissions.
-            std::move(callback).Run(
-                /*access_allowed=*/service_worker &&
-                service_worker->context() &&
-                delegate->IsPrivateNetworkAccessAllowedForServiceWorker(
-                    service_worker->context()->wrapper()->browser_context(),
-                    service_worker->key().origin()));
+              std::move(callback).Run(
+                  /*access_allowed=*/service_worker &&
+                  ArePermissionTypesAllowedForWorker(
+                      content::RenderProcessHost::FromID(
+                          service_worker->embedded_worker()->process_id()),
+                      service_worker->key().origin(),
+                      std::move(required_permissions)));
           }},
       context);
 }
@@ -242,12 +314,14 @@ void CreateSocketIfAllowed(
 template <typename FinishCallback>
 void RequestPrivateNetworkAccessAndCreateSocket(
     const Context& context,
+    std::vector<blink::PermissionType> required_permissions,
     base::OnceCallback<void(FinishCallback)> create_socket_callback,
     FinishCallback finish_callback) {
   RequestPrivateNetworkAccess(
-      context, base::BindOnce(&CreateSocketIfAllowed<FinishCallback>,
-                              std::move(create_socket_callback),
-                              std::move(finish_callback)));
+      context, std::move(required_permissions),
+      base::BindOnce(&CreateSocketIfAllowed<FinishCallback>,
+                     std::move(create_socket_callback),
+                     std::move(finish_callback)));
 }
 
 // Deletes the DirectSocketsServiceImpl when the connected document is
@@ -304,12 +378,6 @@ class DocumentHelper
   const std::unique_ptr<DirectSocketsServiceImpl> service_;
 };
 
-bool ServiceWorkerRunsInIsolatedContext(ServiceWorkerVersion& service_worker) {
-  auto* rph =
-      RenderProcessHost::FromID(service_worker.embedded_worker()->process_id());
-  return rph ? IsIsolatedContext(rph) : false;
-}
-
 }  // namespace
 
 DirectSocketsServiceImpl::DirectSocketsServiceImpl(Context context)
@@ -332,17 +400,19 @@ void DirectSocketsServiceImpl::CreateForFrame(
         "Finch experiment.");
     return;
   }
-  if (!render_frame_host->IsFeatureEnabled(
-          network::mojom::PermissionsPolicyFeature::kDirectSockets)) {
-    mojo::ReportBadMessage(
-        "Permissions policy blocks access to Direct Sockets.");
-    return;
-  }
-  if (!HasIsolatedContextCapability(render_frame_host)) {
+  if (HasIsolatedContextCapability(render_frame_host)) {
+    if (!render_frame_host->IsFeatureEnabled(
+            network::mojom::PermissionsPolicyFeature::kDirectSockets)) {
+      mojo::ReportBadMessage(
+          "Permissions policy blocks access to Direct Sockets.");
+      return;
+    }
+  } else if (!AreDirectSocketsAllowedByEmbedder(render_frame_host)) {
     mojo::ReportBadMessage(
         "Frame is not sufficiently isolated to use Direct Sockets.");
     return;
   }
+
   new DocumentHelper(
       base::WrapUnique(new DirectSocketsServiceImpl(render_frame_host)),
       render_frame_host, std::move(receiver));
@@ -366,6 +436,7 @@ void DirectSocketsServiceImpl::CreateForSharedWorker(
         "parameters or a Finch experiment.");
     return;
   }
+
   if (!IsIsolatedContext(shared_worker.GetProcessHost())) {
     mojo::ReportBadMessage(
         "SharedWorker is not sufficiently isolated to use Direct Sockets.");
@@ -396,7 +467,9 @@ void DirectSocketsServiceImpl::CreateForServiceWorker(
         "parameters or a Finch experiment.");
     return;
   }
-  if (!ServiceWorkerRunsInIsolatedContext(service_worker)) {
+  auto* rph =
+      RenderProcessHost::FromID(service_worker.embedded_worker()->process_id());
+  if (!rph || !IsIsolatedContext(rph)) {
     mojo::ReportBadMessage(
         "ServiceWorker is not sufficiently isolated to use Direct Sockets.");
     return;
@@ -512,7 +585,10 @@ void DirectSocketsServiceImpl::OpenBoundUDPSocket(
 
   RequestPrivateNetworkAccessAndCreateSocket(
       context_,
-      /*create_socket_callback=*/
+      // In case of Bound UDP Sockets, both permissions are required.
+      std::vector<blink::PermissionType>{
+          blink::PermissionType::LOCAL_NETWORK,
+          blink::PermissionType::LOOPBACK_NETWORK}, /*create_socket_callback=*/
       base::BindOnce(&DirectSocketsServiceImpl::CreateRestrictedUDPSocketImpl,
                      weak_factory_.GetWeakPtr(), options->local_addr,
                      network::mojom::RestrictedUDPSocketMode::BOUND,
@@ -585,27 +661,27 @@ network::mojom::NetworkContext* DirectSocketsServiceImpl::GetNetworkContext()
     return network_context;
   }
   return std::visit(
-      absl::Overload{
-          [](RenderFrameHost* rfh) {
-            return rfh->GetStoragePartition()->GetNetworkContext();
-          },
-          [](base::WeakPtr<SharedWorkerHost> shared_worker)
-              -> network::mojom::NetworkContext* {
-            return shared_worker ? CHECK_DEREF(shared_worker->GetProcessHost())
-                                       .GetStoragePartition()
-                                       ->GetNetworkContext()
-                                 : nullptr;
-          },
-          [](base::WeakPtr<ServiceWorkerVersion> service_worker)
-              -> network::mojom::NetworkContext* {
-            if (!service_worker || !service_worker->context()) {
-              return nullptr;
-            }
-            return service_worker->context()
-                ->wrapper()
-                ->storage_partition()
-                ->GetNetworkContext();
-          }},
+      absl::Overload{[](RenderFrameHost* rfh) {
+                       return rfh->GetStoragePartition()->GetNetworkContext();
+                     },
+                     [](base::WeakPtr<SharedWorkerHost> shared_worker)
+                         -> network::mojom::NetworkContext* {
+                       return shared_worker
+                                  ? CHECK_DEREF(shared_worker->GetProcessHost())
+                                        .GetStoragePartition()
+                                        ->GetNetworkContext()
+                                  : nullptr;
+                     },
+                     [](base::WeakPtr<ServiceWorkerVersion> service_worker)
+                         -> network::mojom::NetworkContext* {
+                       if (!service_worker || !service_worker->context()) {
+                         return nullptr;
+                       }
+                       return service_worker->context()
+                           ->wrapper()
+                           ->storage_partition()
+                           ->GetNetworkContext();
+                     }},
       context_);
 }
 
@@ -638,7 +714,10 @@ void DirectSocketsServiceImpl::OnResolveCompleteForTCPSocket(
     socket_options->keep_alive_options = std::move(options->keep_alive_options);
   }
 
-  if (!RequiresPrivateNetworkAccess(resolved_addresses)) {
+  std::vector<blink::PermissionType> required_permissions =
+      GetRequiredPermissions(resolved_addresses);
+
+  if (required_permissions.empty()) {
     CreateTCPConnectedSocketImpl(resolved_addresses, std::move(socket_options),
                                  std::move(socket), std::move(observer),
                                  std::move(callback));
@@ -646,7 +725,7 @@ void DirectSocketsServiceImpl::OnResolveCompleteForTCPSocket(
   }
 
   RequestPrivateNetworkAccessAndCreateSocket(
-      context_,
+      context_, std::move(required_permissions),
       /*create_socket_callback=*/
       base::BindOnce(&DirectSocketsServiceImpl::CreateTCPConnectedSocketImpl,
                      weak_factory_.GetWeakPtr(), resolved_addresses,
@@ -718,7 +797,9 @@ void DirectSocketsServiceImpl::OnResolveCompleteForUDPSocket(
       },
       std::move(callback), peer_addr);
 
-  if (!RequiresPrivateNetworkAccess(resolved_addresses)) {
+  std::vector<blink::PermissionType> required_permissions =
+      GetRequiredPermissions(resolved_addresses);
+  if (required_permissions.empty()) {
     CreateRestrictedUDPSocketImpl(
         resolved_addresses.front(),
         network::mojom::RestrictedUDPSocketMode::CONNECTED, std::move(params),
@@ -728,7 +809,7 @@ void DirectSocketsServiceImpl::OnResolveCompleteForUDPSocket(
   }
 
   RequestPrivateNetworkAccessAndCreateSocket(
-      context_,
+      context_, std::move(required_permissions),
       /*create_socket_callback=*/
       base::BindOnce(
           &DirectSocketsServiceImpl::CreateRestrictedUDPSocketImpl,
@@ -756,7 +837,8 @@ void DirectSocketsServiceImpl::CreateRestrictedUDPSocketImpl(
       /*traffic_annotation=*/
       net::MutableNetworkTrafficAnnotationTag(kDirectSocketsTrafficAnnotation),
       std::move(options), std::move(socket), std::move(listener),
-      IsMulticastAllowed(context_), std::move(callback));
+      IsMulticastAllowed(context_),
+      /*allow_source_specific_multicast=*/false, std::move(callback));
 }
 
 }  // namespace content

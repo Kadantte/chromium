@@ -27,7 +27,7 @@ PerformanceLongAnimationFrameTiming::Create(
     bool cross_origin_isolated_capability,
     DOMWindow* source,
     const std::optional<DOMPaintTimingInfo>& paint_timing_info,
-    uint32_t navigation_id) {
+    uint64_t navigation_id) {
   Performance* performance =
       DOMWindowPerformance::performance(*source->ToLocalDOMWindow());
   DOMHighResTimeStamp startTime =
@@ -52,7 +52,7 @@ PerformanceLongAnimationFrameTiming::PerformanceLongAnimationFrameTiming(
     base::TimeTicks time_origin,
     bool cross_origin_isolated_capability,
     DOMWindow* source,
-    uint32_t navigation_id)
+    uint64_t navigation_id)
     : PerformanceEntry(duration,
                        AtomicString("long-animation-frame"),
                        startTime,
@@ -73,8 +73,15 @@ PerformanceLongAnimationFrameTiming::PerformanceLongAnimationFrameTiming(
           info->FirstUIEventTime(),
           /*allow_negative_value=*/false,
           cross_origin_isolated_capability)),
-      blocking_duration_(info->TotalBlockingDuration().InMillisecondsF()),
-      style_duration_(info->StyleDuration().InMillisecondsF()) {
+      blocking_duration_(
+          Performance::ClampTimeResolution(info->TotalBlockingDuration(),
+                                           cross_origin_isolated_capability)),
+      style_duration_(
+          Performance::ClampTimeResolution(info->StyleDuration(),
+                                           cross_origin_isolated_capability)),
+      layout_duration_(
+          Performance::ClampTimeResolution(info->LayoutDuration(),
+                                           cross_origin_isolated_capability)) {
   CHECK(source->ToLocalDOMWindow());
   const SecurityOrigin* security_origin =
       source->ToLocalDOMWindow()->GetSecurityOrigin();
@@ -108,8 +115,10 @@ void PerformanceLongAnimationFrameTiming::BuildJSONValue(
   builder.AddNumber("styleAndLayoutStart", style_and_layout_start_);
   builder.AddNumber("firstUIEventTimestamp", first_ui_event_timestamp_);
   builder.AddNumber("blockingDuration", blocking_duration_);
-  if (RuntimeEnabledFeatures::LongAnimationFrameStyleDurationEnabled()) {
+  if (RuntimeEnabledFeatures::LongAnimationFrameStyleDurationEnabled(
+          ExecutionContext::From(builder.GetScriptState()))) {
     builder.AddNumber("styleDuration", style_duration_);
+    builder.AddNumber("layoutDuration", layout_duration_);
   }
   builder.AddV8Value("scripts",
                      ToV8Traits<IDLArray<PerformanceScriptTiming>>::ToV8(

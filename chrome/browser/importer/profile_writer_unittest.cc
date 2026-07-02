@@ -175,7 +175,8 @@ class ProfileWriterTest : public testing::Test {
   }
 
   content::BrowserTaskEnvironment task_environment_;
-
+  base::test::ScopedFeatureList scoped_feature_list_{
+      switches::kSyncEnableBookmarksInTransportMode};
   std::unique_ptr<TestingProfile> profile_;
   std::unique_ptr<TestingProfile> second_profile_;
 };
@@ -225,9 +226,6 @@ TEST_F(ProfileWriterTest, CheckBookmarksAfterWritingDataTwice) {
 }
 
 TEST_F(ProfileWriterTest, CheckBookmarksWrittenToAccountStorageIfPresent) {
-  base::test::ScopedFeatureList scoped_feature_list{
-      switches::kSyncEnableBookmarksInTransportMode};
-
   CreateImportedBookmarksEntries();
   BookmarkModel* bookmark_model =
       BookmarkModelFactory::GetForBrowserContext(profile());
@@ -309,7 +307,7 @@ TEST_F(ProfileWriterTest, AddPassword) {
   profile_writer->AddPasswordForm(form);
 
   base::RunLoop().RunUntilIdle();
-  EXPECT_THAT(store->stored_passwords().at(form.signon_realm),
+  EXPECT_THAT(GetAllLoginsSync(store.get()).at(form.signon_realm),
               testing::ElementsAre(form));
 }
 
@@ -324,5 +322,5 @@ TEST_F(ProfileWriterTest, AddPasswordDisabled) {
   profile_writer->AddPasswordForm(form);
 
   base::RunLoop().RunUntilIdle();
-  EXPECT_THAT(store->stored_passwords(), testing::IsEmpty());
+  EXPECT_THAT(GetAllLoginsSync(store.get()), testing::IsEmpty());
 }

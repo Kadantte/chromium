@@ -31,7 +31,7 @@ per-file network_service_test_helper.*=file://services/network/OWNERS
 per-file *devtools*=file://content/browser/devtools/OWNERS
 
 # For BackForwardCache.
-per-file back_forward_cache*=file://content/browser/BACK_FORWARD_CACHE_OWNERS
+per-file back_forward_cache*=file://content/browser/back_forward_cache/OWNERS
 
 # For file system changes.
 per-file *file_system*=file://content/browser/file_system_access/OWNERS
@@ -62,3 +62,6 @@ per-file *captured_surface_controller*=tovep@chromium.org
 
 # For Memory Coordinator
 per-file *memory_coordinator_browsertest_util.cc=file://base/memory_coordinator/OWNERS
+
+# For Web UI.
+per-file *web_ui*=file://ui/webui/PLATFORM_OWNERS

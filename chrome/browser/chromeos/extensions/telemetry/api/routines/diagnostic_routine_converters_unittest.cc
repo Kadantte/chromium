@@ -169,22 +169,6 @@ TEST(TelemetryExtensionDiagnosticRoutineConvertersTest,
 }
 
 TEST(TelemetryExtensionDiagnosticRoutineConvertersTest,
-     LegacyVolumeButtonRoutineFinishedInfo) {
-  constexpr bool kHasPassed = true;
-  const base::Uuid kUuid = base::Uuid::GenerateRandomV4();
-
-  auto input = crosapi::TelemetryDiagnosticVolumeButtonRoutineDetail::New();
-
-  auto result = ConvertPtr(std::move(input), kUuid, kHasPassed);
-
-  ASSERT_TRUE(result.uuid.has_value());
-  EXPECT_EQ(*result.uuid, kUuid.AsLowercaseString());
-
-  ASSERT_TRUE(result.has_passed.has_value());
-  EXPECT_EQ(*result.has_passed, kHasPassed);
-}
-
-TEST(TelemetryExtensionDiagnosticRoutineConvertersTest,
      LegacyFanRoutineFinishedInfo) {
   auto input = crosapi::TelemetryDiagnosticFanRoutineDetail::New();
   input->passed_fan_ids = {0};
@@ -312,28 +296,6 @@ TEST(TelemetryExtensionDiagnosticRoutineConvertersTest,
 }
 
 TEST(TelemetryExtensionDiagnosticRoutineConvertersTest,
-     RoutineFinishedInfoWithVolumeButtonDetail) {
-  constexpr bool kHasPassed = true;
-  const base::Uuid kUuid = base::Uuid::GenerateRandomV4();
-
-  auto detail = crosapi::TelemetryDiagnosticVolumeButtonRoutineDetail::New();
-
-  auto input = crosapi::TelemetryDiagnosticRoutineStateFinished::New();
-  input->detail = crosapi::TelemetryDiagnosticRoutineDetail::NewVolumeButton(
-      std::move(detail));
-
-  auto result = ConvertPtr(std::move(input), kUuid, kHasPassed);
-
-  ASSERT_TRUE(result.uuid.has_value());
-  EXPECT_EQ(*result.uuid, kUuid.AsLowercaseString());
-
-  ASSERT_TRUE(result.has_passed.has_value());
-  EXPECT_EQ(*result.has_passed, kHasPassed);
-
-  EXPECT_FALSE(result.detail.has_value());
-}
-
-TEST(TelemetryExtensionDiagnosticRoutineConvertersTest,
      RoutineFinishedInfoWithFanDetail) {
   constexpr bool kHasPassed = true;
   const base::Uuid kUuid = base::Uuid::GenerateRandomV4();
@@ -439,16 +401,16 @@ TEST(TelemetryExtensionDiagnosticRoutineConvertersTest,
 
 TEST(TelemetryExtensionDiagnosticRoutineConvertersTest, ExceptionReason) {
   EXPECT_EQ(
-      Convert(crosapi::TelemetryExtensionException::Reason::kUnmappedEnumField),
+      Convert(ash::cros_healthd::mojom::Exception::Reason::kUnmappedEnumField),
       cx_diag::ExceptionReason::kUnknown);
-  EXPECT_EQ(Convert(crosapi::TelemetryExtensionException::Reason::
+  EXPECT_EQ(Convert(ash::cros_healthd::mojom::Exception::Reason::
                         kMojoDisconnectWithoutReason),
             cx_diag::ExceptionReason::kUnknown);
-  EXPECT_EQ(Convert(crosapi::TelemetryExtensionException::Reason::kUnexpected),
+  EXPECT_EQ(Convert(ash::cros_healthd::mojom::Exception::Reason::kUnexpected),
             cx_diag::ExceptionReason::kUnexpected);
-  EXPECT_EQ(Convert(crosapi::TelemetryExtensionException::Reason::kUnsupported),
+  EXPECT_EQ(Convert(ash::cros_healthd::mojom::Exception::Reason::kUnsupported),
             cx_diag::ExceptionReason::kUnsupported);
-  EXPECT_EQ(Convert(crosapi::TelemetryExtensionException::Reason::
+  EXPECT_EQ(Convert(ash::cros_healthd::mojom::Exception::Reason::
                         kCameraFrontendNotOpened),
             cx_diag::ExceptionReason::kCameraFrontendNotOpened);
 }

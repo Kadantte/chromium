@@ -658,16 +658,17 @@ TEST_F(Mp4MuxerBoxWriterTest, Mp4MovieVisualSampleEntry) {
   EXPECT_EQ(VideoCodecProfile::H264PROFILE_MAIN,
             video_sample_entry.video_info.profile);
   EXPECT_EQ(
-      VideoColorSpace::JPEG().primaries,
-      reader_sample_description.video_entries[0].video_color_space.primaries);
+      VideoColorSpace::JPEG().primaries(),
+      reader_sample_description.video_entries[0].video_color_space.primaries());
   EXPECT_EQ(
-      VideoColorSpace::JPEG().transfer,
-      reader_sample_description.video_entries[0].video_color_space.transfer);
+      VideoColorSpace::JPEG().transfer(),
+      reader_sample_description.video_entries[0].video_color_space.transfer());
   EXPECT_EQ(
-      VideoColorSpace::JPEG().matrix,
-      reader_sample_description.video_entries[0].video_color_space.matrix);
-  EXPECT_EQ(VideoColorSpace::JPEG().range,
-            reader_sample_description.video_entries[0].video_color_space.range);
+      VideoColorSpace::JPEG().matrix(),
+      reader_sample_description.video_entries[0].video_color_space.matrix());
+  EXPECT_EQ(
+      VideoColorSpace::JPEG().range(),
+      reader_sample_description.video_entries[0].video_color_space.range());
 }
 
 TEST_F(Mp4MuxerBoxWriterTest, Mp4MovieAVCDecoderConfigurationRecord) {
@@ -739,7 +740,7 @@ TEST_F(Mp4MuxerBoxWriterTest, Mp4AacAudioSampleEntry) {
 
   mp4::writable_boxes::ElementaryStreamDescriptor esds;
   constexpr uint32_t kBitRate = 341000u;
-  constexpr size_t kSampleFrequency = 48000;
+  constexpr int kSampleFrequency = 48000;
 
   esds.aac_codec_description.push_back(0x11);
   esds.aac_codec_description.push_back(0x90);
@@ -784,29 +785,21 @@ TEST_F(Mp4MuxerBoxWriterTest, Mp4AacAudioSampleEntry) {
   EXPECT_EQ(AudioCodecProfile::kUnknown, profile);
 
   int aac_frequency = aac.GetOutputSamplesPerSecond(false);
-  EXPECT_EQ(kSampleFrequency, base::checked_cast<size_t>(aac_frequency));
+  EXPECT_EQ(kSampleFrequency, aac_frequency);
 
-  ChannelLayout channel_layout = aac.GetChannelLayout(false);
-  EXPECT_EQ(media::CHANNEL_LAYOUT_STEREO, channel_layout);
+  ChannelLayoutConfig channel_layout_config = aac.GetChannelLayout(false);
+  EXPECT_EQ(ChannelLayoutConfig::Stereo(), channel_layout_config);
 
   size_t adts_header_size;
   auto buffer = aac.CreateAdtsFromEsds({}, &adts_header_size);
   EXPECT_FALSE(buffer.empty());
 
-  ADTSStreamParser adts_parser;
-
-  size_t frame_size = 0, sample_rate = 0, sample_count = 0;
-  ChannelLayout adts_channel_layout;
-  bool metadata_frame;
-  EXPECT_NE(adts_parser.ParseFrameHeader(buffer, &frame_size, &sample_rate,
-                                         &adts_channel_layout, &sample_count,
-                                         &metadata_frame, nullptr),
-            -1);
-  EXPECT_EQ(adts_header_size, frame_size);
-  EXPECT_EQ(kSampleFrequency, sample_rate);
-  EXPECT_EQ(media::CHANNEL_LAYOUT_STEREO, adts_channel_layout);
-  EXPECT_EQ(1024u, sample_count);
-  EXPECT_FALSE(metadata_frame);
+  const auto header = ADTSStreamParser::ParseHeader(buffer);
+  ASSERT_TRUE(header);
+  EXPECT_EQ(adts_header_size, header->frame_size);
+  EXPECT_EQ(kSampleFrequency, header->sample_rate);
+  EXPECT_EQ(media::CHANNEL_LAYOUT_STEREO, header->channel_layout);
+  EXPECT_EQ(1024, header->sample_count);
 }
 #endif
 
@@ -878,13 +871,14 @@ TEST_F(Mp4MuxerBoxWriterTest, Mp4MovieVPConfigurationRecord) {
   EXPECT_EQ(VP9PROFILE_MIN, vp_config_record.profile);
   EXPECT_EQ(0u, vp_config_record.level);
 
-  EXPECT_EQ(gfx::ColorSpace::RangeID::FULL, vp_config_record.color_space.range);
+  EXPECT_EQ(gfx::ColorSpace::RangeID::FULL,
+            vp_config_record.color_space.range());
   EXPECT_EQ(VideoColorSpace::PrimaryID::BT470M,
-            vp_config_record.color_space.primaries);
+            vp_config_record.color_space.primaries());
   EXPECT_EQ(VideoColorSpace::TransferID::GAMMA28,
-            vp_config_record.color_space.transfer);
+            vp_config_record.color_space.transfer());
   EXPECT_EQ(VideoColorSpace::MatrixID::BT470BG,
-            vp_config_record.color_space.matrix);
+            vp_config_record.color_space.matrix());
 }
 
 TEST_F(Mp4MuxerBoxWriterTest, Mp4OpusAudioSampleEntry) {

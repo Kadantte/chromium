@@ -25,6 +25,9 @@ NavigationController::LoadURLParams::LoadURLParams(const OpenURLParams& input)
       initiator_process_id(input.initiator_process_id),
       initiator_origin(input.initiator_origin),
       initiator_base_url(input.initiator_base_url),
+      initiator_navigation_state(input.initiator_navigation_state),
+      should_ignore_initiator_policies_for_inheritance(
+          input.should_ignore_initiator_policies_for_inheritance),
       source_site_instance(input.source_site_instance),
       load_type(input.post_data ? LOAD_TYPE_HTTP_POST : LOAD_TYPE_DEFAULT),
       transition_type(input.transition),
@@ -42,7 +45,8 @@ NavigationController::LoadURLParams::LoadURLParams(const OpenURLParams& input)
       reload_type(input.reload_type),
       impression(input.impression),
       is_pdf(input.is_pdf),
-      has_rel_opener(input.has_rel_opener) {
+      has_rel_opener(input.has_rel_opener),
+      internal_scroll_to_text_fragment(input.internal_scroll_to_text_fragment) {
 #if DCHECK_IS_ON()
   DCHECK(input.Valid());
 #endif

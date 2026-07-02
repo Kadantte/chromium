@@ -14,6 +14,7 @@
 #import "base/test/scoped_feature_list.h"
 #import "base/test/task_environment.h"
 #import "components/test/ios/test_utils.h"
+#import "crypto/features.h"
 #import "ios/chrome/app/application_delegate/app_init_stage.h"
 #import "ios/chrome/app/application_delegate/app_init_stage_test_utils.h"
 #import "ios/chrome/app/application_delegate/app_state+Testing.h"
@@ -95,7 +96,7 @@ typedef void (^TaskExpirationBlock)();
 @interface TestUIThreadRefreshProvider : TestRefreshProvider
 @end
 @implementation TestUIThreadRefreshProvider
-- (scoped_refptr<base::SingleThreadTaskRunner>)taskThread {
+- (scoped_refptr<base::SequencedTaskRunner>)taskRunner {
   return web::GetUIThreadTaskRunner({});
 }
 @end
@@ -104,16 +105,16 @@ typedef void (^TaskExpirationBlock)();
 @interface TestOtherThreadRefreshProvider : TestRefreshProvider
 @end
 @implementation TestOtherThreadRefreshProvider {
-  scoped_refptr<base::SingleThreadTaskRunner> _thread;
+  scoped_refptr<base::SequencedTaskRunner> _runner;
 }
 - (instancetype)init {
   if ((self = [super init])) {
-    _thread = base::ThreadPool::CreateSingleThreadTaskRunner({});
+    _runner = base::ThreadPool::CreateSequencedTaskRunner({});
   }
   return self;
 }
-- (scoped_refptr<base::SingleThreadTaskRunner>)taskThread {
-  return _thread;
+- (scoped_refptr<base::SequencedTaskRunner>)taskRunner {
+  return _runner;
 }
 @end
 
@@ -171,6 +172,10 @@ typedef void (^TaskExpirationBlock)();
 class BackgroundRefreshAppAgentTest : public PlatformTest {
  protected:
   BackgroundRefreshAppAgentTest() {
+    scoped_feature_list_.InitWithFeatures(
+        {kEnableAppBackgroundRefresh,
+         crypto::features::kMigrateIOSKeychainAccessibility},
+        {});
     TestingApplicationContext* application_context =
         TestingApplicationContext::GetGlobal();
 
@@ -204,6 +209,8 @@ class BackgroundRefreshAppAgentTest : public PlatformTest {
     agent_.audience = audience_;
     agent_.appState = app_state_;
     audience_.runLoop = &run_loop_;
+
+    [agent_ appState:app_state_ willTransitionToInitStage:AppInitStage::kStart];
   }
 
   ~BackgroundRefreshAppAgentTest() override {
@@ -295,8 +302,7 @@ class BackgroundRefreshAppAgentTest : public PlatformTest {
   }
 
   // By default, enable background refresh for all tests.
-  base::test::ScopedFeatureList scoped_feature_list_{
-      kEnableAppBackgroundRefresh};
+  base::test::ScopedFeatureList scoped_feature_list_;
   // Local state for test application context.
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   // Threads.

@@ -20,20 +20,24 @@
 #import "ios/chrome/browser/omnibox/ui/popup/omnibox_popup_presenter.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/browser_commands.h"
+#import "ios/chrome/browser/shared/ui/util/ui_view_controller_with_display_tracing.h"
 #import "ios/chrome/browser/toolbar/ui/toolbar_height_delegate.h"
 #import "ios/chrome/browser/web/model/web_state_container_view_provider.h"
 
 @class BookmarksCoordinator;
 @class BrowserContentViewController;
 @protocol BrowserCoordinatorCommands;
-@protocol BWGCommands;
 @protocol DefaultPromoNonModalPresentationDelegate;
 @protocol FindInPageCommands;
+class FullscreenBrowserAgent;
 class FullscreenController;
+@protocol GeminiCommands;
 @protocol HelpCommands;
 @protocol IncognitoReauthCommands;
 @class KeyCommandsProvider;
 @class LayoutGuideCenter;
+@class LayoutState;
+@class MainToolbarCoordinator;
 @class NewTabPageCoordinator;
 @protocol PopupMenuCommands;
 @class PopupMenuCoordinator;
@@ -45,7 +49,6 @@ class TabUsageRecorderBrowserAgent;
 @protocol TextZoomCommands;
 @class ToolbarAccessoryPresenter;
 @protocol ToolbarCommands;
-@class ToolbarCoordinator;
 class UrlLoadingBrowserAgent;
 @protocol VoiceSearchController;
 
@@ -53,9 +56,10 @@ typedef struct {
   ToolbarAccessoryPresenter* toolbarAccessoryPresenter;
   PopupMenuCoordinator* popupMenuCoordinator;
   NewTabPageCoordinator* ntpCoordinator;
-  ToolbarCoordinator* toolbarCoordinator;
+  MainToolbarCoordinator* toolbarCoordinator;
   SideSwipeCoordinator* sideSwipeCoordinator;
   BookmarksCoordinator* bookmarksCoordinator;
+  raw_ptr<FullscreenBrowserAgent> fullscreenBrowserAgent;
   raw_ptr<FullscreenController> fullscreenController;
   id<BrowserCoordinatorCommands> browserCoordinatorHandler;
   id<TextZoomCommands> textZoomHandler;
@@ -64,7 +68,7 @@ typedef struct {
   id<SceneCommands> sceneHandler;
   id<ToolbarCommands> toolbarHandler;
   id<FindInPageCommands> findInPageCommandsHandler;
-  id<BWGCommands> geminiHandler;
+  id<GeminiCommands> geminiHandler;
   LayoutGuideCenter* layoutGuideCenter;
   BOOL isOffTheRecord;
   raw_ptr<UrlLoadingBrowserAgent> urlLoadingBrowserAgent;
@@ -78,16 +82,16 @@ typedef struct {
 // The top-level view controller for the browser UI. Manages other controllers
 // which implement the interface.
 @interface BrowserViewController
-    : UIViewController <BrowserCommands,
-                        BrowserLayoutConsumer,
-                        ContextualSheetPresenter,
-                        IncognitoReauthConsumer,
-                        LensOverlayPresentationEnvironment,
-                        TabConsumer,
-                        OmniboxFocusDelegate,
-                        OmniboxPopupPresenterDelegate,
-                        ToolbarHeightDelegate,
-                        WebStateContainerViewProvider>
+    : UIViewControllerWithDisplayTracing <BrowserCommands,
+                                          BrowserLayoutConsumer,
+                                          ContextualSheetPresenter,
+                                          IncognitoReauthConsumer,
+                                          LensOverlayPresentationEnvironment,
+                                          TabConsumer,
+                                          OmniboxFocusDelegate,
+                                          OmniboxPopupPresenterDelegate,
+                                          ToolbarHeightDelegate,
+                                          WebStateContainerViewProvider>
 
 // Initializes a new BVC.
 // `browserContentViewController` is the container object this BVC will exist
@@ -113,20 +117,15 @@ typedef struct {
 // Whether web usage is enabled for the WebStates in `self.browser`.
 @property(nonatomic) BOOL webUsageEnabled;
 
-// The container used for infobar banner overlays.
-@property(nonatomic, strong)
-    UIViewController* infobarBannerOverlayContainerViewController;
-
-// The container used for infobar modal overlays.
-@property(nonatomic, strong)
-    UIViewController* infobarModalOverlayContainerViewController;
-
 // Presentation delegate for the non-modal default browser promo.
 @property(nonatomic, weak) id<DefaultPromoNonModalPresentationDelegate>
     nonModalPromoPresentationDelegate;
 
 // Command handler for Gemini commands.
-@property(nonatomic, weak) id<BWGCommands> geminiHandler;
+@property(nonatomic, weak) id<GeminiCommands> geminiHandler;
+
+// The layout state.
+@property(nonatomic, weak) LayoutState* layoutState;
 
 // Callback that will be invoked when the browser view visibility changed.
 @property(nonatomic, assign) const BrowserViewVisibilityStateChangedCallback&

@@ -43,6 +43,7 @@
 #include "ui/base/ui_base_switches.h"
 #include "ui/events/event_utils.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/button/checkbox.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/tabbed_pane/tabbed_pane.h"
@@ -274,7 +275,7 @@ TEST_P(DesktopMediaPickerViewsTest, DoneCallbackCalledOnOkButtonPressed) {
   EXPECT_EQ(kFakeId, WaitForPickerResult());
 }
 
-// Regression test for https://crbug.com/1102153
+// Regression test for https://crbug.com/40052774
 TEST_P(DesktopMediaPickerViewsTest, DoneCallbackNotCalledOnDoubleTap) {
   const DesktopMediaID kFakeId(DesktopMediaID::TYPE_SCREEN, 222);
 
@@ -406,13 +407,26 @@ TEST_P(DesktopMediaPickerViewsTest, OkButtonEnabledDuringAcceptSpecific) {
   EXPECT_EQ(fake_id, WaitForPickerResult());
 }
 
+TEST_P(DesktopMediaPickerViewsTest, AccessibleBubbleFrameViewTitle) {
+  // TODO(420734141): Make DesktopMediaPickerDialogView always have a
+  // BubbleFrameView.
+  views::BubbleFrameView* bubble_frame_view =
+      GetPickerDialogView()->GetBubbleFrameView();
+  if (bubble_frame_view) {
+    ui::AXNodeData ax_node;
+    bubble_frame_view->title()->GetViewAccessibility().GetAccessibleNodeData(
+        &ax_node);
+    EXPECT_EQ(ax_node.role, ax::mojom::Role::kHeading);
+    EXPECT_EQ(ax_node.GetStringAttribute(ax::mojom::StringAttribute::kName),
+              "Choose what to share");
+    EXPECT_EQ(
+        ax_node.GetIntAttribute(ax::mojom::IntAttribute::kHierarchicalLevel),
+        1);
+  }
+}
+
 #if BUILDFLAG(IS_MAC)
 TEST_P(DesktopMediaPickerViewsTest, OnPermissionUpdateWithPermissions) {
-  if (base::mac::MacOSMajorVersion() < 13) {
-    GTEST_SKIP()
-        << "ScreenCapturePermissionChecker only created for MacOS 13 and later";
-  }
-
   test_api_.OnPermissionUpdate(true);
 
   test_api_.SelectTabForSourceType(DesktopMediaList::Type::kScreen);
@@ -429,11 +443,6 @@ TEST_P(DesktopMediaPickerViewsTest, OnPermissionUpdateWithPermissions) {
 }
 
 TEST_P(DesktopMediaPickerViewsTest, OnPermissionUpdateWithoutPermissions) {
-  if (base::mac::MacOSMajorVersion() < 13) {
-    GTEST_SKIP()
-        << "ScreenCapturePermissionChecker only created for MacOS 13 and later";
-  }
-
   test_api_.OnPermissionUpdate(false);
 
   test_api_.SelectTabForSourceType(DesktopMediaList::Type::kScreen);
@@ -975,12 +984,12 @@ class DesktopMediaPickerViewsSingleTabPaneTest
 };
 
 // Validates that the tab list's preferred size is not zero.
-// (https://crbug.com/965408).
+// (https://crbug.com/41460157).
 TEST_F(DesktopMediaPickerViewsSingleTabPaneTest, TabListPreferredSizeNotZero) {
   EXPECT_GT(test_api_.GetSelectedListView()->height(), 0);
 }
 
-// Validates that the tab list has a fixed height (https://crbug.com/998485).
+// Validates that the tab list has a fixed height (https://crbug.com/41478575).
 TEST_F(DesktopMediaPickerViewsSingleTabPaneTest, TabListHasFixedHeight) {
   auto GetDialogHeight = [&]() {
     return GetPickerDialogView()->GetPreferredSize().height();
@@ -1017,7 +1026,7 @@ TEST_F(DesktopMediaPickerViewsSingleTabPaneTest, TabListHasFixedHeight) {
   EXPECT_EQ(GetDialogHeight(), initial_size);
 }
 
-// Regression test for https://crbug.com/1042976.
+// Regression test for https://crbug.com/40668785.
 TEST_F(DesktopMediaPickerViewsSingleTabPaneTest,
        CannotAcceptTabWithoutSelection) {
   AddTabSource();
@@ -1030,8 +1039,8 @@ TEST_F(DesktopMediaPickerViewsSingleTabPaneTest,
       ui::mojom::DialogButton::kOk));
 
   // Send the tab list a Return key press, to make sure it doesn't try to accept
-  // with no selected source. If the fix to https://crbug.com/1042976 regresses,
-  // this test will crash here.
+  // with no selected source. If the fix to https://crbug.com/40668785
+  // regresses, this test will crash here.
   test_api_.PressKeyOnSourceAtIndex(
       0, ui::KeyEvent(ui::EventType::kKeyPressed, ui::VKEY_RETURN, 0));
 }
@@ -1173,7 +1182,7 @@ INSTANTIATE_TEST_SUITE_P(
                     std::make_pair(DesktopMediaList::Type::kWebContents,
                                    DesktopMediaID::TYPE_WEB_CONTENTS)));
 
-// Regression test for https://crbug.com/1102153 and https://crbug.com/1127496
+// Regression test for https://crbug.com/40052774 and https://crbug.com/40053331
 TEST_P(DesktopMediaPickerDoubleClickTest, DoneCallbackNotCalledOnDoubleClick) {
   const DesktopMediaList::Type media_list_type = std::get<0>(GetParam());
   const DesktopMediaID::Type media_type = std::get<1>(GetParam());

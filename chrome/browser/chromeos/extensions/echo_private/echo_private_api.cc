@@ -8,6 +8,7 @@
 #include <string_view>
 #include <utility>
 
+#include "ash/constants/webui_url_constants.h"
 #include "base/functional/bind.h"
 #include "base/i18n/time_formatting.h"
 #include "base/location.h"
@@ -21,11 +22,10 @@
 #include "chrome/browser/extensions/window_controller.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/common/extensions/api/echo_private.h"
 #include "chrome/common/pref_names.h"
-#include "chrome/common/url_constants.h"
 #include "chromeos/ash/components/report/utils/time_utils.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
@@ -249,7 +249,7 @@ void EchoPrivateGetUserConsentFunction::OnCancel() {
 
 void EchoPrivateGetUserConsentFunction::OnMoreInfoLinkClicked() {
   NavigateParams params(Profile::FromBrowserContext(browser_context()),
-                        GURL(chrome::kEchoLearnMoreURL),
+                        GURL(ash::kChromeUIEchoLearnMoreURL),
                         ui::PAGE_TRANSITION_LINK);
   // Open the link in a new window. The echo dialog is modal, so the current
   // window is useless until the dialog is closed.

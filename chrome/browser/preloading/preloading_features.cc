@@ -6,7 +6,7 @@
 
 namespace features {
 
-BASE_FEATURE(kPrewarm, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kPrewarm, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE_PARAM(std::string, kPrewarmUrl, &kPrewarm, "url", "");
 BASE_FEATURE_PARAM(bool,
                    kPrewarmZeroSuggestTrigger,
@@ -17,6 +17,17 @@ BASE_FEATURE_PARAM(bool,
                    kPrewarmUserInteractionTrigger,
                    &kPrewarm,
                    "user_interaction_trigger",
+                   true);
+BASE_FEATURE_PARAM(bool, kPrewarmRevalidate, &kPrewarm, "revalidate", false);
+BASE_FEATURE_PARAM(bool,
+                   kPrewarmThrottlePrefetch,
+                   &kPrewarm,
+                   "throttle_prefetch",
+                   false);
+BASE_FEATURE_PARAM(bool,
+                   kPrewarmThrottleUserNavigation,
+                   &kPrewarm,
+                   "throttle_user_navigation",
                    false);
 BASE_FEATURE_PARAM(bool,
                    kForceEnableWithDevTools,
@@ -39,6 +50,12 @@ BASE_FEATURE_PARAM(int,
                    &kPrewarm,
                    "min_memory_threshold_mb",
                    kDSEPrearmDefaultMemoryThresholdMb);
+
+BASE_FEATURE_PARAM(int,
+                   kMaxBlackoutDurationSeconds,
+                   &kPrewarm,
+                   "max_blackout_duration_seconds",
+                   86400);
 
 BASE_FEATURE(kPrerender2WarmUpCompositorForBookmarkBar,
              base::FEATURE_DISABLED_BY_DEFAULT);

@@ -279,7 +279,12 @@ class AutocompleteInputConnection extends InputConnectionWrapper {
             // Update selection first such that keyboard app gets what it expects.
             boolean retVal = decrementBatchEditCount();
 
-            if (mPreBatchEditState.getAutocompleteText() != null) {
+            // Ensure this deletion is for autocomplete and not a site search transition.
+            // When site search is activated (e.g. hitting <space> on "yahoo[ suggestion]")
+            // the current state becomes completely empty. A normal autocomplete deletion will not
+            // leave the current state empty.
+            if (mPreBatchEditState.getAutocompleteText() != null
+                    && !currentState.getUserText().isEmpty()) {
                 // Undo delete to retain the last character and only remove autocomplete text.
                 restoreBackspacedText(diff);
             }
@@ -296,6 +301,7 @@ class AutocompleteInputConnection extends InputConnectionWrapper {
         if (currentState.isForwardTypedFrom(mPreBatchEditState)
                 || (mPreBatchEditState.isWholeUserTextSelected()
                         && currentState.getUserText().length() > 0
+                        && currentState.getSelection().isCollapsed()
                         && currentState.isCursorAtEndOfUserText())) {
             mInputDelegate.setLastEditWasTyping(true);
         }

@@ -2,12 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/extensions/browsertest_util.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
 #include "chrome/browser/extensions/extension_action_runner.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/extensions/extension_context_menu_model.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
+#include "chrome/browser/metrics/critical_user_journeys/critical_user_journey_session.h"
+#include "chrome/browser/metrics/critical_user_journeys/features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
@@ -34,12 +37,14 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "extensions/browser/extension_host.h"
 #include "extensions/browser/extension_host_registry.h"
+#include "extensions/browser/host_access_request_helper.h"
 #include "extensions/browser/permissions/scripting_permissions_modifier.h"
 #include "extensions/browser/permissions/site_permissions_helper.h"
 #include "extensions/browser/permissions_manager.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/test/permissions_manager_waiter.h"
 #include "extensions/test/test_extension_dir.h"
+#include "net/dns/mock_host_resolver.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/base/interaction/state_observer.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -120,6 +125,9 @@ class PermissionsUpdatesObserver
       const extensions::PermissionSet& permissions,
       PermissionsManager::UpdateReason reason) override {
     if (extension.id() == extension_id_) {
+      if (extension.permissions_data()->IsRestrictedUrl(url_, nullptr)) {
+        return;
+      }
       extensions::PermissionsManager::UserSiteAccess site_access =
           permissions_manager_->GetUserSiteAccess(extension, url_);
       OnStateObserverStateChanged(site_access);
@@ -193,7 +201,8 @@ ExtensionsMenuMainPageViewInteractiveUITest::
 }
 
 void ExtensionsMenuMainPageViewInteractiveUITest::ShowMenu() {
-  menu_coordinator()->Show(extensions_button(), GetExtensionsToolbarDesktop());
+  menu_coordinator()->Show(views::BubbleAnchor(extensions_button()),
+                           GetExtensionsToolbarDesktop());
   DCHECK(main_page());
 }
 
@@ -257,7 +266,7 @@ void ExtensionsMenuMainPageViewInteractiveUITest::ShowUi(
     const std::string& name) {
 #if BUILDFLAG(IS_LINUX)
   // The extensions menu can appear offscreen on Linux, so verifying bounds
-  // makes the tests flaky (crbug.com/1050012).
+  // makes the tests flaky (crbug.com/40672885).
   set_should_verify_dialog_bounds(false);
 #endif
 
@@ -271,6 +280,10 @@ void ExtensionsMenuMainPageViewInteractiveUITest::ShowUi(
 // updated.
 IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewInteractiveUITest,
                        SiteAccessToggle_RunAction) {
+  auto cooldown_reset =
+      extensions::HostAccessRequestsHelper::SetCooldownForTesting(
+          base::TimeDelta());
+
   ASSERT_TRUE(embedded_test_server()->Start());
 
   auto extension =
@@ -317,7 +330,21 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewInteractiveUITest,
   //   - reload section is hidden.
   //   - requests section is hidden
   //   - request access button, in the toolbar, does not include extension.
+  //
+  // `WaitForActiveTabPermissionGranted` because `ActiveTabPermissionGranter` is
+  // responsible for granting the requested host permissions - see
+  // https://source.chromium.org/chromium/chromium/src/+/main:extensions/browser/permissions/active_tab_permission_granter.cc;l=148-178;drc=409b77a78792667eb4583c52aa9faf7fa321f4b8
+  extensions::PermissionsManagerWaiter waiter(
+      extensions::PermissionsManager::Get(browser()->profile()));
   ClickButton(menu_entry->action_button_for_testing());
+  waiter.WaitForActiveTabPermissionGranted(extension_id);
+
+  // The menu might have closed after clicking the button. Re-open it.
+  ClickButton(extensions_button());
+  menu_entry = GetOnlyMenuEntry();
+  reload_section = main_page()->reload_section();
+  requests_section = main_page()->requests_section();
+
   EXPECT_TRUE(menu_entry->site_access_toggle_for_testing()->GetVisible());
   EXPECT_TRUE(menu_entry->site_access_toggle_for_testing()->GetIsOn());
   EXPECT_FALSE(reload_section->GetVisible());
@@ -470,8 +497,10 @@ class ExtensionsMenuMainPageViewInteractiveTest
     : public InteractiveBrowserTestMixin<extensions::ExtensionBrowserTest> {
  public:
   ExtensionsMenuMainPageViewInteractiveTest() {
-    scoped_feature_list_.InitAndEnableFeature(
-        extensions_features::kExtensionsMenuAccessControl);
+    scoped_feature_list_.InitWithFeatures(
+        {extensions_features::kExtensionsMenuAccessControl,
+         metrics::kCriticalUserJourneyService, metrics::kPinExtensionJourney},
+        {});
   }
   ExtensionsMenuMainPageViewInteractiveTest(
       const ExtensionsMenuMainPageViewInteractiveTest&) = delete;
@@ -575,10 +604,10 @@ class ExtensionsMenuMainPageViewInteractiveTest
       ui::test::StateIdentifier<PermissionsUpdatesObserver> state_identifier) {
     return Steps(
         OpenContextMenu(extension_id, menu_entry_element_id),
-        SelectMenuItem(
-            extensions::ExtensionContextMenuModel::kPageAccessMenuItem),
-        SelectMenuItem(GetSiteAccessCommandId(site_access)),
-        WaitForState(state_identifier, site_access));
+        InAnyContext(SelectMenuItem(
+            extensions::ExtensionContextMenuModel::kPageAccessMenuItem)),
+        InAnyContext(SelectMenuItem(GetSiteAccessCommandId(site_access))),
+        InAnyContext(WaitForState(state_identifier, site_access)));
   }
 
   // Verifies whether the context menu for `extension_id` opened from
@@ -684,6 +713,7 @@ class ExtensionsMenuMainPageViewInteractiveTest
   void SetUpOnMainThread() override {
     InteractiveBrowserTestMixin<
         extensions::ExtensionBrowserTest>::SetUpOnMainThread();
+    host_resolver()->AddRule("example.com", "127.0.0.1");
     ASSERT_TRUE(embedded_test_server()->Start());
   }
 
@@ -879,7 +909,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewInteractiveTest,
 
 // Tests that removing multiple extensions while one of the extension's action
 // is showing a popup removes such action from the toolbar.
-// Test for crbug.com/1099456.
+// Test for crbug.com/40702475.
 IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewInteractiveTest,
                        RemoveMultipleExtensionsWhileShowingPopup) {
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTab);
@@ -1194,6 +1224,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewInteractiveTest,
   extensions::ScriptingPermissionsModifier(profile(), extension)
       .SetWithholdHostPermissions(true);
 
+  extensions::PermissionsManagerWaiter waiter(
+      PermissionsManager::Get(profile()));
   RunTestSequence(
       InstrumentTab(kTab),
       NavigateWebContents(kTab, embedded_test_server()->GetURL("/simple.html")),
@@ -1210,9 +1242,16 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewInteractiveTest,
       WaitForShow(extensions::kReloadPageDialogCancelButtonElementId),
       PressButton(extensions::kReloadPageDialogCancelButtonElementId),
 
-      // The extension permission should have been applied at this point, but
-      // the extension's script and blocked actions should not run since a
-      // reload is needed.
+      // Wait until the extension permissions have been applied.
+      //
+      // `WaitForActiveTabPermissionGranted` because
+      // `ActiveTabPermissionGranter` is responsible for granting the requested
+      // host permissions - see
+      // https://source.chromium.org/chromium/chromium/src/+/main:extensions/browser/permissions/active_tab_permission_granter.cc;l=148-178;drc=409b77a78792667eb4583c52aa9faf7fa321f4b8
+      Do([&]() { waiter.WaitForActiveTabPermissionGranted(extension->id()); }),
+
+      // Despite new extension permissions, the extension's script and blocked
+      // actions should not run since a reload is needed.
       CheckResult(
           [&]() {
             return extensions::browsertest_util::DidChangeTitle(
@@ -1305,6 +1344,10 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewInteractiveTest,
           extensions::PermissionsManager::UserSiteAccess::kOnSite,
           kPermissionsUpdates),
 
+      NameDescendantViewByType<HoverButton>(kExtensionsMenuEntryViewElementId,
+                                            kExtensionSitePermissionsButton,
+                                            /*index=*/2u),
+
       // Verify extension has "on site" site permissions label.
       CheckView(
           kExtensionSitePermissionsButton,
@@ -1319,6 +1362,10 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewInteractiveTest,
           extension->id(), kExtensionsMenuEntryViewElementId,
           extensions::PermissionsManager::UserSiteAccess::kOnClick,
           kPermissionsUpdates),
+
+      NameDescendantViewByType<HoverButton>(kExtensionsMenuEntryViewElementId,
+                                            kExtensionSitePermissionsButton,
+                                            /*index=*/2u),
 
       // Verify extension has "on click" site permissions label.
       CheckView(
@@ -1400,4 +1447,35 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewInteractiveTest,
                         &views::ToggleButton::GetIsOn, true),
       WaitForHide(kExtensionsMenuReloadSectionElementId),
       CheckRequestsSectionHidden(), DidInjectScript(true));
+}
+
+IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewInteractiveTest,
+                       PinExtensionViaExtensionsMenuJourneyCompletion) {
+  base::HistogramTester histograms;
+  const std::string step_reached =
+      base::StrCat({"CriticalUserJourney.", metrics::kPinExtensionJourney.name,
+                    ".StepReached"});
+  const std::string result = base::StrCat(
+      {"CriticalUserJourney.", metrics::kPinExtensionJourney.name, ".Result"});
+  const extensions::Extension* const extension =
+      LoadExtension(test_data_dir_.AppendASCII("simple_with_icon"));
+
+  histograms.ExpectBucketCount(step_reached, 1, 0);
+  histograms.ExpectBucketCount(step_reached, 2, 0);
+
+  RunTestSequence(
+      OpenExtensionsMenu(),
+      OpenContextMenu(extension->id(), kExtensionsMenuEntryViewElementId),
+      Do([&]() {
+        histograms.ExpectBucketCount(step_reached, 1, 1);
+        histograms.ExpectBucketCount(step_reached, 2, 0);
+      }),
+      SelectMenuItem(
+          extensions::ExtensionContextMenuModel::kToggleVisibilityMenuItem),
+      WaitForEvent(kBrowserViewElementId, kExtensionsMenuPinExtensionsEventId),
+      Do([&]() { histograms.ExpectBucketCount(step_reached, 2, 1); }));
+
+  histograms.ExpectUniqueSample(
+      result, metrics::CriticalUserJourneySession::JourneyResult::kCompleted,
+      1);
 }

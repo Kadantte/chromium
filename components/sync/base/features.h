@@ -24,11 +24,10 @@ inline constexpr base::FeatureParam<int>
 // Enables syncing of settings from the user's account.
 BASE_DECLARE_FEATURE(kSyncAccountSettings);
 
-// Enables syncing of Loyalty Cards coming from Google Wallet.
-BASE_DECLARE_FEATURE(kSyncAutofillLoyaltyCard);
-
-// Makes the AUTOFILL_VALUABLE sync type non-encryptable.
-BASE_DECLARE_FEATURE(kSyncMakeAutofillValuableNonEncryptable);
+// Enables syncing of valuables from the user's account.
+#if BUILDFLAG(IS_IOS)
+BASE_DECLARE_FEATURE(kSyncAutofillValuable);
+#endif
 
 // Enables syncing of usage metadata from Google Wallet passes.
 BASE_DECLARE_FEATURE(kSyncAutofillValuableMetadata);
@@ -51,6 +50,12 @@ BASE_DECLARE_FEATURE(kSyncGeminiThread);
 // Enables syncing of themes across iOS devices.
 BASE_DECLARE_FEATURE(kSyncThemesIos);
 
+// Enables syncing of New Tab Page customization themes on Android.
+BASE_DECLARE_FEATURE(kNewTabPageCustomizationThemeSync);
+
+// Enables syncing of usage metadata for loyalty cards.
+BASE_DECLARE_FEATURE(kSyncLoyaltyCardMetadata);
+
 #if !BUILDFLAG(IS_CHROMEOS)
 // Flag that controls Uno fast-follow features which are:
 // On Android:
@@ -64,43 +69,33 @@ BASE_DECLARE_FEATURE(kSyncThemesIos);
 BASE_DECLARE_FEATURE(kUnoPhase2FollowUp);
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
-// Controls whether to enable syncing of Autofill Wallet Credential Data.
-BASE_DECLARE_FEATURE(kSyncAutofillWalletCredentialData);
-
-constexpr size_t kSyncBookmarksLimit = 100000;
-// If enabled, the error that the bookmarks count exceeded the limit during the
-// last initial merge is reset after a certain period.
-BASE_DECLARE_FEATURE(kSyncResetBookmarksInitialMergeLimitExceededError);
-
-// If enabled, shows a user-actionable error when the bookmarks count limit is
-// exceeded.
-BASE_DECLARE_FEATURE(kSyncShowBookmarksLimitExceededError);
-
+// Do not use this flag directly. Use
+// IsContactInfoDataTypeForCustomPassphraseUsersEnabled() instead.
 BASE_DECLARE_FEATURE(kSyncEnableContactInfoDataTypeForCustomPassphraseUsers);
+
+// If enabled, the Contact Info data type will be enabled for users with custom
+// passphrase.
+bool IsContactInfoDataTypeForCustomPassphraseUsersEnabled();
+
 BASE_DECLARE_FEATURE(kSyncEnableContactInfoDataTypeForDasherUsers);
 
 // If enabled, keeps local and account search engines separate.
 BASE_DECLARE_FEATURE(kSeparateLocalAndAccountSearchEngines);
 
 // Feature flag to replace all sync-related UI with sign-in ones.
+// Do not use this flag directly in production code. Use
+// `syncer::IsReplaceSyncPromosWithSignInPromosEnabled()` instead.
 BASE_DECLARE_FEATURE(kReplaceSyncPromosWithSignInPromos);
-// Enables syncing extensions only if the user newly signs in to Chrome, not if
-// they were already signed in by the time `kReplaceSyncPromosWithSignInPromos`
-// was enabled.
-BASE_DECLARE_FEATURE_PARAM(bool, kExplicitSigninForExtensions);
 
-// Feature flag to enable an observer for awaiting the sync engine startup.
-BASE_DECLARE_FEATURE(kEnableAwaitSyncServiceStartup);
+// Feature flag to replace all sync-related UI with sign-in ones. This
+// feature has the same behavior as kReplaceSyncPromosWithSignInPromos, but only
+// enables extensions and bookmarks on new sign-ins.
+BASE_DECLARE_FEATURE(kReplaceSyncPromosWithSigninPromosNewSignin);
 
-// Configurable timeout for the sync engine startup observation in the profile
-// picker.
-extern const base::FeatureParam<int>
-    kAwaitSyncServiceStartupInProfilePickerTimeoutSeconds;
-
-// Configurable timeout for the sync engine startup observation when browser is
-// open.
-extern const base::FeatureParam<int>
-    kAwaitSyncServiceStartupInBrowserTimeoutSeconds;
+// Returns true if the replace sync promos with sign-in promos feature is
+// enabled. The launch may be controlled by multiple `base::Feature` flags,
+// prefer using this function over checking the feature flags directly.
+bool IsReplaceSyncPromosWithSignInPromosEnabled();
 
 // If enabled, allowlisted priority preferences will be synced even if the
 // preferences user toggle is off. Note that this flag is only meaningful if
@@ -144,12 +139,6 @@ constexpr bool IsReadingListAccountStorageEnabled() {
 // If enabled, sync-the-transport will auto-start (avoid deferring startup) if
 // sync metadata isn't available (i.e. initial sync never completed).
 BASE_DECLARE_FEATURE(kSyncAlwaysForceImmediateStartIfTransportDataMissing);
-
-#if BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID)
-// If enabled, holds the account preference values under a dictionary in the
-// main preferences file.
-BASE_DECLARE_FEATURE(kMigrateAccountPrefs);
-#endif  // BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID)
 
 // If enabled, support displaying and uploading individual Reading List items in
 // the Batch Upload UI.
@@ -222,14 +211,59 @@ BASE_DECLARE_FEATURE(kSyncRecordDeviceStatisticsMetrics);
 // exact number is somewhat arbitrary, chosen to ensure that refresh tokens are
 // loaded, the local cache GUID is up to date, and to avoid interfering with
 // general (sync or browser) startup.
-inline constexpr base::FeatureParam<base::TimeDelta>
-    kSyncRecordDeviceStatisticsMetricsDelay{
-        &kSyncRecordDeviceStatisticsMetrics,
-        "SyncRecordDeviceStatisticsMetricsDelay", base::Seconds(30)};
+BASE_DECLARE_FEATURE_PARAM(base::TimeDelta,
+                           kSyncRecordDeviceStatisticsMetricsDelay);
+// Controls how often device statistics are collected and recorded in metrics,
+// as the minimum number of days between recordings.
+BASE_DECLARE_FEATURE_PARAM(int, kSyncRecordDeviceStatisticsMetricsPeriodDays);
 
 // If enabled, DeviceInfoSyncBridge uses WallClockTimer for pulse updates,
 // which is more resilient to device suspension.
 BASE_DECLARE_FEATURE(kSyncDeviceInfoUseWallClockTimer);
+
+// If enabled, validate the access token before sending the request to the
+// server.
+BASE_DECLARE_FEATURE(kSyncValidateAccessToken);
+
+// If enabled, Sync invalidations will bypass the scheduler on Android.
+BASE_DECLARE_FEATURE(kSyncInvalidationsBypassScheduler);
+
+#if BUILDFLAG(IS_ANDROID)
+// If enabled, search engines and site search will be synced on Android LFF.
+BASE_DECLARE_FEATURE(kSyncSearchEnginesAndroidLFF);
+
+// If enabled, ignores the value set in sessions_invalidations_enabled_ and
+// always registers for sessions invalidations.
+BASE_DECLARE_FEATURE(kAlwaysRegisterSessionsInvalidationsAndroid);
+
+// If enabled, the android.os.Build.FINGERPRINT prefix is uploaded in
+// DeviceInfo.
+// TODO(crbug.com/522788942): Consolidate this with
+// kSyncUseServerDeterminedDeviceName.
+BASE_DECLARE_FEATURE(kSyncUploadAndroidBuildFingerprintPrefix);
+#endif  // BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_CHROMEOS)
+// Feature flag for ChromeOS only to estimate new sign-in users population.
+BASE_DECLARE_FEATURE(kEstimateNewSignInUsersWithFinchAvailablePopulation);
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
+// If enabled, computes the web sign-in status based on account in cookies
+// values even if they are stale. This ensures that we log the last known cookie
+// sign-in status for short-lived sessions instead of the default OFF value.
+BASE_DECLARE_FEATURE(kSyncFixWebSigninSessionDurationForShortLivedSessions);
+
+// If enabled, simplifies the device naming architecture by using the
+// most user friendly name that can be computed for a device (the so-called
+// "preferred name" in legacy path) as a single source of truth, bypassing the
+// legacy deduplication and name-based local device filtering. This affects Send
+// Tab to Self and Sharing features.
+BASE_DECLARE_FEATURE(kSyncSimplifyDeviceNaming);
+
+// If enabled, uses the server-determined model name (marketing name) as the
+// preferred name (and fallback name) if available. This provides a more
+// recognizable name for the user.
+BASE_DECLARE_FEATURE(kSyncUseServerDeterminedDeviceName);
 
 }  // namespace syncer
 

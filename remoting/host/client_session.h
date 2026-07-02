@@ -27,6 +27,7 @@
 #include "remoting/base/errors.h"
 #include "remoting/base/local_session_policies_provider.h"
 #include "remoting/base/session_policies.h"
+#include "remoting/host/audio_injector.h"
 #include "remoting/host/base/desktop_environment_options.h"
 #include "remoting/host/client_session_control.h"
 #include "remoting/host/client_session_details.h"
@@ -35,11 +36,12 @@
 #include "remoting/host/desktop_display_info.h"
 #include "remoting/host/host_experiment_session_plugin.h"
 #include "remoting/host/host_extension_session_manager.h"
+#include "remoting/host/input_pipeline.h"
 #include "remoting/host/mojom/chromoting_host_services.mojom.h"
 #include "remoting/host/mojom/remote_url_opener.mojom.h"
 #include "remoting/host/mojom/webauthn_proxy.mojom.h"
-#include "remoting/host/remote_input_filter.h"
 #include "remoting/proto/action.pb.h"
+#include "remoting/protocol/audio_sample_info.h"
 #include "remoting/protocol/clipboard_echo_filter.h"
 #include "remoting/protocol/clipboard_filter.h"
 #include "remoting/protocol/clipboard_stub.h"
@@ -48,14 +50,9 @@
 #include "remoting/protocol/data_channel_manager.h"
 #include "remoting/protocol/display_size.h"
 #include "remoting/protocol/errors.h"
-#include "remoting/protocol/fractional_input_filter.h"
 #include "remoting/protocol/host_stub.h"
 #include "remoting/protocol/input_event_timestamps.h"
-#include "remoting/protocol/input_event_tracker.h"
-#include "remoting/protocol/input_filter.h"
 #include "remoting/protocol/mouse_cursor_monitor.h"
-#include "remoting/protocol/mouse_input_filter.h"
-#include "remoting/protocol/observing_input_filter.h"
 #include "remoting/protocol/pairing_registry.h"
 #include "remoting/protocol/transport.h"
 #include "remoting/protocol/video_stream.h"
@@ -67,6 +64,8 @@
 namespace remoting {
 
 class ActiveDisplayMonitor;
+class SecurityKeyAuthHandler;
+class SecurityKeyExtension;
 class DesktopEnvironment;
 class DesktopEnvironmentFactory;
 class InputInjector;
@@ -90,6 +89,7 @@ class ClientSession : public protocol::HostStub,
                       public ClientSessionDetails,
                       public ClientSessionEvents,
                       public CursorVisibilityNotifier::EventHandler,
+                      public AudioInjector::Delegate,
                       public protocol::MouseCursorMonitor::Callback,
                       public mojom::ChromotingSessionServices {
  public:
@@ -163,6 +163,8 @@ class ClientSession : public protocol::HostStub,
   void ControlPeerConnection(
       const protocol::PeerConnectionParameters& parameters) override;
   void SetVideoLayout(const protocol::VideoLayout& video_layout) override;
+  void ControlTerminal(
+      const protocol::TerminalControl& terminal_control) override;
 
   // protocol::ConnectionToClient::EventHandler interface.
   void OnConnectionAuthenticating() override;
@@ -177,6 +179,9 @@ class ClientSession : public protocol::HostStub,
   void OnIncomingDataChannel(
       const std::string& channel_name,
       std::unique_ptr<protocol::MessagePipe> pipe) override;
+  void OnIncomingAudioFormatChanged(
+      const protocol::AudioSampleInfo& info,
+      base::OnceCallback<void(bool)> done) override;
 
   // ClientSessionControl interface.
   const std::string& client_jid() const override;
@@ -189,13 +194,19 @@ class ClientSession : public protocol::HostStub,
   void SetDisableInputs(bool disable_inputs) override;
   void OnDesktopDisplayChanged(
       std::unique_ptr<protocol::VideoLayout> layout) override;
+  void OnMicrophoneControl(const protocol::MicrophoneControl& control) override;
 
   // ClientSessionEvents interface.
-  void OnDesktopAttached(std::uint32_t session_id) override;
+  void OnDesktopAttached() override;
+
   void OnDesktopDetached() override;
+  void OnSecurityKeyConnection(
+      mojo::PendingReceiver<mojom::SecurityKeyForwarder> receiver) override;
+  void OnSessionServicesClientConnected(
+      mojo::PendingReceiver<mojom::ChromotingSessionServices> receiver)
+      override;
 
   // ClientSessionDetails interface.
-  std::uint32_t desktop_session_id() const override;
   ClientSessionControl* session_control() override;
 
   // CursorVisibilityNotifier::EventHandler interface
@@ -215,9 +226,6 @@ class ClientSession : public protocol::HostStub,
   void BindSecurityKeyForwarder(
       mojo::PendingReceiver<mojom::SecurityKeyForwarder> receiver) override;
 #endif
-
-  void BindReceiver(
-      mojo::PendingReceiver<mojom::ChromotingSessionServices> receiver);
 
   protocol::ConnectionToClient* connection() const { return connection_.get(); }
 
@@ -245,9 +253,15 @@ class ClientSession : public protocol::HostStub,
     return effective_policies_;
   }
 
+  HostExtensionSessionManager* extension_manager_for_tests() const {
+    return extension_manager_.get();
+  }
+
  private:
   void OnDesktopEnvironmentCreated(
       std::unique_ptr<DesktopEnvironment> desktop_environment);
+
+  void CreateAudioInjectorAndBuffer();
 
   void OnLocalSessionPoliciesChanged(const SessionPolicies& new_policies);
 
@@ -260,6 +274,9 @@ class ClientSession : public protocol::HostStub,
   void OnVideoSizeChanged(protocol::VideoStream* stream,
                           const webrtc::DesktopSize& size,
                           const webrtc::DesktopVector& dpi) override;
+
+  // AudioInjector::Delegate interface.
+  void OnAudioInjectorConsumersChanged(bool has_consumers) override;
 
   void CreateActionMessageHandler(
       std::vector<protocol::ActionRequest::Action> capabilities,
@@ -285,6 +302,12 @@ class ClientSession : public protocol::HostStub,
   void CreateRemoteWebAuthnMessageHandler(
       const std::string& channel_name,
       std::unique_ptr<protocol::MessagePipe> pipe);
+
+  void CreateSecurityKeyDataChannelHandler(
+      const std::string& channel_name,
+      std::unique_ptr<protocol::MessagePipe> pipe);
+
+  void DestroySecurityKeyExtensionSession();
 
   void CreatePerMonitorVideoStreams();
 
@@ -332,34 +355,13 @@ class ClientSession : public protocol::HostStub,
   // Used to convert fractional coordinates to absolute coordinates.
   protocol::CoordinateConverter coordinate_converter_;
 
-  // Tracker used to release pressed keys and buttons when disconnecting.
-  protocol::InputEventTracker input_tracker_;
-
-  // Filter used to detect transitions into and out of client-side pointer lock,
-  // and to monitor local input to determine whether or not to include the mouse
-  // cursor in the desktop image.
-  CursorVisibilityNotifier cursor_visibility_notifier_;
-
-  // Filter used to disable remote inputs during local input activity.
-  RemoteInputFilter remote_input_filter_;
-
-  // Filter used to convert any fractional coordinates to input-injection
-  // coordinates.
-  protocol::FractionalInputFilter fractional_input_filter_;
-
-  // Filter used to clamp mouse events to the current display dimensions.
-  protocol::MouseInputFilter mouse_clamping_filter_;
-
-  // Filter used to notify listeners when remote input events are received.
-  protocol::ObservingInputFilter observing_input_filter_;
-
   // Filter to used to stop clipboard items sent from the client being echoed
   // back to it.  It is the final element in the clipboard (client -> host)
   // pipeline.
   protocol::ClipboardEchoFilter clipboard_echo_filter_;
 
-  // Filters used to manage enabling & disabling of input.
-  protocol::InputFilter disable_input_filter_;
+  // Injects microphone input received from the client.
+  std::unique_ptr<AudioInjector> audio_injector_;
 
   // Used to enable/disable clipboard sync and to restrict payload size.
   protocol::ClipboardFilter host_clipboard_filter_;
@@ -378,6 +380,12 @@ class ClientSession : public protocol::HostStub,
   std::map<webrtc::ScreenId, std::unique_ptr<protocol::VideoStream>>
       video_streams_;
   std::unique_ptr<protocol::AudioStream> audio_stream_;
+  std::unique_ptr<FifoBufferWriter> pending_audio_writer_
+      GUARDED_BY_CONTEXT(sequence_checker_);
+  std::optional<protocol::AudioSampleInfo> pending_audio_sample_info_
+      GUARDED_BY_CONTEXT(sequence_checker_);
+  base::OnceCallback<void(bool)> pending_audio_format_ack_callback_
+      GUARDED_BY_CONTEXT(sequence_checker_);
 
   // The set of all capabilities supported by the client.
   std::unique_ptr<std::string> client_capabilities_;
@@ -390,6 +398,11 @@ class ClientSession : public protocol::HostStub,
 
   // Used to inject mouse and keyboard input and handle clipboard events.
   std::unique_ptr<InputInjector> input_injector_;
+
+  // Input pipeline encapsulating the event filters.
+  // Declared after `input_injector_` because it holds a reference to it (via
+  // target), ensuring the pipeline is destroyed before the injector.
+  InputPipeline input_pipeline_;
 
   // Used to apply client-requested changes in screen resolution.
   std::unique_ptr<ScreenControls> screen_controls_;
@@ -454,6 +467,9 @@ class ClientSession : public protocol::HostStub,
   std::unique_ptr<protocol::ConnectionToClient> connection_;
 
   std::string client_jid_;
+
+  std::unique_ptr<SecurityKeyAuthHandler> security_key_auth_handler_;
+  std::unique_ptr<SecurityKeyExtension> security_key_extension_;
 
   // Used to manage extension functionality.
   std::unique_ptr<HostExtensionSessionManager> extension_manager_;

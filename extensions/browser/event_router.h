@@ -22,6 +22,7 @@
 #include "base/values.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "content/public/browser/render_process_host_observer.h"
+#include "content/public/common/child_process_id.h"
 #include "extensions/browser/event_listener_map.h"
 #include "extensions/browser/events/event_ack_data.h"
 #include "extensions/browser/events/lazy_event_dispatch_util.h"
@@ -118,6 +119,9 @@ class EventRouter : public KeyedService,
     virtual void OnListenerAdded(const EventListenerInfo& details) {}
     // Called when a listener is removed.
     virtual void OnListenerRemoved(const EventListenerInfo& details) {}
+    // Called when an existing listener's filter is updated. The listener is
+    // neither added nor removed; only its filter changed.
+    virtual void OnListenerUpdated(const EventListenerInfo& details) {}
 
    protected:
     ~Observer() override = default;
@@ -140,6 +144,10 @@ class EventRouter : public KeyedService,
   // without a "/" are returned unchanged.
   static std::string GetBaseEventName(const std::string& full_event_name);
 
+  // Returns true if `event` is a sub-event name (e.g.
+  // "webRequest.onBeforeRequest/s1").
+  static bool IsSubEventName(std::string_view event);
+
   // Sends an event via ipc_sender to the given extension. Can be called on any
   // thread.
   //
@@ -160,10 +168,10 @@ class EventRouter : public KeyedService,
                              mojom::EventFilteringInfoPtr info);
 
   static void BindForRenderer(
-      int process_id,
+      content::ChildProcessId process_id,
       mojo::PendingAssociatedReceiver<mojom::EventRouter> receiver);
 
-  void SwapReceiverForTesting(int render_process_id,
+  void SwapReceiverForTesting(content::ChildProcessId render_process_id,
                               mojom::EventRouter* new_impl);
 
   // An EventRouter is shared between `browser_context` and its associated
@@ -181,7 +189,8 @@ class EventRouter : public KeyedService,
       mojom::EventListenerPtr event_listener) override;
 
   void AddListenerForServiceWorker(
-      mojom::EventListenerPtr event_listener) override;
+      mojom::EventListenerPtr event_listener,
+      mojom::ServiceWorkerContextPtr service_worker_context) override;
 
   void AddLazyListenerForMainThread(const ExtensionId& extension_id,
                                     const std::string& name) override;
@@ -207,7 +216,8 @@ class EventRouter : public KeyedService,
       mojom::EventListenerPtr event_listener) override;
 
   void RemoveListenerForServiceWorker(
-      mojom::EventListenerPtr event_listener) override;
+      mojom::EventListenerPtr event_listener,
+      mojom::ServiceWorkerContextPtr service_worker_context) override;
 
   void RemoveLazyListenerForMainThread(const ExtensionId& extension_id,
                                        const std::string& name) override;
@@ -237,8 +247,11 @@ class EventRouter : public KeyedService,
   void RemoveEventListener(const std::string& event_name,
                            content::RenderProcessHost* process,
                            const ExtensionId& extension_id);
-  void RemoveServiceWorkerEventListener(mojom::EventListenerPtr event_listener,
-                                        content::RenderProcessHost* process);
+  void RemoveServiceWorkerEventListener(
+      const ExtensionId& extension_id,
+      const std::string& event_name,
+      const mojom::ServiceWorkerContext& service_worker_context,
+      content::RenderProcessHost* process);
 
   // Add or remove a URL as an event listener for `event_name`.
   void AddEventListenerForURL(const std::string& event_name,
@@ -343,6 +356,11 @@ class EventRouter : public KeyedService,
   bool HasLazyEventListenerForTesting(const std::string& event_name);
   bool HasNonLazyEventListenerForTesting(const std::string& event_name);
 
+  // Returns true if there is a registered lazy listener for `event_name` whose
+  // filter matches `filter`.
+  bool HasLazyEventListenerWithFilterForTesting(const std::string& event_name,
+                                                const base::DictValue& filter);
+
   void BindServiceWorkerEventDispatcher(
       int render_process_id,
       int worker_thread_id,
@@ -363,7 +381,9 @@ class EventRouter : public KeyedService,
   friend class SystemInfoAPITest;
   FRIEND_TEST_ALL_PREFIXES(EventRouterTest,
                            AddLazyListenerForUnloadedExtension);
+  FRIEND_TEST_ALL_PREFIXES(EventRouterTest, RemovesOrphanedWebRequestEvents);
   FRIEND_TEST_ALL_PREFIXES(EventRouterTest, MultipleEventRouterObserver);
+  FRIEND_TEST_ALL_PREFIXES(EventRouterTest, DispatchPendingEvent_NullContext);
   FRIEND_TEST_ALL_PREFIXES(EventRouterDispatchTest, TestDispatch);
   FRIEND_TEST_ALL_PREFIXES(EventRouterDispatchTest, TestDispatchCallback);
   FRIEND_TEST_ALL_PREFIXES(EventRouterFilterTest,
@@ -419,6 +439,44 @@ class EventRouter : public KeyedService,
   // Returns true if the extension with the given ID is enabled.
   bool IsExtensionEnabled(const ExtensionId& extension_id) const;
 
+  // Returns true if a renderer-originated listener message should be ignored
+  // because the extension may have unloaded before the renderer shut down.
+  bool ShouldIgnoreListenerMessageForUnloadedExtension(
+      const ExtensionId& extension_id) const;
+
+  // Returns true if `process` may add or remove active main-thread listeners
+  // for `extension_id`, including content and user script processes.
+  bool IsProcessAuthorizedForMainThreadExtensionListener(
+      const ExtensionId& extension_id,
+      content::RenderProcessHost& process) const;
+
+  // Returns true if `process` is an extension process for `extension_id`.
+  bool IsProcessAuthorizedForExtensionProcessListener(
+      const ExtensionId& extension_id,
+      content::RenderProcessHost& process) const;
+
+  // Returns true if `process` is allowed to access data for `url`'s origin.
+  bool CanProcessAccessOrigin(content::RenderProcessHost& process,
+                              const GURL& url) const;
+
+  // Validates a main-thread listener owner from a renderer-originated message.
+  // If `require_extension_process` is true, content and user script processes
+  // are rejected. Returns true if the listener owner is valid and authorized.
+  // Returns false if the message should be ignored (e.g., for an unloaded
+  // extension) or if it is unauthorized (in which case a bad message is
+  // reported).
+  bool ValidateMainThreadListenerOwner(
+      const mojom::EventListenerOwner& listener_owner,
+      content::RenderProcessHost& process,
+      bool require_extension_process);
+
+  // Validates that a renderer-originated service worker listener message is
+  // acting for an extension-owned worker scope that `process` may host.
+  bool ValidateServiceWorkerListenerForExtension(
+      const ExtensionId& extension_id,
+      const GURL& worker_scope_url,
+      content::RenderProcessHost& process);
+
   // Adds an extension as an event listener for `event_name`.
   //
   // Note that multiple extensions can share a process due to process
@@ -427,8 +485,11 @@ class EventRouter : public KeyedService,
   void AddEventListener(const std::string& event_name,
                         content::RenderProcessHost* process,
                         const ExtensionId& extension_id);
-  void AddServiceWorkerEventListener(mojom::EventListenerPtr event_listener,
-                                     content::RenderProcessHost* process);
+  void AddServiceWorkerEventListener(
+      const ExtensionId& extension_id,
+      const std::string& event_name,
+      const mojom::ServiceWorkerContext& service_worker_context,
+      content::RenderProcessHost* process);
 
   // Returns or sets the list of events for which the given extension has
   // registered.
@@ -437,6 +498,11 @@ class EventRouter : public KeyedService,
   void SetRegisteredEvents(const ExtensionId& extension_id,
                            const std::set<std::string>& events,
                            RegisteredEventType type);
+
+  // TODO(crbug.com/474558883): Remove this in M157.
+  void RemoveOrphanedWebRequestEvents(const ExtensionId& extension_id,
+                                      std::set<std::string>& events,
+                                      RegisteredEventType type);
 
   // ExtensionRegistryObserver implementation.
   void OnExtensionLoaded(content::BrowserContext* browser_context,
@@ -448,6 +514,19 @@ class EventRouter : public KeyedService,
   // ProcessManagerObserver:
   void OnStoppedTrackingServiceWorkerInstance(
       const WorkerId& worker_id) override;
+
+  // Adds/removes lazy listeners for trusted browser-internal callers that do
+  // not have a current EventRouter Mojo receiver.
+  void AddLazyListenerForMainThreadImpl(const ExtensionId& extension_id,
+                                        const std::string& event_name);
+  void AddLazyListenerForServiceWorkerImpl(const ExtensionId& extension_id,
+                                           const GURL& worker_scope_url,
+                                           const std::string& event_name);
+  void RemoveLazyListenerForMainThreadImpl(const ExtensionId& extension_id,
+                                           const std::string& event_name);
+  void RemoveLazyListenerForServiceWorkerImpl(const ExtensionId& extension_id,
+                                              const GURL& worker_scope_url,
+                                              const std::string& event_name);
 
   void AddLazyEventListenerImpl(std::unique_ptr<EventListener> listener,
                                 RegisteredEventType type);
@@ -525,6 +604,7 @@ class EventRouter : public KeyedService,
   // Implementation of EventListenerMap::Delegate.
   void OnListenerAdded(const EventListener* listener) override;
   void OnListenerRemoved(const EventListener* listener) override;
+  void OnListenerUpdated(const EventListener* listener) override;
 
   // RenderProcessHostObserver implementation.
   void RenderProcessExited(
@@ -569,7 +649,7 @@ class EventRouter : public KeyedService,
 
   // All the Mojo receivers for the EventRouter. Keeps track of the render
   // process id.
-  mojo::AssociatedReceiverSet<mojom::EventRouter, int /*render_process_id*/>
+  mojo::AssociatedReceiverSet<mojom::EventRouter, content::ChildProcessId>
       receivers_;
 
   base::WeakPtrFactory<EventRouter> weak_factory_{this};
@@ -638,6 +718,12 @@ struct Event {
   // histograms.
   bool lazy_background_active_on_dispatch;
 
+  // If valid, the event will not be dispatched to this process. This can be
+  // helpful for events that want to be dispatched to other renderer context's
+  // but don't want to receive that event themselves even if they have a
+  // listener for it.
+  content::ChildProcessId exclude_process_id;
+
   // Whether a user gesture triggered the event.
   EventRouter::UserGestureState user_gesture;
 
@@ -666,10 +752,11 @@ struct Event {
   // If specified, this is called after dispatching an event to each target.
   DidDispatchCallback did_dispatch_callback;
 
-  // Called if the event cannot be dispatched to a lazy listener. This happens
-  // if e.g. the extension registers an event listener from a lazy context
-  // asynchronously, which results in the active listener not being registered
-  // at the time the lazy context is spun back up.
+  // Called when the event cannot be delivered to a matching listener. This can
+  // happen if no matching listener is registered when dispatch begins, or if a
+  // lazy listener's context fails to start or starts without that listener
+  // still registered, e.g. because the extension registers event listeners
+  // asynchronously from the lazy context.
   CannotDispatchCallback cannot_dispatch_callback;
 
   // TODO(lazyboy): This sets `restrict_to_browser_context` to nullptr, this
@@ -726,7 +813,7 @@ struct EventListenerInfo {
                     const GURL& listener_url,
                     const base::DictValue* filter,
                     content::BrowserContext* browser_context,
-                    int render_process_id,
+                    content::ChildProcessId render_process_id,
                     int worker_thread_id,
                     int64_t service_worker_version_id,
                     bool is_lazy);
@@ -740,7 +827,7 @@ struct EventListenerInfo {
   const GURL listener_url;
   const std::optional<base::DictValue> filter;
   const raw_ptr<content::BrowserContext> browser_context;
-  const int render_process_id;
+  const content::ChildProcessId render_process_id;
   const int worker_thread_id;
   const int64_t service_worker_version_id;
   const bool is_lazy;

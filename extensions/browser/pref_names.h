@@ -46,6 +46,15 @@ inline constexpr char kAppFullscreenAllowed[] = "apps.fullscreen.allowed";
 inline constexpr char kBlockExternalExtensions[] =
     "extensions.block_external_extensions";
 
+// Records the last time the CWS Info Service downloaded information about
+// currently installed extensions from the Chrome Web Store, successfully
+// compared it with the information stored in extension_prefs and updated the
+// latter if necessary. The timestamp therefore represents the "freshness" of
+// the CWS information saved.
+inline constexpr char kCWSInfoTimestamp[] = "extensions.cws_info_timestamp";
+inline constexpr char kCWSInfoFetchErrorTimestamp[] =
+    "extensions.cws_info_fetch_error_timestamp";
+
 // A preference for a list of Component extensions that have been
 // uninstalled/removed and should not be reloaded.
 inline constexpr char kDeletedComponentExtensions[] =
@@ -117,11 +126,6 @@ inline constexpr char kNativeMessagingAllowlist[] =
 inline constexpr char kNativeMessagingUserLevelHosts[] =
     "native_messaging.user_level_hosts";
 
-// An integer indicates the availability of manifest v2 extensions. The value is
-// controlled by the ExtensionManifestV2Availability policy. More details can
-// be found at ExtensionManifestV2Availability.yaml.
-inline constexpr char kManifestV2Availability[] = "extensions.manifest_v2";
-
 // A preference that tracks extensions pinned to the toolbar. This is a list
 // object stored in the Preferences file. The extensions are stored by ID.
 inline constexpr char kPinnedExtensions[] = "extensions.pinned_extensions";
@@ -155,6 +159,8 @@ inline constexpr char kGlobalShortcutsUuid[] =
     "extensions.global_shortcuts.uuid";
 
 // Boolean that specifies whether ExtensionInstallCloudPolicyChecks is enabled.
+// This pref is used by both the profile and the browser, it can be found in the
+// local state as well as the profile prefs.
 inline constexpr char kExtensionInstallCloudPolicyChecksEnabled[] =
     "extensions.install.cloud_policy_checks_enabled";
 

@@ -6,6 +6,7 @@ import * as fillConstants from '//components/autofill/ios/form_util/resources/fi
 import * as fillUtil from '//components/autofill/ios/form_util/resources/fill_util.js';
 import {unownedFormElementsAndFieldSetsToFormData, webFormElementToFormData} from '//components/autofill/ios/form_util/resources/fill_web_form.js';
 import {getFormControlElements, getFormElementFromRendererId} from '//components/autofill/ios/form_util/resources/form_utils.js';
+import {getElementByUniqueID} from '//components/autofill/ios/form_util/resources/renderer_id.js';
 import {CrWebApi, gCrWeb} from '//ios/web/public/js_messaging/resources/gcrweb.js';
 import {isTextField, sendWebKitMessage} from '//ios/web/public/js_messaging/resources/utils.js';
 
@@ -85,7 +86,13 @@ function addSubmitButtonTouchEndHandler(form: HTMLFormElement) {
  * Click handler for the submit button.
  */
 function onSubmitButtonTouchEnd(evt: Event) {
-  const form = (evt.currentTarget as HTMLFormElement)['form'];
+  if (!evt.isTrusted) {
+    return;
+  }
+  const form = (evt.currentTarget as HTMLButtonElement).form;
+  if (!form) {
+    return;
+  }
   const formData = getPasswordFormData(form);
   if (!formData) {
     return;
@@ -167,10 +174,7 @@ function fillPasswordForm(
   }
 
   // Check fields that are not inside any <form> tag.
-  // TODO(crbug.com/454044167): Cleanup autofill TS type casting.
-  const unownedInputs =
-      fillUtil.getUnownedAutofillableFormFieldElements(
-          Array.from(document.all) as fillConstants.FormControlElement[], []) as
+  const unownedInputs = fillUtil.getUnownedAutofillableFormFieldElements([]) as
       HTMLInputElement[];
   if (unownedInputs.length > 0) {
     return fillUsernameAndPassword(unownedInputs, formData, username, password);
@@ -223,11 +227,9 @@ function fillGeneratedPassword(
   if (!form && hasFormTag) {
     return false;
   }
-  // TODO(crbug.com/454044167): Cleanup autofill TS type casting.
   const inputs = hasFormTag ?
       getFormInputElements(form as HTMLFormElement) :
-      fillUtil.getUnownedAutofillableFormFieldElements(
-          Array.from(document.all) as fillConstants.FormControlElement[], []) as
+      fillUtil.getUnownedAutofillableFormFieldElements([]) as
           HTMLInputElement[];
   const newPasswordField =
       findInputByFieldRendererID(inputs, newPasswordIdentifier);
@@ -377,9 +379,7 @@ function getPasswordFormDataList(formDataList: fillUtil.AutofillFormData[]) {
       addSubmitButtonTouchEndHandler(form);
     }
   }
-  // TODO(crbug.com/454044167): Cleanup autofill TS type casting.
-  const unownedFormData =
-      getPasswordFormDataFromUnownedElements() as fillUtil.AutofillFormData;
+  const unownedFormData = getPasswordFormDataFromUnownedElements();
   if (unownedFormData && isRecognizedCredentialForm(unownedFormData)) {
     formDataList.push(unownedFormData);
   }
@@ -390,13 +390,11 @@ function getPasswordFormDataList(formDataList: fillUtil.AutofillFormData[]) {
  * JS object containing the form data.
  * @return Object of data from formElement.
  */
-function getPasswordFormDataFromUnownedElements(): object|null {
-  const fieldsets: fillConstants.FormControlElement[] = [];
-  // TODO(crbug.com/454044167): Cleanup autofill TS type casting.
+function getPasswordFormDataFromUnownedElements(): fillUtil.AutofillFormData|
+    null {
+  const fieldsets: Element[] = [];
   const unownedControlElements =
-      fillUtil.getUnownedAutofillableFormFieldElements(
-          Array.from(document.all) as fillConstants.FormControlElement[],
-          fieldsets) as HTMLInputElement[];
+      fillUtil.getUnownedAutofillableFormFieldElements(fieldsets);
   if (unownedControlElements.length === 0) {
     return null;
   }
@@ -420,6 +418,228 @@ function getPasswordFormData(
   return ok ? formData : null;
 }
 
+// TODO(crbug.com/500385204): Move these helpers to somewhere it can be easily
+// reused for other features.
+
+/**
+ * Submits the form identified by |formIdentifier| or dispatches Enter key
+ * events as last resort on the password field if standard submission fails (
+ * with a small chance of success since the isTrusted bit is false for these
+ * synthetic events).
+ * @param formIdentifier The identifier of the form to submit.
+ * @param passwordIdentifier The identifier of the password field to dispatch
+ *     events on.
+ * @param fallbackToKeystroke Whether to fallback to keystroke submission.
+ * @return True if a submission attempt was made (e.g., via requestSubmit() or
+ *     by dispatching an Enter key event). Note that returning true does not
+ *     guarantee that the form was successfully submitted.
+ */
+function submitPasswordForm(
+    formIdentifier: number, passwordIdentifier: number|null = null,
+    fallbackToKeystroke: boolean = false): boolean {
+  const form = getFormElementFromRendererId(formIdentifier);
+  if (form) {
+    try {
+      form.requestSubmit();
+      return true;
+    } catch (e) {
+      // Fallback to dispatching Enter key events if requestSubmit fails.
+    }
+  }
+
+  if (fallbackToKeystroke && passwordIdentifier !== null) {
+    let inputs: HTMLInputElement[];
+    if (form) {
+      inputs = getFormInputElements(form);
+    } else {
+      inputs = fillUtil.getUnownedAutofillableFormFieldElements([]) as
+          HTMLInputElement[];
+    }
+    const passwordInput =
+        findInputByFieldRendererID(inputs, passwordIdentifier);
+    if (passwordInput) {
+      dispatchEnterKeyEvent(passwordInput);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Dispatches synthetic Enter key events on the given element.
+ * @param element The element to dispatch events on.
+ */
+function dispatchEnterKeyEvent(element: HTMLElement): void {
+  const eventInit = {
+    key: 'Enter',
+    code: 'Enter',
+    keyCode: 13,
+    which: 13,
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+  };
+
+  element.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+  element.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+  element.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+}
+
+// Map to store original inputmode values
+const originalInputModes = new WeakMap<HTMLElement, string>();
+
+/**
+ * Sets the inputmode of the element to 'none' to prevent showing the keyboard
+ * on focus.
+ */
+function preventKeyboardOnElement(elementId: number): boolean {
+  const element = getElementByUniqueID(elementId) as HTMLElement;
+  if (!element) {
+    return false;
+  }
+
+  if (element.hasAttribute('inputmode')) {
+    originalInputModes.set(element, element.getAttribute('inputmode')!);
+  }
+  element.setAttribute('inputmode', 'none');
+  return true;
+}
+/**
+ * Restores the original inputmode of the element.
+ * @param elementId Unique ID of the element to restore.
+ * @return Whether the inputmode was successfully restored.
+ */
+function restoreKeyboardOnElement(elementId: number): boolean {
+  const element = getElementByUniqueID(elementId) as HTMLElement;
+  if (!element) {
+    return false;
+  }
+
+  if (originalInputModes.has(element)) {
+    element.setAttribute('inputmode', originalInputModes.get(element)!);
+    originalInputModes.delete(element);
+  } else {
+    element.removeAttribute('inputmode');
+  }
+
+  // Blur the element right away to prevent the keyboard from showing up after
+  // restoring the inputmode.
+  element.blur();
+
+  return true;
+}
+
+let activeShieldTargetRef: WeakRef<HTMLElement>|null = null;
+let activeShieldTimeoutId: number|null = null;
+
+/**
+ * Event listener that acts as a transparent shield over the page.
+ * It intercepts and prevents all user interactions (like clicks or touches)
+ * that do not target the currently active shield target element.
+ */
+function keystrokeShieldListener(e: Event): void {
+  const targetElement = activeShieldTargetRef?.deref();
+  if (!targetElement) {
+    return;
+  }
+
+  if (e.target !== targetElement) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+}
+
+const RENDERER_SHIELD_TIMEOUT_MS = 1000;
+
+/**
+ * Sets up a keystroke interaction shield in the renderer to prevent
+ * keystrokes from affecting elements other than the targeted element.
+ * @param elementId Unique ID of the element to protect.
+ * @return Whether the shield was successfully set up.
+ */
+function setUpRendererKeystrokeShield(elementId: number): boolean {
+  removeRendererKeystrokeShield();  // Ensure any existing shield is cleaned up
+
+  const element = getElementByUniqueID(elementId) as HTMLElement;
+  if (!element) {
+    return false;
+  }
+
+  activeShieldTargetRef = new WeakRef(element);
+
+  // Use capture phase to intercept the event before it reaches other elements.
+  document.addEventListener('keydown', keystrokeShieldListener, true);
+  document.addEventListener('keypress', keystrokeShieldListener, true);
+  document.addEventListener('keyup', keystrokeShieldListener, true);
+
+  // Fallback to clear the shield after 1 second if not explicitly removed.
+  activeShieldTimeoutId = window.setTimeout(() => {
+    removeRendererKeystrokeShield();
+  }, RENDERER_SHIELD_TIMEOUT_MS);
+
+  return true;
+}
+
+/**
+ * Removes the keystroke interaction shield.
+ */
+function removeRendererKeystrokeShield(): void {
+  if (activeShieldTimeoutId !== null) {
+    window.clearTimeout(activeShieldTimeoutId);
+    activeShieldTimeoutId = null;
+  }
+
+  activeShieldTargetRef = null;
+
+  document.removeEventListener('keydown', keystrokeShieldListener, true);
+  document.removeEventListener('keypress', keystrokeShieldListener, true);
+  document.removeEventListener('keyup', keystrokeShieldListener, true);
+}
+
+/**
+ * Focuses the element.
+ * @returns true if the element was successfully found and focused, false
+ *     otherwise.
+ */
+function focusElement(elementId: number): boolean {
+  const element = getElementByUniqueID(elementId) as HTMLElement;
+  if (element) {
+    element.focus();
+    return true;
+  }
+  return false;
+}
+
+
+// TODO(crbug.com/454044167): Cleanup autofill TS type casting.
+/**
+ * Finds the form described by |formData| and fills in the
+ * username and password values. Then triggers form submission.
+ *
+ * @param formData Form data.
+ * @param username The username to fill.
+ * @param password The password to fill.
+ * @param fallbackToKeystroke Whether to fallback to keystroke submission.
+ * @return {FillResult} The result of filling the password fields.
+ */
+function fillPasswordFormAndSubmit(
+    formData: fillUtil.AutofillFormData, username: string, password: string,
+    fallbackToKeystroke: boolean = false): FillResult {
+  const result = fillPasswordForm(formData, username, password);
+  if (result.didAttemptFill) {
+    // Extract password renderer ID if available from formData
+    let passwordRendererId: number|null = null;
+    if (formData.fields && formData.fields.length > 1 &&
+        formData.fields[1]!.renderer_id) {
+      passwordRendererId = Number(formData.fields[1]!.renderer_id);
+    }
+    submitPasswordForm(
+        Number(formData.renderer_id), passwordRendererId, fallbackToKeystroke);
+  }
+  return result;
+}
+
 const passwordsApi = new CrWebApi('passwords');
 
 passwordsApi.addFunction('findPasswordForms', findPasswordForms);
@@ -430,5 +650,15 @@ passwordsApi.addFunction(
 passwordsApi.addFunction('getPasswordFormData', getPasswordFormData);
 passwordsApi.addFunction(
     'getPasswordFormDataAsString', getPasswordFormDataAsString);
+passwordsApi.addFunction('submitPasswordForm', submitPasswordForm);
+passwordsApi.addFunction(
+    'fillPasswordFormAndSubmit', fillPasswordFormAndSubmit);
+passwordsApi.addFunction('preventKeyboardOnElement', preventKeyboardOnElement);
+passwordsApi.addFunction('restoreKeyboardOnElement', restoreKeyboardOnElement);
+passwordsApi.addFunction(
+    'setUpRendererKeystrokeShield', setUpRendererKeystrokeShield);
+passwordsApi.addFunction(
+    'removeRendererKeystrokeShield', removeRendererKeystrokeShield);
+passwordsApi.addFunction('focusElement', focusElement);
 
 gCrWeb.registerApi(passwordsApi);

@@ -38,6 +38,10 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewFocusTest, MAYBE_AutoFocusScalingInput) {
   RunTest("print_preview/scaling_settings_interactive_test.js", "mocha.run()");
 }
 
+IN_PROC_BROWSER_TEST_F(PrintPreviewFocusTest, DestinationList) {
+  RunTest("print_preview/destination_list_focus_test.js", "mocha.run()");
+}
+
 class PrintPreviewPagesSettingsFocusTest : public PrintPreviewFocusTest {
  protected:
   void RunTestCase(const std::string& testCase) {
@@ -80,4 +84,9 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewDestinationDialogFocusTest, FocusSearchBox) {
 IN_PROC_BROWSER_TEST_F(PrintPreviewDestinationDialogFocusTest,
                        EscapeSearchBox) {
   RunTestCase("EscapeSearchBox");
+}
+
+IN_PROC_BROWSER_TEST_F(PrintPreviewDestinationDialogFocusTest,
+                       SearchDestinationsKorean) {
+  RunTestCase("SearchDestinationsKorean");
 }

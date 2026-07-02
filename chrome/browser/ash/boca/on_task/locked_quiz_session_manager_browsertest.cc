@@ -5,7 +5,6 @@
 #include "chrome/browser/ash/boca/on_task/locked_quiz_session_manager.h"
 
 #include "ash/constants/ash_features.h"
-#include "ash/webui/system_apps/public/system_web_app_type.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/ash/boca/on_task/locked_quiz_session_manager.h"
@@ -20,6 +19,7 @@
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "chromeos/ui/wm/window_util.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "components/sessions/core/session_id.h"
@@ -114,7 +114,7 @@ IN_PROC_BROWSER_TEST_F(LockedQuizSessionManagerBrowserTest,
       OnTaskLockedController::From(boca_app_browser)->is_locked_for_on_task());
   ASSERT_TRUE(platform_util::IsBrowserLockedFullscreen(boca_app_browser));
   EXPECT_FALSE(chromeos::wm::CanFloatWindow(
-      boca_app_browser->window()->GetNativeWindow()));
+      boca_app_browser->GetWindow()->GetNativeWindow()));
 
   auto* const tab_strip_model = boca_app_browser->tab_strip_model();
   ASSERT_EQ(tab_strip_model->count(), 1);
@@ -160,7 +160,7 @@ IN_PROC_BROWSER_TEST_F(LockedQuizSessionManagerBrowserTest,
                   ->is_locked_for_on_task());
   ASSERT_TRUE(platform_util::IsBrowserLockedFullscreen(boca_app_browser_2));
   EXPECT_FALSE(chromeos::wm::CanFloatWindow(
-      boca_app_browser_2->window()->GetNativeWindow()));
+      boca_app_browser_2->GetWindow()->GetNativeWindow()));
 
   auto* const tab_strip_model = boca_app_browser_2->tab_strip_model();
   ASSERT_EQ(tab_strip_model->count(), 1);

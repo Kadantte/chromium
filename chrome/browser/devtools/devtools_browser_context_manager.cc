@@ -8,10 +8,10 @@
 #include "base/functional/callback_helpers.h"
 #include "base/no_destructor.h"
 #include "base/task/single_thread_task_runner.h"
+#include "chrome/browser/lifetime/application_lifetime_desktop.h"
 #include "chrome/browser/profiles/profile_destroyer.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
@@ -78,7 +78,9 @@ DevToolsBrowserContextManager::GetBrowserContexts() {
 
 content::BrowserContext*
 DevToolsBrowserContextManager::GetDefaultBrowserContext() {
-  return ProfileManager::GetLastUsedProfile()->GetOriginalProfile();
+  // Do not force profile loading (or it will blow up if called on shutdown).
+  auto* last_profile = ProfileManager::GetLastUsedProfileIfLoaded();
+  return last_profile ? last_profile->GetOriginalProfile() : nullptr;
 }
 
 void DevToolsBrowserContextManager::DisposeBrowserContext(

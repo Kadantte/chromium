@@ -17,14 +17,12 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/scoped_multi_source_observation.h"
 #include "base/scoped_observation.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
-#include "chrome/browser/web_applications/web_app_callback_app_identity.h"
 #include "chrome/browser/web_applications/web_app_icon_manager.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/browser/web_applications/web_app_ui_manager.h"
@@ -85,6 +83,11 @@ class WebAppUiManagerImpl : public BrowserCollectionObserver,
   bool CanAddAppToQuickLaunchBar() const override;
   void AddAppToQuickLaunchBar(const webapps::AppId& app_id) override;
   bool IsAppInQuickLaunchBar(const webapps::AppId& app_id) const override;
+
+  bool IsAppMigrationSuggested(BrowserWindowInterface* window) const override;
+  bool IsAppMigrationDialogShowing(
+      BrowserWindowInterface* window) const override;
+
   bool CanReparentAppTabToWindow(
       const webapps::AppId& app_id,
       bool shortcut_created,
@@ -105,16 +108,6 @@ class WebAppUiManagerImpl : public BrowserCollectionObserver,
       const GURL& protocol_url,
       const webapps::AppId& app_id,
       WebAppLaunchAcceptanceCallback launch_callback) override;
-  void ShowWebAppIdentityUpdateDialog(
-      const std::string& app_id,
-      bool title_change,
-      bool icon_change,
-      const std::u16string& old_title,
-      const std::u16string& new_title,
-      const SkBitmap& old_icon,
-      const SkBitmap& new_icon,
-      content::WebContents* web_contents,
-      web_app::AppIdentityDialogCallback callback) override;
   void ShowSubAppsInstallDialog(
       content::WebContents* initiating_web_contents,
       const std::vector<std::unique_ptr<WebAppInstallInfo>>& sub_apps,
@@ -182,6 +175,10 @@ class WebAppUiManagerImpl : public BrowserCollectionObserver,
       UninstallCompleteCallback callback,
       UninstallScheduledCallback scheduled_callback) override;
 
+  void UninstallAppSilentlyForMigration(const webapps::AppId& app_id) override;
+
+  void ShowProfileErrorDialogForCorruptDB() override;
+
   void ShowIntentPicker(const GURL& url,
                         content::WebContents* web_contents,
                         ShowIntentPickerBubbleCallback callback) override;
@@ -192,6 +189,16 @@ class WebAppUiManagerImpl : public BrowserCollectionObserver,
   void MaybeCreateEnableSupportedLinksInfobar(
       content::WebContents* web_contents,
       const std::string& launch_name) override;
+
+  void MaybeCreateWebAppBlockedMigrationInfoBar(
+      content::WebContents* web_contents,
+      base::OnceClosure on_dismiss_callback) override;
+
+  void MaybeRemoveWebAppBlockedMigrationInfoBar(
+      content::WebContents* web_contents) override;
+
+  void NotifyDidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override;
 
   void MaybeShowIPHPromoForAppsLaunchedViaLinkCapturing(
       Browser* browser,
@@ -224,6 +231,11 @@ class WebAppUiManagerImpl : public BrowserCollectionObserver,
 
   void OnExtensionSystemReady();
 
+  // Triggers the uninstall dialog with the icons read from the disk. If the
+  // icon assets for any size are missing for whatever reason, uses a fallback
+  // behavior of generating the icons from the app's name. This is necessary
+  // for the dialog to show up in high-DPI screens where the icon assets might
+  // not be available in all sizes.
   void OnIconsReadForUninstall(
       const webapps::AppId& app_id,
       webapps::WebappUninstallSource uninstall_source,
@@ -251,7 +263,8 @@ class WebAppUiManagerImpl : public BrowserCollectionObserver,
       UninstallCompleteCallback uninstall_complete_callback,
       webapps::UninstallResultCode uninstall_code);
 
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+    BUILDFLAG(IS_CHROMEOS)
   void ShowIPHPromoForAppsLaunchedViaLinkCapturing(Browser* browser,
                                                    const webapps::AppId& app_id,
                                                    bool is_activated);
@@ -260,7 +273,8 @@ class WebAppUiManagerImpl : public BrowserCollectionObserver,
 
   void OnTabChangedDuringIph(BrowserWindowInterface* browser);
 
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+        // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_CHROMEOS)
   void OnBrowserCloseCancelled(

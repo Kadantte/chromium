@@ -4,7 +4,10 @@
 
 package org.chromium.media;
 
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.graphics.ImageFormat;
 import android.graphics.Rect;
 import android.hardware.HardwareBuffer;
@@ -221,6 +224,11 @@ public class VideoCaptureCamera2 extends VideoCapture {
                     throw new IllegalStateException();
                 }
 
+                int dataSpace = 0;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    dataSpace = image.getDataSpace();
+                }
+
                 if (mUseHardwareBuffers) {
                     try (HardwareBuffer hardwareBuffer = image.getHardwareBuffer()) {
                         if (hardwareBuffer == null) {
@@ -231,7 +239,10 @@ public class VideoCaptureCamera2 extends VideoCapture {
                             return;
                         }
                         onHardwareBufferAvailable(
-                                hardwareBuffer, getCameraRotation(), image.getTimestamp());
+                                hardwareBuffer,
+                                dataSpace,
+                                getCameraRotation(),
+                                image.getTimestamp());
                     }
                 } else {
                     if (image.getFormat() != ImageFormat.YUV_420_888
@@ -256,7 +267,8 @@ public class VideoCaptureCamera2 extends VideoCapture {
                             image.getWidth(),
                             image.getHeight(),
                             getCameraRotation(),
-                            image.getTimestamp());
+                            image.getTimestamp(),
+                            dataSpace);
                 }
             } catch (IllegalStateException ex) {
                 Log.e(TAG, "acquireLatestImage():", ex);
@@ -1554,10 +1566,9 @@ public class VideoCaptureCamera2 extends VideoCapture {
             return false;
         }
 
-        final float maxZoom =
+        final Float maxZoom =
                 cameraCharacteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM);
-        final boolean isZoomSupported = maxZoom > 1.0f;
-        return isZoomSupported;
+        return maxZoom != null && maxZoom > 1.0f;
     }
 
     public static int getFacingMode(int index) {
@@ -1716,6 +1727,8 @@ public class VideoCaptureCamera2 extends VideoCapture {
         }
     }
 
+    private @Nullable BroadcastReceiver mInteractiveStateReceiver;
+
     VideoCaptureCamera2(int id, long nativeVideoCaptureDeviceAndroid) {
         super(id, nativeVideoCaptureDeviceAndroid);
 
@@ -1748,7 +1761,8 @@ public class VideoCaptureCamera2 extends VideoCapture {
             int height,
             int frameRate,
             boolean enableFaceDetection,
-            boolean useHardwareBuffers) {
+            boolean useHardwareBuffers,
+            boolean enableBackgroundMediaCapturing) {
         Log.d(TAG, "allocate: requested (%d x %d) @%dfps", width, height, frameRate);
         dCheckCurrentlyOnIncomingTaskRunner();
         synchronized (mCameraStateLock) {
@@ -1814,18 +1828,45 @@ public class VideoCaptureCamera2 extends VideoCapture {
 
         // TODO(mcasas): The following line is correct for N5 with prerelease Build,
         // but NOT for N7 with a dev Build. Figure out which one to support.
-        mInvertDeviceOrientationReadings =
-                cameraCharacteristics.get(CameraCharacteristics.LENS_FACING)
-                        == CameraCharacteristics.LENS_FACING_BACK;
+        final int facing = cameraCharacteristics.get(CameraCharacteristics.LENS_FACING);
+        mInvertDeviceOrientationReadings = facing == CameraCharacteristics.LENS_FACING_BACK;
+        mIsExternalCamera = facing == CameraCharacteristics.LENS_FACING_EXTERNAL;
 
         mEnableFaceDetection = enableFaceDetection;
         mUseHardwareBuffers = useHardwareBuffers;
+
+        if (enableBackgroundMediaCapturing && mInteractiveStateReceiver == null) {
+            mInteractiveStateReceiver =
+                    new BroadcastReceiver() {
+                        @Override
+                        public void onReceive(Context context, Intent intent) {
+                            if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
+                                onInteractiveStateChanged(false);
+                            } else if (Intent.ACTION_SCREEN_ON.equals(intent.getAction())) {
+                                onInteractiveStateChanged(true);
+                            }
+                        }
+                    };
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(Intent.ACTION_SCREEN_OFF);
+            filter.addAction(Intent.ACTION_SCREEN_ON);
+            ContextUtils.registerProtectedBroadcastReceiver(
+                    ContextUtils.getApplicationContext(), mInteractiveStateReceiver, filter);
+        }
+
         return true;
     }
 
     @Override
     public boolean startCaptureMaybeAsync() {
         dCheckCurrentlyOnIncomingTaskRunner();
+
+        synchronized (mCameraStateLock) {
+            if (mCameraState != CameraState.STOPPED) {
+                Log.d(TAG, "startCaptureMaybeAsync: Camera is not stopped, ignoring.");
+                return true;
+            }
+        }
 
         changeCameraStateAndNotify(CameraState.OPENING);
         final CameraManager manager =
@@ -1940,6 +1981,11 @@ public class VideoCaptureCamera2 extends VideoCapture {
 
     @Override
     public void deallocateInternal() {
+        dCheckCurrentlyOnIncomingTaskRunner();
+        if (mInteractiveStateReceiver != null) {
+            ContextUtils.getApplicationContext().unregisterReceiver(mInteractiveStateReceiver);
+            mInteractiveStateReceiver = null;
+        }
         Log.d(TAG, "deallocate");
     }
 }

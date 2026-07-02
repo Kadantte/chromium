@@ -26,6 +26,14 @@ base::android::ScopedJavaGlobalRef<jobject> BuildHistoryClustersAction(
     const std::u16string& accessibility_hint,
     const std::string& query);
 
+base::android::ScopedJavaGlobalRef<jobject> BuildSiteSearchAction(
+    JNIEnv* env,
+    intptr_t instance,
+    const std::u16string& hint,
+    const std::u16string& accessibility_hint,
+    const std::u16string& keyword,
+    int starter_pack_id);
+
 base::android::ScopedJavaGlobalRef<jobject> BuildOmniboxActionInSuggest(
     JNIEnv* env,
     intptr_t instance,
@@ -34,7 +42,13 @@ base::android::ScopedJavaGlobalRef<jobject> BuildOmniboxActionInSuggest(
     int action_type,
     const std::string& action_uri,
     int tab_id,
-    bool show_as_action_button);
+    ActionPresentationMode presentation_mode);
+
+base::android::ScopedJavaGlobalRef<jobject> BuildOmniboxLensOverlayAction(
+    JNIEnv* env,
+    intptr_t instance,
+    const std::u16string& hint,
+    const std::u16string& accessibility_hint);
 
 std::vector<jni_zero::ScopedJavaLocalRef<jobject>> ToJavaOmniboxActionsList(
     JNIEnv* env,

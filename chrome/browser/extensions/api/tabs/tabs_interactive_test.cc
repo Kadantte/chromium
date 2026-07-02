@@ -20,8 +20,8 @@
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/extensions/extension_action_test_helper.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -39,12 +39,15 @@
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_observer.h"
 
+#if BUILDFLAG(IS_OZONE)
+#include "ui/ozone/public/ozone_platform.h"
+#endif
+
 namespace extensions {
 
 namespace keys = tabs_constants;
 namespace utils = api_test_utils;
 
-using ContextType = extensions::browser_test_util::ContextType;
 using ExtensionTabsTest = InProcessBrowserTest;
 
 IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, GetLastFocusedWindow) {
@@ -86,7 +89,9 @@ IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, GetLastFocusedWindow) {
   api_test_utils::GetList(result, ExtensionTabUtil::kTabsKey);
 }
 
-IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, QueryLastFocusedWindowTabs) {
+using ExtensionTabsApiTest = ExtensionApiTest;
+
+IN_PROC_BROWSER_TEST_F(ExtensionTabsApiTest, QueryLastFocusedWindowTabs) {
   const size_t kExtraWindows = 2;
   for (size_t i = 0; i < kExtraWindows; ++i) {
     CreateBrowser(GetProfile());
@@ -134,18 +139,6 @@ IN_PROC_BROWSER_TEST_F(ExtensionTabsTest, QueryLastFocusedWindowTabs) {
   }
 }
 
-class NonPersistentExtensionTabsTest
-    : public ExtensionApiTest,
-      public testing::WithParamInterface<ContextType> {
- public:
-  NonPersistentExtensionTabsTest() : ExtensionApiTest(GetParam()) {}
-  ~NonPersistentExtensionTabsTest() override = default;
-  NonPersistentExtensionTabsTest(const NonPersistentExtensionTabsTest&) =
-      delete;
-  NonPersistentExtensionTabsTest& operator=(
-      const NonPersistentExtensionTabsTest&) = delete;
-};
-
 #if BUILDFLAG(IS_LINUX)
 #define MAYBE_TabCurrentWindow DISABLED_TabCurrentWindow
 #else
@@ -155,7 +148,7 @@ class NonPersistentExtensionTabsTest
 // Tests chrome.windows.create and chrome.windows.getCurrent.
 // TODO(crbug.com/40636155): Expand the test to verify that setSelfAsOpener
 // param is ignored from Service Worker extension scripts.
-IN_PROC_BROWSER_TEST_P(NonPersistentExtensionTabsTest, MAYBE_TabCurrentWindow) {
+IN_PROC_BROWSER_TEST_F(ExtensionTabsApiTest, MAYBE_TabCurrentWindow) {
   ASSERT_TRUE(RunExtensionTest("tabs/current_window")) << message_;
 }
 
@@ -167,8 +160,7 @@ IN_PROC_BROWSER_TEST_P(NonPersistentExtensionTabsTest, MAYBE_TabCurrentWindow) {
 #endif
 
 // Tests chrome.windows.getLastFocused.
-IN_PROC_BROWSER_TEST_P(NonPersistentExtensionTabsTest,
-                       MAYBE_TabGetLastFocusedWindow) {
+IN_PROC_BROWSER_TEST_F(ExtensionTabsApiTest, MAYBE_TabGetLastFocusedWindow) {
   ASSERT_TRUE(RunExtensionTest("tabs/last_focused_window")) << message_;
 }
 
@@ -176,18 +168,10 @@ IN_PROC_BROWSER_TEST_P(NonPersistentExtensionTabsTest,
 // differently, which complicates the test. A separate  test should
 // be written for it to avoid complicating this one.
 #if !BUILDFLAG(IS_LINUX)
-IN_PROC_BROWSER_TEST_P(NonPersistentExtensionTabsTest, WindowSetFocus) {
+IN_PROC_BROWSER_TEST_F(ExtensionTabsApiTest, WindowSetFocus) {
   ASSERT_TRUE(RunExtensionTest("window_update/set_focus")) << message_;
 }
 #endif
-
-INSTANTIATE_TEST_SUITE_P(EventPage,
-                         NonPersistentExtensionTabsTest,
-                         ::testing::Values(ContextType::kEventPage));
-
-INSTANTIATE_TEST_SUITE_P(ServiceWorker,
-                         NonPersistentExtensionTabsTest,
-                         ::testing::Values(ContextType::kServiceWorker));
 
 // TODO(llandwerlin): Activating a browser window and waiting for the
 // action to happen requires views::Widget which is not available on
@@ -414,7 +398,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionWindowLastFocusedTest,
 using TabsApiInteractiveTest = ExtensionApiTest;
 
 // Tests that a window created with `focused: false` does not cover the focused
-// window. Regression test for https://crbug.com/1302159.
+// window. Regression test for https://crbug.com/40058935.
 IN_PROC_BROWSER_TEST_F(TabsApiInteractiveTest,
                        OpeningAnUnfocusedWindowDoesntCoverTheFocusedWindow) {
   ASSERT_TRUE(StartEmbeddedTestServer());
@@ -426,10 +410,10 @@ IN_PROC_BROWSER_TEST_F(TabsApiInteractiveTest,
   {
     ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), url1));
     ui_test_utils::BrowserActivationWaiter activation_waiter(browser());
-    browser()->window()->Activate();
+    browser()->GetWindow()->Activate();
     activation_waiter.WaitForActivation();
   }
-  ASSERT_TRUE(browser()->window()->IsActive());
+  ASSERT_TRUE(browser()->GetWindow()->IsActive());
 
   // Create and load an extension that creates a new window with a tab at
   // `url2` with `focused: false` and waits for the tab to complete loading.
@@ -477,7 +461,7 @@ IN_PROC_BROWSER_TEST_F(TabsApiInteractiveTest,
 
   // Now, verify the browsers. There should be exactly two browser windows (the
   // original and the one created by the extension).
-  ASSERT_EQ(2u, chrome::GetTotalBrowserCount());
+  ASSERT_EQ(2u, GlobalBrowserCollection::GetInstance()->GetSize());
   EXPECT_NE(new_browser, browser());
 
   // The new browser should have a tab pointed to `url2`; we use this mostly as
@@ -488,15 +472,16 @@ IN_PROC_BROWSER_TEST_F(TabsApiInteractiveTest,
                       ->GetLastCommittedURL());
 
   bool check_window_active_state = true;
-#if (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)) && \
-    BUILDFLAG(SUPPORTS_OZONE_WAYLAND)
-  check_window_active_state = false;
+#if BUILDFLAG(IS_OZONE)
+  if (::ui::OzonePlatform::RunningOnWaylandForTest()) {
+    check_window_active_state = false;
+  }
 #endif
 
   // The new browser should be inactive, since it was created with
   // `focused: false`. The old browser should remain active.
   // This assertion fails on Wayland. This is possibly due to
-  // https://crbug.com/1280332, where bubbles are drawn on the same window,
+  // https://crbug.com/40058249, where bubbles are drawn on the same window,
   // but that is yet to be confirmed.
   if (check_window_active_state) {
     EXPECT_FALSE(new_browser->GetWindow()->IsActive());
@@ -583,13 +568,13 @@ IN_PROC_BROWSER_TEST_F(TabsApiInteractiveTest,
 
   // Additional Verification.
   // We should have the original browser and the new one
-  ASSERT_EQ(2u, chrome::GetTotalBrowserCount());
+  ASSERT_EQ(2u, GlobalBrowserCollection::GetInstance()->GetSize());
 
   // Check Z-Order.
   // Under the hood, the original browser was temporarily pinned to the front by
   // setting its z-order to kFloatingWindow. This checks that the original
   // browser's z-order is reset.
-  EXPECT_EQ(ui::ZOrderLevel::kNormal, browser()->window()->GetZOrderLevel());
+  EXPECT_EQ(ui::ZOrderLevel::kNormal, browser()->GetWindow()->GetZOrderLevel());
 }
 
 }  // namespace extensions

@@ -7,9 +7,14 @@
 #include <algorithm>
 #include <optional>
 
+#include "base/containers/to_vector.h"
+#include "base/feature_list.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
 #include "chrome/browser/platform_util.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/views/autofill/popup/popup_base_view.h"
+#include "chrome/browser/ui/views/autofill/popup/popup_view_views.h"
 #include "chrome/browser/ui/views/extensions/extension_popup.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/interaction/browser_elements_views.h"
@@ -18,6 +23,8 @@
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
 #include "components/autofill/core/browser/ui/popup_open_enums.h"
 #include "components/autofill/core/common/autofill_features.h"
+#include "components/feature_engagement/public/feature_constants.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/common/constants.h"
 #include "ui/display/screen.h"
@@ -116,6 +123,38 @@ bool BoundsOverlapWithView(const gfx::Rect& screen_bounds,
 }
 
 }  // namespace
+
+namespace internal {
+bool BoundsOverlapWithHtmlFormPopup(
+    const gfx::Rect& popup_bounds,
+    const std::vector<PopupWidgetProperties>& widget_properties) {
+  return std::ranges::any_of(
+      widget_properties, [&popup_bounds](const auto& view) {
+        return view.is_showing && view.is_html_form_popup &&
+               view.bounds.Intersects(popup_bounds);
+      });
+}
+}  // namespace internal
+
+bool BoundsOverlapWithHtmlFormPopup(const gfx::Rect& popup_bounds,
+                                    content::WebContents* web_contents) {
+  // Currently HTML Form Popup overlap problem occurs only on Windows. On other
+  // platforms the Autofill popup correctly shows up above the HTML Form Popup.
+  // But the fix is enabled on other platforms as well, just in case.
+
+  // GetPopupWidgets() only returns popups associated with the current tab.
+  std::vector<internal::PopupWidgetProperties> widget_properties =
+      base::ToVector(web_contents->GetPopupWidgets(),
+                     [](content::RenderWidgetHostView* view) {
+                       return internal::PopupWidgetProperties({
+                           .is_showing = view->IsShowing(),
+                           .is_html_form_popup = view->IsHTMLFormPopup(),
+                           .bounds = view->GetViewBounds(),
+                       });
+                     });
+  return internal::BoundsOverlapWithHtmlFormPopup(popup_bounds,
+                                                  widget_properties);
+}
 
 void CalculatePopupYAndHeight(int popup_preferred_height,
                               const gfx::Rect& visible_content_area_bounds,
@@ -237,7 +276,8 @@ bool BoundsOverlapWithAnyOpenPrompt(const gfx::Rect& screen_bounds,
 bool BoundsOverlapWithOpenPermissionsPrompt(
     const gfx::Rect& screen_bounds,
     content::WebContents* web_contents) {
-  Browser* browser = chrome::FindBrowserWithTab(web_contents);
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
   if (!browser) {
     return false;
   }
@@ -453,8 +493,10 @@ BubbleBorder::Arrow GetOptimalPopupPlacement(
     // The popup top can never go above the content area since the popup size
     // computed to fit in the screen by GetExpandedPopupSize.
     popup_bounds.Offset(
-        0, -1 * std::max(0, popup_bounds.bottom() -
-                                visible_content_area_bounds.bottom()));
+        0,
+        std::max(visible_content_area_bounds.y() - popup_bounds.y(),
+                 -1 * std::max(0, popup_bounds.bottom() -
+                                      visible_content_area_bounds.bottom())));
     return arrow;
   }
 
@@ -514,64 +556,219 @@ BubbleBorder::Arrow GetOptimalPopupPlacement(
 
 bool IsExpandableSuggestionType(SuggestionType type) {
   switch (type) {
-    case SuggestionType::kAddressEntry:
-    case SuggestionType::kAddressFieldByFieldFilling:
+    // This opens the non-affiliated loyalty cards submenu.
     case SuggestionType::kAllLoyaltyCardsEntry:
+    // This opens a submenu with footer-like suggestions around the compose
+    // nudge (e.g., Go to settings).
     case SuggestionType::kComposeProactiveNudge:
-    case SuggestionType::kCreditCardEntry:
+    // This opens the submenu where one of many test addresses can be selected.
     case SuggestionType::kDevtoolsTestAddresses:
-    case SuggestionType::kFillAutofillAi:
-    case SuggestionType::kLoyaltyCardEntry:
+    // This opens a submenu, only during password manual fallback, so that the
+    // user can decide whether to fill the username or password into the field.
     case SuggestionType::kPasswordEntry:
+    // This opens the submenu where different suggestions related to the same
+    // query response are present.
+    case SuggestionType::kAtMemorySearchResult:
+    // This opens the submenu with all other Autofill AI orders suggestions
+    // that are not displayed in the first level.
+    case SuggestionType::kAutofillAiOtherOrders:
       return true;
     case SuggestionType::kAccountStoragePasswordEntry:
+    case SuggestionType::kAddressEntry:
     case SuggestionType::kAddressEntryOnTyping:
+    case SuggestionType::kAddressFieldByFieldFilling:
     case SuggestionType::kAllSavedPasswordsEntry:
+    case SuggestionType::kAtMemoryGenericError:
+    case SuggestionType::kAtMemoryInactivityNudge:
+    case SuggestionType::kAtMemoryNoConnection:
+    case SuggestionType::kAtMemorySearchAffordance:
+    case SuggestionType::kAutocompleteAtMemoryButton:
     case SuggestionType::kAutocompleteEntry:
+    case SuggestionType::kBackupPasswordEntry:
     case SuggestionType::kBnplEntry:
+    case SuggestionType::kBnplFootnote:
     case SuggestionType::kComposeDisable:
     case SuggestionType::kComposeGoToSettings:
     case SuggestionType::kComposeNeverShowOnThisSiteAgain:
     case SuggestionType::kComposeResumeNudge:
     case SuggestionType::kComposeSavedStateNotification:
+    case SuggestionType::kCreditCardEntry:
     case SuggestionType::kDatalistEntry:
     case SuggestionType::kDevtoolsTestAddressByCountry:
     case SuggestionType::kDevtoolsTestAddressEntry:
-    case SuggestionType::kFillExistingPlusAddress:
-    case SuggestionType::kBackupPasswordEntry:
-    case SuggestionType::kTroubleSigningInEntry:
-    case SuggestionType::kFreeformFooter:
+    case SuggestionType::kFetchingAmbientData:
+    case SuggestionType::kFillAutofillAi:
     case SuggestionType::kFillPassword:
+    case SuggestionType::kFreeformFooter:
     case SuggestionType::kGeneratePasswordEntry:
     case SuggestionType::kIbanEntry:
+    case SuggestionType::kIdentityCredential:
     case SuggestionType::kInsecureContextPaymentDisabledMessage:
+    case SuggestionType::kLoadingThrobber:
+    case SuggestionType::kLoyaltyCardEntry:
     case SuggestionType::kManageAddress:
     case SuggestionType::kManageAutofillAi:
     case SuggestionType::kManageAutofillAiIdentityDocs:
+    case SuggestionType::kManageAutofillAiShopping:
     case SuggestionType::kManageAutofillAiTravel:
     case SuggestionType::kManageCreditCard:
     case SuggestionType::kManageIban:
     case SuggestionType::kManageLoyaltyCard:
-    case SuggestionType::kManagePlusAddress:
+    case SuggestionType::kMaximizeCreditCardBenefitsEntry:
     case SuggestionType::kMerchantPromoCodeEntry:
     case SuggestionType::kMixedFormMessage:
+    case SuggestionType::kOneTimePasswordEntry:
+    case SuggestionType::kOpenGemini:
     case SuggestionType::kPasswordFieldByFieldFilling:
+    case SuggestionType::kPendingStateSignin:
+    case SuggestionType::kPersonalContextNotice:
     case SuggestionType::kSaveAndFillCreditCardEntry:
     case SuggestionType::kScanCreditCard:
     case SuggestionType::kSeePromoCodeDetails:
     case SuggestionType::kSeparator:
     case SuggestionType::kTitle:
+    case SuggestionType::kTroubleSigningInEntry:
     case SuggestionType::kUndoOrClear:
     case SuggestionType::kViewPasswordDetails:
     case SuggestionType::kVirtualCreditCardEntry:
-    case SuggestionType::kIdentityCredential:
     case SuggestionType::kWebauthnCredential:
+    case SuggestionType::kWebauthnPasskeyQrCode:
     case SuggestionType::kWebauthnSignInWithAnotherDevice:
-    case SuggestionType::kPendingStateSignin:
-    case SuggestionType::kOneTimePasswordEntry:
-    case SuggestionType::kLoadingThrobber:
       return false;
   }
+}
+
+bool IsSuggestionTypeAutoselected(SuggestionType type) {
+  switch (type) {
+    case SuggestionType::kAtMemorySearchAffordance:
+      return true;
+    case SuggestionType::kAccountStoragePasswordEntry:
+    case SuggestionType::kAddressEntry:
+    case SuggestionType::kAddressEntryOnTyping:
+    case SuggestionType::kAddressFieldByFieldFilling:
+    case SuggestionType::kAllLoyaltyCardsEntry:
+    case SuggestionType::kAllSavedPasswordsEntry:
+    case SuggestionType::kAtMemoryGenericError:
+    case SuggestionType::kAtMemoryInactivityNudge:
+    case SuggestionType::kAtMemoryNoConnection:
+    case SuggestionType::kAtMemorySearchResult:
+    case SuggestionType::kAutocompleteAtMemoryButton:
+    case SuggestionType::kAutocompleteEntry:
+    case SuggestionType::kAutofillAiOtherOrders:
+    case SuggestionType::kBackupPasswordEntry:
+    case SuggestionType::kBnplEntry:
+    case SuggestionType::kBnplFootnote:
+    case SuggestionType::kComposeDisable:
+    case SuggestionType::kComposeGoToSettings:
+    case SuggestionType::kComposeNeverShowOnThisSiteAgain:
+    case SuggestionType::kComposeProactiveNudge:
+    case SuggestionType::kComposeResumeNudge:
+    case SuggestionType::kComposeSavedStateNotification:
+    case SuggestionType::kCreditCardEntry:
+    case SuggestionType::kDatalistEntry:
+    case SuggestionType::kDevtoolsTestAddressByCountry:
+    case SuggestionType::kDevtoolsTestAddressEntry:
+    case SuggestionType::kDevtoolsTestAddresses:
+    case SuggestionType::kFetchingAmbientData:
+    case SuggestionType::kFillAutofillAi:
+    case SuggestionType::kFillPassword:
+    case SuggestionType::kFreeformFooter:
+    case SuggestionType::kGeneratePasswordEntry:
+    case SuggestionType::kIbanEntry:
+    case SuggestionType::kIdentityCredential:
+    case SuggestionType::kInsecureContextPaymentDisabledMessage:
+    case SuggestionType::kLoadingThrobber:
+    case SuggestionType::kLoyaltyCardEntry:
+    case SuggestionType::kManageAddress:
+    case SuggestionType::kManageAutofillAi:
+    case SuggestionType::kManageAutofillAiIdentityDocs:
+    case SuggestionType::kManageAutofillAiShopping:
+    case SuggestionType::kManageAutofillAiTravel:
+    case SuggestionType::kManageCreditCard:
+    case SuggestionType::kManageIban:
+    case SuggestionType::kManageLoyaltyCard:
+    case SuggestionType::kMaximizeCreditCardBenefitsEntry:
+    case SuggestionType::kMerchantPromoCodeEntry:
+    case SuggestionType::kMixedFormMessage:
+    case SuggestionType::kOneTimePasswordEntry:
+    case SuggestionType::kOpenGemini:
+    case SuggestionType::kPasswordEntry:
+    case SuggestionType::kPasswordFieldByFieldFilling:
+    case SuggestionType::kPendingStateSignin:
+    case SuggestionType::kPersonalContextNotice:
+    case SuggestionType::kSaveAndFillCreditCardEntry:
+    case SuggestionType::kScanCreditCard:
+    case SuggestionType::kSeePromoCodeDetails:
+    case SuggestionType::kSeparator:
+    case SuggestionType::kTitle:
+    case SuggestionType::kTroubleSigningInEntry:
+    case SuggestionType::kUndoOrClear:
+    case SuggestionType::kViewPasswordDetails:
+    case SuggestionType::kVirtualCreditCardEntry:
+    case SuggestionType::kWebauthnCredential:
+    case SuggestionType::kWebauthnPasskeyQrCode:
+    case SuggestionType::kWebauthnSignInWithAnotherDevice:
+      return false;
+  }
+}
+
+bool ShouldAutoselectFirstSuggestion(
+    AutoselectFirstSuggestion trigger_source_autoselect,
+    std::optional<SuggestionType> first_suggestion_type) {
+  return trigger_source_autoselect.value() ||
+         (first_suggestion_type &&
+          IsSuggestionTypeAutoselected(*first_suggestion_type));
+}
+
+ui::ElementIdentifier GetAutofillPopupCellElementIdentifier(
+    const base::Feature* feature) {
+  if (!feature) {
+    return ui::ElementIdentifier();
+  }
+  if (feature ==
+          &feature_engagement::kIPHAutofillVirtualCardSuggestionFeature ||
+      feature == &feature_engagement::
+                     kIPHAutofillDisabledVirtualCardSuggestionFeature ||
+      feature ==
+          &feature_engagement::kIPHAutofillCardInfoRetrievalSuggestionFeature ||
+      feature ==
+          &feature_engagement::kIPHAutofillDownstreamCardAwarenessFeature) {
+    return PopupViewViews::kAutofillCreditCardSuggestionEntryElementId;
+  }
+  if (feature ==
+      &feature_engagement::kIPHAutofillVirtualCardCVCSuggestionFeature) {
+    return PopupViewViews::kAutofillStandaloneCvcSuggestionElementId;
+  }
+  if (feature == &feature_engagement::
+                     kIPHAutofillExternalAccountProfileSuggestionFeature) {
+    return PopupViewViews::kAutofillSuggestionElementId;
+  }
+  if (feature == &feature_engagement::kIPHAutofillCreditCardBenefitFeature) {
+    return PopupViewViews::kAutofillCreditCardBenefitElementId;
+  }
+  if (feature ==
+      &feature_engagement::kIPHAutofillBnplAffirmOrZipSuggestionFeature) {
+    return PopupViewViews::kAutofillBnplAffirmOrZipSuggestionElementId;
+  }
+  if (feature ==
+      &feature_engagement::kIPHAutofillBnplAffirmZipOrKlarnaSuggestionFeature) {
+    return PopupViewViews::kAutofillBnplAffirmZipOrKlarnaSuggestionElementId;
+  }
+  if (feature ==
+      &feature_engagement::kIPHAutofillHomeWorkProfileSuggestionFeature) {
+    return PopupViewViews::kAutofillHomeWorkSuggestionElementId;
+  }
+  if (feature == &feature_engagement::kIPHAutofillEnableLoyaltyCardsFeature) {
+    return PopupViewViews::kAutofillEnableLoyaltyCardsElementId;
+  }
+  if (feature ==
+      &feature_engagement::kIPHAutofillAccountNameEmailSuggestionFeature) {
+    return PopupViewViews::kAutofillAccountNameEmailSuggestionElementId;
+  }
+  if (feature == &feature_engagement::kIPHAutofillAiValuablesFeature) {
+    return PopupViewViews::kAutofillAiValuablesElementId;
+  }
+  return ui::ElementIdentifier();
 }
 
 }  // namespace autofill

@@ -24,8 +24,7 @@
 #include "chrome/browser/lens/core/mojom/page_content_type.mojom.h"
 #include "chrome/browser/lens/core/mojom/text.mojom.h"
 #include "chrome/browser/themes/theme_service.h"
-#include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
-#include "chrome/browser/ui/exclusive_access/fullscreen_observer.h"
+#include "base/callback_list.h"
 #include "chrome/browser/ui/lens/lens_overlay_blur_layer_delegate.h"
 #include "chrome/browser/ui/lens/lens_overlay_colors.h"
 #include "chrome/browser/ui/lens/lens_overlay_gen204_controller.h"
@@ -99,7 +98,6 @@ enum class SidePanelEntryHideReason;
 // thread.
 class LensOverlayController : public OverlayBaseController,
                               public lens::mojom::LensPageHandler,
-                              public FullscreenObserver,
                               public OmniboxTabHelper::Observer,
                               public find_in_page::FindResultObserver {
  public:
@@ -145,9 +143,6 @@ class LensOverlayController : public OverlayBaseController,
   }
 
   // Returns the dynamic color palette identifier based on the screenshot.
-  lens::PaletteId color_palette() {
-    return initialization_data_->color_palette_;
-  }
 
   // Returns whether visual searches should be fulfilled by AIM rather than
   // load immediately in the results panel.
@@ -166,7 +161,6 @@ class LensOverlayController : public OverlayBaseController,
   void SendRegionText(lens::mojom::TextPtr text, bool is_injected_image);
 
   // Creates theme with data obtained from `palette_id` to be sent to the WebUI.
-  lens::mojom::OverlayThemePtr CreateTheme(lens::PaletteId palette_id);
 
   // Send overlay object data to the WebUI, or stores it to be sent when the
   // WebUI is ready.
@@ -180,6 +174,9 @@ class LensOverlayController : public OverlayBaseController,
 
   // Returns true if the overlay has a region selection.
   bool HasRegionSelection() const;
+
+  // Returns true if the results side panel is currently showing, or is opening.
+  bool IsResultsSidePanelShowingOrWillOpen();
 
   // Pass a result frame URL to load in the side panel.
   void LoadURLInResultsFrame(const GURL& url);
@@ -303,6 +300,10 @@ class LensOverlayController : public OverlayBaseController,
 
   const lens::mojom::CenterRotatedBoxPtr& get_selected_region_for_testing() {
     return initialization_data_->selected_region_;
+  }
+
+  LensSearchController* get_lens_search_controller_for_testing() {
+    return lens_search_controller_;
   }
 
   const std::optional<std::pair<int, int>> get_selected_text_for_region() {
@@ -448,7 +449,6 @@ class LensOverlayController : public OverlayBaseController,
     // ownership of the Bitmap to OverlayInitializationData.
     OverlayInitializationData(const SkBitmap& screenshot,
                               SkBitmap rgb_screenshot,
-                              lens::PaletteId color_palette,
                               GURL page_url,
                               std::optional<std::string> page_title);
     ~OverlayInitializationData();
@@ -472,7 +472,6 @@ class LensOverlayController : public OverlayBaseController,
     SkBitmap updated_screenshot_;
 
     // The dynamic color palette identifier based on the screenshot.
-    lens::PaletteId color_palette_;
 
     // The page url. Empty if it is not allowed to be shared.
     GURL page_url_;
@@ -601,17 +600,20 @@ class LensOverlayController : public OverlayBaseController,
   GURL GetInitialURL() override;
   void NotifyIsOverlayShowing(bool is_showing) override;
   int GetToolResourceId() override;
-  ui::ElementIdentifier GetViewContainerId() override;
-  SidePanelEntry::PanelType GetSidePanelType() override;
+  ui::ElementIdentifier GetViewContainerId() const override;
+  SidePanelType GetSidePanelType() override;
   bool ShouldCloseSidePanel() override;
   void StartScreenshotFlow() override;
   void FinishedWaitingForReflow(base::TimeTicks reflow_start_time) override;
   bool ShouldShowPreselectionBubble() override;
+  void ShowPreselectionBubble() override;
   bool UseOverlayBlur() override;
   void NotifyPageNavigated() override;
   void NotifyOverlayClosing() override;
   void NotifyTabForegrounded() override;
   void NotifyTabWillEnterBackground() override;
+  PreselectionUIConfig GetPreselectionBubbleConfig() override;
+  bool IsOverlayViewShared() const override;
 
   // content::WebContentsDelegate:
   bool HandleContextMenu(content::RenderFrameHost& render_frame_host,
@@ -619,8 +621,8 @@ class LensOverlayController : public OverlayBaseController,
   bool HandleKeyboardEvent(content::WebContents* source,
                            const input::NativeWebKeyboardEvent& event) override;
 
-  // FullscreenObserver:
-  void OnFullscreenStateChanged() override;
+  // Called when the browser window's fullscreen state changes.
+  void OnFullscreenStateChanged();
 
   // OmniboxTabHelper::Observer:
   void OnOmniboxInputStateChanged() override {}
@@ -914,9 +916,8 @@ class LensOverlayController : public OverlayBaseController,
   // State that is scoped to the browser window must be reset when the tab is
   // backgrounded, since the tab may move between browser windows.
 
-  // Observer to check for browser window entering fullscreen.
-  base::ScopedObservation<FullscreenController, FullscreenObserver>
-      fullscreen_observation_{this};
+  // Subscription to be notified when the browser window enters fullscreen.
+  base::CallbackListSubscription fullscreen_subscription_;
 
   // Observer to check if the user is using CTRL/CMD+F while the overlay is
   // open.

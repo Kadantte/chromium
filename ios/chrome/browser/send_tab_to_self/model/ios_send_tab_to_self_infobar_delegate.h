@@ -14,6 +14,8 @@
 #include "components/infobars/core/confirm_infobar_delegate.h"
 #include "url/gurl.h"
 
+@protocol SceneCommands;
+
 namespace send_tab_to_self {
 
 class SendTabToSelfEntry;
@@ -23,10 +25,12 @@ class IOSSendTabToSelfInfoBarDelegate : public ConfirmInfoBarDelegate {
  public:
   static std::unique_ptr<IOSSendTabToSelfInfoBarDelegate> Create(
       const SendTabToSelfEntry* entry,
-      SendTabToSelfModel* model);
+      SendTabToSelfModel* model,
+      id<SceneCommands> scene_handler);
 
-  explicit IOSSendTabToSelfInfoBarDelegate(const SendTabToSelfEntry* entry,
-                                           SendTabToSelfModel* model);
+  IOSSendTabToSelfInfoBarDelegate(const SendTabToSelfEntry* entry,
+                                  SendTabToSelfModel* model,
+                                  id<SceneCommands> scene_handler);
 
   IOSSendTabToSelfInfoBarDelegate(const IOSSendTabToSelfInfoBarDelegate&) =
       delete;
@@ -35,6 +39,9 @@ class IOSSendTabToSelfInfoBarDelegate : public ConfirmInfoBarDelegate {
 
   ~IOSSendTabToSelfInfoBarDelegate() override;
 
+  // Returns the GUID of the SendTabToSelfEntry.
+  const std::string& GetGUID() const;
+
  private:
   // ConfirmInfoBarDelegate:
   InfoBarDelegate::InfoBarIdentifier GetIdentifier() const override;
@@ -42,6 +49,7 @@ class IOSSendTabToSelfInfoBarDelegate : public ConfirmInfoBarDelegate {
   std::u16string GetButtonLabel(InfoBarButton button) const override;
   int GetIconId() const override;
   void InfoBarDismissed() override;
+  std::u16string GetTitleText() const override;
   std::u16string GetMessageText() const override;
   bool Accept() override;
   bool Cancel() override;
@@ -49,14 +57,17 @@ class IOSSendTabToSelfInfoBarDelegate : public ConfirmInfoBarDelegate {
   // Send the notice of conclusion of this infobar to other windows.
   void SendConclusionNotification();
 
-  // The entry that was share to this device. Must outlive this instance.
-  raw_ptr<const SendTabToSelfEntry, DanglingUntriaged> entry_ = nullptr;
-
-  // The SendTabToSelfModel that holds the `entry_`. Must outlive this instance.
+  // The SendTabToSelfModel. Must outlive this instance.
   raw_ptr<SendTabToSelfModel> model_ = nullptr;
 
   // Registration with NSNotificationCenter for this window.
   __strong id<NSObject> registration_ = nil;
+
+  // Handler for scene commands.
+  __weak id<SceneCommands> scene_handler_ = nil;
+
+  // The GUID of the entry.
+  std::string guid_;
 
   base::WeakPtrFactory<IOSSendTabToSelfInfoBarDelegate> weak_ptr_factory_;
 };

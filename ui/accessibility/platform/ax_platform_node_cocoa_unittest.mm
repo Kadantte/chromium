@@ -34,6 +34,7 @@ using AXRange = ui::AXPlatformNodeDelegate::AXRange;
 
 @interface AXPlatformNodeCocoa (Private)
 
+- (id)AXValue;
 - (void)addTextAnnotationsIn:(const AXRange*)axRange
                           to:(NSMutableAttributedString*)attributedString;
 
@@ -718,6 +719,53 @@ TEST_P(AXPlatformNodeCocoaTest,
 
   EXPECT_EQ(misspelled_spans, 1);
   EXPECT_EQ(other_marked, 0);
+}
+
+TEST_P(AXPlatformNodeCocoaTest,
+       AddTextAnnotations_InlineTextBox_LineBreakParent) {
+  AXNodeData root;
+  root.id = 1;
+  root.role = ax::mojom::Role::kRootWebArea;
+  root.child_ids = {2};
+
+  const std::u16string kText = u"\n";
+
+  AXNodeData lb;
+  lb.id = 2;
+  lb.role = ax::mojom::Role::kLineBreak;
+  lb.SetName(kText);
+  lb.child_ids = {3};
+
+  AXNodeData itb;
+  itb.id = 3;
+  itb.role = ax::mojom::Role::kInlineTextBox;
+  itb.SetName(kText);
+
+  ui::AXTreeUpdate update;
+  update.root_id = root.id;
+  update.nodes = {root, lb, itb};
+  Init(update);
+
+  AXNode* itb_node = GetTree()->GetFromId(itb.id);
+  auto start = ui::AXNodePosition::CreateTextPosition(
+      *itb_node, /*offset=*/0, ax::mojom::TextAffinity::kDownstream);
+  auto end = ui::AXNodePosition::CreateTextPosition(
+      *itb_node, /*offset=*/static_cast<int>(kText.size()),
+      ax::mojom::TextAffinity::kDownstream);
+  AXRange ax_range(start->Clone(), end->Clone());
+
+  std::u16string text_utf16;
+  for (const ui::AXPlatformNodeDelegate::AXRange& leaf_text_range : ax_range) {
+    text_utf16 += leaf_text_range.GetText();
+  }
+
+  NSMutableAttributedString* attributed = [[NSMutableAttributedString alloc]
+      initWithString:base::SysUTF16ToNSString(text_utf16)];
+
+  AXPlatformNodeCocoa* platform_node =
+      [[AXPlatformNodeCocoa alloc] initWithNode:nil];
+  // This should not crash on the DCHECK in addTextAnnotationsIn:to:
+  [platform_node addTextAnnotationsIn:&ax_range to:attributed];
 }
 
 // Tests the actions contained in the old API action list.
@@ -1610,6 +1658,95 @@ TEST_P(AXPlatformNodeCocoaTest, AccessibilityScrollbars) {
 
   scrollbar = [node accessibilityVerticalScrollBar];
   EXPECT_NSEQ([scrollbar accessibilityLabel], @"Vertical scrollbar");
+}
+
+TEST_P(AXPlatformNodeCocoaTest, ExpandedChangedNotificationForTreeItem) {
+  EXPECT_NSEQ(
+      [AXPlatformNodeCocoa
+          nativeNotificationForExpandedChangedWithRole:ax::mojom::Role::kTreeItem
+                                           isExpanded:YES],
+      NSAccessibilityRowExpandedNotification);
+  EXPECT_NSEQ(
+      [AXPlatformNodeCocoa
+          nativeNotificationForExpandedChangedWithRole:ax::mojom::Role::kTreeItem
+                                           isExpanded:NO],
+      NSAccessibilityRowCollapsedNotification);
+}
+
+TEST_P(AXPlatformNodeCocoaTest, ExpandedChangedNotificationForRow) {
+  EXPECT_NSEQ(
+      [AXPlatformNodeCocoa
+          nativeNotificationForExpandedChangedWithRole:ax::mojom::Role::kRow
+                                           isExpanded:YES],
+      NSAccessibilityRowExpandedNotification);
+  EXPECT_NSEQ(
+      [AXPlatformNodeCocoa
+          nativeNotificationForExpandedChangedWithRole:ax::mojom::Role::kRow
+                                           isExpanded:NO],
+      NSAccessibilityRowCollapsedNotification);
+}
+
+TEST_P(AXPlatformNodeCocoaTest, ExpandedChangedNotificationForGroup) {
+  EXPECT_NSEQ(
+      [AXPlatformNodeCocoa
+          nativeNotificationForExpandedChangedWithRole:ax::mojom::Role::kGroup
+                                           isExpanded:YES],
+      @"AXExpandedChanged");
+  EXPECT_NSEQ(
+      [AXPlatformNodeCocoa
+          nativeNotificationForExpandedChangedWithRole:ax::mojom::Role::kGroup
+                                           isExpanded:NO],
+      @"AXExpandedChanged");
+}
+
+TEST_P(AXPlatformNodeCocoaTest, AXValueOnSliderReturnsNSNumber) {
+  AXNodeData root = AXNodeData();
+  root.id = 1;
+  root.role = ax::mojom::Role::kSlider;
+  root.AddStringAttribute(ax::mojom::StringAttribute::kValue, "50%");
+  root.AddFloatAttribute(ax::mojom::FloatAttribute::kValueForRange, 0.5f);
+  Init(root);
+  AXPlatformNodeCocoa* node = GetCocoaNode(GetRoot());
+  id value = [node AXValue];
+  ASSERT_TRUE([value isKindOfClass:[NSNumber class]]);
+  EXPECT_FLOAT_EQ([value floatValue], 0.5f);
+}
+
+TEST_P(AXPlatformNodeCocoaTest,
+       AXValueOnSliderWithoutRangeValueReturnsString) {
+  AXNodeData root = AXNodeData();
+  root.id = 1;
+  root.role = ax::mojom::Role::kSlider;
+  root.AddStringAttribute(ax::mojom::StringAttribute::kValue, "50%");
+  Init(root);
+  AXPlatformNodeCocoa* node = GetCocoaNode(GetRoot());
+  id value = [node AXValue];
+  ASSERT_TRUE([value isKindOfClass:[NSString class]]);
+  EXPECT_NSEQ(value, @"50%");
+}
+
+TEST_P(AXPlatformNodeCocoaTest, AXValueOnProgressIndicatorReturnsNSNumber) {
+  AXNodeData root = AXNodeData();
+  root.id = 1;
+  root.role = ax::mojom::Role::kProgressIndicator;
+  root.AddFloatAttribute(ax::mojom::FloatAttribute::kValueForRange, 0.75f);
+  Init(root);
+  AXPlatformNodeCocoa* node = GetCocoaNode(GetRoot());
+  id value = [node AXValue];
+  ASSERT_TRUE([value isKindOfClass:[NSNumber class]]);
+  EXPECT_FLOAT_EQ([value floatValue], 0.75f);
+}
+
+TEST_P(AXPlatformNodeCocoaTest, AXValueOnTextFieldReturnsString) {
+  AXNodeData root = AXNodeData();
+  root.id = 1;
+  root.role = ax::mojom::Role::kTextField;
+  root.AddStringAttribute(ax::mojom::StringAttribute::kValue, "hello");
+  Init(root);
+  AXPlatformNodeCocoa* node = GetCocoaNode(GetRoot());
+  id value = [node AXValue];
+  ASSERT_TRUE([value isKindOfClass:[NSString class]]);
+  EXPECT_NSEQ(value, @"hello");
 }
 
 }  // namespace ui

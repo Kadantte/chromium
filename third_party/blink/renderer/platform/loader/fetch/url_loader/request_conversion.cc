@@ -124,6 +124,7 @@ mojom::ResourceType RequestContextToResourceType(
     case mojom::blink::RequestContextType::SPECULATION_RULES:
     case mojom::blink::RequestContextType::SUBRESOURCE:
     case mojom::blink::RequestContextType::SUBRESOURCE_WEBBUNDLE:
+    case mojom::blink::RequestContextType::TEXT:
       return mojom::ResourceType::kSubResource;
 
     // TextTrack
@@ -306,11 +307,14 @@ void PopulateResourceRequest(const ResourceRequestHead& src,
     dest->cors_exempt_headers.SetHeader(kCorsExemptRequestedWithHeaderName,
                                         src.GetRequestedWithHeader().Utf8());
   }
-  // Set Purpose header to cors_exempt_headers rather than headers to be
-  // exempted from CORS checks.
-  if (!src.GetPurposeHeader().empty()) {
-    dest->cors_exempt_headers.SetHeader(kPurposeHeaderName,
-                                        src.GetPurposeHeader().Utf8());
+  // Set Last-Event-ID header to cors_exempt_headers for EventSource.
+  // HTTP headers are Latin-1 byte strings, but the Last-Event-ID header is
+  // encoded as UTF-8.
+  // TODO(davidben): This should be captured in the type of
+  // setHTTPHeaderField's arguments.
+  if (!src.GetEventSourceLastEventId().empty()) {
+    dest->cors_exempt_headers.SetHeader("Last-Event-ID",
+                                        src.GetEventSourceLastEventId().Utf8());
   }
 
   // TODO(yhirano): Remove this WrappedResourceRequest.
@@ -361,7 +365,7 @@ void PopulateResourceRequest(const ResourceRequestHead& src,
   dest->has_user_gesture = src.HasUserGesture();
   dest->enable_load_timing = true;
   dest->enable_upload_progress = src.ReportUploadProgress();
-  dest->throttling_profile_id = src.GetDevToolsToken();
+  dest->throttling_profile_id = src.GetDevToolsThrottlingToken();
   dest->trust_token_params = ConvertTrustTokenParams(src.TrustTokenParams());
   dest->required_ip_address_space = src.GetTargetAddressSpace();
   if (src.HasFetchRetryOptions()) {
@@ -431,8 +435,7 @@ void PopulateResourceRequest(const ResourceRequestHead& src,
 
   dest->is_ad_tagged = src.IsAdResource();
 
-  dest->allows_device_bound_session_registration =
-      src.AllowsDeviceBoundSessionRegistration();
+  dest->allows_device_bound_sessions = src.AllowsDeviceBoundSessions();
 }
 
 }  // namespace blink

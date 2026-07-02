@@ -16,6 +16,7 @@
 #include "chrome/browser/preloading/prefetch/search_prefetch/search_prefetch_request.h"
 #include "chrome/browser/preloading/prefetch/search_prefetch/search_prefetch_service.h"
 #include "chrome/browser/preloading/prefetch/search_prefetch/search_prefetch_service_factory.h"
+#include "chrome/browser/preloading/search_preload/search_preload_features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/ui/browser.h"
@@ -46,6 +47,8 @@ constexpr char kLoadInSubframe[] = "/load_in_subframe";
 }  // namespace
 
 SearchPrefetchBaseBrowserTest::SearchPrefetchBaseBrowserTest() {
+  feature_list_for_dse_preload2_.InitAndDisableFeature(features::kDsePreload2);
+
   search_server_ = std::make_unique<net::EmbeddedTestServer>(
       net::EmbeddedTestServer::TYPE_HTTPS);
   search_server_->ServeFilesFromSourceDirectory("chrome/test/data");
@@ -224,6 +227,7 @@ void SearchPrefetchBaseBrowserTest::SetDSEWithURL(const GURL& url,
       search_suggest_server_->GetURL(kSuggestDomain, "/?q={searchTerms}")
           .spec();
   data.prefetch_likely_navigations = dse_allows_prefetch;
+  data.send_x_geo_header = true;
 
   TemplateURL* template_url = model->Add(std::make_unique<TemplateURL>(data));
   ASSERT_TRUE(template_url);

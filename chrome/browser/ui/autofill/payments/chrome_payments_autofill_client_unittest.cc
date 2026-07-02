@@ -9,6 +9,8 @@
 
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/values_test_util.h"
+#include "base/values.h"
 #include "build/branding_buildflags.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/ui/autofill/payments/chrome_payments_autofill_client.h"
@@ -21,7 +23,9 @@
 #include "components/autofill/core/browser/test_utils/valuables_data_test_utils.h"
 #include "components/autofill/core/browser/ui/payments/bnpl_ui_delegate.h"
 #include "components/autofill/core/browser/ui/payments/bubble_show_options.h"
+#include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
+#include "components/autofill/core/common/autofill_prefs.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -45,12 +49,19 @@
 #include "components/autofill/core/browser/payments/autofill_save_card_ui_info.h"
 #include "components/autofill/core/browser/payments/bnpl_util.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/feature_engagement/public/feature_constants.h"
 #include "components/feature_engagement/test/mock_tracker.h"
 #include "ui/android/window_android.h"
 #else  // !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/autofill/payments/omnibox_autofill_page_action_controller.h"
 #include "chrome/browser/ui/autofill/payments/save_card_bubble_controller_impl.h"
+#include "chrome/browser/ui/page_action/test_support/mock_page_action_controller.h"
+#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/ui_features.h"  // nogncheck
 #include "components/autofill/core/browser/payments/desktop_bnpl_strategy.h"
+#include "components/tabs/public/mock_tab_interface.h"
+#include "ui/base/unowned_user_data/unowned_user_data_host.h"
 #endif                                      // BUILDFLAG(IS_ANDROID)
 
 using ::autofill::test::CreateLoyaltyCard;
@@ -172,11 +183,8 @@ class ChromePaymentsAutofillClientTest
     : public ChromeRenderViewHostTestHarness {
  public:
   ChromePaymentsAutofillClientTest() {
-    feature_list_.InitWithFeatures(
-        /*enabled_features=*/
-        {features::kAutofillEnableCvcStorageAndFilling,
-         features::kAutofillEnablePrefetchingRiskDataForRetrieval},
-        /*disabled_features=*/{});
+    feature_list_.InitAndEnableFeature(
+        features::kAutofillEnablePrefetchingRiskDataForRetrieval);
   }
 
   void SetUp() override {
@@ -546,7 +554,7 @@ TEST_F(ChromePaymentsAutofillClientTest,
       });
   EXPECT_CALL(*snackbar_controller, Show(AutofillSnackbarType::kBnpl, _));
 
-  chrome_payments_client()->OnCardDataAvailable(options);
+  chrome_payments_client()->OnCardDataAvailable(options, url::Origin());
 }
 
 TEST_F(ChromePaymentsAutofillClientTest,
@@ -572,7 +580,7 @@ TEST_F(ChromePaymentsAutofillClientTest,
   EXPECT_CALL(*snackbar_controller,
               Show(AutofillSnackbarType::kVirtualCard, _));
 
-  chrome_payments_client()->OnCardDataAvailable(options);
+  chrome_payments_client()->OnCardDataAvailable(options, url::Origin());
 }
 
 TEST_F(ChromePaymentsAutofillClientTest,
@@ -598,7 +606,7 @@ TEST_F(ChromePaymentsAutofillClientTest,
   EXPECT_CALL(*snackbar_controller,
               Show(AutofillSnackbarType::kCardInfoRetrieval, _));
 
-  chrome_payments_client()->OnCardDataAvailable(options);
+  chrome_payments_client()->OnCardDataAvailable(options, url::Origin());
 }
 
 // Test that calling `ShowAffiliatedLoyaltyCards` passes the correct lists of
@@ -867,6 +875,22 @@ TEST_F(ChromePaymentsAutofillClientTest, DisablePaymentsAutofill) {
   EXPECT_FALSE(chrome_payments_client()->IsAutofillPaymentMethodsEnabled());
 }
 
+TEST_F(ChromePaymentsAutofillClientTest,
+       IsAutofillPaymentMethodsEnabled_BlockedByPolicy) {
+  base::test::ScopedFeatureList feature_list(
+      features::kAutofillEnableAutofillSettingsEnterprisePolicy);
+  NavigateAndCommit(GURL("https://example.com"));
+
+  EXPECT_TRUE(chrome_payments_client()->IsAutofillPaymentMethodsEnabled());
+
+  profile()->GetPrefs()->Set(
+      prefs::kAutofillTypesBlocked,
+      base::test::ParseJson(
+          R"([{"url_pattern": "https://example.com", "blocked_types": ["payments"]}])"));
+
+  EXPECT_FALSE(chrome_payments_client()->IsAutofillPaymentMethodsEnabled());
+}
+
 #if BUILDFLAG(IS_ANDROID)
 class ChromePaymentsAutofillClientWalletBrandingTest
     : public ChromePaymentsAutofillClientTest,
@@ -966,11 +990,8 @@ class ChromePaymentsAutofillIOSPromoClientTest
     : public ChromePaymentsAutofillClientTest {
  public:
   ChromePaymentsAutofillIOSPromoClientTest() {
-    feature_list_.InitWithFeatures(
-        /*enabled_features=*/
-        {features::kAutofillEnableCvcStorageAndFilling,
-         features::kAutofillEnablePrefetchingRiskDataForRetrieval},
-        /*disabled_features=*/{});
+    feature_list_.InitAndEnableFeature(
+        features::kAutofillEnablePrefetchingRiskDataForRetrieval);
   }
 
  private:
@@ -989,6 +1010,81 @@ TEST_F(ChromePaymentsAutofillIOSPromoClientTest,
       payments::PaymentsAutofillClient::PaymentsRpcResult::kSuccess,
       std::nullopt);
 }
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+#if !BUILDFLAG(IS_ANDROID)
+
+class ChromePaymentsAutofillClientOmniboxTest
+    : public ChromePaymentsAutofillClientTest {
+ public:
+  ChromePaymentsAutofillClientOmniboxTest() {
+    feature_list_.InitAndEnableFeature(
+        features::kAutofillEnableOmniboxAutofill);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Test that Omnibox Autofill delegate is created and returned correctly.
+TEST_F(ChromePaymentsAutofillClientOmniboxTest, GetOmniboxAutofillDelegate) {
+  OmniboxAutofillDelegate* omnibox_autofill_delegate =
+      chrome_payments_client()->GetOmniboxAutofillDelegate();
+  ASSERT_NE(omnibox_autofill_delegate, nullptr);
+
+  // Test that the same instance is returned on subsequent calls.
+  EXPECT_EQ(omnibox_autofill_delegate,
+            chrome_payments_client()->GetOmniboxAutofillDelegate());
+}
+
+TEST_F(ChromePaymentsAutofillClientOmniboxTest, ShowOmniboxAutofillChip) {
+  tabs::MockTabInterface mock_tab_interface;
+  ui::UnownedUserDataHost user_data_host;
+  ON_CALL(mock_tab_interface, GetUnownedUserDataHost())
+      .WillByDefault(testing::ReturnRef(user_data_host));
+
+  page_actions::MockPageActionController mock_page_action_controller;
+  OmniboxAutofillPageActionController omnibox_controller(
+      mock_tab_interface, mock_page_action_controller);
+
+  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(),
+                                                       &mock_tab_interface);
+
+  EXPECT_CALL(mock_page_action_controller, Show(kActionAutofillPayment))
+      .Times(1);
+  EXPECT_CALL(mock_page_action_controller,
+              ShowSuggestionChip(kActionAutofillPayment, _))
+      .Times(1);
+
+  chrome_payments_client()->ShowOmniboxAutofillChip(
+      /*suggestions=*/{},
+      /*on_suggestions_shown=*/base::DoNothing(),
+      /*did_select_suggestion=*/base::DoNothing(),
+      /*did_accept_suggestion=*/base::DoNothing());
+}
+
+TEST_F(ChromePaymentsAutofillClientOmniboxTest, HideOmniboxAutofillChip) {
+  tabs::MockTabInterface mock_tab_interface;
+  ui::UnownedUserDataHost user_data_host;
+  ON_CALL(mock_tab_interface, GetUnownedUserDataHost())
+      .WillByDefault(testing::ReturnRef(user_data_host));
+
+  page_actions::MockPageActionController mock_page_action_controller;
+  OmniboxAutofillPageActionController omnibox_controller(
+      mock_tab_interface, mock_page_action_controller);
+
+  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(),
+                                                       &mock_tab_interface);
+
+  EXPECT_CALL(mock_page_action_controller,
+              HideSuggestionChip(kActionAutofillPayment))
+      .Times(1);
+  EXPECT_CALL(mock_page_action_controller, Hide(kActionAutofillPayment))
+      .Times(1);
+
+  chrome_payments_client()->HideOmniboxAutofillChip();
+}
+
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 }  // namespace autofill

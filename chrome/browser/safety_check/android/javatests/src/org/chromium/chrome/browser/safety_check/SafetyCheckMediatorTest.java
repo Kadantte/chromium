@@ -134,7 +134,6 @@ public class SafetyCheckMediatorTest {
     private final boolean mUseGmsApi;
 
     private ModalDialogManager mModalDialogManager;
-
     private final SettableMonotonicObservableSupplier<ModalDialogManager>
             mModalDialogManagerSupplier = ObservableSuppliers.createMonotonic();
 
@@ -293,15 +292,13 @@ public class SafetyCheckMediatorTest {
     public void testUpdatesCheckUpdated() {
         doAnswer(
                         invocation -> {
-                            Callback<Integer> callback =
-                                    ((WeakReference<Callback<Integer>>)
-                                                    invocation.getArguments()[0])
-                                            .get();
+                            WeakReference<Callback<Integer>> ref = invocation.getArgument(0);
+                            Callback<Integer> callback = ref.get();
                             callback.onResult(UpdatesState.UPDATED);
                             return null;
                         })
                 .when(mUpdatesDelegate)
-                .checkForUpdates(any(WeakReference.class));
+                .checkForUpdates(any());
 
         mMediator.performSafetyCheck();
         assertEquals(UpdatesState.UPDATED, mSafetyCheckModel.get(UPDATES_STATE));
@@ -315,15 +312,13 @@ public class SafetyCheckMediatorTest {
     public void testUpdatesCheckOutdated() {
         doAnswer(
                         invocation -> {
-                            Callback<Integer> callback =
-                                    ((WeakReference<Callback<Integer>>)
-                                                    invocation.getArguments()[0])
-                                            .get();
+                            WeakReference<Callback<Integer>> ref = invocation.getArgument(0);
+                            Callback<Integer> callback = ref.get();
                             callback.onResult(UpdatesState.OUTDATED);
                             return null;
                         })
                 .when(mUpdatesDelegate)
-                .checkForUpdates(any(WeakReference.class));
+                .checkForUpdates(any());
 
         mMediator.performSafetyCheck();
         assertEquals(UpdatesState.OUTDATED, mSafetyCheckModel.get(UPDATES_STATE));
@@ -434,15 +429,13 @@ public class SafetyCheckMediatorTest {
         // Updates: outdated.
         doAnswer(
                         invocation -> {
-                            Callback<Integer> callback =
-                                    ((WeakReference<Callback<Integer>>)
-                                                    invocation.getArguments()[0])
-                                            .get();
+                            WeakReference<Callback<Integer>> ref = invocation.getArgument(0);
+                            Callback<Integer> callback = ref.get();
                             callback.onResult(UpdatesState.OUTDATED);
                             return null;
                         })
                 .when(mUpdatesDelegate)
-                .checkForUpdates(any(WeakReference.class));
+                .checkForUpdates(any());
 
         mMediator.setInitialState();
         // Passwords: safe state.
@@ -471,15 +464,13 @@ public class SafetyCheckMediatorTest {
         // Updates: offline.
         doAnswer(
                         invocation -> {
-                            Callback<Integer> callback =
-                                    ((WeakReference<Callback<Integer>>)
-                                                    invocation.getArguments()[0])
-                                            .get();
+                            WeakReference<Callback<Integer>> ref = invocation.getArgument(0);
+                            Callback<Integer> callback = ref.get();
                             callback.onResult(UpdatesState.OFFLINE);
                             return null;
                         })
                 .when(mUpdatesDelegate)
-                .checkForUpdates(any(WeakReference.class));
+                .checkForUpdates(any());
 
         mMediator.setInitialState();
         // Passwords: no passwords.
@@ -508,15 +499,13 @@ public class SafetyCheckMediatorTest {
         // Updates: updated.
         doAnswer(
                         invocation -> {
-                            Callback<Integer> callback =
-                                    ((WeakReference<Callback<Integer>>)
-                                                    invocation.getArguments()[0])
-                                            .get();
+                            WeakReference<Callback<Integer>> ref = invocation.getArgument(0);
+                            Callback<Integer> callback = ref.get();
                             callback.onResult(UpdatesState.UPDATED);
                             return null;
                         })
                 .when(mUpdatesDelegate)
-                .checkForUpdates(any(WeakReference.class));
+                .checkForUpdates(any());
 
         mMediator.setInitialState();
         // Passwords: compromised state.
@@ -544,15 +533,13 @@ public class SafetyCheckMediatorTest {
         // Updates: outdated.
         doAnswer(
                         invocation -> {
-                            Callback<Integer> callback =
-                                    ((WeakReference<Callback<Integer>>)
-                                                    invocation.getArguments()[0])
-                                            .get();
+                            WeakReference<Callback<Integer>> ref = invocation.getArgument(0);
+                            Callback<Integer> callback = ref.get();
                             callback.onResult(UpdatesState.OUTDATED);
                             return null;
                         })
                 .when(mUpdatesDelegate)
-                .checkForUpdates(any(WeakReference.class));
+                .checkForUpdates(any());
 
         mMediator.setInitialState();
         // Passwords: safe state.
@@ -580,15 +567,13 @@ public class SafetyCheckMediatorTest {
         // Updates: updated.
         doAnswer(
                         invocation -> {
-                            Callback<Integer> callback =
-                                    ((WeakReference<Callback<Integer>>)
-                                                    invocation.getArguments()[0])
-                                            .get();
+                            WeakReference<Callback<Integer>> ref = invocation.getArgument(0);
+                            Callback<Integer> callback = ref.get();
                             callback.onResult(UpdatesState.UPDATED);
                             return null;
                         })
                 .when(mUpdatesDelegate)
-                .checkForUpdates(any(WeakReference.class));
+                .checkForUpdates(any());
 
         mMediator.setInitialState();
         // Passwords: compromised state.

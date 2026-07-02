@@ -12,7 +12,7 @@ namespace safe_browsing {
 // What service classified this threat as unsafe.
 enum class ThreatSource {
   UNKNOWN,
-  // From V4LocalDatabaseManager, protocol v4. Desktop only.
+  // From SBLocalDatabaseManager, protocol v4. Desktop only.
   LOCAL_PVER4,
   // From ClientSideDetectionHost.
   CLIENT_SIDE_DETECTION,
@@ -26,6 +26,9 @@ enum class ThreatSource {
   ANDROID_SAFEBROWSING_REAL_TIME,
   // From GmsCore SafeBrowsing API. Android only. Protocol v4 only.
   ANDROID_SAFEBROWSING,
+  // Triggered by Glic web client when server reports a dangerous Counter
+  // Abuse verdict.
+  GLIC_COUNTER_ABUSE,
 };
 
 // What subtype that expands more into details on what threat category
@@ -36,6 +39,10 @@ enum class ThreatSubtype {
   SCAM_EXPERIMENT_VERDICT_1,
   // Scam experiment verdict 2
   SCAM_EXPERIMENT_VERDICT_2,
+  // Scam experiment verdict 3
+  SCAM_EXPERIMENT_VERDICT_3,
+  // Scam experiment verdict 4
+  SCAM_EXPERIMENT_VERDICT_4,
   // Scam experiment catch all enforcement
   SCAM_EXPERIMENT_CATCH_ALL_ENFORCEMENT,
 };

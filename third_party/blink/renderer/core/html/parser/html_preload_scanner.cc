@@ -33,6 +33,7 @@
 
 #include "base/task/sequenced_task_runner.h"
 #include "base/trace_event/trace_event.h"
+#include "services/network/public/mojom/content_security_policy.mojom-blink.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
 #include "third_party/blink/public/mojom/script/script_type.mojom-blink.h"
@@ -45,6 +46,7 @@
 #include "third_party/blink/renderer/core/css/parser/sizes_attribute_parser.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/execution_context/security_context.h"
+#include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/frame/viewport_data.h"
@@ -220,7 +222,30 @@ class TokenPreloadScanner::StartTagScanner {
       String attribute_value = html_token_attribute.Value();
       ProcessAttribute(attribute_name, attribute_value);
     }
+    MaybeClearNonceForDanglingMarkup(attributes);
     PostProcessAfterAttributes();
+  }
+
+  // Mirror the dangling-markup-injection mitigation in
+  // ContentSecurityPolicy::IsNonceableElement so the preload scanner cannot
+  // be tricked into authorizing a speculative fetch with a hijacked nonce.
+  // This is done as a separate pass after ProcessAttributes so we can skip
+  // the work entirely when no nonce is present.
+  void MaybeClearNonceForDanglingMarkup(
+      const HTMLToken::AttributeList& attributes) {
+    if (nonce_.IsNull() || nonce_.empty())
+      return;
+    HashSet<AtomicString> seen_names;
+    for (const HTMLToken::Attribute& html_token_attribute : attributes) {
+      AtomicString attribute_name(html_token_attribute.GetName());
+      String attribute_value = html_token_attribute.Value();
+      if (!seen_names.insert(attribute_name).is_new_entry ||
+          ContentSecurityPolicy::ContainsDanglingMarkupSignal(
+              attribute_name, attribute_value)) {
+        SetNonce(String());
+        return;
+      }
+    }
   }
 
   void PostProcessAfterAttributes() {
@@ -345,6 +370,13 @@ class TokenPreloadScanner::StartTagScanner {
     if (type == ResourceType::kImage && is_img &&
         IsLazyLoadImageDeferable(document_parameters,
                                  is_potentially_lcp_element)) {
+      return nullptr;
+    }
+    // Don't preload video poster if loading="lazy" is set.
+    if (RuntimeEnabledFeatures::LazyLoadVideoAndAudioEnabled() &&
+        type == ResourceType::kImage &&
+        Match(tag_impl_, html_names::kVideoTag) &&
+        loading_attr_value_ == LoadingAttributeValue::kLazy) {
       return nullptr;
     }
     // Do not set integrity metadata for <link> elements for destinations not
@@ -510,7 +542,7 @@ class TokenPreloadScanner::StartTagScanner {
     } else if (Match(attribute_name, html_names::kNonceAttr)) {
       SetNonce(attribute_value);
     } else if (Match(attribute_name, html_names::kAsAttr)) {
-      as_attribute_value_ = attribute_value.DeprecatedLower();
+      as_attribute_value_ = attribute_value.ToAsciiLower();
     } else if (Match(attribute_name, html_names::kTypeAttr)) {
       type_attribute_value_ = attribute_value;
     } else if (!referrer_policy_set_ &&
@@ -546,7 +578,7 @@ class TokenPreloadScanner::StartTagScanner {
       SetUrlToLoad(attribute_value, kDisallowURLReplacement);
     } else if (Match(attribute_name, html_names::kTypeAttr)) {
       input_is_image_ =
-          EqualIgnoringASCIICase(attribute_value, input_type_names::kImage);
+          EqualIgnoringAsciiCase(attribute_value, input_type_names::kImage);
     }
   }
 
@@ -576,10 +608,15 @@ class TokenPreloadScanner::StartTagScanner {
 
   void ProcessVideoAttribute(const AtomicString& attribute_name,
                              const String& attribute_value) {
-    if (Match(attribute_name, html_names::kPosterAttr))
+    if (Match(attribute_name, html_names::kPosterAttr)) {
       SetUrlToLoad(attribute_value, kDisallowURLReplacement);
-    else if (Match(attribute_name, html_names::kCrossoriginAttr))
+    } else if (Match(attribute_name, html_names::kCrossoriginAttr)) {
       SetCrossOrigin(attribute_value);
+    } else if (RuntimeEnabledFeatures::LazyLoadVideoAndAudioEnabled() &&
+               loading_attr_value_ == LoadingAttributeValue::kAuto &&
+               Match(attribute_name, html_names::kLoadingAttr)) {
+      loading_attr_value_ = GetLoadingAttributeValue(attribute_value);
+    }
   }
 
   void ProcessAttribute(const AtomicString& attribute_name,
@@ -853,7 +890,6 @@ TokenPreloadScanner::TokenPreloadScanner(
       in_script_web_bundle_(false),
       seen_body_(false),
       seen_img_(false),
-      template_count_(0),
       document_parameters_(std::move(document_parameters)),
       media_values_cached_data_(std::move(media_values_cached_data)),
       scanner_type_(scanner_type),
@@ -917,13 +953,13 @@ void TokenPreloadScanner::HandleMetaNameAttribute(
     return;
 
   String content_attribute_value(content_attribute->Value());
-  if (EqualIgnoringASCIICase(name_attribute_value, "viewport")) {
+  if (EqualIgnoringAsciiCase(name_attribute_value, "viewport")) {
     HandleMetaViewport(content_attribute_value, document_parameters_.get(),
                        EnsureMediaValues(), viewport);
     return;
   }
 
-  if (EqualIgnoringASCIICase(name_attribute_value, "referrer")) {
+  if (EqualIgnoringAsciiCase(name_attribute_value, "referrer")) {
     HandleMetaReferrer(content_attribute_value, document_parameters_.get(),
                        &css_scanner_);
   }
@@ -957,8 +993,15 @@ void TokenPreloadScanner::Scan(const HTMLToken& token,
       const StringImpl* tag_impl = TagImplFor(token.Data());
       lcp_element_matcher_.ObserveEndTag(tag_impl);
       if (Match(tag_impl, html_names::kTemplateTag)) {
-        if (template_count_)
+        if (template_count_) {
+          // This is an end tag for a non-DSD <template> or a DSD <template>
+          // that is inside a non-DSD <template>.
           --template_count_;
+        } else if (dsd_count_) {
+          // This is an end tag for a DSD <template> that is not inside any
+          // regular <template>.
+          --dsd_count_;
+        }
         return;
       }
       if (template_count_) {
@@ -996,13 +1039,17 @@ void TokenPreloadScanner::Scan(const HTMLToken& token,
         if (shadowrootmode_attribute) {
           String shadowrootmode_value(shadowrootmode_attribute->Value());
           is_declarative_shadow_root =
-              EqualIgnoringASCIICase(shadowrootmode_value, "open") ||
-              EqualIgnoringASCIICase(shadowrootmode_value, "closed");
+              EqualIgnoringAsciiCase(shadowrootmode_value, "open") ||
+              EqualIgnoringAsciiCase(shadowrootmode_value, "closed");
         }
-        // If this is a declarative shadow root <template shadowrootmode>
-        // element *and* we're not already inside a non-DSD <template> element,
-        // then we leave the template count at zero. Otherwise, increment it.
-        if (!(is_declarative_shadow_root && !template_count_)) {
+        if (is_declarative_shadow_root && !template_count_) {
+          // This is a <template> start tag for a DSD <template> *and* it's
+          // not nested inside of a regular (non-DSD) <template>.
+          ++dsd_count_;
+        } else {
+          // This is either a regular <template> start tag or a <template>
+          // start tag for a DSD <template> that has a regular template
+          // ancestor.
           ++template_count_;
         }
       }
@@ -1027,22 +1074,26 @@ void TokenPreloadScanner::Scan(const HTMLToken& token,
           in_script_web_bundle_ = true;
         }
       }
-      if (Match(tag_impl, html_names::kBaseTag)) {
+      // Check dsd_count_ since <base> elements are not processed inside of
+      // shadow DOM.
+      if (Match(tag_impl, html_names::kBaseTag) && !dsd_count_) {
         // The first <base> element is the one that wins.
         if (!predicted_base_element_url_.IsEmpty())
           return;
         UpdatePredictedBaseURL(token);
         return;
       }
-      if (Match(tag_impl, html_names::kMetaTag)) {
+      // Check dsd_count_ since <meta> elements are not processed inside of
+      // shadow DOM.
+      if (Match(tag_impl, html_names::kMetaTag) && !dsd_count_) {
         const HTMLToken::Attribute* equiv_attribute =
             token.GetAttributeItem(html_names::kHttpEquivAttr);
         if (equiv_attribute) {
           String equiv_attribute_value(equiv_attribute->Value());
-          if (EqualIgnoringASCIICase(equiv_attribute_value,
+          if (EqualIgnoringAsciiCase(equiv_attribute_value,
                                      "content-security-policy")) {
             ++(*csp_meta_tag_count);
-          } else if (EqualIgnoringASCIICase(equiv_attribute_value,
+          } else if (EqualIgnoringAsciiCase(equiv_attribute_value,
                                             http_names::kAcceptCH)) {
             const HTMLToken::Attribute* content_attribute =
                 token.GetAttributeItem(html_names::kContentAttr);
@@ -1053,7 +1104,7 @@ void TokenPreloadScanner::Scan(const HTMLToken& token,
                               .is_doc_preloader =
                                   scanner_type_ == ScannerType::kMainDocument});
             }
-          } else if (EqualIgnoringASCIICase(equiv_attribute_value,
+          } else if (EqualIgnoringAsciiCase(equiv_attribute_value,
                                             http_names::kDelegateCH)) {
             const HTMLToken::Attribute* content_attribute =
                 token.GetAttributeItem(html_names::kContentAttr);
@@ -1081,7 +1132,7 @@ void TokenPreloadScanner::Scan(const HTMLToken& token,
             token.GetAttributeItem(html_names::kSrcAttr);
         if (source_attribute) {
           String source_attribute_value(source_attribute->Value());
-          if (source_attribute_value.StartsWithIgnoringASCIICase("data:")) {
+          if (source_attribute_value.StartsWithIgnoringAsciiCase("data:")) {
             return;
           }
         }
@@ -1135,7 +1186,10 @@ void TokenPreloadScanner::UpdatePredictedBaseURL(const HTMLToken& token) {
     KURL url(document_url_,
              StripLeadingAndTrailingHtmlSpaces(href_attribute->Value()));
     bool is_valid_base_url =
-        url.IsValid() && !url.ProtocolIsData() && !url.ProtocolIsJavaScript();
+        url.IsValid() && !url.ProtocolIsData() && !url.ProtocolIsJavaScript() &&
+        ContentSecurityPolicy::AllowBaseURI(
+            url, document_parameters_->content_security_policy);
+
     predicted_base_element_url_ = is_valid_base_url ? url : KURL();
   }
 }
@@ -1255,7 +1309,7 @@ std::unique_ptr<PendingPreloadData> HTMLPreloadScanner::Scan(
       // Don't preload anything if a CSP meta tag is found. We should rarely
       // find them here because the HTMLPreloadScanner is only used for the
       // synchronous parsing path.
-      CHECK(csp_meta_tag_count >= 0);
+      CHECK_GE(csp_meta_tag_count, 0);
       if (csp_meta_tag_count) {
         // Reset the tokenizer, to avoid re-scanning tokens that we are about to
         // start parsing.
@@ -1316,6 +1370,14 @@ CachedDocumentParameters::CachedDocumentParameters(Document* document) {
           : kPreloadLazyLoadImageType;
   probe::GetDisabledImageTypes(document->GetExecutionContext(),
                                &disabled_image_types);
+  if (document->GetExecutionContext() &&
+      document->GetExecutionContext()->GetContentSecurityPolicy()) {
+    for (const auto& policy : document->GetExecutionContext()
+                                  ->GetContentSecurityPolicy()
+                                  ->GetParsedPolicies()) {
+      content_security_policy.push_back(policy->Clone());
+    }
+  }
 }
 
 // static

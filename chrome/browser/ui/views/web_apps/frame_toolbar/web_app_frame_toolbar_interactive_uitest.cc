@@ -34,8 +34,10 @@ class WebAppFrameToolbarInteractiveUITest
       public testing::WithParamInterface<bool> {
  public:
   WebAppFrameToolbarInteractiveUITest() {
-    feature_list_.InitWithFeatureState(
-        ::features::kDesktopPWAsElidedExtensionsMenu, IsExtensionsMenuElided());
+    feature_list_.InitWithFeatureStates(
+        {{::features::kDesktopPWAsElidedExtensionsMenu,
+          IsExtensionsMenuElided()},
+         {::features::kWebAppInstallDialog, true}});
   }
 
   void LoadAndLaunchExtension() {
@@ -143,6 +145,7 @@ IN_PROC_BROWSER_TEST_P(WebAppFrameToolbarInteractiveUITest, CycleFocusForward) {
       SetToolbarFocusable(),
 #endif
       FocusToolbar(), CheckViewFocused(kReloadButtonElementId),
+      CycleFocusForward(), CheckViewFocused(kWebAppUninstallButtonElementId),
       VerifyExtensionsMenuButtonIfNeeded(/*go_forward=*/true),
       CycleFocusForward(), CheckViewFocused(kToolbarAppMenuButtonElementId),
       CycleFocusForward(), CheckViewFocused(kReloadButtonElementId));
@@ -159,6 +162,7 @@ IN_PROC_BROWSER_TEST_P(WebAppFrameToolbarInteractiveUITest,
       SetToolbarFocusable(),
 #endif
       FocusToolbar(), CheckViewFocused(kReloadButtonElementId),
+      CycleFocusForward(), CheckViewFocused(kWebAppUninstallButtonElementId),
       VerifyExtensionsMenuButtonIfNeeded(/*go_forward=*/true),
       CycleFocusForward(),
       CheckViewProperty(kToolbarAppMenuButtonElementId, &views::View::HasFocus,
@@ -168,6 +172,7 @@ IN_PROC_BROWSER_TEST_P(WebAppFrameToolbarInteractiveUITest,
       CheckViewProperty(kToolbarAppMenuButtonElementId, &views::View::HasFocus,
                         true),
       VerifyExtensionsMenuButtonIfNeeded(/*go_forward=*/false),
+      CycleFocusBackward(), CheckViewFocused(kWebAppUninstallButtonElementId),
       CycleFocusBackward(), CheckViewFocused(kReloadButtonElementId));
 }
 

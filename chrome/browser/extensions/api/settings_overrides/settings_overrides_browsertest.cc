@@ -60,7 +60,7 @@ namespace {
 // Prepopulated id hardcoded in test_extension. We select it to be a
 // prepopulated ID unlikely to match an engine that is part of the TopEngines
 // tier for the environments where the test run, but still matches some
-// known engine (context around these requirements: https://crbug.com/1500526).
+// known engine (context around these requirements: https://crbug.com/40940777).
 // The default set of engines (when no country is available) has ids 1, 2
 // and 3. The ID 83 is associated with mail.ru, chosen because it's not part
 // of the prepopulated set where we run tests.
@@ -105,11 +105,13 @@ std::unique_ptr<TemplateURLData> TestExtensionSearchEngine(Profile* profile) {
 
 testing::AssertionResult VerifyTemplateURLServiceLoad(
     TemplateURLService* service) {
-  if (service->loaded())
+  if (service->loaded()) {
     return testing::AssertionSuccess();
+  }
   search_test_utils::WaitForTemplateURLServiceToLoad(service);
-  if (service->loaded())
+  if (service->loaded()) {
     return testing::AssertionSuccess();
+  }
   return testing::AssertionFailure() << "TemplateURLService isn't loaded";
 }
 

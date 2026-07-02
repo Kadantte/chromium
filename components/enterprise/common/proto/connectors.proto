@@ -24,6 +24,7 @@ enum AnalysisConnector {
   BULK_DATA_ENTRY = 3;
   PRINT = 4;
   FILE_TRANSFER = 5;
+  DATA_COPIED = 6;
 }
 
 message ContentMetaData {
@@ -86,6 +87,7 @@ message ContentMetaData {
       CLIPBOARD = 2;
       OTHER_PROFILE = 3;
       SAME_PROFILE = 4;
+      GEMINI_IN_CHROME = 5;
     }
     // Holds Chrome context of copied data.
     optional CopiedTextSourceType context = 2;
@@ -221,19 +223,14 @@ message ContentAnalysisRequest {
     // Only possible for the `FILE_DOWNLOADED` analysis connector.
     NORMAL_DOWNLOAD = 6;
     SAVE_AS_DOWNLOAD = 7;
+    CLIPBOARD_COPY = 8;
   }
   optional Reason reason = 19;
 
   // Indicates whether request is blocking until verdict given.
   optional bool blocking = 20;
 
-  // Indicates whether the request requires a metadata verdict (applicable to
-  // resumable metadata request only).
-  //
-  // The field is set to true when Chrome sends the metadata of files larger
-  // than 50MB or encrypted, because it expects a block or allow verdict from
-  // WebProtect right away, and cannot upload full content.
-  optional bool require_metadata_verdict = 21;
+  reserved 21;
 
   // Local IP addresses of the device.
   repeated string local_ips = 22;
@@ -244,6 +241,9 @@ message ContentAnalysisRequest {
   // If true, the content hash is given during the finalize call rather than
   // the initial upload, only for larger files.
   optional bool content_hash_in_final_call = 24;
+
+  // If true, the request originates from mobile browser.
+  optional bool is_mobile = 25;
 
   // Reserved to make sure there is no overlap with DeepScanningClientRequest.
   reserved 3, 4, 6 to 8;

@@ -78,11 +78,6 @@ PaymentRequestDialog* TestContentPaymentRequestDelegate::GetDialogForTesting() {
   return nullptr;
 }
 
-SecurePaymentConfirmationNoCreds*
-TestContentPaymentRequestDelegate::GetNoMatchingCredentialsDialogForTesting() {
-  return nullptr;
-}
-
 autofill::PersonalDataManager*
 TestContentPaymentRequestDelegate::GetPersonalDataManager() {
   return core_delegate_.GetPersonalDataManager();
@@ -106,18 +101,6 @@ TestContentPaymentRequestDelegate::GetAddressNormalizer() {
   return core_delegate_.GetAddressNormalizer();
 }
 
-autofill::RegionDataLoader*
-TestContentPaymentRequestDelegate::GetRegionDataLoader() {
-  return core_delegate_.GetRegionDataLoader();
-}
-
-ukm::UkmRecorder* TestContentPaymentRequestDelegate::GetUkmRecorder() {
-  return core_delegate_.GetUkmRecorder();
-}
-
-std::string TestContentPaymentRequestDelegate::GetAuthenticatedEmail() const {
-  return core_delegate_.GetAuthenticatedEmail();
-}
 
 PrefService* TestContentPaymentRequestDelegate::GetPrefService() {
   return core_delegate_.GetPrefService();
@@ -152,17 +135,6 @@ void TestContentPaymentRequestDelegate::CompleteFullCardRequest() {
 const base::WeakPtr<PaymentUIObserver>
 TestContentPaymentRequestDelegate::GetPaymentUIObserver() const {
   return nullptr;
-}
-
-void TestContentPaymentRequestDelegate::ShowNoMatchingPaymentCredentialDialog(
-    const std::u16string& merchant_name,
-    const std::string& rp_id,
-    base::OnceClosure response_callback,
-    base::OnceClosure opt_out_callback) {}
-
-std::optional<base::UnguessableToken>
-TestContentPaymentRequestDelegate::GetChromeOSTWAInstanceId() const {
-  return std::nullopt;
 }
 
 std::string TestContentPaymentRequestDelegate::

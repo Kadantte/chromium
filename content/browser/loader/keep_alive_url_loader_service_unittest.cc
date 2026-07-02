@@ -31,6 +31,7 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/functions.h"
+#include "net/http/http_request_headers.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "services/network/public/cpp/content_security_policy/content_security_policy.h"
@@ -62,6 +63,7 @@ using attribution_reporting::kAttributionReportingRegisterSourceHeader;
 using attribution_reporting::kAttributionReportingRegisterTriggerHeader;
 
 using testing::_;
+using testing::ElementsAre;
 using testing::Eq;
 using testing::IsEmpty;
 using testing::SizeIs;
@@ -223,9 +225,7 @@ class ConfigurableURLLoaderThrottle final : public blink::URLLoaderThrottle {
       net::RedirectInfo* redirect_info,
       const network::mojom::URLResponseHead& /* response_head */,
       bool* defer,
-      std::vector<std::string>* /* to_be_removed_headers */,
-      net::HttpRequestHeaders* /* modified_headers */,
-      net::HttpRequestHeaders* /* modified_cors_exempt_headers */) override {
+      network::HttpRequestHeadersUpdateParams* headers_update_params) override {
     will_redirect_request_called_ = true;
     *defer = deferring_;
     if (canceling_before_redirect_) {
@@ -868,9 +868,11 @@ TEST_F(KeepAliveURLLoaderServiceTest,
       GetLastPendingRequest()->test_url_loader->follow_redirect_params();
   EXPECT_THAT(params, SizeIs(1));
   EXPECT_EQ(params[0].new_url, std::nullopt);
-  EXPECT_THAT(params[0].removed_headers, IsEmpty());
-  EXPECT_TRUE(params[0].modified_headers.IsEmpty());
-  EXPECT_TRUE(params[0].modified_cors_exempt_headers.IsEmpty());
+  EXPECT_THAT(params[0].headers_update_params.removed_headers,
+              ElementsAre(net::HttpRequestHeaders::kAuthorization));
+  EXPECT_TRUE(params[0].headers_update_params.modified_headers.IsEmpty());
+  EXPECT_TRUE(
+      params[0].headers_update_params.modified_cors_exempt_headers.IsEmpty());
 }
 
 TEST_F(KeepAliveURLLoaderServiceTest,

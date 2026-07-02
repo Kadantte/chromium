@@ -11,10 +11,12 @@
 <translation id="1556537182262721003">ਐਕਸਟੈਂਸ਼ਨ ਡਾਇਰੈਕਟਰੀ 'ਚ ਪ੍ਰੋਫਾਈਲ ਦੀ ਹਲਚਲ ਨਹੀਂ ਕੀਤੀ ਜਾ ਸਕਦੀ।</translation>
 <translation id="1610570795592207282">ਸਕ੍ਰਿਪਟ ਦੇ ਲਈ css '<ph name="RELATIVE_PATH" />' ਨੂੰ ਲੋਡ ਨਹੀਂ ਕੀਤਾ ਜਾ ਸਕਿਆ।</translation>
 <translation id="1616298854599875024">"<ph name="IMPORT_NAME" />" ਐਕਸਟੈਂਸ਼ਨ ਨੂੰ ਆਯਾਤ ਨਹੀਂ ਕੀਤਾ ਜਾ ਸਕਿਆ, ਕਿਉਂਕਿ ਇਹ ਇੱਕ ਸਾਂਝਾ ਕੀਤਾ ਗਿਆ ਮਾਡਿਊਲ ਨਹੀਂ ਹੈ</translation>
+<translation id="1757786065507923842">ਮਾਂ-ਪਿਓ ਦੀ ਇਜਾਜ਼ਤ ਸੰਬੰਧੀ ਬੇਨਤੀ ਅਸਫਲ ਰਹੀ।</translation>
 <translation id="1803557475693955505">ਬੈਕਗ੍ਰਾਊਂਡ ਪੰਨਾ '<ph name="BACKGROUND_PAGE" />' ਲੋਡ ਨਹੀਂ ਕੀਤਾ ਜਾ ਸਕਿਆ।</translation>
 <translation id="1875387611427697908">ਇਸਨੂੰ ਸਿਰਫ਼ <ph name="CHROME_WEB_STORE" /> ਤੋੋਂ ਹੀ ਸ਼ਾਮਲ ਕੀਤਾ ਜਾ ਸਕਦਾ ਹੈ</translation>
 <translation id="2131077480075264">"<ph name="APP_NAME" />" ਨੂੰ ਸਥਾਪਤ ਕਰਨ ਵਿੱਚ ਅਸਮਰੱਥ ਕਿਉਂਕਿ "<ph name="IMPORT_NAME" />" ਵੱਲੋਂ ਇਸਦੀ ਆਗਿਆ ਨਹੀਂ ਹੈ</translation>
 <translation id="2159915644201199628">ਚਿੱਤਰ ਡੀਕੋਡ ਨਹੀਂ ਕਰ ਸਕਿਆ: '<ph name="IMAGE_NAME" />'</translation>
+<translation id="2193567467390483943">ਤੁਹਾਡੇ ਮਾਂ-ਪਿਓ ਨੇ ਇਸ ਐਕਸਟੈਂਸ਼ਨ ਨੂੰ ਮਨਜ਼ੂਰੀ ਨਹੀਂ ਦਿੱਤੀ</translation>
 <translation id="2350172092385603347">ਸਥਾਨੀਕਰਨ ਵਰਤਿਆ, ਪਰ default_locale ਮੈਨੀਫ਼ੈਸਟ ਵਿੱਚ ਨਹੀਂ ਦਿੱਤਾ ਹੋਇਆ ਸੀ।</translation>
 <translation id="2576842806987913196">ਇਸ ਨਾਮ ਨਾਲ ਪਹਿਲਾਂ ਹੀ ਇੱਕ CRX ਫਾਈਲ ਮੌਜੂਦ ਹੈ।</translation>
 <translation id="2662876636500006917">Chrome ਵੈੱਬ ਸਟੋਰ</translation>
@@ -25,13 +27,16 @@
 <translation id="3115238746683532089">ਵਿਕਰੇਤਾ <ph name="VENDOR_ID" /> ਤੋਂ ਅਗਿਆਤ ਉਤਪਾਦ <ph name="PRODUCT_ID" /> (ਸੀਰੀਅਲ ਨੰਬਰ <ph name="SERIAL_NUMBER" />)</translation>
 <translation id="3144135466825225871">crx ਫ਼ਾਈਲ ਬਦਲੀ ਕਰਨਾ ਅਸਫਲ ਰਿਹਾ। ਇਹ ਦੇਖਣ ਲਈ ਜਾਂਚ ਕਰੋ ਕਿ ਫ਼ਾਈਲ ਵਰਤੋਂ ਵਿੱਚ ਹੈ ਜਾਂ ਨਹੀਂ।</translation>
 <translation id="3163201441334626963">ਵਿਕਰੇਤਾ <ph name="VENDOR_ID" /> ਤੋਂ ਅਗਿਆਤ ਉਤਪਾਦ <ph name="PRODUCT_ID" /></translation>
+<translation id="3174723475300476613">ਤੁਹਾਡੀ ਸੰਸਥਾ ਵੱਲੋਂ ਇਸ ਐਕਸਟੈਂਸ਼ਨ ਤੱਕ ਪਹੁੰਚ ਨੂੰ ਬਲਾਕ ਕੀਤਾ ਗਿਆ ਹੈ।</translation>
 <translation id="3242289508736283383">'kiosk_only' ਮੈਨੀਫ਼ੈਸਟ ਵਿਸ਼ੇਸ਼ਤਾ ਵਾਲੀ ਐਪ ਨੂੰ ChromeOS ਕਿਓਸਕ ਮੋਡ ਵਿੱਚ ਸਥਾਪਤ ਕਰਨਾ ਲਾਜ਼ਮੀ ਹੈ</translation>
+<translation id="3364986687961713424">ਤੁਹਾਡੇ ਪ੍ਰਸ਼ਾਸਕ ਵੱਲੋਂ: <ph name="ADMIN_MESSAGE" /></translation>
 <translation id="3393440416772303020"><ph name="PRODUCT_NAME" /> (ਸੀਰੀਅਲ ਨੰਬਰ <ph name="SERIAL_NUMBER" />)</translation>
 <translation id="3466070586188012397">ਵਿਕਰੇਤਾ <ph name="VENDOR_ID" /> ਤੋਂ <ph name="PRODUCT_NAME" /> (ਸੀਰੀਅਲ ਨੰਬਰ <ph name="SERIAL_NUMBER" />)</translation>
 <translation id="3561217442734750519">ਨਿੱਜੀ ਕੁੰਜੀ ਲਈ ਇਨਪੁਟ ਵੈਲਯੂ ਇੱਕ ਪ੍ਰਮਾਣਿਕ ਮਾਰਗ ਹੋਣੀ ਚਾਹੀਦੀ ਹੈ।</translation>
 <translation id="3834775135533257713">"<ph name="TO_INSTALL_APP_NAME" />" ਨੂੰ ਸਥਾਪਤ ਨਹੀਂ ਕੀਤਾ ਜਾ ਸਕਿਆ ਕਿਉਂਕਿ ਇਸਦੀ "<ph name="INSTALLED_APP_NAME" />" ਨਾਲ ਵਿਰੋਧਤਾ ਹੈ।</translation>
 <translation id="388442998277590542">ਵਿਕਲਪ ਪੰਨਾ '<ph name="OPTIONS_PAGE" />' ਲੋਡ ਨਹੀਂ ਕੀਤਾ ਜਾ ਸਕਿਆ।</translation>
 <translation id="3984413272403535372">ਐਕਸਟੈਂਸ਼ਨ ਸਾਈਨ-ਇਨ ਕਰਨ ਵੇਲੇ ਗੜਬੜ।</translation>
+<translation id="4094452115117798451">ਤੁਹਾਡੀ ਸੰਸਥਾ ਵੱਲੋਂ ਇਸ ਐਕਸਟੈਂਸ਼ਨ ਸ਼੍ਰੇਣੀ ਤੱਕ ਪਹੁੰਚ ਨੂੰ ਬਲਾਕ ਕੀਤਾ ਗਿਆ ਹੈ।</translation>
 <translation id="4233778200880751280">ਬਾਰੇ ਪੰਨਾ '<ph name="ABOUT_PAGE" />' ਲੋਡ ਨਹੀਂ ਕੀਤਾ ਜਾ ਸਕਿਆ।</translation>
 <translation id="424963718355121712">ਐਪਾਂ ਨੂੰ ਲਾਜ਼ਮੀ ਤੌਰ 'ਤੇ ਉਸ ਹੋਸਟ ਤੋਂ ਦੇਣਾ ਚਾਹੀਦਾ ਹੈ ਜਿਸ ਨੂੰ ਉਹ ਪ੍ਰਭਾਵਿਤ ਕਰਦੀਆਂ ਹਨ</translation>
 <translation id="4306119971288449206">ਐਪਾਂ ਨੂੰ ਲਾਜ਼ਮੀ ਤੌਰ 'ਤੇ ਸਮੱਗਰੀ-ਪ੍ਰਕਾਰ "<ph name="CONTENT_TYPE" />" ਵਿੱਚ ਦੇਣਾ ਚਾਹੀਦਾ ਹੈ</translation>
@@ -64,6 +69,7 @@
 <translation id="7003844668372540529"><ph name="VENDOR_NAME" /> ਤੋਂ ਅਗਿਆਤ ਉਤਪਾਦ <ph name="PRODUCT_ID" /></translation>
 <translation id="7068383018033524534">ਮੈਨੀਫ਼ੈਸਟ ਫ਼ਾਈਲ ਅਵੈਧ ਹੈ</translation>
 <translation id="7217838517480956708">ਇਸ ਮਸ਼ੀਨ ਦੇ ਪ੍ਰਬੰਧਕ ਨੂੰ <ph name="EXTENSION_NAME" /> ਇੰਸਟੌਲ ਕੀਤੇ ਜਾਣ ਦੀ ਲੋੜ ਹੈ। ਇਸਨੂੰ ਹਟਾਇਆ ਜਾਂ ਸੰਸ਼ੋਧਿਤ ਨਹੀਂ ਕੀਤਾ ਜਾ ਸਕਦਾ।</translation>
+<translation id="7287143125007575591">ਪਹੁੰਚ ਅਸਵੀਕਾਰ ਕੀਤੀ</translation>
 <translation id="7612608473764576263">ਪ੍ਰਾਈਵੇਟ ਕੁੰਜੀ ਲਈ ਇਨਪੁੱਟ ਮੁੱਲ ਵੈਧ ਫਾਰਮੈਟ ਵਿੱਚ ਹੋਣਾ ਲਾਜ਼ਮੀ ਹੈ (PKCS#8-ਫਾਰਮੈਟ PEM-ਇਨਕੋਡ ਕੀਤੀ ਗਈ RSA ਕੁੰਜੀ)।</translation>
 <translation id="765293928828334535">ਇਸ ਵੈੱਬਸਾਈਟ ਤੋਂ ਐਪਾਂ, ਐਕਸਟੈਂਸ਼ਨਾਂ ਅਤੇ ਵਰਤੋਂਕਾਰ ਸਕ੍ਰਿਪਟਾਂ ਸ਼ਾਮਲ ਨਹੀਂ ਕੀਤੀਆਂ ਜਾ ਸਕਦੀਆਂ ਹਨ</translation>
 <translation id="7876803335449432072">ਸਮੱਗਰੀ ਸਕ੍ਰਿਪਟ ਲਈ '<ph name="RELATIVE_PATH" />' ਫ਼ਾਈਲ ਨੂੰ ਲੋਡ ਨਹੀਂ ਕੀਤਾ ਜਾ ਸਕਿਆ, ਸਮੱਗਰੀ ਸਕ੍ਰਿਪਟ ਸਟਾਈਲ ਸ਼ੀਟਾਂ ਨੂੰ ਸਿਰਫ਼ ਸਮਰਥਿਤ ਸਟਾਈਲ ਸ਼ੀਟ ਫ਼ਾਈਲਾਂ ਜਿਵੇਂ ਕਿ .CSS ਫ਼ਾਈਲਾਂ ਤੋਂ ਲੋਡ ਕੀਤਾ ਜਾ ਸਕਦਾ ਹੈ।</translation>

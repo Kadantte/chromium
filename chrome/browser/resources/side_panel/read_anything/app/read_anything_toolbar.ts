@@ -20,15 +20,17 @@ import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import '//resources/cr_elements/cr_lazy_render/cr_lazy_render_lit.js';
 import '//resources/cr_elements/icons.html.js';
 
+import {HelpBubbleMixinLit} from '//resources/cr_components/help_bubble/help_bubble_mixin_lit.js';
 import {AnchorAlignment} from '//resources/cr_elements/cr_action_menu/cr_action_menu.js';
 import type {CrActionMenuElement} from '//resources/cr_elements/cr_action_menu/cr_action_menu.js';
+import type {CrButtonElement} from '//resources/cr_elements/cr_button/cr_button.js';
 import type {CrIconButtonElement} from '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import type {CrLazyRenderLitElement} from '//resources/cr_elements/cr_lazy_render/cr_lazy_render_lit.js';
 import {I18nMixinLit} from '//resources/cr_elements/i18n_mixin_lit.js';
 import {WebUiListenerMixinLit} from '//resources/cr_elements/web_ui_listener_mixin_lit.js';
 import {assert} from '//resources/js/assert.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
-import {CrLitElement, html, type TemplateResult} from '//resources/lit/v3_0/lit.rollup.js';
+import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 
 import {DEFAULT_SETTINGS, SettingsOption, ToolbarEvent} from '../content/read_anything_types.js';
@@ -76,7 +78,7 @@ interface MenuButton {
   icon: string;
   ariaLabel: string;
   openMenu: (target: HTMLElement) => void;
-  announceBlock?: TemplateResult;
+  announceId?: string;
 }
 
 
@@ -114,7 +116,7 @@ const flexWrapTypical = 'nowrap';
 const flexWrapOverflow = 'wrap';
 
 const ReadAnythingToolbarElementBase =
-    WebUiListenerMixinLit(I18nMixinLit(CrLitElement));
+    HelpBubbleMixinLit(WebUiListenerMixinLit(I18nMixinLit(CrLitElement)));
 
 export class ReadAnythingToolbarElement extends ReadAnythingToolbarElementBase {
   static get is() {
@@ -151,7 +153,7 @@ export class ReadAnythingToolbarElement extends ReadAnythingToolbarElementBase {
       isReadAnythingPinned: {type: Boolean},
       isImmersiveEnabled_: {type: Boolean},
       lineFocusStyle: {type: Object},
-      lineFocusMovement: {type: Object},
+      lineFocusMovement: {type: Number},
     };
   }
 
@@ -174,7 +176,7 @@ export class ReadAnythingToolbarElement extends ReadAnythingToolbarElementBase {
   accessor localeToDisplayName: {[lang: string]: string} = {};
   accessor previewVoicePlaying: SpeechSynthesisVoice|null = null;
   accessor settingsPrefs: SettingsPrefs = DEFAULT_SETTINGS;
-  accessor selectedVoice: SpeechSynthesisVoice|undefined;
+  accessor selectedVoice: SpeechSynthesisVoice|null = null;
   accessor pageLanguage: string = '';
   accessor isImmersiveMode: boolean = false;
   accessor lineFocusStyle: LineFocusStyle|null = null;
@@ -203,6 +205,7 @@ export class ReadAnythingToolbarElement extends ReadAnythingToolbarElementBase {
   private constructorTime_: number = 0;
   private currentFocusId_: string = '';
   private windowResizeCallback_: () => void = () => {};
+  private toolbarContainerBlurCallback_: () => void = () => {};
   // The previous speech active status so we can track when it changes.
   private wasSpeechActive_: boolean = false;
   private spinnerDebouncerCallbackHandle_?: number;
@@ -211,6 +214,20 @@ export class ReadAnythingToolbarElement extends ReadAnythingToolbarElementBase {
   // Corresponds to UI setup being complete on the toolbar when
   // connectedCallback has finished executing.
   private isSetupComplete_: boolean = false;
+
+  protected isFontSizeDefault_(): boolean {
+    return chrome.readingMode.fontSize === 2.0;
+  }
+
+  isReadingModeInactive(): boolean {
+    return this.presentationState ===
+        chrome.readingMode.inHiddenPresentationState;
+  }
+
+  isReadingModeInSidePanel(): boolean {
+    return this.presentationState ===
+        chrome.readingMode.inSidePanelPresentationState;
+  }
 
   constructor() {
     super();
@@ -237,6 +254,12 @@ export class ReadAnythingToolbarElement extends ReadAnythingToolbarElementBase {
 
     this.windowResizeCallback_ = this.maybeUpdateMoreOptions_.bind(this);
     window.addEventListener('resize', this.windowResizeCallback_);
+    if (this.isImmersiveEnabled_) {
+      this.toolbarContainerBlurCallback_ =
+          this.onToolbarContainerBlur_.bind(this);
+      this.$.toolbarContainer.addEventListener(
+          'blur', this.toolbarContainerBlurCallback_);
+    }
 
     this.loadFontsStylesheet();
     this.initializeMenuButtons_();
@@ -247,10 +270,21 @@ export class ReadAnythingToolbarElement extends ReadAnythingToolbarElementBase {
     if (this.windowResizeCallback_) {
       window.removeEventListener('resize', this.windowResizeCallback_);
     }
+    if (this.isImmersiveEnabled_) {
+      this.$.toolbarContainer.removeEventListener(
+          'blur', this.toolbarContainerBlurCallback_);
+    }
     if (this.spinnerDebouncerCallbackHandle_ !== undefined) {
       clearTimeout(this.spinnerDebouncerCallbackHandle_);
     }
     super.disconnectedCallback();
+  }
+
+  override firstUpdated(_changedProperties: PropertyValues) {
+    super.firstUpdated(_changedProperties);
+    this.registerHelpBubble(
+        'kReadAnythingViewModeElementId', '#toolbarContainer');
+    this.registerHelpBubble('kReadAnythingSettingsButtonElementId', '#more');
   }
 
   override updated(changedProperties: PropertyValues<this>) {
@@ -258,6 +292,22 @@ export class ReadAnythingToolbarElement extends ReadAnythingToolbarElementBase {
     if (changedProperties.has('isSpeechActive') ||
         changedProperties.has('isAudioCurrentlyPlaying')) {
       this.onSpeechPlayingStateChanged_();
+    }
+
+    if (changedProperties.has('presentationState') &&
+        (this.isReadingModeInSidePanel() || this.isReadingModeInactive())) {
+      this.$.toolbarContainer.tabIndex = 0;
+      const currentFocusedElement =
+          this.$.toolbarContainer.querySelector<HTMLElement>('[tabindex="0"]');
+      if (!currentFocusedElement) {
+        const tabIndexElementId =
+            this.isReadAloudPlayable ? '#play-pause' : '#rate';
+        const element = this.$.toolbarContainer.querySelector<HTMLElement>(
+            tabIndexElementId);
+        if (element) {
+          element.tabIndex = 0;
+        }
+      }
     }
   }
 
@@ -352,8 +402,7 @@ export class ReadAnythingToolbarElement extends ReadAnythingToolbarElementBase {
       ariaLabel: loadTimeData.getString('fontSizeTitle'),
       openMenu: (target: HTMLElement) =>
           openMenu(this.$.fontSizeMenu.get(), target),
-      announceBlock: html`<div id='size-announce' class='announce-block'
-            aria-live='polite'></div>`,
+      announceId: 'size-announce',
     };
     if (this.isImmersiveEnabled_) {
       this.textStyleOptions_ = [fontSizeElement];
@@ -495,7 +544,7 @@ export class ReadAnythingToolbarElement extends ReadAnythingToolbarElementBase {
     this.fire(ToolbarEvent.PREVIOUS_GRANULARITY);
   }
 
-  protected onTextStyleMenuButtonClickFromOverflow_(e: Event) {
+  protected onTextStyleMenuButtonFromOverflowClick_(e: Event) {
     const currentTarget = e.currentTarget as HTMLElement;
     const index = Number.parseInt(currentTarget.dataset['index']!);
     const menu = this.moreOptionsButtons_[index];
@@ -681,6 +730,7 @@ export class ReadAnythingToolbarElement extends ReadAnythingToolbarElementBase {
     if (startingSize !== chrome.readingMode.fontSize) {
       this.announceSizeChage(increase);
     }
+    this.requestUpdate();
     // Don't close the menu
   }
 
@@ -689,6 +739,7 @@ export class ReadAnythingToolbarElement extends ReadAnythingToolbarElementBase {
         ReadAnythingSettingsChange.FONT_SIZE_CHANGE);
     chrome.readingMode.onFontSizeReset();
     this.fire(ToolbarEvent.FONT_SIZE);
+    this.requestUpdate();
   }
 
   protected onPlayPauseClick_() {
@@ -701,18 +752,21 @@ export class ReadAnythingToolbarElement extends ReadAnythingToolbarElementBase {
     this.fire(ToolbarEvent.PLAY_PAUSE);
   }
 
-  protected onToolbarKeyDown_(e: KeyboardEvent) {
+  protected onToolbarKeydown_(e: KeyboardEvent) {
     const toolbar = this.$.toolbarContainer;
-    const buttons =
-        Array.from(toolbar.querySelectorAll<HTMLElement>('.toolbar-button'));
+    const buttons = Array.from(
+        // TODO(crbug.com/342411653): Update the loading spinner to be inside a
+        // button and update the querySelectorAll to use just '.toolbar-button'.
+        toolbar.querySelectorAll<CrIconButtonElement|CrButtonElement>(
+            'cr-icon-button.toolbar-button, cr-button.toolbar-button'));
     assert(buttons, 'no toolbar buttons');
 
     // Only allow focus on the currently visible and actionable elements.
-    const focusableElements = buttons.filter(el => {
+    const focusableElements: HTMLElement[] = buttons.filter(el => {
       return (el.clientHeight > 0) && (el.clientWidth > 0) &&
           (el.getBoundingClientRect().right < toolbar.clientWidth) &&
           (el.style.visibility !== 'hidden') && (el.style.display !== 'none') &&
-          (!(el as any).disabled) && (el.className !== 'separator');
+          (!el.disabled) && (el.className !== 'separator');
     });
 
     // Allow focusing the more options menu if it's visible.
@@ -730,7 +784,7 @@ export class ReadAnythingToolbarElement extends ReadAnythingToolbarElementBase {
     this.onKeyDown_(e, focusableElements);
   }
 
-  protected onFontSizeMenuKeyDown_(e: KeyboardEvent) {
+  protected onFontSizeMenuKeydown_(e: KeyboardEvent) {
     // The font size selection menu is laid out horizontally, so users should be
     // able to navigate it using either up and down arrows, or left and right
     // arrows.
@@ -774,7 +828,6 @@ export class ReadAnythingToolbarElement extends ReadAnythingToolbarElementBase {
 
     const showAtConfig = {
       minY: 0,
-      anchorAlignmentX: AnchorAlignment.BEFORE_START,
       anchorAlignmentY: AnchorAlignment.AFTER_START,
     };
     const currentMenu = this.settingsMenu_[id];
@@ -962,6 +1015,12 @@ export class ReadAnythingToolbarElement extends ReadAnythingToolbarElementBase {
   protected shouldDisableGranularityNavButtons_(): boolean {
     return !this.isReadAloudPlayable ||
         (this.isImmersiveEnabled_ && !this.isSpeechActive);
+  }
+
+  protected onToolbarContainerBlur_() {
+    if (this.isImmersiveEnabled_) {
+      this.$.toolbarContainer.tabIndex = -1;
+    }
   }
 }
 

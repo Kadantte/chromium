@@ -30,7 +30,6 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.ui.R;
 import org.chromium.ui.UiUtils;
 import org.chromium.ui.hierarchicalmenu.HierarchicalMenuController;
-import org.chromium.ui.hierarchicalmenu.HierarchicalMenuController.AccessibilityListObserver;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.ModelListAdapter;
@@ -106,7 +105,9 @@ public class BasicListMenu implements ListMenu {
                                 R.style.TextAppearance_DensityAdaptive_ListMenuItem)
                         .with(
                                 ListMenuItemProperties.ICON_TINT_COLOR_STATE_LIST_ID,
-                                isIconTintable ? R.color.list_menu_item_icon_color_list : 0)
+                                isIconTintable
+                                        ? R.color.list_menu_item_icon_color_list
+                                        : Resources.ID_NULL)
                         .with(ListMenuItemProperties.ORDER, order);
         return new ListItem(ListItemType.MENU_ITEM, modelBuilder.build());
     }
@@ -241,9 +242,9 @@ public class BasicListMenu implements ListMenu {
      * @param dismissDialog The {@link Runnable} to run.
      * @param hierarchicalMenuController The {@link HierarchicalMenuController} to use.
      */
-    public void setupCallbacksRecursively(
-            Runnable dismissDialog, HierarchicalMenuController hierarchicalMenuController) {
-        AccessibilityListObserver observer =
+    public void setupCallbacks(
+            Runnable dismissDialog, HierarchicalMenuController<?> hierarchicalMenuController) {
+        HierarchicalMenuController<?>.AccessibilityListObserver observer =
                 hierarchicalMenuController
                 .new AccessibilityListObserver(
                         mListMenuLayout,
@@ -254,7 +255,7 @@ public class BasicListMenu implements ListMenu {
         mHeaderModelList.addObserver(observer);
         mContentModelList.addObserver(observer);
 
-        hierarchicalMenuController.setupCallbacksRecursively(
+        hierarchicalMenuController.setupCallbacks(
                 mHeaderModelList, mContentModelList, dismissDialog);
     }
 

@@ -7,12 +7,15 @@
 
 #import <UIKit/UIKit.h>
 
+#import "ios/chrome/browser/autofill/form_input_accessory/public/autofill_suggestion_context_menu_handler.h"
+
 @class FormSuggestion;
 @protocol FormSuggestionClient;
 @class FormSuggestionView;
 @class LayoutGuideCenter;
 
-@protocol FormSuggestionViewDelegate <NSObject>
+@protocol
+    FormSuggestionViewDelegate <NSObject, AutofillSuggestionContextMenuHandler>
 
 // User accepted a suggestion from FormSuggestionView. `index` indicates the
 // position of the selected suggestion among the available suggestions.
@@ -51,6 +54,9 @@
 // Reset content insets back to zero and sets the delegate to nil. Used to stop
 // hearing for the pull gesture to reset and unlock the trailing view.
 - (void)resetContentInsetAndDelegateAnimated:(BOOL)animated;
+
+// Starts or stops the activity indicator and enables/disables user interaction.
+- (void)setActivityIndicatorEnabled:(BOOL)enabled;
 
 @end
 

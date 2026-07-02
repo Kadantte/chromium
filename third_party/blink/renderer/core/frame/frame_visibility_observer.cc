@@ -9,7 +9,9 @@
 namespace blink {
 
 FrameVisibilityObserver::FrameVisibilityObserver(LocalFrame* frame) {
-  frame->GetFrameVisibilityObserverSet().insert(this);
+  if (frame) {
+    frame->AddVisibilityObserver(this);
+  }
 }
 
 }  // namespace blink

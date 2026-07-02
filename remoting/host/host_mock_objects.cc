@@ -8,8 +8,6 @@
 #include "base/task/single_thread_task_runner.h"
 #include "net/base/ip_endpoint.h"
 #include "remoting/base/auto_thread_task_runner.h"
-#include "remoting/codec/audio_encoder.h"
-#include "remoting/codec/video_encoder.h"
 #include "remoting/host/input_injector.h"
 #include "remoting/proto/event.pb.h"
 #include "remoting/proto/video.pb.h"
@@ -56,13 +54,27 @@ MockSecurityKeyAuthHandler::MockSecurityKeyAuthHandler() = default;
 MockSecurityKeyAuthHandler::~MockSecurityKeyAuthHandler() = default;
 
 void MockSecurityKeyAuthHandler::SetSendMessageCallback(
-    const SecurityKeyAuthHandler::SendMessageCallback& callback) {
-  callback_ = callback;
+    const SecurityKeyAuthHandler::SendMessageCallback& callback,
+    const void* client_id) {
+  send_message_callback_ = callback;
+  active_client_id_ = client_id;
+}
+
+void MockSecurityKeyAuthHandler::ClearSendMessageCallback(
+    const void* client_id) {
+  if (active_client_id_ == client_id) {
+    send_message_callback_.Reset();
+    active_client_id_ = nullptr;
+  }
 }
 
 const SecurityKeyAuthHandler::SendMessageCallback&
 MockSecurityKeyAuthHandler::GetSendMessageCallback() {
-  return callback_;
+  return send_message_callback_;
+}
+
+base::WeakPtr<SecurityKeyAuthHandler> MockSecurityKeyAuthHandler::GetWeakPtr() {
+  return weak_factory_.GetWeakPtr();
 }
 
 MockMouseCursorMonitor::MockMouseCursorMonitor() = default;

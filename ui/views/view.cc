@@ -685,6 +685,10 @@ bool View::GetIsDrawn() const {
   return IsDrawn();
 }
 
+bool View::GetIsPaintLocked() const {
+  return IsPaintLocked();
+}
+
 bool View::GetEnabled() const {
   return enabled_;
 }
@@ -947,6 +951,11 @@ void View::DeprecatedLayoutImmediately() {
 
 void View::Layout(PassKey) {
   needs_layout_ = false;
+
+  if (GetProperty(kViewDoesNotLayOutChildren)) {
+    CHECK(!HasLayoutManager());
+    return;
+  }
 
   // If we have a layout manager, let it handle the layout for us.
   if (HasLayoutManager()) {
@@ -1605,7 +1614,10 @@ View* View::GetEventHandlerForRect(const gfx::Rect& rect) {
 }
 
 bool View::GetCanProcessEventsWithinSubtree() const {
-  return can_process_events_within_subtree_;
+  if (!can_process_events_within_subtree_) {
+    return false;
+  }
+  return parent() ? parent()->GetCanProcessEventsWithinSubtree() : true;
 }
 
 void View::SetCanProcessEventsWithinSubtree(bool can_process) {
@@ -1722,9 +1734,10 @@ bool View::OnMouseWheel(const ui::MouseWheelEvent& event) {
 }
 
 void View::OnEvent(ui::Event* event) {
-  if (!GetEnabledInViewsSubtree()) {
-    // if this view or any of it parent is disabled, we should "eat" events
-    // without processing
+  if (!GetEnabledInViewsSubtree() || !GetCanProcessEventsWithinSubtree()) {
+    // If this view or any of it parent is disabled, we should "eat" events
+    // without processing. Similarly we should honor views configured to
+    // ignore events within its subtree.
     return;
   }
   ui::EventHandler::OnEvent(event);
@@ -1833,7 +1846,7 @@ WordLookupClient* View::GetWordLookupClient() {
 }
 
 bool View::CanAcceptEvent(const ui::Event& event) {
-  return IsDrawn();
+  return IsDrawn() && GetCanProcessEventsWithinSubtree();
 }
 
 ui::EventTarget* View::GetParentTarget() {
@@ -3037,11 +3050,54 @@ void View::DragInfo::PossibleDrag(const gfx::Point& p) {
 
 // Painting --------------------------------------------------------------------
 
+void View::AddPaintLock() {
+  paint_lock_count_++;
+}
+
+void View::RemovePaintLock() {
+  CHECK_GT(paint_lock_count_, 0);
+  paint_lock_count_--;
+  if (paint_lock_count_ == 0) {
+    UnlockPaint();
+  }
+}
+
+bool View::IsPaintLocked() const {
+  if (paint_lock_count_ > 0) {
+    return true;
+  }
+
+  return parent_ ? parent_->IsPaintLocked() : false;
+}
+
+void View::UnlockPaint() {
+  if (IsPaintLocked()) {
+    return;
+  }
+
+  if (paint_pending_while_locked_) {
+    paint_pending_while_locked_ = false;
+    SchedulePaint();
+  }
+
+  for (View* child : children_) {
+    if (child->paint_lock_count_ == 0) {
+      child->UnlockPaint();
+    }
+  }
+}
+
 void View::SchedulePaintInRectImpl(const gfx::Rect& rect) {
+  if (IsPaintLocked()) {
+    paint_pending_while_locked_ = true;
+    return;
+  }
+
   OnDidSchedulePaint(rect);
   if (!visible_) {
     return;
   }
+
   if (layer()) {
     layer()->SchedulePaint(rect);
   } else if (parent_) {
@@ -3081,7 +3137,7 @@ void View::SchedulePaintOnParent() {
 }
 
 bool View::ShouldPaint() const {
-  return visible_ && !size().IsEmpty();
+  return visible_ && !size().IsEmpty() && !IsPaintLocked();
 }
 
 void View::SetUpTransformRecorderForPainting(
@@ -3237,6 +3293,12 @@ void View::AddChildViewAtImpl(View* view, size_t index) {
   // initialized. If so, let's merge these two functions.
   view->GetViewAccessibility().OnViewHasNewAncestor(this);
 
+  // Fire the live region event if needed on the parent of the added view, not
+  // the view itself, so the right live region container is notified of the
+  // addition.
+  GetViewAccessibility().FireLiveRegionChangedIfNeeded(
+      ViewAccessibility::LiveRegionEventTrigger::kAdditions);
+
   if (widget) {
     // There are scenarios where we might be reparenting a view from a widget
     // that was closed to a widget that is not closed.
@@ -3318,6 +3380,8 @@ void View::DoRemoveChildView(View* view,
   }
 
   if (view->parent_) {
+    view->parent_->GetViewAccessibility().FireLiveRegionChangedIfNeeded(
+        ViewAccessibility::LiveRegionEventTrigger::kRemovals);
     view->parent_->GetViewAccessibility().NotifyEvent(
         ax::mojom::Event::kChildrenChanged, true);
   }
@@ -3702,24 +3766,14 @@ bool View::UpdateParentLayers() {
 void View::OrphanLayers() {
   if (layer()) {
     if (ui::Layer* parent = layer()->parent()) {
+      base::WeakPtr<ui::Layer> weak_parent = layer()->parent()->AsWeakPtr();
       for (ui::Layer* layer : GetLayersInOrder()) {
-        // TODO(http://b/319941708): Please remove the below crash keys once the
-        // the crash is fixed. It seems one of the layers returned by
-        // `GetLayersInOrder()` is not a sibling of this view's `layer()` (i.e.
-        // the parent is different).
-        SCOPED_CRASH_KEY_BOOL("OrphanLayers", "layer_valid", !!layer);
-        SCOPED_CRASH_KEY_BOOL("OrphanLayers", "layer_is_sibling",
-                              layer->parent() == parent);
-        SCOPED_CRASH_KEY_STRING256("OrphanLayers", "this_layer_name",
-                                   this->layer()->name());
-        SCOPED_CRASH_KEY_STRING256("OrphanLayers", "parent_layer_name",
-                                   parent->name());
-        SCOPED_CRASH_KEY_STRING256("OrphanLayers", "sibling_layer_name",
-                                   layer->name());
-        SCOPED_CRASH_KEY_STRING256("OrphanLayers", "widget_name",
-                                   GetWidget() ? GetWidget()->GetName() : "");
-        SCOPED_CRASH_KEY_STRING256("OrphanLayers", "view_class_name",
-                                   GetClassName());
+        // Layer::Remove() will stop any layer animation on the parent, notify
+        // LayerAnimationObserver::OnLayerAnimationAborted(). If the observer
+        // deletes the layer, the weak_parent will become null.
+        if (!weak_parent) {
+          break;
+        }
         parent->Remove(layer);
       }
     }
@@ -4063,8 +4117,8 @@ bool View::DoDrag(const ui::LocatedEvent& event,
   // the RootView can detect it and avoid calling us back.
   gfx::Point widget_location(event.location());
   ConvertPointToWidget(this, &widget_location);
-  widget->RunShellDrag(this, std::move(data), widget_location, drag_operations,
-                       source);
+  widget->RunDragDropLoop(this, std::move(data), widget_location,
+                          drag_operations, source);
   // WARNING: we may have been deleted.
   return true;
 }
@@ -4106,6 +4160,7 @@ ADD_PROPERTY_METADATA(int, OwnedGroup)
 ADD_PROPERTY_METADATA(int, Height)
 ADD_PROPERTY_METADATA(int, ID)
 ADD_READONLY_PROPERTY_METADATA(bool, IsDrawn);
+ADD_READONLY_PROPERTY_METADATA(bool, IsPaintLocked)
 ADD_READONLY_PROPERTY_METADATA(gfx::Size, MaximumSize)
 ADD_READONLY_PROPERTY_METADATA(gfx::Size, MinimumSize)
 ADD_PROPERTY_METADATA(bool, Mirrored)

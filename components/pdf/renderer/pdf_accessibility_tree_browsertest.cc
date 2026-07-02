@@ -9,7 +9,6 @@
 #include <map>
 #include <memory>
 
-#include "base/compiler_specific.h"
 #include "base/functional/callback.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
@@ -19,6 +18,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
+#include "base/types/zip.h"
 #include "build/build_config.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/common/content_switches.h"
@@ -63,14 +63,12 @@ namespace {
 const chrome_pdf::AccessibilityTextRunInfo kFirstTextRun = {
     /*start_index=*/0,
     /*len=*/15,
-    "P",
     gfx::RectF(26.0f, 189.0f, 84.0f, 13.0f),
     chrome_pdf::AccessibilityTextDirection::kNone,
     chrome_pdf::AccessibilityTextStyleInfo()};
 const chrome_pdf::AccessibilityTextRunInfo kSecondTextRun = {
     /*start_index=*/15,
     /*len=*/15,
-    "P",
     gfx::RectF(28.0f, 117.0f, 152.0f, 19.0f),
     chrome_pdf::AccessibilityTextDirection::kNone,
     chrome_pdf::AccessibilityTextStyleInfo()};
@@ -84,28 +82,24 @@ const chrome_pdf::AccessibilityCharInfo kDummyCharsData[] = {
 const chrome_pdf::AccessibilityTextRunInfo kFirstRunMultiLine = {
     /*start_index=*/0,
     /*len=*/7,
-    "P",
     gfx::RectF(26.0f, 189.0f, 84.0f, 13.0f),
     chrome_pdf::AccessibilityTextDirection::kNone,
     chrome_pdf::AccessibilityTextStyleInfo()};
 const chrome_pdf::AccessibilityTextRunInfo kSecondRunMultiLine = {
     /*start_index=*/7,
     /*len=*/8,
-    "P",
     gfx::RectF(26.0f, 189.0f, 84.0f, 13.0f),
     chrome_pdf::AccessibilityTextDirection::kNone,
     chrome_pdf::AccessibilityTextStyleInfo()};
 const chrome_pdf::AccessibilityTextRunInfo kThirdRunMultiLine = {
     /*start_index=*/15,
     /*len=*/9,
-    "P",
     gfx::RectF(26.0f, 189.0f, 84.0f, 13.0f),
     chrome_pdf::AccessibilityTextDirection::kNone,
     chrome_pdf::AccessibilityTextStyleInfo()};
 const chrome_pdf::AccessibilityTextRunInfo kFourthRunMultiLine = {
     /*start_index=*/24,
     /*len=*/6,
-    "P",
     gfx::RectF(26.0f, 189.0f, 84.0f, 13.0f),
     chrome_pdf::AccessibilityTextDirection::kNone,
     chrome_pdf::AccessibilityTextStyleInfo()};
@@ -573,58 +567,19 @@ TEST_F(PdfAccessibilityTreeTest, HeadingsDetectedByHeuristic) {
   EXPECT_EQ(ax::mojom::Role::kParagraph, paragraph3->GetRole());
 }
 
-TEST_F(PdfAccessibilityTreeTest, HeadingsDetectedFromTags) {
+class PdfAccessibilityTreeStructuredModeTest
+    : public PdfAccessibilityTreeTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  bool UseStructuredMode() const { return GetParam(); }
+};
+
+TEST_P(PdfAccessibilityTreeStructuredModeTest,
+       TestSelectionConversionViaFindNodeOffset) {
   base::test::ScopedFeatureList pdf_tags;
-  pdf_tags.InitAndEnableFeature(chrome_pdf::features::kPdfTags);
-  CreatePdfAccessibilityTree();
-  text_runs_ = {kFirstTextRun, kSecondTextRun};
-  text_runs_[0].tag_type = "H1";
-  text_runs_[1].tag_type = "H2";
-
-  chars_ = {std::begin(kDummyCharsData), std::end(kDummyCharsData)};
-  page_info_.text_run_count = text_runs_.size();
-  page_info_.char_count = chars_.size();
-  std::unique_ptr<chrome_pdf::AccessibilityDocInfo> doc_info =
-      CreateAccessibilityDocInfo();
-  doc_info->is_tagged = true;
-  pdf_accessibility_tree_->SetAccessibilityDocInfo(std::move(doc_info));
-  pdf_accessibility_tree_->SetAccessibilityViewportInfo(viewport_info_);
-
-  pdf_accessibility_tree_->SetAccessibilityPageInfo(page_info_, text_runs_,
-                                                    chars_, page_objects_);
-  WaitForThreadTasks();
-  // Wait for `PdfAccessibilityTree::UnserializeNodes()`, a delayed task.
-  WaitForThreadDelayedTasks();
-
-  const ui::AXNode* pdf_root = pdf_accessibility_tree_->GetRoot();
-  CheckRootAndStatusNodes(pdf_root, page_count_,
-                          /*is_pdf_ocr_test=*/false, /*is_ocr_completed=*/false,
-                          /*create_empty_ocr_results=*/false);
-
-  ASSERT_GT(pdf_root->GetChildCount(), 1u);
-  const ui::AXNode* page = pdf_root->GetChildAtIndex(1u);
-  ASSERT_NE(nullptr, page);
-  ASSERT_EQ(2u, page->GetChildCount());
-
-  const ui::AXNode* heading1 = page->GetChildAtIndex(0u);
-  ASSERT_NE(nullptr, heading1);
-  EXPECT_EQ(ax::mojom::Role::kHeading, heading1->GetRole());
-  EXPECT_EQ(1, heading1->GetIntAttribute(
-                   ax::mojom::IntAttribute::kHierarchicalLevel));
-
-  const ui::AXNode* heading2 = page->GetChildAtIndex(1u);
-  ASSERT_NE(nullptr, heading2);
-  EXPECT_EQ(ax::mojom::Role::kHeading, heading2->GetRole());
-  EXPECT_EQ(2, heading2->GetIntAttribute(
-                   ax::mojom::IntAttribute::kHierarchicalLevel));
-}
-
-TEST_F(PdfAccessibilityTreeTest, TestSelectionConversionViaFindNodeOffset) {
-  // TODO(crbug.com/40707542): Parameterized this test. Should work in both
-  // structured and heuristic modes.
-
-  base::test::ScopedFeatureList pdf_tags;
-  pdf_tags.InitAndEnableFeature(chrome_pdf::features::kPdfTags);
+  if (UseStructuredMode()) {
+    pdf_tags.InitAndEnableFeature(chrome_pdf::features::kPdfTags);
+  }
   CreatePdfAccessibilityTree();
 
   constexpr size_t kTextRunLength = 6;
@@ -687,54 +642,57 @@ TEST_F(PdfAccessibilityTreeTest, TestSelectionConversionViaFindNodeOffset) {
     chars_.push_back({static_cast<uint32_t>('e'), 10});
   }
 
-  // Build structure tree:
-  // Document -> Part -> [Sect -> Sect -> P (first text run), P (second, third,
-  // and fourth text run)]
-  auto doc_structure_root =
-      std::make_unique<chrome_pdf::AccessibilityStructureElement>();
-  doc_structure_root->type = chrome_pdf::PdfTagType::kDocument;
+  std::unique_ptr<chrome_pdf::AccessibilityDocInfo> doc_info =
+      CreateAccessibilityDocInfo();
 
-  auto page_structure =
-      std::make_unique<chrome_pdf::AccessibilityStructureElement>();
-  page_structure->type = chrome_pdf::PdfTagType::kPart;
+  if (UseStructuredMode()) {
+    // Build structure tree:
+    // Document -> Part -> [Sect -> Sect -> P (first text run), P (second,
+    // third, and fourth text run)]
+    auto doc_structure_root =
+        std::make_unique<chrome_pdf::AccessibilityStructureElement>();
+    doc_structure_root->type = chrome_pdf::PdfTagType::kDocument;
 
-  // First element: Sect -> Sect -> P (first text run)
-  auto outer_sect =
-      std::make_unique<chrome_pdf::AccessibilityStructureElement>();
-  outer_sect->type = chrome_pdf::PdfTagType::kSect;
+    auto page_structure =
+        std::make_unique<chrome_pdf::AccessibilityStructureElement>();
+    page_structure->type = chrome_pdf::PdfTagType::kPart;
 
-  auto inner_sect =
-      std::make_unique<chrome_pdf::AccessibilityStructureElement>();
-  inner_sect->type = chrome_pdf::PdfTagType::kSect;
+    // First element: Sect -> Sect -> P (first text run)
+    auto outer_sect =
+        std::make_unique<chrome_pdf::AccessibilityStructureElement>();
+    outer_sect->type = chrome_pdf::PdfTagType::kSect;
 
-  auto first_para =
-      std::make_unique<chrome_pdf::AccessibilityStructureElement>();
-  first_para->type = chrome_pdf::PdfTagType::kP;
-  first_para->associated_text_runs_if_available.push_back(&text_runs_[0]);
+    auto inner_sect =
+        std::make_unique<chrome_pdf::AccessibilityStructureElement>();
+    inner_sect->type = chrome_pdf::PdfTagType::kSect;
 
-  inner_sect->children.push_back(std::move(first_para));
-  outer_sect->children.push_back(std::move(inner_sect));
+    auto first_para =
+        std::make_unique<chrome_pdf::AccessibilityStructureElement>();
+    first_para->type = chrome_pdf::PdfTagType::kP;
+    first_para->associated_text_runs_if_available.push_back(&text_runs_[0]);
 
-  // Second element: P (second, third and fourth text runs)
-  auto second_para =
-      std::make_unique<chrome_pdf::AccessibilityStructureElement>();
-  second_para->type = chrome_pdf::PdfTagType::kP;
-  second_para->associated_text_runs_if_available.push_back(&text_runs_[1]);
-  second_para->associated_text_runs_if_available.push_back(&text_runs_[2]);
-  second_para->associated_text_runs_if_available.push_back(&text_runs_[3]);
-  second_para->associated_text_runs_if_available.push_back(&text_runs_[4]);
+    inner_sect->children.push_back(std::move(first_para));
+    outer_sect->children.push_back(std::move(inner_sect));
 
-  page_structure->children.push_back(std::move(outer_sect));
-  page_structure->children.push_back(std::move(second_para));
-  doc_structure_root->children.push_back(std::move(page_structure));
+    // Second element: P (second, third and fourth text runs)
+    auto second_para =
+        std::make_unique<chrome_pdf::AccessibilityStructureElement>();
+    second_para->type = chrome_pdf::PdfTagType::kP;
+    second_para->associated_text_runs_if_available.push_back(&text_runs_[1]);
+    second_para->associated_text_runs_if_available.push_back(&text_runs_[2]);
+    second_para->associated_text_runs_if_available.push_back(&text_runs_[3]);
+    second_para->associated_text_runs_if_available.push_back(&text_runs_[4]);
+
+    page_structure->children.push_back(std::move(outer_sect));
+    page_structure->children.push_back(std::move(second_para));
+    doc_structure_root->children.push_back(std::move(page_structure));
+
+    doc_info->is_tagged = true;
+    doc_info->structure_tree_root = std::move(doc_structure_root);
+  }
 
   page_info_.text_run_count = text_runs_.size();
   page_info_.char_count = chars_.size();
-
-  std::unique_ptr<chrome_pdf::AccessibilityDocInfo> doc_info =
-      CreateAccessibilityDocInfo();
-  doc_info->is_tagged = true;
-  doc_info->structure_tree_root = std::move(doc_structure_root);
 
   pdf_accessibility_tree_->SetAccessibilityDocInfo(std::move(doc_info));
   pdf_accessibility_tree_->SetAccessibilityViewportInfo(viewport_info_);
@@ -813,6 +771,10 @@ TEST_F(PdfAccessibilityTreeTest, TestSelectionConversionViaFindNodeOffset) {
   EXPECT_EQ(18, out_node_char_index);
   EXPECT_EQ(second_static_text->id(), out_node_id);
 }
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         PdfAccessibilityTreeStructuredModeTest,
+                         testing::Bool());
 
 TEST_F(PdfAccessibilityTreeTest, StructureTree) {
   base::test::ScopedFeatureList pdf_tags;
@@ -916,6 +878,9 @@ TEST_F(PdfAccessibilityTreeTest, StructureTree) {
                           /*is_pdf_ocr_test=*/false, /*is_ocr_completed=*/false,
                           /*create_empty_ocr_results=*/false);
 
+  EXPECT_FALSE(
+      pdf_root->HasStringAttribute(ax::mojom::StringAttribute::kLanguage));
+
   ASSERT_GT(pdf_root->GetChildCount(), 1u);
   const ui::AXNode* page = pdf_root->GetChildAtIndex(1u);
   ASSERT_NE(nullptr, page);
@@ -974,6 +939,190 @@ TEST_F(PdfAccessibilityTreeTest, StructureTree) {
   const ui::AXNode* link_node = page->GetChildAtIndex(6u);
   ASSERT_NE(nullptr, link_node);
   EXPECT_EQ(ax::mojom::Role::kImage, link_node->GetRole());
+}
+
+TEST_F(PdfAccessibilityTreeTest, StructureTreeAbbreviationExpansion) {
+  base::test::ScopedFeatureList pdf_tags;
+  pdf_tags.InitAndEnableFeature(chrome_pdf::features::kPdfTags);
+  CreatePdfAccessibilityTree();
+
+  text_runs_ = {kFirstRunMultiLine, kSecondRunMultiLine, kThirdRunMultiLine,
+                kFourthRunMultiLine};
+  chars_.insert_range(chars_.end(), kDummyCharsData);
+
+  auto doc_structure_root =
+      std::make_unique<chrome_pdf::AccessibilityStructureElement>();
+  doc_structure_root->type = chrome_pdf::PdfTagType::kDocument;
+
+  auto page_structure =
+      std::make_unique<chrome_pdf::AccessibilityStructureElement>();
+  page_structure->type = chrome_pdf::PdfTagType::kPart;
+
+  // Text element with abbreviation_expansion.
+  auto span = std::make_unique<chrome_pdf::AccessibilityStructureElement>();
+  span->type = chrome_pdf::PdfTagType::kP;
+  span->associated_text_runs_if_available.push_back(text_runs_.data());
+  span->abbreviation_expansion = "Portable Document Format";
+
+  page_structure->children.push_back(std::move(span));
+  doc_structure_root->children.push_back(std::move(page_structure));
+
+  page_info_.text_run_count = text_runs_.size();
+  page_info_.char_count = chars_.size();
+
+  std::unique_ptr<chrome_pdf::AccessibilityDocInfo> doc_info =
+      CreateAccessibilityDocInfo();
+  doc_info->is_tagged = true;
+  doc_info->structure_tree_root = std::move(doc_structure_root);
+
+  pdf_accessibility_tree_->SetAccessibilityDocInfo(std::move(doc_info));
+  pdf_accessibility_tree_->SetAccessibilityViewportInfo(viewport_info_);
+  pdf_accessibility_tree_->SetAccessibilityPageInfo(page_info_, text_runs_,
+                                                    chars_, page_objects_);
+  WaitForThreadTasks();
+  WaitForThreadDelayedTasks();
+
+  const ui::AXNode* pdf_root = pdf_accessibility_tree_->GetRoot();
+  CheckRootAndStatusNodes(pdf_root, page_count_,
+                          /*is_pdf_ocr_test=*/false, /*is_ocr_completed=*/false,
+                          /*create_empty_ocr_results=*/false);
+
+  ASSERT_GT(pdf_root->GetChildCount(), 1u);
+  const ui::AXNode* page = pdf_root->GetChildAtIndex(1u);
+  ASSERT_NE(nullptr, page);
+  ASSERT_EQ(1u, page->GetChildCount());
+
+  // abbreviation_expansion maps to kDescription.
+  const ui::AXNode* span_node = page->GetChildAtIndex(0u);
+  ASSERT_NE(nullptr, span_node);
+  EXPECT_EQ(ax::mojom::Role::kParagraph, span_node->GetRole());
+  EXPECT_EQ(
+      "Portable Document Format",
+      span_node->GetStringAttribute(ax::mojom::StringAttribute::kDescription));
+}
+
+TEST_F(PdfAccessibilityTreeTest, DocumentLanguageOnRootNode) {
+  base::test::ScopedFeatureList pdf_tags;
+  pdf_tags.InitAndEnableFeature(chrome_pdf::features::kPdfTags);
+  CreatePdfAccessibilityTree();
+
+  auto doc_structure_root =
+      std::make_unique<chrome_pdf::AccessibilityStructureElement>();
+  doc_structure_root->type = chrome_pdf::PdfTagType::kDocument;
+  doc_structure_root->language = "en-US";
+
+  auto page_structure =
+      std::make_unique<chrome_pdf::AccessibilityStructureElement>();
+  page_structure->type = chrome_pdf::PdfTagType::kPart;
+
+  text_runs_ = {kFirstRunMultiLine, kSecondRunMultiLine, kThirdRunMultiLine,
+                kFourthRunMultiLine};
+  chars_.insert(chars_.end(), std::begin(kDummyCharsData),
+                std::end(kDummyCharsData));
+
+  auto para = std::make_unique<chrome_pdf::AccessibilityStructureElement>();
+  para->type = chrome_pdf::PdfTagType::kP;
+  para->associated_text_runs_if_available.push_back(&text_runs_[0]);
+
+  page_structure->children.push_back(std::move(para));
+  doc_structure_root->children.push_back(std::move(page_structure));
+
+  page_info_.text_run_count = text_runs_.size();
+  page_info_.char_count = chars_.size();
+
+  std::unique_ptr<chrome_pdf::AccessibilityDocInfo> doc_info =
+      CreateAccessibilityDocInfo();
+  doc_info->is_tagged = true;
+  doc_info->structure_tree_root = std::move(doc_structure_root);
+
+  pdf_accessibility_tree_->SetAccessibilityDocInfo(std::move(doc_info));
+  pdf_accessibility_tree_->SetAccessibilityViewportInfo(viewport_info_);
+  pdf_accessibility_tree_->SetAccessibilityPageInfo(page_info_, text_runs_,
+                                                    chars_, page_objects_);
+
+  WaitForThreadTasks();
+  WaitForThreadDelayedTasks();
+
+  const ui::AXNode* pdf_root = pdf_accessibility_tree_->GetRoot();
+  CheckRootAndStatusNodes(pdf_root, page_count_,
+                          /*is_pdf_ocr_test=*/false, /*is_ocr_completed=*/false,
+                          /*create_empty_ocr_results=*/false);
+  EXPECT_EQ("en-US", pdf_root->GetStringAttribute(
+                         ax::mojom::StringAttribute::kLanguage));
+}
+
+TEST_F(PdfAccessibilityTreeTest, StructureTreeRootAttributes) {
+  base::test::ScopedFeatureList pdf_tags;
+  pdf_tags.InitAndEnableFeature(chrome_pdf::features::kPdfTags);
+  CreatePdfAccessibilityTree();
+
+  // Structure tree:
+  //   kDocument -> kPart -> kDocument(lang="es", alt="...") -> kP -> text.
+  auto doc_structure_root =
+      std::make_unique<chrome_pdf::AccessibilityStructureElement>();
+  doc_structure_root->type = chrome_pdf::PdfTagType::kDocument;
+
+  auto page_structure =
+      std::make_unique<chrome_pdf::AccessibilityStructureElement>();
+  page_structure->type = chrome_pdf::PdfTagType::kPart;
+
+  auto pdf_doc = std::make_unique<chrome_pdf::AccessibilityStructureElement>();
+  pdf_doc->type = chrome_pdf::PdfTagType::kDocument;
+  pdf_doc->language = "es";
+  pdf_doc->alt_text = "Document description";
+
+  text_runs_ = {kFirstTextRun, kSecondTextRun};
+  chars_.insert(chars_.end(), std::begin(kDummyCharsData),
+                std::end(kDummyCharsData));
+
+  auto para = std::make_unique<chrome_pdf::AccessibilityStructureElement>();
+  para->type = chrome_pdf::PdfTagType::kP;
+  para->associated_text_runs_if_available.push_back(&text_runs_[0]);
+
+  pdf_doc->children.push_back(std::move(para));
+  page_structure->children.push_back(std::move(pdf_doc));
+  doc_structure_root->children.push_back(std::move(page_structure));
+
+  page_info_.text_run_count = text_runs_.size();
+  page_info_.char_count = chars_.size();
+
+  std::unique_ptr<chrome_pdf::AccessibilityDocInfo> doc_info =
+      CreateAccessibilityDocInfo();
+  doc_info->is_tagged = true;
+  doc_info->structure_tree_root = std::move(doc_structure_root);
+
+  pdf_accessibility_tree_->SetAccessibilityDocInfo(std::move(doc_info));
+  pdf_accessibility_tree_->SetAccessibilityViewportInfo(viewport_info_);
+  pdf_accessibility_tree_->SetAccessibilityPageInfo(page_info_, text_runs_,
+                                                    chars_, page_objects_);
+
+  WaitForThreadTasks();
+  // Wait for `PdfAccessibilityTree::UnserializeNodes()`, a delayed task.
+  WaitForThreadDelayedTasks();
+
+  const ui::AXNode* pdf_root = pdf_accessibility_tree_->GetRoot();
+  CheckRootAndStatusNodes(pdf_root, page_count_,
+                          /*is_pdf_ocr_test=*/false, /*is_ocr_completed=*/false,
+                          /*create_empty_ocr_results=*/false);
+
+  ASSERT_GT(pdf_root->GetChildCount(), 1u);
+  const ui::AXNode* page = pdf_root->GetChildAtIndex(1u);
+  ASSERT_NE(nullptr, page);
+
+  // Tagged PDFs have a /Document element at the root of their structure tree
+  // which gets mapped to kGenericContainer to avoid introducing a redundant
+  // Document node in the accessibility tree.
+  ASSERT_EQ(1u, page->GetChildCount());
+  const ui::AXNode* container = page->GetChildAtIndex(0u);
+  ASSERT_NE(nullptr, container);
+  EXPECT_EQ(ax::mojom::Role::kGenericContainer, container->GetRole());
+
+  // The container node holds the kDocument attributes.
+  EXPECT_EQ("es", container->GetStringAttribute(
+                      ax::mojom::StringAttribute::kLanguage));
+  EXPECT_EQ(
+      "Document description",
+      container->GetStringAttribute(ax::mojom::StringAttribute::kDescription));
 }
 
 TEST_F(PdfAccessibilityTreeTest, PartiallyTaggedPdfPreservesSemanticStructure) {
@@ -1768,24 +1917,18 @@ TEST_F(PdfAccessibilityTreeTest, TestListboxNodeCreation) {
     ASSERT_EQ(std::size(kExpectedOptions[0]), listbox_node->GetChildCount());
     const std::vector<raw_ptr<ui::AXNode, VectorExperimental>>&
         listbox_child_nodes = listbox_node->GetAllChildren();
-    UNSAFE_TODO({
-      for (size_t i = 0; i < listbox_child_nodes.size(); i++) {
-        EXPECT_EQ(ax::mojom::Role::kListBoxOption,
-                  listbox_child_nodes[i]->GetRole());
-        EXPECT_NE(ax::mojom::Restriction::kReadOnly,
-                  listbox_child_nodes[i]->data().GetRestriction());
-        EXPECT_EQ(kExpectedOptions[0][i].name,
-                  listbox_child_nodes[i]->GetStringAttribute(
-                      ax::mojom::StringAttribute::kName));
-        EXPECT_EQ(kExpectedOptions[0][i].is_selected,
-                  listbox_child_nodes[i]->GetBoolAttribute(
-                      ax::mojom::BoolAttribute::kSelected));
-        EXPECT_TRUE(
-            listbox_child_nodes[i]->HasState(ax::mojom::State::kFocusable));
-        EXPECT_EQ(kExpectedBounds[0],
-                  listbox_child_nodes[i]->data().relative_bounds.bounds);
-      }
-    });
+    for (const auto [expected, node] :
+         base::zip(kExpectedOptions[0], listbox_child_nodes)) {
+      EXPECT_EQ(ax::mojom::Role::kListBoxOption, node->GetRole());
+      EXPECT_NE(ax::mojom::Restriction::kReadOnly,
+                node->data().GetRestriction());
+      EXPECT_EQ(expected.name,
+                node->GetStringAttribute(ax::mojom::StringAttribute::kName));
+      EXPECT_EQ(expected.is_selected,
+                node->GetBoolAttribute(ax::mojom::BoolAttribute::kSelected));
+      EXPECT_TRUE(node->HasState(ax::mojom::State::kFocusable));
+      EXPECT_EQ(kExpectedBounds[0], node->data().relative_bounds.bounds);
+    }
   }
 
   {
@@ -1802,24 +1945,18 @@ TEST_F(PdfAccessibilityTreeTest, TestListboxNodeCreation) {
     ASSERT_EQ(std::size(kExpectedOptions[1]), listbox_node->GetChildCount());
     const std::vector<raw_ptr<ui::AXNode, VectorExperimental>>&
         listbox_child_nodes = listbox_node->GetAllChildren();
-    UNSAFE_TODO({
-      for (size_t i = 0; i < listbox_child_nodes.size(); i++) {
-        EXPECT_EQ(ax::mojom::Role::kListBoxOption,
-                  listbox_child_nodes[i]->GetRole());
-        EXPECT_EQ(ax::mojom::Restriction::kReadOnly,
-                  listbox_child_nodes[i]->data().GetRestriction());
-        EXPECT_EQ(kExpectedOptions[1][i].name,
-                  listbox_child_nodes[i]->GetStringAttribute(
-                      ax::mojom::StringAttribute::kName));
-        EXPECT_EQ(kExpectedOptions[1][i].is_selected,
-                  listbox_child_nodes[i]->GetBoolAttribute(
-                      ax::mojom::BoolAttribute::kSelected));
-        EXPECT_TRUE(
-            listbox_child_nodes[i]->HasState(ax::mojom::State::kFocusable));
-        EXPECT_EQ(kExpectedBounds[1],
-                  listbox_child_nodes[i]->data().relative_bounds.bounds);
-      }
-    });
+    for (const auto [expected, node] :
+         base::zip(kExpectedOptions[1], listbox_child_nodes)) {
+      EXPECT_EQ(ax::mojom::Role::kListBoxOption, node->GetRole());
+      EXPECT_EQ(ax::mojom::Restriction::kReadOnly,
+                node->data().GetRestriction());
+      EXPECT_EQ(expected.name,
+                node->GetStringAttribute(ax::mojom::StringAttribute::kName));
+      EXPECT_EQ(expected.is_selected,
+                node->GetBoolAttribute(ax::mojom::BoolAttribute::kSelected));
+      EXPECT_TRUE(node->HasState(ax::mojom::State::kFocusable));
+      EXPECT_EQ(kExpectedBounds[1], node->data().relative_bounds.bounds);
+    }
   }
 }
 
@@ -1989,24 +2126,18 @@ TEST_F(PdfAccessibilityTreeTest, TestComboboxNodeCreation) {
               combobox_popup_node->GetChildCount());
     const std::vector<raw_ptr<ui::AXNode, VectorExperimental>>&
         popup_child_nodes = combobox_popup_node->GetAllChildren();
-    UNSAFE_TODO({
-      for (size_t i = 0; i < popup_child_nodes.size(); i++) {
-        EXPECT_EQ(ax::mojom::Role::kListBoxOption,
-                  popup_child_nodes[i]->GetRole());
-        EXPECT_NE(ax::mojom::Restriction::kReadOnly,
-                  popup_child_nodes[i]->data().GetRestriction());
-        EXPECT_EQ(kExpectedOptions[0][i].name,
-                  popup_child_nodes[i]->GetStringAttribute(
-                      ax::mojom::StringAttribute::kName));
-        EXPECT_EQ(kExpectedOptions[0][i].is_selected,
-                  popup_child_nodes[i]->GetBoolAttribute(
-                      ax::mojom::BoolAttribute::kSelected));
-        EXPECT_TRUE(
-            popup_child_nodes[i]->HasState(ax::mojom::State::kFocusable));
-        EXPECT_EQ(kExpectedBounds[0],
-                  popup_child_nodes[i]->data().relative_bounds.bounds);
-      }
-    });
+    for (const auto [expected, node] :
+         base::zip(kExpectedOptions[0], popup_child_nodes)) {
+      EXPECT_EQ(ax::mojom::Role::kListBoxOption, node->GetRole());
+      EXPECT_NE(ax::mojom::Restriction::kReadOnly,
+                node->data().GetRestriction());
+      EXPECT_EQ(expected.name,
+                node->GetStringAttribute(ax::mojom::StringAttribute::kName));
+      EXPECT_EQ(expected.is_selected,
+                node->GetBoolAttribute(ax::mojom::BoolAttribute::kSelected));
+      EXPECT_TRUE(node->HasState(ax::mojom::State::kFocusable));
+      EXPECT_EQ(kExpectedBounds[0], node->data().relative_bounds.bounds);
+    }
     EXPECT_EQ(popup_child_nodes[1]->data().id,
               combobox_input_node->GetIntAttribute(
                   ax::mojom::IntAttribute::kActivedescendantId));
@@ -2051,24 +2182,18 @@ TEST_F(PdfAccessibilityTreeTest, TestComboboxNodeCreation) {
               combobox_popup_node->GetChildCount());
     const std::vector<raw_ptr<ui::AXNode, VectorExperimental>>&
         popup_child_nodes = combobox_popup_node->GetAllChildren();
-    UNSAFE_TODO({
-      for (size_t i = 0; i < popup_child_nodes.size(); i++) {
-        EXPECT_EQ(ax::mojom::Role::kListBoxOption,
-                  popup_child_nodes[i]->GetRole());
-        EXPECT_EQ(ax::mojom::Restriction::kReadOnly,
-                  popup_child_nodes[i]->data().GetRestriction());
-        EXPECT_EQ(kExpectedOptions[1][i].name,
-                  popup_child_nodes[i]->GetStringAttribute(
-                      ax::mojom::StringAttribute::kName));
-        EXPECT_EQ(kExpectedOptions[1][i].is_selected,
-                  popup_child_nodes[i]->GetBoolAttribute(
-                      ax::mojom::BoolAttribute::kSelected));
-        EXPECT_TRUE(
-            popup_child_nodes[i]->HasState(ax::mojom::State::kFocusable));
-        EXPECT_EQ(kExpectedBounds[1],
-                  popup_child_nodes[i]->data().relative_bounds.bounds);
-      }
-    });
+    for (const auto [expected, node] :
+         base::zip(kExpectedOptions[1], popup_child_nodes)) {
+      EXPECT_EQ(ax::mojom::Role::kListBoxOption, node->GetRole());
+      EXPECT_EQ(ax::mojom::Restriction::kReadOnly,
+                node->data().GetRestriction());
+      EXPECT_EQ(expected.name,
+                node->GetStringAttribute(ax::mojom::StringAttribute::kName));
+      EXPECT_EQ(expected.is_selected,
+                node->GetBoolAttribute(ax::mojom::BoolAttribute::kSelected));
+      EXPECT_TRUE(node->HasState(ax::mojom::State::kFocusable));
+      EXPECT_EQ(kExpectedBounds[1], node->data().relative_bounds.bounds);
+    }
     EXPECT_EQ(popup_child_nodes[1]->data().id,
               combobox_input_node->GetIntAttribute(
                   ax::mojom::IntAttribute::kActivedescendantId));

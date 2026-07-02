@@ -6,6 +6,7 @@
 
 #include <string>
 
+#include "base/check_is_test.h"
 #include "base/command_line.h"
 #include "base/containers/flat_set.h"
 #include "base/feature_list.h"
@@ -19,7 +20,6 @@
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
-#include "components/signin/public/base/signin_switches.h"
 
 namespace {
 
@@ -94,6 +94,14 @@ ProfilePicker::Params ProfilePicker::Params::ForGlicManager(
   return params;
 }
 
+// static
+ProfilePicker::Params ProfilePicker::Params::ForTesting(  // IN-TEST
+    EntryPoint entry_point,
+    const base::FilePath& profile_path) {
+  CHECK_IS_TEST();
+  return ProfilePicker::Params(entry_point, profile_path);
+}
+
 void ProfilePicker::Params::NotifyFirstRunExited(
     FirstRunExitStatus exit_status) {
   if (!first_run_exited_callback_) {
@@ -146,7 +154,7 @@ StartupProfileMode ProfilePicker::GetStartupMode() {
     return StartupProfileMode::kBrowserWindow;
   }
 
-  // TODO (crbug/1155158): Move this over the urls check (in
+  // TODO (crbug.com/40159795): Move this over the urls check (in
   // startup_browser_creator.cc) once the profile picker can forward urls
   // specified in command line.
   if (availability_on_startup == AvailabilityOnStartup::kForced) {
@@ -167,9 +175,7 @@ StartupProfileMode ProfilePicker::GetStartupMode() {
       if (!profile_manager->GetProfileDirForEmail(switch_email).empty()) {
         return StartupProfileMode::kBrowserWindow;
       } else if (command_line->HasSwitch(
-                     switches::kCreateProfileEmailIfNotExists) &&
-                 base::FeatureList::IsEnabled(
-                     features::kCreateProfileIfNoneExists)) {
+                     switches::kCreateProfileEmailIfNotExists)) {
         return StartupProfileMode::kProfilePicker;
       }
     }
@@ -177,12 +183,7 @@ StartupProfileMode ProfilePicker::GetStartupMode() {
 
   size_t number_of_profiles = profile_manager->GetNumberOfProfiles();
   // Need to consider 0 profiles as this is what happens in some browser-tests.
-  if (number_of_profiles == 0) {
-    return StartupProfileMode::kBrowserWindow;
-  }
-  if (number_of_profiles == 1 &&
-      !base::FeatureList::IsEnabled(
-          switches::kShowProfilePickerToAllUsersExperiment)) {
+  if (number_of_profiles <= 1) {
     return StartupProfileMode::kBrowserWindow;
   }
 

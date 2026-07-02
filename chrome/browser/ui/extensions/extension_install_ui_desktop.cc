@@ -11,17 +11,17 @@
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/extensions/extension_installed_watcher.h"
 #include "chrome/browser/ui/extensions/extension_post_install_dialog.h"
 #include "chrome/browser/ui/extensions/extension_post_install_dialog_model.h"
 #include "chrome/browser/ui/extensions/installation_error_infobar_delegate.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
 #include "chrome/browser/ui/simple_message_box.h"
 #include "chrome/browser/ui/singleton_tabs.h"
@@ -82,8 +82,7 @@ void ShowAppInstalledNotification(
       FindOrCreateVisibleBrowser(current_profile);
   CHECK(browser_window);
   NavigateParams params(GetSingletonTabNavigateParams(
-      browser_window->GetBrowserForMigrationOnly(),
-      GURL(chrome::kChromeUIAppsURL)));
+      browser_window, GURL(chrome::kChromeUIAppsURL)));
   Navigate(&params);
 #endif
 }
@@ -142,12 +141,14 @@ void ExtensionInstallUIDesktop::OnInstallFailure(
     return;
   }
 
-  Browser* browser = chrome::FindLastActiveWithProfile(profile());
+  BrowserWindowInterface* const browser =
+      ProfileBrowserCollection::GetForProfile(profile())
+          ->GetLastActiveBrowser();
   if (!browser) {  // Can be nullptr in unittests.
     return;
   }
   WebContents* web_contents =
-      browser->tab_strip_model()->GetActiveWebContents();
+      browser->GetTabStripModel()->GetActiveWebContents();
   if (!web_contents) {
     return;
   }

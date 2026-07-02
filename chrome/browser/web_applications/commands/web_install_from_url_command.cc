@@ -21,6 +21,7 @@
 #include "chrome/browser/web_applications/locks/shared_web_contents_with_app_lock.h"
 #include "chrome/browser/web_applications/locks/web_app_lock_manager.h"
 #include "chrome/browser/web_applications/web_app_command_manager.h"
+#include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_constants.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/browser/web_applications/web_app_install_finalizer.h"
@@ -28,6 +29,7 @@
 #include "chrome/browser/web_applications/web_app_install_params.h"
 #include "chrome/browser/web_applications/web_app_install_utils.h"
 #include "chrome/browser/web_applications/web_app_logging.h"
+#include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/browser/web_applications/web_app_ui_manager.h"
 #include "chrome/browser/web_applications/web_contents/web_app_data_retriever.h"
@@ -179,7 +181,6 @@ void WebInstallFromUrlCommand::OnDidPerformInstallableCheck(
   }
 
   CHECK(opt_manifest->start_url.is_valid());
-  CHECK(opt_manifest->id.is_valid());
 
   // If navigator.install was invoked with only an `install_url` (1 parameter
   // version), the manifest must have a developer-specified, or "custom", id.
@@ -193,13 +194,16 @@ void WebInstallFromUrlCommand::OnDidPerformInstallableCheck(
     Abort(webapps::InstallResultCode::kNoValidIconsInManifest);
     return;
   }
+  std::optional<webapps::ManifestId> opt_manifest_id =
+          webapps::ManifestId::Create(opt_manifest_->id);
+  CHECK(opt_manifest_id.has_value());
 
   CHECK(!shared_web_contents_with_app_lock_);
   shared_web_contents_with_app_lock_ =
       std::make_unique<SharedWebContentsWithAppLock>();
   command_manager()->lock_manager().UpgradeAndAcquireLock(
       std::move(web_contents_lock_), *shared_web_contents_with_app_lock_,
-      {GenerateAppIdFromManifestId(opt_manifest_->id)},
+      {GenerateAppIdFromManifestId(*opt_manifest_id)},
       base::BindOnce(
           &WebInstallFromUrlCommand::CreateWebAppInstallInfoFromManifest,
           weak_ptr_factory_.GetWeakPtr()));
@@ -224,14 +228,22 @@ void WebInstallFromUrlCommand::OnWebAppInstallInfoCreatedShowDialog(
     std::unique_ptr<WebAppInstallInfo> install_info) {
   CHECK(install_info);
   web_app_info_ = std::move(install_info);
+  web_app_info_->installed_by = installed_by_;
 
   // If navigator.install was invoked with both `install_url` and `manifest_id`
   // (2 param version), the given `manifest_id` must match the computed id of
   // the manifest we just fetched.
-  if (manifest_id_.has_value() &&
-      manifest_id_ != web_app_info_->manifest_id()) {
-    Abort(webapps::InstallResultCode::kManifestIdMismatch);
-    return;
+  if (manifest_id_.has_value()) {
+    std::optional<webapps::ManifestId> valid_manifest_id_ =
+        webapps::ManifestId::Create(*manifest_id_);
+    if (!valid_manifest_id_.has_value()) {
+      Abort(webapps::InstallResultCode::kInvalidManifestId);
+      return;
+    }
+    if (valid_manifest_id_.value() != web_app_info_->manifest_id()) {
+      Abort(webapps::InstallResultCode::kManifestIdMismatch);
+      return;
+    }
   }
 
   // TODO(crbug.com/415825168): Support detailed install dialog for background
@@ -247,7 +259,9 @@ void WebInstallFromUrlCommand::OnWebAppInstallInfoCreatedShowDialog(
 
 void WebInstallFromUrlCommand::OnInstallDialogCompleted(
     bool user_accepted,
-    std::unique_ptr<WebAppInstallInfo> web_app_info) {
+    std::unique_ptr<WebAppInstallInfo> web_app_info,
+    WebAppInstallationAcceptanceResultCallback result_callback) {
+  acceptance_result_callback_ = std::move(result_callback);
   if (!user_accepted) {
     Abort(webapps::InstallResultCode::kUserInstallDeclined);
     return;
@@ -264,14 +278,19 @@ void WebInstallFromUrlCommand::OnInstallDialogCompleted(
   finalize_options.overwrite_existing_manifest_fields = true;
   finalize_options.add_to_applications_menu = true;
   finalize_options.add_to_desktop = true;
-  shared_web_contents_with_app_lock_->install_finalizer().FinalizeInstall(
-      *web_app_info_, finalize_options,
-      base::BindOnce(&WebInstallFromUrlCommand::OnAppInstalled,
-                     weak_ptr_factory_.GetWeakPtr()));
+
+  install_job_ = std::make_unique<FinalizeInstallJob>(
+      profile_.get(), shared_web_contents_with_app_lock_.get(),
+      shared_web_contents_with_app_lock_.get(), *web_app_info_,
+      finalize_options);
+
+  install_job_->Start(base::BindOnce(&WebInstallFromUrlCommand::OnAppInstalled,
+                                     weak_ptr_factory_.GetWeakPtr()));
 }
 
 void WebInstallFromUrlCommand::OnAppInstalled(const webapps::AppId& app_id,
                                               webapps::InstallResultCode code) {
+  install_job_.reset();
   if (code != webapps::InstallResultCode::kSuccessNewInstall) {
     Abort(code);
     return;
@@ -287,33 +306,28 @@ void WebInstallFromUrlCommand::OnAppInstalled(const webapps::AppId& app_id,
   RecordInstallMetrics(InstallCommand::kWebAppInstallFromUrl,
                        WebAppType::kCraftedApp, code, kInstallSource);
 
-  LaunchApp();
-}
+  base::OnceClosure launch_closure = base::BindOnce(
+      [](base::WeakPtr<WebAppCommandScheduler> scheduler,
+         webapps::AppId app_id) {
+        if (scheduler) {
+          scheduler->LaunchApp(app_id, std::nullopt, base::DoNothing(),
+                               apps::LaunchSource::kFromWebInstallApi,
+                               FROM_HERE);
+        }
+      },
+      WebAppProvider::GetForWebApps(&profile_.get())->scheduler().GetWeakPtr(),
+      app_id);
 
-void WebInstallFromUrlCommand::LaunchApp() {
-  apps::AppLaunchParams params = apps::AppLaunchParams(
-      app_id_, apps::LaunchContainer::kLaunchContainerNone,
-      WindowOpenDisposition::UNKNOWN, apps::LaunchSource::kFromWebInstallApi);
-
-  shared_web_contents_with_app_lock_->ui_manager().LaunchWebApp(
-      std::move(params), LaunchWebAppWindowSetting::kOverrideWithWebAppConfig,
-      profile_.get(),
-      base::IgnoreArgs<base::WeakPtr<Browser>,
-                       base::WeakPtr<content::WebContents>,
-                       apps::LaunchContainer>(
-          base::BindOnce(&WebInstallFromUrlCommand::OnAppLaunched,
-                         weak_ptr_factory_.GetWeakPtr())),
-      *shared_web_contents_with_app_lock_);
-}
-
-void WebInstallFromUrlCommand::OnAppLaunched(base::Value launch_debug_value) {
-  GetMutableDebugValue().Set("launch", std::move(launch_debug_value));
+  if (acceptance_result_callback_) {
+    std::move(acceptance_result_callback_).Run(true, std::move(launch_closure));
+  }
 
   const GURL manifest_id =
       shared_web_contents_with_app_lock_->registrar().GetComputedManifestId(
-          app_id_);
+          app_id);
   CHECK(opt_manifest_->id == manifest_id);
-  CompleteAndSelfDestruct(CommandResult::kSuccess, app_id_,
+
+  CompleteAndSelfDestruct(CommandResult::kSuccess, app_id,
                           install_result_code_);
 }
 

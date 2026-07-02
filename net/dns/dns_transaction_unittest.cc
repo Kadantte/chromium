@@ -11,6 +11,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -32,10 +33,13 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "net/base/idempotency.h"
 #include "net/base/ip_address.h"
+#include "net/base/isolation_info.h"
 #include "net/base/port_util.h"
 #include "net/base/upload_bytes_element_reader.h"
 #include "net/base/url_util.h"
@@ -48,6 +52,7 @@
 #include "net/dns/dns_server_iterator.h"
 #include "net/dns/dns_session.h"
 #include "net/dns/dns_test_util.h"
+#include "net/dns/host_resolver_internal_result_test_util.h"
 #include "net/dns/public/dns_over_https_config.h"
 #include "net/dns/public/dns_over_https_server_config.h"
 #include "net/dns/public/dns_protocol.h"
@@ -71,7 +76,24 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
+#if BUILDFLAG(IS_ANDROID)
+#include "net/dns/mock_dns_platform_android_attempt_delegate.h"
+#endif  // BUILDFLAG(IS_ANDROID)
+
+using net::test::IsError;
 using net::test::IsOk;
+using ::testing::_;
+using ::testing::AllOf;
+using ::testing::ElementsAre;
+using ::testing::Eq;
+using ::testing::Ne;
+
+using ::testing::IsEmpty;
+using ::testing::Pointee;
+using ::testing::Property;
+using ::testing::Return;
+using ::testing::SizeIs;
+using ::testing::StrEq;
 
 namespace net {
 
@@ -276,8 +298,11 @@ class TestSocketFactory : public MockClientSocketFactory {
 
   std::unique_ptr<DatagramClientSocket> CreateDatagramClientSocket(
       DatagramSocket::BindType bind_type,
+      handles::NetworkHandle target_network,
       NetLog* net_log,
       const NetLogSource& source) override {
+    // This is used only for testing in scenarios that do not involve multiple
+    // networks. With that in mind, it's safe to ignore `target_network`.
     if (fail_next_socket_) {
       fail_next_socket_ = false;
       return std::make_unique<FailingUDPClientSocket>(&empty_data_, net_log);
@@ -349,8 +374,8 @@ class TransactionHelper {
     std::unique_ptr<DnsTransaction> transaction = factory->CreateTransaction(
         hostname, qtype,
         NetLogWithSource::Make(net::NetLog::Get(), net::NetLogSourceType::NONE),
-        attempt_mode, factory->GetSecureDnsModeForTest(), context,
-        true /* fast_timeout */);
+        attempt_mode, factory->GetSecureDnsModeForTest(),
+        handles::kInvalidNetworkHandle, context, true /* fast_timeout */);
     transaction->SetRequestPriority(DEFAULT_PRIORITY);
     EXPECT_EQ(qtype, transaction->GetType());
     StartTransaction(std::move(transaction));
@@ -668,26 +693,51 @@ class DnsTransactionTestBase : public testing::Test {
   // HTTPResponse.
   void ConfigureDohServers(bool use_post,
                            size_t num_doh_servers = 1,
-                           bool make_available = true) {
-    GURL url(URLRequestMockDohJob::GetMockHttpsUrl("doh_test"));
-    URLRequestFilter* filter = URLRequestFilter::GetInstance();
-    filter->AddHostnameInterceptor(url.GetScheme(), url.GetHost(),
-                                   std::make_unique<DohJobInterceptor>(this));
-    CHECK_LE(num_doh_servers, 255u);
-    std::vector<string> templates;
-    templates.reserve(num_doh_servers);
-    for (size_t i = 0; i < num_doh_servers; ++i) {
-      templates.push_back(URLRequestMockDohJob::GetMockHttpsUrl(
-                              base::StringPrintf("doh_test_%zu", i)) +
-                          (use_post ? "" : "{?dns}"));
+                           bool make_available = true,
+                           bool use_doh_fallback_upgrade = false) {
+    if (use_doh_fallback_upgrade) {
+      CHECK_EQ(config_.secure_dns_mode, SecureDnsMode::kAutomatic);
+      config_.should_perform_doh_fallback_upgrade = true;
+      config_.fallback_doh_nameservers = {
+          IPEndPoint(IPAddress(8, 8, 8, 8), 53)};
+      config_.doh_config =
+          DnsOverHttpsConfig(GetDohUpgradeServersFromNameservers(
+              config_.fallback_doh_nameservers));
+      // When using DoH fallback we don't have an easy way to switch between
+      // GET and POST since it's just based on what's in the hardcoded config,
+      // but we can at least ensure the parameter value provided matches what
+      // will actually be used.
+      CHECK_EQ(use_post, config_.doh_config.servers()[0].use_post());
+    } else {
+      CHECK_LE(num_doh_servers, 255u);
+      std::vector<std::string> templates;
+      templates.reserve(num_doh_servers);
+      for (size_t i = 0; i < num_doh_servers; ++i) {
+        templates.push_back(URLRequestMockDohJob::GetMockHttpsUrl(
+                                base::StringPrintf("doh_test_%zu", i)) +
+                            (use_post ? "" : "{?dns}"));
+      }
+      config_.doh_config =
+          *DnsOverHttpsConfig::FromTemplatesForTesting(std::move(templates));
     }
-    config_.doh_config =
-        *DnsOverHttpsConfig::FromTemplatesForTesting(std::move(templates));
+
+    std::set<std::pair<std::string, std::string>> registered_hosts;
+    for (const auto& server : config_.doh_config.servers()) {
+      GURL url(GetURLFromTemplateWithoutParameters(server.server_template()));
+      std::pair<std::string, std::string> host_key(std::string(url.scheme()),
+                                                   std::string(url.host()));
+      if (registered_hosts.insert(host_key).second) {
+        URLRequestFilter::GetInstance()->AddHostnameInterceptor(
+            host_key.first, host_key.second,
+            std::make_unique<DohJobInterceptor>(this));
+      }
+    }
+
     ConfigureFactory();
 
     if (make_available) {
-      for (size_t server_index = 0; server_index < num_doh_servers;
-           ++server_index) {
+      for (size_t server_index = 0;
+           server_index < config_.doh_config.servers().size(); ++server_index) {
         resolve_context_->RecordServerSuccess(
             server_index, true /* is_doh_server */, session_.get());
       }
@@ -880,21 +930,10 @@ class DnsTransactionTestBase : public testing::Test {
     }
     EXPECT_TRUE(server_found);
 
-    EXPECT_TRUE(
-        request->isolation_info().network_isolation_key().IsTransient());
-
-    // All DoH requests for the same ResolveContext should use the same
-    // IsolationInfo, so network objects like sockets can be reused between
-    // requests.
-    if (!expect_multiple_isolation_infos_) {
-      if (!isolation_info_) {
-        isolation_info_ =
-            std::make_unique<IsolationInfo>(request->isolation_info());
-      } else {
-        EXPECT_TRUE(
-            isolation_info_->IsEqualForTesting(request->isolation_info()));
-      }
-    }
+    // All DoH requests should use the same IsolationInfo, so network objects
+    // like sockets can be reused between requests.
+    EXPECT_TRUE(DnsHTTPAttempt::GetDohIsolationInfo().IsEqualForTesting(
+        request->isolation_info()));
 
     EXPECT_FALSE(request->allow_credentials());
     EXPECT_EQ(SecureDnsPolicy::kBootstrap, request->secure_dns_policy());
@@ -957,6 +996,11 @@ class DnsTransactionTestBase : public testing::Test {
     config_.fallback_period = kFallbackPeriod;
     auto context_builder = CreateTestURLRequestContextBuilder();
     socket_factory_ = std::make_unique<TestSocketFactory>();
+#if BUILDFLAG(IS_ANDROID)
+    context_builder->set_dns_platform_attempt_factory(
+        DnsPlatformAttemptFactoryAndroid::CreateForTesting(
+            &mock_dns_platform_android_attempt_delegate_));
+#endif
     context_builder->set_client_socket_factory_for_testing(
         socket_factory_.get());
     request_context_ = context_builder->Build();
@@ -976,11 +1020,6 @@ class DnsTransactionTestBase : public testing::Test {
     filter->ClearHandlers();
   }
 
-  void set_expect_multiple_isolation_infos(
-      bool expect_multiple_isolation_infos) {
-    expect_multiple_isolation_infos_ = expect_multiple_isolation_infos;
-  }
-
  protected:
   int GetNextId(int min, int max) {
     EXPECT_FALSE(transaction_ids_.empty());
@@ -997,6 +1036,10 @@ class DnsTransactionTestBase : public testing::Test {
 
   base::circular_deque<int> transaction_ids_;
   std::unique_ptr<TestSocketFactory> socket_factory_;
+#if BUILDFLAG(IS_ANDROID)
+  MockAndroidDnsPlatformAttemptDelegate
+      mock_dns_platform_android_attempt_delegate_;
+#endif
   std::unique_ptr<URLRequestContext> request_context_;
   std::unique_ptr<ResolveContext> resolve_context_;
   scoped_refptr<DnsSession> session_;
@@ -1004,15 +1047,6 @@ class DnsTransactionTestBase : public testing::Test {
   ResponseModifierCallback response_modifier_;
   UrlRequestStartedCallback on_start_;
   DohJobMakerCallback doh_job_maker_;
-
-  // Whether multiple IsolationInfos should be expected (due to there being
-  // multiple RequestContexts in use).
-  bool expect_multiple_isolation_infos_ = false;
-
-  // IsolationInfo used by DoH requests. Populated on first DoH request, and
-  // compared to IsolationInfo used by all subsequent requests, unless
-  // |expect_multiple_isolation_infos_| is true.
-  std::unique_ptr<IsolationInfo> isolation_info_;
 };
 
 class DnsTransactionTest : public DnsTransactionTestBase,
@@ -1030,6 +1064,53 @@ class DnsTransactionTestWithMockTime : public DnsTransactionTestBase,
             base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
   ~DnsTransactionTestWithMockTime() override = default;
 };
+
+class DnsTransactionAttemptModeWithNetworkHandleTest
+    : public DnsTransactionTest,
+      public ::testing::WithParamInterface<DnsTransactionFactory::AttemptMode> {
+};
+
+TEST_P(DnsTransactionAttemptModeWithNetworkHandleTest,
+       NonKPlatformAttemptWithTargetNetworkFailsWithInvalidArgument) {
+  DnsTransactionFactory::AttemptMode attempt_mode = GetParam();
+
+  // This switch statement is here only to make sure the
+  // INSTANTIATE_TEST_SUITE_P below stays in sync with the possible values of
+  // DnsTransactionFactory::AttemptMode.
+  switch (attempt_mode) {
+    case DnsTransactionFactory::AttemptMode::kPlatform:
+      // kPlatform is allowed to have a target network.
+      // We don't test it here to avoid NOTREACHED() crash on non-Android
+      // platforms during Start().
+      GTEST_SKIP() << "kPlatform supports target networks, no need to test for "
+                      "invalid argument error.";
+    case DnsTransactionFactory::AttemptMode::kClassic:
+      break;
+    case DnsTransactionFactory::AttemptMode::kHttp:
+      // Needed for kHttp not to fail early due to no DoH servers being
+      // configured.
+      ConfigureDohServers(/*use_post=*/false);
+      break;
+  }
+
+  constexpr handles::NetworkHandle kTestNetworkHandle = 123;
+
+  TransactionHelper helper(ERR_INVALID_ARGUMENT);
+  std::unique_ptr<DnsTransaction> transaction =
+      transaction_factory_->CreateTransaction(
+          kT0HostName, kT0Qtype, NetLogWithSource(), attempt_mode,
+          SecureDnsMode::kOff, kTestNetworkHandle, resolve_context_.get(),
+          /*fast_timeout=*/true);
+  helper.StartTransaction(std::move(transaction));
+  helper.RunUntilComplete();
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    DnsTransactionAttemptModeWithNetworkHandleTest,
+    ::testing::Values(DnsTransactionFactory::AttemptMode::kClassic,
+                      DnsTransactionFactory::AttemptMode::kHttp,
+                      DnsTransactionFactory::AttemptMode::kPlatform));
 
 TEST_F(DnsTransactionTest, Lookup) {
   AddAsyncQueryAndResponse(0 /* id */, kT0HostName, kT0Qtype,
@@ -1282,8 +1363,10 @@ TEST_F(DnsTransactionTestWithMockTime, Timeout_FastTimeout) {
   TransactionHelper helper0(ERR_DNS_TIMED_OUT);
   std::unique_ptr<DnsTransaction> transaction =
       transaction_factory_->CreateTransaction(
-          kT0HostName, kT0Qtype, NetLogWithSource(), DnsTransactionFactory::AttemptMode::kClassic,
-          SecureDnsMode::kOff, resolve_context_.get(), true /* fast_timeout */);
+          kT0HostName, kT0Qtype, NetLogWithSource(),
+          DnsTransactionFactory::AttemptMode::kClassic, SecureDnsMode::kOff,
+          handles::kInvalidNetworkHandle, resolve_context_.get(),
+          true /* fast_timeout */);
 
   helper0.StartTransaction(std::move(transaction));
 
@@ -2461,11 +2544,13 @@ TEST_F(DnsTransactionTest, HttpsPostTestNoCookies) {
   GURL cookie_url(GetURLFromTemplateWithoutParameters(
       config_.doh_config.servers()[0].server_template()));
   auto cookie = CanonicalCookie::CreateForTesting(
-      cookie_url, "test-cookie=you-still-fail", base::Time::Now());
+      cookie_url, "test-cookie=you-still-fail", base::Time::Now(),
+      CookieSourceType::kOther);
   request_context_->cookie_store()->SetCanonicalCookieAsync(
       std::move(cookie), cookie_url, CookieOptions(),
       base::BindOnce(&CookieCallback::SetCookieCallback,
-                     base::Unretained(&callback)));
+                     base::Unretained(&callback)),
+      /*cookie_access_result=*/std::nullopt);
   helper1.StartTransaction(transaction_factory_.get(), kT0HostName, kT0Qtype,
                            DnsTransactionFactory::AttemptMode::kHttp, resolve_context_.get());
   helper1.RunUntilComplete();
@@ -2679,8 +2764,9 @@ TEST_F(DnsTransactionTestWithMockTime, SlowHttpsResponse_SingleAttempt) {
   TransactionHelper helper(kT0RecordCount);
   std::unique_ptr<DnsTransaction> transaction =
       transaction_factory_->CreateTransaction(
-          kT0HostName, kT0Qtype, NetLogWithSource(), DnsTransactionFactory::AttemptMode::kHttp,
-          SecureDnsMode::kSecure, resolve_context_.get(),
+          kT0HostName, kT0Qtype, NetLogWithSource(),
+          DnsTransactionFactory::AttemptMode::kHttp, SecureDnsMode::kSecure,
+          handles::kInvalidNetworkHandle, resolve_context_.get(),
           false /* fast_timeout */);
 
   helper.StartTransaction(std::move(transaction));
@@ -2708,8 +2794,9 @@ TEST_F(DnsTransactionTestWithMockTime,
   TransactionHelper helper(ERR_DNS_TIMED_OUT);
   std::unique_ptr<DnsTransaction> transaction =
       transaction_factory_->CreateTransaction(
-          kT0HostName, kT0Qtype, NetLogWithSource(), DnsTransactionFactory::AttemptMode::kHttp,
-          SecureDnsMode::kSecure, resolve_context_.get(),
+          kT0HostName, kT0Qtype, NetLogWithSource(),
+          DnsTransactionFactory::AttemptMode::kHttp, SecureDnsMode::kSecure,
+          handles::kInvalidNetworkHandle, resolve_context_.get(),
           true /* fast_timeout */);
   helper.StartTransaction(std::move(transaction));
   base::RunLoop().RunUntilIdle();
@@ -2741,8 +2828,9 @@ TEST_F(DnsTransactionTestWithMockTime, SlowHttpsResponse_TwoAttempts) {
   TransactionHelper helper(kT0RecordCount);
   std::unique_ptr<DnsTransaction> transaction =
       transaction_factory_->CreateTransaction(
-          kT0HostName, kT0Qtype, NetLogWithSource(), DnsTransactionFactory::AttemptMode::kHttp,
-          SecureDnsMode::kSecure, resolve_context_.get(),
+          kT0HostName, kT0Qtype, NetLogWithSource(),
+          DnsTransactionFactory::AttemptMode::kHttp, SecureDnsMode::kSecure,
+          handles::kInvalidNetworkHandle, resolve_context_.get(),
           false /* fast_timeout */);
 
   helper.StartTransaction(std::move(transaction));
@@ -2784,8 +2872,9 @@ TEST_F(DnsTransactionTestWithMockTime, HttpsTimeout) {
   TransactionHelper helper(ERR_DNS_TIMED_OUT);
   std::unique_ptr<DnsTransaction> transaction =
       transaction_factory_->CreateTransaction(
-          kT0HostName, kT0Qtype, NetLogWithSource(), DnsTransactionFactory::AttemptMode::kHttp,
-          SecureDnsMode::kSecure, resolve_context_.get(),
+          kT0HostName, kT0Qtype, NetLogWithSource(),
+          DnsTransactionFactory::AttemptMode::kHttp, SecureDnsMode::kSecure,
+          handles::kInvalidNetworkHandle, resolve_context_.get(),
           false /* fast_timeout */);
   helper.StartTransaction(std::move(transaction));
   base::RunLoop().RunUntilIdle();
@@ -2825,8 +2914,9 @@ TEST_F(DnsTransactionTestWithMockTime, HttpsTimeout2) {
   TransactionHelper helper(ERR_DNS_TIMED_OUT);
   std::unique_ptr<DnsTransaction> transaction =
       transaction_factory_->CreateTransaction(
-          kT0HostName, kT0Qtype, NetLogWithSource(), DnsTransactionFactory::AttemptMode::kHttp,
-          SecureDnsMode::kSecure, resolve_context_.get(),
+          kT0HostName, kT0Qtype, NetLogWithSource(),
+          DnsTransactionFactory::AttemptMode::kHttp, SecureDnsMode::kSecure,
+          handles::kInvalidNetworkHandle, resolve_context_.get(),
           false /* fast_timeout */);
   helper.StartTransaction(std::move(transaction));
   base::RunLoop().RunUntilIdle();
@@ -2882,8 +2972,9 @@ TEST_F(DnsTransactionTestWithMockTime, LongHttpsTimeouts) {
   TransactionHelper helper(ERR_DNS_TIMED_OUT);
   std::unique_ptr<DnsTransaction> transaction =
       transaction_factory_->CreateTransaction(
-          kT0HostName, kT0Qtype, NetLogWithSource(), DnsTransactionFactory::AttemptMode::kHttp,
-          SecureDnsMode::kSecure, resolve_context_.get(),
+          kT0HostName, kT0Qtype, NetLogWithSource(),
+          DnsTransactionFactory::AttemptMode::kHttp, SecureDnsMode::kSecure,
+          handles::kInvalidNetworkHandle, resolve_context_.get(),
           false /* fast_timeout */);
   helper.StartTransaction(std::move(transaction));
   base::RunLoop().RunUntilIdle();
@@ -2925,8 +3016,9 @@ TEST_F(DnsTransactionTestWithMockTime, LastHttpsAttemptFails) {
   TransactionHelper helper(kT0RecordCount);
   std::unique_ptr<DnsTransaction> transaction =
       transaction_factory_->CreateTransaction(
-          kT0HostName, kT0Qtype, NetLogWithSource(), DnsTransactionFactory::AttemptMode::kHttp,
-          SecureDnsMode::kSecure, resolve_context_.get(),
+          kT0HostName, kT0Qtype, NetLogWithSource(),
+          DnsTransactionFactory::AttemptMode::kHttp, SecureDnsMode::kSecure,
+          handles::kInvalidNetworkHandle, resolve_context_.get(),
           false /* fast_timeout */);
   helper.StartTransaction(std::move(transaction));
 
@@ -2957,8 +3049,9 @@ TEST_F(DnsTransactionTestWithMockTime, LastHttpsAttemptFails_Timeout) {
   TransactionHelper helper(ERR_DNS_TIMED_OUT);
   std::unique_ptr<DnsTransaction> transaction =
       transaction_factory_->CreateTransaction(
-          kT0HostName, kT0Qtype, NetLogWithSource(), DnsTransactionFactory::AttemptMode::kHttp,
-          SecureDnsMode::kSecure, resolve_context_.get(),
+          kT0HostName, kT0Qtype, NetLogWithSource(),
+          DnsTransactionFactory::AttemptMode::kHttp, SecureDnsMode::kSecure,
+          handles::kInvalidNetworkHandle, resolve_context_.get(),
           false /* fast_timeout */);
 
   helper.StartTransaction(std::move(transaction));
@@ -3006,8 +3099,9 @@ TEST_F(DnsTransactionTestWithMockTime, LastHttpsAttemptFails_FastTimeout) {
   TransactionHelper helper(ERR_DNS_SERVER_FAILURE);
   std::unique_ptr<DnsTransaction> transaction =
       transaction_factory_->CreateTransaction(
-          kT0HostName, kT0Qtype, NetLogWithSource(), DnsTransactionFactory::AttemptMode::kHttp,
-          SecureDnsMode::kSecure, resolve_context_.get(),
+          kT0HostName, kT0Qtype, NetLogWithSource(),
+          DnsTransactionFactory::AttemptMode::kHttp, SecureDnsMode::kSecure,
+          handles::kInvalidNetworkHandle, resolve_context_.get(),
           true /* fast_timeout */);
 
   helper.StartTransaction(std::move(transaction));
@@ -3045,8 +3139,9 @@ TEST_F(DnsTransactionTestWithMockTime, LastHttpsAttemptFailsFirst) {
   TransactionHelper helper(ERR_DNS_SERVER_FAILURE);
   std::unique_ptr<DnsTransaction> transaction =
       transaction_factory_->CreateTransaction(
-          kT0HostName, kT0Qtype, NetLogWithSource(), DnsTransactionFactory::AttemptMode::kHttp,
-          SecureDnsMode::kSecure, resolve_context_.get(),
+          kT0HostName, kT0Qtype, NetLogWithSource(),
+          DnsTransactionFactory::AttemptMode::kHttp, SecureDnsMode::kSecure,
+          handles::kInvalidNetworkHandle, resolve_context_.get(),
           false /* fast_timeout */);
   helper.StartTransaction(std::move(transaction));
 
@@ -3078,8 +3173,9 @@ TEST_F(DnsTransactionTestWithMockTime, LastHttpsAttemptFailsLast) {
   TransactionHelper helper(ERR_DNS_SERVER_FAILURE);
   std::unique_ptr<DnsTransaction> transaction =
       transaction_factory_->CreateTransaction(
-          kT0HostName, kT0Qtype, NetLogWithSource(), DnsTransactionFactory::AttemptMode::kHttp,
-          SecureDnsMode::kSecure, resolve_context_.get(),
+          kT0HostName, kT0Qtype, NetLogWithSource(),
+          DnsTransactionFactory::AttemptMode::kHttp, SecureDnsMode::kSecure,
+          handles::kInvalidNetworkHandle, resolve_context_.get(),
           false /* fast_timeout */);
   helper.StartTransaction(std::move(transaction));
 
@@ -3462,6 +3558,32 @@ TEST_F(DnsTransactionTestWithMockTime, ProbeUntilSuccess) {
   EXPECT_EQ(doh_itr->GetNextAttemptIndex(), 0u);
 }
 
+TEST_F(DnsTransactionTestWithMockTime,
+       ProbeNotSuppressedWithoutFallbackConfig) {
+  config_.secure_dns_mode = SecureDnsMode::kAutomatic;
+  ConfigureDohServers(/*use_post=*/true, /*num_doh_servers=*/1,
+                      /*make_available=*/false,
+                      /*use_doh_fallback_upgrade=*/false);
+  ASSERT_FALSE(config_.doh_config.servers().empty());
+
+  AddQueryAndResponse(/*id=*/0, kT4HostName, kT4Qtype, kT4ResponseDatagram,
+                      ASYNC, Transport::HTTPS, /*opt_rdata=*/nullptr,
+                      DnsQuery::PaddingStrategy::BLOCK_LENGTH_128,
+                      /*enqueue_transaction_id=*/false);
+
+  size_t url_requests_started = 0;
+  SetUrlRequestStartedCallback(
+      base::BindLambdaForTesting([&] { url_requests_started++; }));
+
+  std::unique_ptr<DnsProbeRunner> runner =
+      transaction_factory_->CreateDohProbeRunner(resolve_context_.get());
+  runner->Start(/*network_change=*/false);
+
+  // The first probe attempt should NOT be suppressed.
+  EXPECT_TRUE(base::test::RunUntil([&] { return url_requests_started == 1u; }));
+  CheckServerOrder({session_->config().nameservers.size()});
+}
+
 TEST_F(DnsTransactionTestWithMockTime, ProbeCreationTriggersSuccessMetric) {
   config_.secure_dns_mode = SecureDnsMode::kAutomatic;
   ConfigureDohServers(/*use_post=*/true, /*num_doh_servers=*/1,
@@ -3733,11 +3855,6 @@ TEST_F(DnsTransactionTestWithMockTime, MultipleProbeRunners) {
 }
 
 TEST_F(DnsTransactionTestWithMockTime, MultipleProbeRunners_SeparateContexts) {
-  // Each RequestContext uses its own transient IsolationInfo. Since there's
-  // typically only one RequestContext per URLRequestContext, there's no
-  // advantage in using the same IsolationInfo across RequestContexts.
-  set_expect_multiple_isolation_infos(true);
-
   ConfigureDohServers(true /* use_post */, 1 /* num_doh_servers */,
                       false /* make_available */);
   AddQueryAndResponse(0 /* id */, kT4HostName, kT4Qtype, kT4ResponseDatagram,
@@ -4289,6 +4406,279 @@ TEST_F(DnsTransactionTestWithMockTime, HttpsConnectionRefusedAfterFallback) {
   sequenced_socket_data2->Resume();
 
   EXPECT_TRUE(helper0.has_completed());
+}
+
+#if BUILDFLAG(IS_ANDROID)
+
+namespace {
+
+// A successful DNS response for www.google.com -> 192.168.1.1
+const std::vector<uint8_t> kSuccessfulDnsResponse = {
+    // Header
+    0x00, 0x00, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+    // Question section
+    0x03, 0x77, 0x77, 0x77, 0x06, 0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x03,
+    0x63, 0x6f, 0x6d, 0x00, 0x00, 0x01, 0x00, 0x01,
+    // Answer section
+    0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x04,
+    0xc0, 0xa8, 0x01, 0x01};
+
+// A failed DNS response for www.google.com that indicates NXDOMAIN.
+const std::vector<uint8_t> kNxdomainDnsResponse = {
+    // Header
+    0xab, 0xcd, 0x81, 0x83, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // Question section
+    0x03, 0x77, 0x77, 0x77, 0x06, 0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x03,
+    0x63, 0x6f, 0x6d, 0x00, 0x00, 0x01, 0x00, 0x01};
+
+}  // namespace
+
+TEST_F(DnsTransactionTest, PlatformAttemptSuccess) {
+  if (__builtin_available(android 29, *)) {
+    base::ScopedFD fd =
+        MockAndroidDnsPlatformAttemptDelegate::CreateFdWithUnreadData();
+
+    EXPECT_CALL(mock_dns_platform_android_attempt_delegate_,
+                Query(NETWORK_UNSPECIFIED, StrEq("www.google.com"),
+                      dns_protocol::kTypeA))
+        .WillOnce(Return(fd.get()));
+
+    EXPECT_CALL(mock_dns_platform_android_attempt_delegate_,
+                Result(fd.get(), _, _))
+        .WillOnce([&](int, int* rcode, base::span<uint8_t> answer) {
+          std::ranges::copy(kSuccessfulDnsResponse, answer.begin());
+          return kSuccessfulDnsResponse.size();
+        });
+
+    TransactionHelper helper(/*expected_answer_count=*/1);
+    helper.StartTransaction(
+        transaction_factory_.get(), "www.google.com", dns_protocol::kTypeA,
+        DnsTransactionFactory::AttemptMode::kPlatform, resolve_context_.get());
+    EXPECT_FALSE(helper.has_completed());
+    helper.RunUntilComplete();
+    ASSERT_TRUE(helper.has_completed());
+    EXPECT_EQ(helper.response()->rcode(), dns_protocol::kRcodeNOERROR);
+  } else {
+    GTEST_SKIP_("Skip test on Android version below 29.");
+  }
+}
+
+TEST_F(DnsTransactionTest, PlatformAttemptPropagatesTargetNetwork) {
+  if (__builtin_available(android 29, *)) {
+    constexpr handles::NetworkHandle kTestNetworkHandle = 123;
+    base::ScopedFD fd =
+        MockAndroidDnsPlatformAttemptDelegate::CreateFdWithUnreadData();
+
+    EXPECT_CALL(mock_dns_platform_android_attempt_delegate_,
+                Query(static_cast<net_handle_t>(kTestNetworkHandle),
+                      StrEq("www.google.com"), dns_protocol::kTypeA))
+        .WillOnce(Return(fd.get()));
+
+    EXPECT_CALL(mock_dns_platform_android_attempt_delegate_,
+                Result(fd.get(), _, _))
+        .WillOnce([&](int, int* rcode, base::span<uint8_t> answer) {
+          std::ranges::copy(kSuccessfulDnsResponse, answer.begin());
+          return kSuccessfulDnsResponse.size();
+        });
+
+    TransactionHelper helper(/*expected_answer_count=*/1);
+    std::unique_ptr<DnsTransaction> transaction =
+        transaction_factory_->CreateTransaction(
+            "www.google.com", dns_protocol::kTypeA, NetLogWithSource(),
+            DnsTransactionFactory::AttemptMode::kPlatform, SecureDnsMode::kOff,
+            kTestNetworkHandle, resolve_context_.get(), /*fast_timeout=*/true);
+    helper.StartTransaction(std::move(transaction));
+    EXPECT_FALSE(helper.has_completed());
+    helper.RunUntilComplete();
+    ASSERT_TRUE(helper.has_completed());
+    EXPECT_EQ(helper.response()->rcode(), dns_protocol::kRcodeNOERROR);
+  } else {
+    GTEST_SKIP_("Skip test on Android version below 29.");
+  }
+}
+
+TEST_F(DnsTransactionTestWithMockTime, PlatformAttemptTimeout) {
+  if (__builtin_available(android 29, *)) {
+    base::ScopedFD fd =
+        MockAndroidDnsPlatformAttemptDelegate::CreateFdWithNoData();
+
+    EXPECT_CALL(mock_dns_platform_android_attempt_delegate_,
+                Query(NETWORK_UNSPECIFIED, StrEq("www.google.com"),
+                      dns_protocol::kTypeA))
+        .WillOnce(Return(fd.get()));
+
+    TransactionHelper helper(ERR_DNS_TIMED_OUT);
+    helper.StartTransaction(
+        transaction_factory_.get(), "www.google.com", dns_protocol::kTypeA,
+        DnsTransactionFactory::AttemptMode::kPlatform, resolve_context_.get());
+    EXPECT_FALSE(helper.has_completed());
+    FastForwardBy(
+        resolve_context_->NextPlatformFallbackPeriod(session_.get()));
+    helper.RunUntilComplete();
+    ASSERT_TRUE(helper.has_completed());
+  } else {
+    GTEST_SKIP_("Skip test on Android version below 29.");
+  }
+}
+
+TEST_F(DnsTransactionTest, PlatformAttemptUsesSuffixSearchList) {
+  if (__builtin_available(android 29, *)) {
+    config_.search.push_back("com");
+    config_.ndots = 1;
+    ConfigureFactory();
+    base::ScopedFD first_query_fd =
+        MockAndroidDnsPlatformAttemptDelegate::CreateFdWithUnreadData();
+    EXPECT_CALL(
+        mock_dns_platform_android_attempt_delegate_,
+        Query(NETWORK_UNSPECIFIED, StrEq("www.google"), dns_protocol::kTypeA))
+        .WillOnce(Return(first_query_fd.get()));
+    EXPECT_CALL(mock_dns_platform_android_attempt_delegate_,
+                Result(first_query_fd.get(), _, _))
+        .WillOnce([&](int, int* rcode, base::span<uint8_t> answer) {
+          std::ranges::copy(kNxdomainDnsResponse, answer.begin());
+          return kNxdomainDnsResponse.size();
+        });
+
+    base::ScopedFD second_query_fd =
+        MockAndroidDnsPlatformAttemptDelegate::CreateFdWithUnreadData();
+    EXPECT_CALL(mock_dns_platform_android_attempt_delegate_,
+                Query(NETWORK_UNSPECIFIED, StrEq("www.google.com"),
+                      dns_protocol::kTypeA))
+        .WillOnce(Return(second_query_fd.get()));
+    EXPECT_CALL(mock_dns_platform_android_attempt_delegate_,
+                Result(second_query_fd.get(), _, _))
+        .WillOnce([&](int, int* rcode, base::span<uint8_t> answer) {
+          std::ranges::copy(kSuccessfulDnsResponse, answer.begin());
+          return kSuccessfulDnsResponse.size();
+        });
+
+    TransactionHelper helper(/*expected_answer_count=*/1);
+    helper.StartTransaction(
+        transaction_factory_.get(), "www.google", dns_protocol::kTypeA,
+        DnsTransactionFactory::AttemptMode::kPlatform, resolve_context_.get());
+    EXPECT_FALSE(helper.has_completed());
+    helper.RunUntilComplete();
+    ASSERT_TRUE(helper.has_completed());
+    EXPECT_EQ(helper.response()->rcode(), dns_protocol::kRcodeNOERROR);
+  } else {
+    GTEST_SKIP_("Skip test on Android version below 29.");
+  }
+}
+
+#endif  // BUILDFLAG(IS_ANDROID)
+
+struct DnsTransactionLookupMetricTestParams {
+  uint16_t qtype;
+  std::string histogram_prefix;
+};
+
+class DnsTransactionLookupMetricTest
+    : public DnsTransactionTest,
+      public ::testing::WithParamInterface<
+          DnsTransactionLookupMetricTestParams> {};
+
+INSTANTIATE_TEST_SUITE_P(
+    DnsTransactionLookupMetric,
+    DnsTransactionLookupMetricTest,
+    ::testing::ValuesIn(std::vector<DnsTransactionLookupMetricTestParams>{
+        {dns_protocol::kTypeA, "A"},
+        {dns_protocol::kTypeAAAA, "AAAA"},
+        {dns_protocol::kTypeHttps, "HTTPS"},
+    }));
+
+TEST_P(DnsTransactionLookupMetricTest, Success) {
+  base::HistogramTester histogram_tester;
+  uint16_t qtype = GetParam().qtype;
+  std::string prefix = GetParam().histogram_prefix;
+  std::string histogram_name =
+      "Net.DNS.DnsTransaction." + prefix + ".LookupResult";
+
+  DnsResponse response =
+      BuildTestDnsResponse(kT0HostName, qtype, /*answers=*/{});
+  AddQueryAndResponse(0 /* id */, kT0HostName, qtype,
+                      response.io_buffer()->span(), ASYNC, Transport::UDP);
+
+  TransactionHelper helper(0 /* expected_answer_count */);
+  helper.StartTransaction(transaction_factory_.get(), kT0HostName, qtype,
+                          DnsTransactionFactory::AttemptMode::kClassic,
+                          resolve_context_.get());
+  helper.RunUntilComplete();
+
+  histogram_tester.ExpectUniqueSample(histogram_name, std::abs(OK), 1);
+  histogram_tester.ExpectUniqueSample(histogram_name + ".Classic", std::abs(OK),
+                                      1);
+  histogram_tester.ExpectTotalCount(
+      histogram_name + ".ClassicTruncatedAndTcpRetried", 0);
+}
+
+TEST_P(DnsTransactionLookupMetricTest, Failure) {
+  base::HistogramTester histogram_tester;
+  uint16_t qtype = GetParam().qtype;
+  std::string prefix = GetParam().histogram_prefix;
+  std::string histogram_name =
+      "Net.DNS.DnsTransaction." + prefix + ".LookupResult";
+
+  AddAsyncQueryAndRcode(kT0HostName, qtype, dns_protocol::kRcodeNXDOMAIN);
+
+  TransactionHelper helper(ERR_NAME_NOT_RESOLVED);
+  helper.StartTransaction(transaction_factory_.get(), kT0HostName, qtype,
+                          DnsTransactionFactory::AttemptMode::kClassic,
+                          resolve_context_.get());
+  helper.RunUntilComplete();
+
+  histogram_tester.ExpectUniqueSample(histogram_name,
+                                      std::abs(ERR_NAME_NOT_RESOLVED), 1);
+  histogram_tester.ExpectUniqueSample(histogram_name + ".Classic",
+                                      std::abs(ERR_NAME_NOT_RESOLVED), 1);
+}
+
+TEST_P(DnsTransactionLookupMetricTest, Aborted) {
+  base::HistogramTester histogram_tester;
+  uint16_t qtype = GetParam().qtype;
+  std::string prefix = GetParam().histogram_prefix;
+  std::string histogram_name =
+      "Net.DNS.DnsTransaction." + prefix + ".LookupResult";
+
+  AddQueryAndResponseNoWrite(0 /* id */, kT0HostName, qtype, ASYNC,
+                             Transport::UDP, nullptr);
+
+  TransactionHelper helper(0);
+  helper.StartTransaction(transaction_factory_.get(), kT0HostName, qtype,
+                          DnsTransactionFactory::AttemptMode::kClassic,
+                          resolve_context_.get());
+  helper.Cancel();
+
+  histogram_tester.ExpectUniqueSample(histogram_name, std::abs(ERR_ABORTED), 1);
+  histogram_tester.ExpectUniqueSample(histogram_name + ".Classic",
+                                      std::abs(ERR_ABORTED), 1);
+}
+
+TEST_P(DnsTransactionLookupMetricTest, TruncatedAndTcpRetried) {
+  base::HistogramTester histogram_tester;
+  uint16_t qtype = GetParam().qtype;
+  std::string prefix = GetParam().histogram_prefix;
+  std::string histogram_name =
+      "Net.DNS.DnsTransaction." + prefix + ".LookupResult";
+
+  AddAsyncQueryAndRcode(kT0HostName, qtype,
+                        dns_protocol::kRcodeNOERROR | dns_protocol::kFlagTC);
+
+  DnsResponse response =
+      BuildTestDnsResponse(kT0HostName, qtype, /*answers=*/{});
+  AddQueryAndResponse(0 /* id */, kT0HostName, qtype,
+                      response.io_buffer()->span(), ASYNC, Transport::TCP);
+
+  TransactionHelper helper(0);
+  helper.StartTransaction(transaction_factory_.get(), kT0HostName, qtype,
+                          DnsTransactionFactory::AttemptMode::kClassic,
+                          resolve_context_.get());
+  helper.RunUntilComplete();
+
+  histogram_tester.ExpectUniqueSample(histogram_name, std::abs(OK), 1);
+  histogram_tester.ExpectUniqueSample(histogram_name + ".Classic", std::abs(OK),
+                                      1);
+  histogram_tester.ExpectUniqueSample(
+      histogram_name + ".ClassicTruncatedAndTcpRetried", std::abs(OK), 1);
 }
 
 }  // namespace

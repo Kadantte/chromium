@@ -26,8 +26,10 @@
 #include "base/values.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/global_request_id.h"
+#include "content/public/common/child_process_id.h"
 #include "extensions/browser/api/declarative_webrequest/request_stage.h"
 #include "extensions/browser/api/web_request/extension_web_request_event_router.h"
+#include "extensions/browser/api/web_request/web_request_event_router_factory.h"
 #include "extensions/browser/api/web_request/web_request_permissions.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 #include "extensions/browser/event_router.h"
@@ -42,6 +44,7 @@
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "services/network/public/mojom/websocket.mojom.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
@@ -207,6 +210,7 @@ class WebRequestAPI : public BrowserContextKeyedAPI,
   // EventRouter::Observer overrides:
   void OnListenerAdded(const EventListenerInfo& details) override;
   void OnListenerRemoved(const EventListenerInfo& details) override;
+  void OnListenerUpdated(const EventListenerInfo& details) override;
 
   // If any WebRequest event listeners are currently active for this
   // BrowserContext, |*factory_request| is swapped out for a new request which
@@ -257,7 +261,8 @@ class WebRequestAPI : public BrowserContextKeyedAPI,
       const net::SiteForCookies& site_for_cookies,
       const std::optional<std::string>& user_agent,
       mojo::PendingRemote<network::mojom::WebSocketHandshakeClient>
-          handshake_client);
+          handshake_client,
+      mojo::PendingRemote<network::mojom::TrustedHeaderClient> header_client);
 
   // Starts proxying WebTransport handshake.
   void ProxyWebTransport(
@@ -271,13 +276,21 @@ class WebRequestAPI : public BrowserContextKeyedAPI,
 
   void ForceProxyForTesting();
 
-  // Indicates whether or not the WebRequestAPI may have one or more proxies
-  // installed to support the API.
+  // Returns true if any extension is installed that could potentially require
+  // network request proxying (e.g. extensions with 'webRequest',
+  // 'declarativeNetRequest', or 'webview' permissions). This is a global
+  // check; for frame-specific decisions, use `MayHaveProxiesForFrame()`.
   bool MayHaveProxies() const;
 
-  // Indicates whether the WebRequestAPI is available to a RenderFrameHost
-  // that embeds a WebView instance.
-  bool IsAvailableToWebViewEmbedderFrame(
+  // Returns true if any installed extension has the 'webRequest' or
+  // 'declarativeNetRequest' permission, or if proxying is forced for testing.
+  bool HasWebRequestOrDeclarativeWebRequestExtension() const;
+
+  // Returns true if requests from the given `render_frame_host` should be
+  // proxied by the WebRequestAPI. If kOptimizeWebRequestProxy is enabled,
+  // this performs a strict check based on whether the frame is a guest
+  // (WebView/Controlled Frame) or if global extensions are present.
+  bool MayHaveProxiesForFrame(
       content::RenderFrameHost* render_frame_host) const;
 
   bool HasExtraHeadersListenerForTesting();
@@ -310,8 +323,8 @@ class WebRequestAPI : public BrowserContextKeyedAPI,
   static const bool kServiceRedirectedInIncognito = true;
   static const bool kServiceIsNULLWhileTesting = true;
 
-  // Checks if |MayHaveProxies()| has changed from false to true, and resets
-  // URLLoaderFactories if so.
+  // Checks if |MayHaveProxies()| has changed, and resets URLLoaderFactories
+  // if so.
   void UpdateMayHaveProxies();
 
   void ResetURLLoaderFactories();
@@ -332,6 +345,7 @@ class WebRequestAPI : public BrowserContextKeyedAPI,
       WebRequestEventRouter::ListenerUpdateType update_type,
       const ExtensionId& extension_id,
       const std::string& sub_event_name,
+      content::ChildProcessId render_process_id,
       int worker_thread_id,
       int64_t service_worker_version_id);
 
@@ -343,7 +357,7 @@ class WebRequestAPI : public BrowserContextKeyedAPI,
                           const ExtensionId& extension_id,
                           const std::string& sub_event_name);
 
-  // Internal implemntation of MaybeProxyURLLoaderFactory that returns a
+  // Internal implementation of MaybeProxyURLLoaderFactory that returns a
   // detailed reason, ProxyDecision, to tell why the proxy is used.
   ProxyDecision MaybeProxyURLLoaderFactoryInternal(
       content::BrowserContext* browser_context,
@@ -358,11 +372,29 @@ class WebRequestAPI : public BrowserContextKeyedAPI,
       scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
       const url::Origin& request_initiator = url::Origin());
 
-  // Counts of active extensions for this BrowserContext that use kWebRequest*,
-  // kDeclarative{Web|Net}Request*, or kWebView permissions.
+  // Returns true if the given `render_frame_host` is a guest frame embedded by
+  // a WebUI that has access to the `webRequestInternal` API.
+  bool IsAvailableToWebViewEmbedderWebUIFrame(
+      content::RenderFrameHost* render_frame_host) const;
+
+  // Returns true if the given `render_frame_host` is a guest frame embedded by
+  // a web page that has access to the `webRequestInternal` API (e.g. Isolated
+  // Web Apps).
+  bool IsAvailableToWebViewEmbedderWebPageFrame(
+      content::RenderFrameHost* render_frame_host) const;
+
+  // Returns true if the given `render_frame_host` is a guest frame embedded by
+  // an extension that has a `webview` permission.
+  bool IsAvailableToWebViewEmbedderExtensionFrame(
+      content::RenderFrameHost* render_frame_host) const;
+
+  // Counts of active extensions for this BrowserContext that use kWebRequest*
+  // or  kDeclarative{Web|Net}Request* permissions.
   int web_request_extension_count_ = 0;
   int declarative_request_extension_count_ = 0;
-  int web_view_extension_count_ = 0;
+
+  // Set of extension IDs that have the 'webview' permission.
+  absl::flat_hash_set<ExtensionId> web_view_extension_ids_;
 
   const raw_ptr<content::BrowserContext, DanglingUntriaged> browser_context_;
 
@@ -374,6 +406,23 @@ class WebRequestAPI : public BrowserContextKeyedAPI,
   bool may_have_proxies_;
 
   base::WeakPtrFactory<WebRequestAPI> weak_factory_{this};
+};
+
+template <>
+struct BrowserContextFactoryDependencies<WebRequestAPI> {
+  static void DeclareFactoryDependencies(
+      BrowserContextKeyedAPIFactory<WebRequestAPI>* factory) {
+    // Restore the default dependency on the ExtensionSystemFactory that is
+    // otherwise lost when explicitly specializing this template.
+    if (ExtensionsBrowserClient::Get()) {
+      factory->DependsOn(
+          ExtensionsBrowserClient::Get()->GetExtensionSystemFactory());
+    }
+
+    // Ensure the EventRouter outlives the WebRequestAPI so that proxies can
+    // safely broadcast network errors during profile teardown.
+    factory->DependsOn(WebRequestEventRouterFactory::GetInstance());
+  }
 };
 
 class WebRequestInternalFunction : public ExtensionFunction {

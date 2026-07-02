@@ -18,6 +18,7 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/image-decoders/image_decoder.h"
+#include "third_party/blink/renderer/platform/loader/fetch/ad_tagging_utils.h"
 #include "third_party/blink/renderer/platform/loader/fetch/media_timing.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_status.h"
 #include "ui/gfx/geometry/size.h"
@@ -139,13 +140,14 @@ class CORE_EXPORT ImageResourceContent final
 
   // Redirecting methods to Resource.
   const KURL& Url() const override;
+  bool IsAutomaticUpgrade() const;
   bool IsDataUrl() const override;
   base::TimeTicks LoadResponseEnd() const;
   base::TimeTicks DiscoveryTime() const override;
   base::TimeTicks LoadStart() const override;
   base::TimeTicks LoadEnd() const override;
   AtomicString MediaType() const override;
-  bool IsAccessAllowed() const;
+  bool IsCorsSameOrigin() const;
   const ResourceResponse& GetResponse() const;
   std::optional<ResourceError> GetResourceError() const;
 
@@ -223,8 +225,9 @@ class CORE_EXPORT ImageResourceContent final
 
   void LoadDeferredImage(ResourceFetcher* fetcher);
 
-  // Returns whether the resource request has been tagged as an ad.
-  bool IsAdResource() const;
+  // Returns the `AdProvenance` of the resource request if it has been
+  // identified as an ad, or `std::nullopt` otherwise.
+  const std::optional<AdProvenance>& GetAdProvenance() const;
 
   // Records the decoded image type in a UseCounter if the image is a
   // BitmapImage. |use_counter| may be a null pointer.

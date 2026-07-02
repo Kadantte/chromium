@@ -28,6 +28,7 @@
 #include <array>
 #include <string_view>
 
+#include "base/compiler_specific.h"
 #include "base/trace_event/trace_event.h"
 #include "third_party/blink/renderer/core/clipboard/data_object.h"
 #include "third_party/blink/renderer/core/clipboard/data_transfer.h"
@@ -89,6 +90,7 @@
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/input_type_names.h"
 #include "third_party/blink/renderer/core/layout/hit_test_result.h"
+#include "third_party/blink/renderer/core/layout/layout_block.h"
 #include "third_party/blink/renderer/core/layout/layout_image.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/svg/svg_image_element.h"
@@ -121,8 +123,9 @@ UChar WhitespaceRebalancingCharToAppend(const StringView& string,
                                         UChar previous) {
   DCHECK_LT(index, string.length());
 
-  if (!IsWhitespace(string[index]))
-    return string[index];
+  if (!IsWhitespace(UNSAFE_TODO(string[index]))) {
+    return UNSAFE_TODO(string[index]);
+  }
 
   if (!index && start_is_start_of_paragraph)
     return uchar::kNoBreakSpace;
@@ -137,9 +140,11 @@ UChar WhitespaceRebalancingCharToAppend(const StringView& string,
   }
 
   // Run of two or more spaces starts with a no-break space (crbug.com/453042).
-  if (index + 1 < string.length() && IsWhitespace(string[index + 1]))
+  // SAFETY: index checked before use in &&-expression.
+  if (index + 1 < string.length() &&
+      IsWhitespace(UNSAFE_BUFFERS(string[index + 1]))) {
     return uchar::kNoBreakSpace;
-
+  }
   return ' ';
 }
 
@@ -333,7 +338,7 @@ ContainerNode* HighestEditableRoot(const Position& position) {
 }
 
 ContainerNode* HighestEditableRoot(const PositionInFlatTree& position) {
-  return HighestEditableRoot(ToPositionInDOMTree(position));
+  return HighestEditableRoot(ToPositionInDomTree(position));
 }
 
 bool IsEditablePosition(const Position& position) {
@@ -359,7 +364,7 @@ bool IsEditablePosition(const Position& position) {
 }
 
 bool IsEditablePosition(const PositionInFlatTree& p) {
-  return IsEditablePosition(ToPositionInDOMTree(p));
+  return IsEditablePosition(ToPositionInDomTree(p));
 }
 
 bool IsRichlyEditablePosition(const Position& p) {
@@ -385,7 +390,7 @@ Element* RootEditableElementOf(const Position& p) {
 }
 
 Element* RootEditableElementOf(const PositionInFlatTree& p) {
-  return RootEditableElementOf(ToPositionInDOMTree(p));
+  return RootEditableElementOf(ToPositionInDomTree(p));
 }
 
 template <typename Strategy>
@@ -954,7 +959,7 @@ TextDirection DirectionOfEnclosingBlockOfAlgorithm(
   if (!enclosing_block_element)
     return TextDirection::kLtr;
   LayoutObject* layout_object = enclosing_block_element->GetLayoutObject();
-  return layout_object ? layout_object->Style()->Direction()
+  return layout_object ? layout_object->StyleRef().Direction()
                        : TextDirection::kLtr;
 }
 
@@ -971,7 +976,7 @@ TextDirection PrimaryDirectionOf(const Node& node) {
   TextDirection primary_direction = TextDirection::kLtr;
   for (const LayoutObject* r = node.GetLayoutObject(); r; r = r->Parent()) {
     if (r->IsLayoutBlockFlow()) {
-      primary_direction = r->Style()->Direction();
+      primary_direction = r->StyleRef().Direction();
       break;
     }
   }
@@ -1022,9 +1027,9 @@ String RepeatString(const String& string, unsigned count) {
 
 template <typename Strategy>
 static Element* TableElementJustBeforeAlgorithm(
-    const VisiblePositionTemplate<Strategy>& visible_position) {
+    const PositionTemplate<Strategy>& position) {
   const PositionTemplate<Strategy> upstream(
-      MostBackwardCaretPosition(visible_position.DeepEquivalent()));
+      MostBackwardCaretPosition(position));
   if (IsDisplayInsideTable(upstream.AnchorNode()) &&
       upstream.AtLastEditingPositionForNode())
     return To<Element>(upstream.AnchorNode());
@@ -1032,14 +1037,21 @@ static Element* TableElementJustBeforeAlgorithm(
   return nullptr;
 }
 
+Element* TableElementJustBefore(const Position& position) {
+  return TableElementJustBeforeAlgorithm<EditingStrategy>(position);
+}
+
+Element* TableElementJustBefore(const PositionInFlatTree& position) {
+  return TableElementJustBeforeAlgorithm<EditingInFlatTreeStrategy>(position);
+}
+
 Element* TableElementJustBefore(const VisiblePosition& visible_position) {
-  return TableElementJustBeforeAlgorithm<EditingStrategy>(visible_position);
+  return TableElementJustBefore(visible_position.DeepEquivalent());
 }
 
 Element* TableElementJustBefore(
     const VisiblePositionInFlatTree& visible_position) {
-  return TableElementJustBeforeAlgorithm<EditingInFlatTreeStrategy>(
-      visible_position);
+  return TableElementJustBefore(visible_position.DeepEquivalent());
 }
 
 Element* EnclosingTableCell(const Position& p) {
@@ -1049,14 +1061,17 @@ Element* EnclosingTableCell(const PositionInFlatTree& p) {
   return To<Element>(EnclosingNodeOfType(p, IsTableCell));
 }
 
-Element* TableElementJustAfter(const VisiblePosition& visible_position) {
-  Position downstream(
-      MostForwardCaretPosition(visible_position.DeepEquivalent()));
+Element* TableElementJustAfter(const Position& position) {
+  Position downstream(MostForwardCaretPosition(position));
   if (IsDisplayInsideTable(downstream.AnchorNode()) &&
       downstream.AtFirstEditingPositionForNode())
     return To<Element>(downstream.AnchorNode());
 
   return nullptr;
+}
+
+Element* TableElementJustAfter(const VisiblePosition& visible_position) {
+  return TableElementJustAfter(visible_position.DeepEquivalent());
 }
 
 // Returns the position at the beginning of a node
@@ -1079,7 +1094,7 @@ Position PositionAfterNode(const Node& node) {
   return Position::InParentAfterNode(node);
 }
 
-bool IsHTMLListElement(const Node* n) {
+bool IsHtmlListElement(const Node* n) {
   return (n && (IsA<HTMLUListElement>(*n) || IsA<HTMLOListElement>(*n) ||
                 IsA<HTMLDListElement>(*n)));
 }
@@ -1100,7 +1115,7 @@ bool IsListElementTag(const Node* n) {
                n->HasTagName(html_names::kDlTag));
 }
 
-bool IsPresentationalHTMLElement(const Node* node) {
+bool IsPresentationalHtmlElement(const Node* node) {
   const auto* element = DynamicTo<HTMLElement>(node);
   if (!element)
     return false;
@@ -1250,7 +1265,7 @@ HTMLElement* CreateDefaultParagraphElement(Document& document) {
   NOTREACHED();
 }
 
-bool IsTabHTMLSpanElement(const Node* node) {
+bool IsTabSpanElement(const Node* node) {
   const auto* span = DynamicTo<HTMLSpanElement>(node);
   if (!span) {
     return false;
@@ -1260,7 +1275,7 @@ bool IsTabHTMLSpanElement(const Node* node) {
   if (!first_child_text_node) {
     return false;
   }
-  if (!first_child_text_node->data().Contains('\t')) {
+  if (!first_child_text_node->data().contains('\t')) {
     return false;
   }
   // TODO(editing-dev): Hoist the call of UpdateStyleAndLayoutTree to callers.
@@ -1270,13 +1285,13 @@ bool IsTabHTMLSpanElement(const Node* node) {
   return style && style->WhiteSpace() == EWhiteSpace::kPre;
 }
 
-bool IsTabHTMLSpanElementTextNode(const Node* node) {
+bool IsTabSpanElementTextNode(const Node* node) {
   return node && node->IsTextNode() && node->parentNode() &&
-         IsTabHTMLSpanElement(node->parentNode());
+         IsTabSpanElement(node->parentNode());
 }
 
 HTMLSpanElement* TabSpanElement(const Node* node) {
-  return IsTabHTMLSpanElementTextNode(node)
+  return IsTabSpanElementTextNode(node)
              ? To<HTMLSpanElement>(node->parentNode())
              : nullptr;
 }
@@ -1336,6 +1351,29 @@ static Element* UserSelectContainBoundaryOf(const Position& position) {
   return nullptr;
 }
 
+// Check if anchorNode and targetNode share the same neareast out-of-flow
+// ancestor.
+static bool HaveSameOutOfFlowAncestor(const Node& anchor_node,
+                                      const Node& target_node) {
+  LayoutObject* anchor_object = anchor_node.GetLayoutObject();
+  LayoutObject* target_object = target_node.GetLayoutObject();
+  if (!anchor_object || !target_object || anchor_object == target_object) {
+    return true;
+  }
+  auto nearest_out_of_flow_object = [](LayoutObject* ancestor) {
+    while (ancestor) {
+      if (ancestor->IsOutOfFlowPositioned()) {
+        return ancestor;
+      }
+      ancestor = ancestor->ContainingBlock();
+    }
+    return static_cast<LayoutObject*>(nullptr);
+  };
+
+  return nearest_out_of_flow_object(anchor_object) ==
+         nearest_out_of_flow_object(target_object);
+}
+
 PositionWithAffinity PositionRespectingEditingBoundary(
     const Position& position,
     const HitTestResult& hit_test_result) {
@@ -1344,6 +1382,13 @@ PositionWithAffinity PositionRespectingEditingBoundary(
   const LayoutObject* target_object = target_node->GetLayoutObject();
   if (!target_object)
     return PositionWithAffinity();
+
+  if (RuntimeEnabledFeatures::
+          NoExtendSelectionToUserSelectNoneOutOfFlowEnabled() &&
+      !position.IsNull() && !target_object->IsSelectable() &&
+      !HaveSameOutOfFlowAncestor(*position.AnchorNode(), *target_node)) {
+    return PositionWithAffinity();
+  }
 
   Element* editable_element = UserSelectContainBoundaryOf(position);
   if (!editable_element || editable_element->contains(target_node))
@@ -1463,7 +1508,7 @@ Position ComputePositionForNodeRemoval(const Position& position,
   NOTREACHED() << "We should handle all PositionAnchorType";
 }
 
-bool IsMailHTMLBlockquoteElement(const Node* node) {
+bool IsMailHtmlBlockquoteElement(const Node* node) {
   const auto* element = DynamicTo<HTMLElement>(*node);
   if (!element)
     return false;
@@ -1585,10 +1630,10 @@ bool AreSameRangesAlgorithm(Node* node,
   DCHECK(node);
   const EphemeralRange range =
       CreateVisibleSelection(
-          SelectionInDOMTree::Builder().SelectAllChildren(*node).Build())
+          SelectionInDomTree::Builder().SelectAllChildren(*node).Build())
           .ToNormalizedEphemeralRange();
-  return ToPositionInDOMTree(start_position) == range.StartPosition() &&
-         ToPositionInDOMTree(end_position) == range.EndPosition();
+  return ToPositionInDomTree(start_position) == range.StartPosition() &&
+         ToPositionInDomTree(end_position) == range.EndPosition();
 }
 
 bool AreSameRanges(Node* node,
@@ -1616,7 +1661,7 @@ bool IsRenderedAsNonInlineTableImageOrHR(const Node* node) {
          layout_object->IsHR();
 }
 
-bool IsNonTableCellHTMLBlockElement(const Node* node) {
+bool IsNonTableCellHtmlBlockElement(const Node* node) {
   const auto* element = DynamicTo<HTMLElement>(node);
   if (!element)
     return false;
@@ -1689,7 +1734,7 @@ const GCedStaticRangeVector* TargetRangesForInputEvent(const Node& node) {
       FirstEphemeralRangeOf(node.GetDocument()
                                 .GetFrame()
                                 ->Selection()
-                                .ComputeVisibleSelectionInDOMTree());
+                                .ComputeVisibleSelectionInDomTree());
   if (range.IsNull())
     return nullptr;
   return MakeGarbageCollected<GCedStaticRangeVector>(
@@ -1765,7 +1810,7 @@ void InsertTextAndSendInputEventsOfTypeInsertReplacementText(
 
   // Dispatch 'beforeinput'.
   Element* const target = FindEventTargetFrom(
-      frame, frame.Selection().ComputeVisibleSelectionInDOMTree());
+      frame, frame.Selection().ComputeVisibleSelectionInDomTree());
 
   // Copy the original target text into a string, in case the 'beforeinput'
   // event handler modifies the text.

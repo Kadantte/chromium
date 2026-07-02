@@ -237,7 +237,7 @@ void RouteStdioToConsole(bool create_console_if_not_found) {
   // log-lines in output.
   enum { kOutputBufferSize = 64 * 1024 };
 
-  if (freopen("CONOUT$", "w", stdout)) {
+  if (freopen("CONOUT$", "w+", stdout)) {
     setvbuf(stdout, nullptr, _IOLBF, kOutputBufferSize);
     // Overwrite FD 1 for the benefit of any code that uses this FD
     // directly.  This is safe because the CRT allocates FDs 0, 1 and
@@ -246,7 +246,7 @@ void RouteStdioToConsole(bool create_console_if_not_found) {
     // _open() after startup.
     _dup2(_fileno(stdout), 1);
   }
-  if (freopen("CONOUT$", "w", stderr)) {
+  if (freopen("CONOUT$", "w+", stderr)) {
     setvbuf(stderr, nullptr, _IOLBF, kOutputBufferSize);
     _dup2(_fileno(stderr), 2);
   }
@@ -416,21 +416,14 @@ Process LaunchProcess(const CommandLine::StringType& cmdline,
   } else {
     wchar_t* new_environment = nullptr;
     std::wstring env_storage;
+    base::HeapArray<wchar_t> current_env;
     if (options.clear_environment || !options.environment.empty()) {
-      if (options.clear_environment) {
-        static const wchar_t kEmptyEnvironment[] = {0};
-        env_storage =
-            internal::AlterEnvironment(kEmptyEnvironment, options.environment);
-      } else {
-        wchar_t* old_environment = GetEnvironmentStrings();
-        if (!old_environment) {
-          DPLOG(ERROR);
-          return Process();
-        }
-        env_storage =
-            internal::AlterEnvironment(old_environment, options.environment);
-        FreeEnvironmentStrings(old_environment);
+      if (!options.clear_environment) {
+        current_env = internal::GetEnvironment();
       }
+
+      env_storage =
+          internal::AlterEnvironment(current_env, options.environment);
       new_environment = data(env_storage);
       flags |= CREATE_UNICODE_ENVIRONMENT;
     }

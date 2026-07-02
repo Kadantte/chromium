@@ -5,24 +5,32 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_SUGGESTIONS_SUGGESTION_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_SUGGESTIONS_SUGGESTION_H_
 
-#include <cstdint>
+#include <stdint.h>
+
+#include <map>
 #include <optional>
 #include <ostream>
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
+#include "base/check.h"
+#include "base/containers/span.h"
+#include "base/dcheck_is_on.h"
+#include "base/feature.h"
 #include "base/feature_list.h"
-#include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/types/strong_alias.h"
 #include "build/build_config.h"
+#include "components/accessibility_annotator/core/annotation_reducer/memory_data_type.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/data_model/payments/bnpl_issuer.h"
+#include "components/autofill/core/browser/data_model/payments/iban.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
 #include "components/autofill/core/browser/webdata/autocomplete/autocomplete_entry.h"
-#include "components/autofill/core/common/unique_ids.h"
+#include "components/autofill/core/common/autofill_payments_features.h"
 #include "ui/gfx/image/image.h"
 #include "url/gurl.h"
 
@@ -31,6 +39,14 @@
 #endif  // BUILDFLAG(IS_ANDROID)
 
 namespace autofill {
+
+// The index that will be used to filter suggestions for showing them in tabbed
+// panes in the suggestion bubble.
+using SuggestionTabIndex = base::StrongAlias<struct SuggestionTabIndexTag, int>;
+
+// The index of the default suggestion tab which all suggestions should be
+// displayed in unless specified otherwise in `Suggestion::tab_index`.
+inline constexpr SuggestionTabIndex kDefaultSuggestionTabIndex(0);
 
 struct Suggestion {
   struct PasswordSuggestionDetails {
@@ -46,11 +62,13 @@ struct Suggestion {
     // Stores either the password signon realm or the Android app name for which
     // the password was saved.
     std::optional<std::u16string> display_signon_realm;
-    // This flag is set to `false` for the manual fallback suggestions which
-    // represent exact, strongly affiliated, PSL and weakly affiliated matches
-    // for the domain the suggestions are shown for. All other manual fallback
-    // suggestions have this flag set to `true`.
-    // Note that non-manual-fallback suggestions are never cross domain.
+    // Indicates if the suggestions represents a credential for which we are
+    // unsure if it belongs to the current website, and thus should show a
+    // confirmation popup when filling the credential. For manual fallback
+    // suggestions, this is set to `false` if they represent exact, strongly
+    // affiliated or PSL matches, and `true` for all others (such as
+    // grouped/weakly affiliated matches). For backup suggestions, this is set
+    // to `true` if they represent a grouped match.
     bool is_cross_domain = false;
 
     PasswordSuggestionDetails();
@@ -62,7 +80,9 @@ struct Suggestion {
     // Used to construct the payload of a backup password suggestion.
     PasswordSuggestionDetails(std::u16string_view username,
                               std::u16string_view password,
-                              std::u16string_view backup_password);
+                              std::u16string_view backup_password,
+                              std::string_view signon_realm,
+                              bool is_cross_domain);
     PasswordSuggestionDetails(const PasswordSuggestionDetails&);
     PasswordSuggestionDetails(PasswordSuggestionDetails&&);
     PasswordSuggestionDetails& operator=(const PasswordSuggestionDetails&);
@@ -73,38 +93,28 @@ struct Suggestion {
                            const PasswordSuggestionDetails&) = default;
   };
 
-  struct PlusAddressPayload final {
-    PlusAddressPayload();
-    explicit PlusAddressPayload(std::optional<std::u16string> address);
-    PlusAddressPayload(const PlusAddressPayload&);
-    PlusAddressPayload(PlusAddressPayload&&);
-    PlusAddressPayload& operator=(const PlusAddressPayload&);
-    PlusAddressPayload& operator=(PlusAddressPayload&&);
-    ~PlusAddressPayload();
-
-    friend bool operator==(const PlusAddressPayload&,
-                           const PlusAddressPayload&) = default;
-
-    // The proposed plus address string. If it is `nullopt`, then it is
-    // currently loading and nothing is previewed.
-    std::optional<std::u16string> address;
-    // Whether the suggestion should display a refresh button.
-    bool offer_refresh = true;
-  };
-
   struct AutofillAiPayload final {
     AutofillAiPayload();
-    explicit AutofillAiPayload(EntityInstance::EntityId guid);
+    explicit AutofillAiPayload(EntityInstance::EntityId guid,
+                               bool requires_server_fetch = false);
     AutofillAiPayload(const AutofillAiPayload&);
     AutofillAiPayload(AutofillAiPayload&&);
     AutofillAiPayload& operator=(const AutofillAiPayload&);
     AutofillAiPayload& operator=(AutofillAiPayload&&);
     ~AutofillAiPayload();
 
+#if BUILDFLAG(IS_ANDROID)
+    base::android::ScopedJavaLocalRef<jobject> CreateJavaObject() const;
+#endif  // BUILDFLAG(IS_ANDROID)
+
     friend bool operator==(const AutofillAiPayload&,
                            const AutofillAiPayload&) = default;
 
     EntityInstance::EntityId guid;
+
+    // Whether selecting this suggestion requires fetching data from a server.
+    // E.g. retrieving masked credentials.
+    bool requires_server_fetch = false;
   };
 
   using Guid = base::StrongAlias<class GuidTag, std::string>;
@@ -146,7 +156,6 @@ struct Suggestion {
   struct AutofillProfilePayload final {
     AutofillProfilePayload();
     explicit AutofillProfilePayload(Guid guid);
-    AutofillProfilePayload(Guid guid, std::u16string email_override);
     AutofillProfilePayload(const AutofillProfilePayload&);
     AutofillProfilePayload(AutofillProfilePayload&&);
     AutofillProfilePayload& operator=(const AutofillProfilePayload&);
@@ -162,9 +171,6 @@ struct Suggestion {
 
     // Address profile identifier.
     Guid guid;
-    // If non-empty, the email override is applied on the AutofillProfile
-    // identified by `guid` every time it's loaded.
-    std::u16string email_override;
   };
 
   struct IdentityCredentialPayload final {
@@ -192,20 +198,72 @@ struct Suggestion {
     std::map<FieldType, std::u16string> fields;
   };
 
+  struct AtMemoryPayload final {
+    // `std::string` is used to store the `CreditCard::guid_`.
+    // TODO(crbug.com/505251083): Replace `std::string` with `CreditCard::Guid`
+    // once its added.
+    using Identifier = std::variant<std::monostate,
+                                    Iban::Guid,
+                                    Iban::InstrumentId,
+                                    std::string,
+                                    EntityInstance::EntityId>;
+
+    AtMemoryPayload();
+    // `value` is the value to be shown in the suggestion UI and the preview.
+    AtMemoryPayload(std::u16string value,
+                    accessibility_annotator::MemoryDataType memory_data_type);
+    AtMemoryPayload(const AtMemoryPayload&);
+    AtMemoryPayload(AtMemoryPayload&&);
+    AtMemoryPayload& operator=(const AtMemoryPayload&);
+    AtMemoryPayload& operator=(AtMemoryPayload&&);
+    ~AtMemoryPayload();
+
+    friend bool operator==(const AtMemoryPayload&,
+                           const AtMemoryPayload&) = default;
+
+    // Text to fill in the trigger field upon accepting the suggestion.
+    std::u16string value;
+
+    // The identifier for the entry (e.g. IBAN Guid or InstrumentId).
+    Identifier identifier;
+
+    // The type of the entry from accessibility annotator.
+    accessibility_annotator::MemoryDataType memory_data_type =
+        accessibility_annotator::MemoryDataType::kUnknown;
+  };
+
+  struct OpenGeminiPayload final {
+    OpenGeminiPayload();
+    explicit OpenGeminiPayload(std::u16string prompt);
+    OpenGeminiPayload(const OpenGeminiPayload&);
+    OpenGeminiPayload(OpenGeminiPayload&&);
+    OpenGeminiPayload& operator=(const OpenGeminiPayload&);
+    OpenGeminiPayload& operator=(OpenGeminiPayload&&);
+    ~OpenGeminiPayload();
+
+    friend bool operator==(const OpenGeminiPayload&,
+                           const OpenGeminiPayload&) = default;
+
+    // The prompt to pass to Gemini when opening it.
+    std::u16string prompt;
+  };
+
   using IsLoading = base::StrongAlias<class IsLoadingTag, bool>;
   using InstrumentId = base::StrongAlias<class InstrumentIdTag, uint64_t>;
+  // TODO(crbug.com/477689220): Directly use BnplIssuer and remove the alias.
   using BnplIssuer = base::StrongAlias<class BnplIssuerTag, BnplIssuer>;
   using Payload = std::variant<Guid,
                                InstrumentId,
                                AutofillProfilePayload,
                                GURL,
                                PasswordSuggestionDetails,
-                               PlusAddressPayload,
                                AutofillAiPayload,
                                PaymentsPayload,
                                IdentityCredentialPayload,
                                AutocompleteEntry,
-                               BnplIssuer>;
+                               BnplIssuer,
+                               AtMemoryPayload,
+                               OpenGeminiPayload>;
 
   // This struct is used to provide password suggestions with custom icons,
   // using the favicon of the website associated with the credentials. While
@@ -307,6 +365,7 @@ struct Suggestion {
     kEmail,
     kError,
     kFlight,
+    kFlightSpark,
     kGlobe,
     kGoogle,
     kGoogleMonochrome,
@@ -316,23 +375,38 @@ struct Suggestion {
     kGoogleWalletMonochrome,
     kHome,
     kIdCard,
+    kIdCard2,
+    kIdCard2Spark,
+    kIdCardSpark,
     kKey,
     kLocation,
+    kLocationSpark,
     kLoyalty,
     kMagic,
     kOfferTag,
+    kOrder,
+    kOrderSpark,
+    kPassport,
+    kPassportSpark,
     kPenSpark,
     kPersonCheck,
-    kPlusAddress,
     kQuestionMark,
     kRecoveryPassword,
     kScanCreditCard,
     kSettings,
+    kShipment,
+    kShipmentSpark,
+    kTextSpark,
     kUndo,
     kVehicle,
+    kVehicleSpark,
     kWork,
+    kGmail,
+    kGooglePhotos,
+    kGoogleCalendar,
     // Payment method icons
     kCardGeneric,
+    kCardGenericSpark,
     kCardAmericanExpress,
     kCardDiners,
     kCardDiscover,
@@ -346,16 +420,14 @@ struct Suggestion {
     kCardVisa,
     kIban,
     kBnplGeneric,
-    kBnplAffirmLinked,
-    kBnplAffirmUnlinked,
-    kBnplAfterpayLinked,
-    kBnplAfterpayUnlinked,
-    kBnplZipLinked,
-    kBnplZipUnlinked,
-    kBnplKlarnaLinked,
-    kBnplKlarnaUnlinked,
+    kBnplAffirm,
+    kBnplAfterpay,
+    kBnplKlarna,
+    kBnplZip,
     kSaveAndFill,
     kAndroidMessages,
+    kSpark,
+    kSadTab,
   };
 
   // This enum is used to control filtration of suggestions (see it's used in
@@ -433,6 +505,7 @@ struct Suggestion {
         return std::holds_alternative<Guid>(payload) ||
                std::holds_alternative<PasswordSuggestionDetails>(payload);
       case SuggestionType::kFillPassword:
+      case SuggestionType::kPasswordFieldByFieldFilling:
       case SuggestionType::kViewPasswordDetails:
       case SuggestionType::kBackupPasswordEntry:
       case SuggestionType::kTroubleSigningInEntry:
@@ -452,8 +525,15 @@ struct Suggestion {
         return std::holds_alternative<Guid>(payload) ||
                std::holds_alternative<PaymentsPayload>(payload);
       case SuggestionType::kBnplEntry:
-        return std::holds_alternative<PaymentsPayload>(payload) ||
-               std::holds_alternative<BnplIssuer>(payload);
+        if (base::FeatureList::IsEnabled(
+                features::kAutofillEnablePayNowPayLaterTabs)) {
+          return std::holds_alternative<BnplIssuer>(payload);
+        }
+        return std::holds_alternative<PaymentsPayload>(payload);
+      case SuggestionType::kAtMemorySearchResult:
+        return std::holds_alternative<AtMemoryPayload>(payload);
+      case SuggestionType::kOpenGemini:
+        return std::holds_alternative<OpenGeminiPayload>(payload);
       case SuggestionType::kDevtoolsTestAddressEntry:
       default:
         return std::holds_alternative<Guid>(payload) ||
@@ -472,6 +552,14 @@ struct Suggestion {
 
   // Determines popup identifier for the suggestion.
   SuggestionType type;
+
+  // The index of the tab in which the suggestion is shown in.
+  // This index is used to filter suggestions into separate tabs
+  // when they are displayed within a tabbed pane.
+  // Note: Suggestions are typically shown in a single list.
+  // Displaying suggestions in tabbed panes is enabled only for specific cases,
+  // for example, the "Pay Now"/"Pay Later" tabs.
+  SuggestionTabIndex tab_index = kDefaultSuggestionTabIndex;
 
   // The texts that will be displayed on the first line in a suggestion. The
   // order of showing the two texts on the first line depends on whether it is
@@ -517,11 +605,6 @@ struct Suggestion {
   // This is the icon which is shown on the side of a suggestion.
   // If |custom_icon| is empty, the fallback built-in icon.
   Icon icon = Icon::kNoIcon;
-
-#if BUILDFLAG(IS_IOS)
-  // Indicates whether the suggestion has a custom card art image.
-  bool has_custom_card_art_image = false;
-#endif  // BUILDFLAG(IS_IOS)
 
   // An icon that appears after the suggestion in the suggestion view. For
   // passwords, this icon string shows whether the suggestion originates from

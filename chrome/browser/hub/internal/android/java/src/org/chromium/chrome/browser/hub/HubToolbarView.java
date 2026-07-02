@@ -48,10 +48,9 @@ import org.chromium.base.Callback;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.hub.HubToolbarProperties.PaneButtonLookup;
 import org.chromium.chrome.browser.toolbar.menu_button.MenuButton;
-import org.chromium.components.omnibox.OmniboxFeatures;
+import org.chromium.chrome.browser.ui.actions.button.FullButtonData;
 import org.chromium.ui.animation.AnimationHandler;
 import org.chromium.ui.interpolators.Interpolators;
 
@@ -60,6 +59,8 @@ import java.util.List;
 /** Toolbar for the Hub. May contain a single or multiple rows, of which this view is the parent. */
 @NullMarked
 public class HubToolbarView extends LinearLayout {
+    private final HubColorMixerRegistrationHelper mColorMixerHelper =
+            new HubColorMixerRegistrationHelper();
     private TabLayout mPaneSwitcher;
     private LinearLayout mMenuButtonContainer;
     private ImageButton mMenuButton;
@@ -80,7 +81,6 @@ public class HubToolbarView extends LinearLayout {
     private @Nullable NonNullObservableSupplier<Boolean> mXrSpaceModeObservableSupplier;
     private @Nullable List<FullButtonData> mCachedButtonDataList;
     private final int mSearchBoxHeightPx;
-    private final boolean mIsSquishAnimationEnabled;
 
     /** Default {@link LinearLayout} constructor called by inflation. */
     public HubToolbarView(Context context, AttributeSet attributeSet) {
@@ -89,9 +89,6 @@ public class HubToolbarView extends LinearLayout {
         mHandler = new Handler();
         mToolbarOverviewColorSetter = (color) -> {};
         mSearchBoxHeightPx = getResources().getDimensionPixelSize(R.dimen.hub_search_box_height);
-        mIsSquishAnimationEnabled =
-                ChromeFeatureList.sAndroidPinnedTabs.isEnabled()
-                        && ChromeFeatureList.sAndroidPinnedTabsSearchBoxSquishAnimation.getValue();
     }
 
     @Override
@@ -112,15 +109,13 @@ public class HubToolbarView extends LinearLayout {
         mSearchBoxTextView = findViewById(R.id.search_box_text);
         mSearchLoupeView = findViewById(R.id.search_loupe);
         mHairline = findViewById(R.id.toolbar_bottom_hairline);
+
+        registerColorBlends();
+        registerSearchBoxColorBlends();
     }
 
     void setMenuButtonVisible(boolean visible) {
-        if (OmniboxFeatures.sAndroidHubSearchTabGroups.isEnabled()
-                && OmniboxFeatures.sAndroidHubSearchEnableOnTabGroupsPane.getValue()) {
-            mMenuButtonWrapper.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
-        } else {
-            mMenuButtonContainer.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
-        }
+        mMenuButtonWrapper.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
     }
 
     void setPaneSwitcherButtonData(
@@ -285,21 +280,20 @@ public class HubToolbarView extends LinearLayout {
     }
 
     void setColorMixer(HubColorMixer mixer) {
-        registerColorBlends(mixer);
-        registerSearchBoxColorBlends(mixer);
+        mColorMixerHelper.setColorMixer(mixer);
     }
 
-    private void registerColorBlends(HubColorMixer mixer) {
+    private void registerColorBlends() {
         Context context = getContext();
         boolean isGtsUpdateEnabled = HubUtils.isGtsUpdateEnabled();
 
-        mixer.registerBlend(
+        mColorMixerHelper.registerBlend(
                 new SingleHubViewColorBlend(
                         PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
                         colorScheme -> getBackgroundColor(context, colorScheme),
                         this::setBackgroundColor));
 
-        mixer.registerBlend(
+        mColorMixerHelper.registerBlend(
                 new SingleHubViewColorBlend(
                         PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
                         colorScheme -> {
@@ -312,7 +306,7 @@ public class HubToolbarView extends LinearLayout {
                         },
                         mPaneSwitcher::setSelectedTabIndicatorColor));
 
-        mixer.registerBlend(
+        mColorMixerHelper.registerBlend(
                 new SingleHubViewColorBlend(
                         PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
                         colorScheme -> HubColors.getHairlineColor(context, colorScheme),
@@ -345,9 +339,9 @@ public class HubToolbarView extends LinearLayout {
                     animation.setInterpolator(Interpolators.LINEAR_INTERPOLATOR);
                     return animation;
                 };
-        mixer.registerBlend(multiColorBlend);
+        mColorMixerHelper.registerBlend(multiColorBlend);
 
-        mixer.registerBlend(
+        mColorMixerHelper.registerBlend(
                 new SingleHubViewColorBlend(
                         PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
                         colorScheme -> HubColors.getIconColor(context, colorScheme),
@@ -359,14 +353,14 @@ public class HubToolbarView extends LinearLayout {
 
         // We don't want to pass a method reference. Lambdas will ensure we run the most recent
         // setter.
-        mixer.registerBlend(
+        mColorMixerHelper.registerBlend(
                 new SingleHubViewColorBlend(
                         PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
                         colorScheme -> HubColors.getBackgroundColor(context, colorScheme),
                         color -> mToolbarOverviewColorSetter.onResult(color)));
 
         if (isGtsUpdateEnabled) {
-            mixer.registerBlend(
+            mColorMixerHelper.registerBlend(
                     new SingleHubViewColorBlend(
                             PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
                             colorScheme ->
@@ -377,7 +371,7 @@ public class HubToolbarView extends LinearLayout {
                                 mPaneSwitcherCard.getBackground().setColorFilter(filter);
                             }));
 
-            mixer.registerBlend(
+            mColorMixerHelper.registerBlend(
                     new SingleHubViewColorBlend(
                             PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
                             colorScheme ->
@@ -385,7 +379,7 @@ public class HubToolbarView extends LinearLayout {
                                             context, colorScheme),
                             color -> updateTabItemBackgroundColor(context, color)));
 
-            mixer.registerBlend(
+            mColorMixerHelper.registerBlend(
                     new SingleHubViewColorBlend(
                             PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
                             colorScheme ->
@@ -395,10 +389,10 @@ public class HubToolbarView extends LinearLayout {
         }
     }
 
-    private void registerSearchBoxColorBlends(HubColorMixer mixer) {
+    private void registerSearchBoxColorBlends() {
         Context context = getContext();
 
-        mixer.registerBlend(
+        mColorMixerHelper.registerBlend(
                 new SingleHubViewColorBlend(
                         PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
                         colorScheme -> HubColors.getSearchBoxHintTextColor(context, colorScheme),
@@ -406,13 +400,13 @@ public class HubToolbarView extends LinearLayout {
 
         GradientDrawable backgroundDrawable =
                 (GradientDrawable) mSearchBoxLayout.getBackground().mutate();
-        mixer.registerBlend(
+        mColorMixerHelper.registerBlend(
                 new SingleHubViewColorBlend(
                         PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
                         colorScheme -> HubColors.getSearchBoxBgColor(context, colorScheme),
                         backgroundDrawable::setColor));
 
-        mixer.registerBlend(
+        mColorMixerHelper.registerBlend(
                 new SingleHubViewColorBlend(
                         PANE_COLOR_BLEND_ANIMATION_DURATION_MS,
                         colorScheme -> HubColors.getIconColor(context, colorScheme),
@@ -526,14 +520,9 @@ public class HubToolbarView extends LinearLayout {
         if (!mManualSearchBoxAnimation) return;
 
         mSearchBoxLayout.setAlpha(fraction);
-        if (mIsSquishAnimationEnabled) {
-            mSearchBoxLayout.setPivotY(0);
-            mSearchBoxLayout.setScaleY(fraction);
-            mSearchBoxLayout.setTranslationY(0);
-        } else {
-            mSearchBoxLayout.setTranslationY((fraction - 1) * mSearchBoxHeightPx);
-            mSearchBoxLayout.setScaleY(1.0f);
-        }
+        mSearchBoxLayout.setPivotY(0);
+        mSearchBoxLayout.setScaleY(fraction);
+        mSearchBoxLayout.setTranslationY(0);
 
         // Physical Height Reduction (Reduces the Canvas size).
         int targetHeight =
@@ -574,7 +563,7 @@ public class HubToolbarView extends LinearLayout {
             @Override
             public void onTabSelected(Tab tab) {
                 if (!mBlockTabSelectionCallback) {
-                    assumeNonNull(buttonDataList.get(tab.getPosition()).getOnPressRunnable()).run();
+                    buttonDataList.get(tab.getPosition()).onPress(tab.view);
                 }
             }
 
@@ -588,11 +577,7 @@ public class HubToolbarView extends LinearLayout {
 
     private void updateSearchBoxElements(boolean isIncognito) {
         Context context = getContext();
-        @StringRes
-        int regularEmptyHintRes =
-                OmniboxFeatures.sAndroidHubSearchEnableTabGroupStrings.getValue()
-                        ? R.string.hub_search_empty_hint_with_tab_groups
-                        : R.string.hub_search_empty_hint;
+        @StringRes int regularEmptyHintRes = R.string.hub_search_empty_hint;
         @StringRes
         int emptyHintRes =
                 isIncognito ? R.string.hub_search_empty_hint_incognito : regularEmptyHintRes;
@@ -625,11 +610,7 @@ public class HubToolbarView extends LinearLayout {
                 ObjectAnimator.ofFloat(mSearchBoxLayout, View.ALPHA, fadeAlphaFrom, fadeAlphaTo);
 
         Animator primaryAnimator;
-        if (mIsSquishAnimationEnabled) {
-            primaryAnimator = createSquishAnimation(visible);
-        } else {
-            primaryAnimator = createSlideAnimation(visible);
-        }
+        primaryAnimator = createSquishAnimation(visible);
 
         transitionAnimator.play(primaryAnimator).with(fade);
         transitionAnimator.setDuration(PANE_FADE_ANIMATION_DURATION_MS);
@@ -642,11 +623,6 @@ public class HubToolbarView extends LinearLayout {
         float scaleYFrom = visible ? 0f : 1f;
         float scaleYTo = visible ? 1f : 0f;
         return ObjectAnimator.ofFloat(mSearchBoxLayout, View.SCALE_Y, scaleYFrom, scaleYTo);
-    }
-
-    private Animator createSlideAnimation(boolean visible) {
-        float slideTransitionY = visible ? 0 : -mSearchBoxLayout.getHeight();
-        return ObjectAnimator.ofFloat(mSearchBoxLayout, View.TRANSLATION_Y, slideTransitionY);
     }
 
     private GradientDrawable buildBackgroundDrawableForTab() {
@@ -668,5 +644,15 @@ public class HubToolbarView extends LinearLayout {
             NonNullObservableSupplier<Boolean> xrSpaceModeObservableSupplier) {
         mXrSpaceModeObservableSupplier = xrSpaceModeObservableSupplier;
         HubColors.setXrSpaceModeObservableSupplier(xrSpaceModeObservableSupplier);
+    }
+
+    public void destroy() {
+        mHubSearchAnimatorHandler.forceFinishAnimation();
+        mColorMixerHelper.destroy();
+        mHandler.removeCallbacksAndMessages(null);
+        if (mOnTabSelectedListener != null) {
+            mPaneSwitcher.removeOnTabSelectedListener(mOnTabSelectedListener);
+            mOnTabSelectedListener = null;
+        }
     }
 }

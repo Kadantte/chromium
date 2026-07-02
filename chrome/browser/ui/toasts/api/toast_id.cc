@@ -59,14 +59,46 @@ std::string_view GetToastName(ToastId toast_id) {
       return "CopiedToClipboard";
     case ToastId::kEnhancedBundledSecuritySettings:
       return "EnhancedBundledSecuritySettings";
-    case ToastId::kSavedAutofillAiEntityToWallet:
-      return "SavedAutofillAiEntityToWallet";
+    case ToastId::kAutofillAiFetchFromWalletErrorMessage:
+      return "AutofillAiFetchFromWalletErrorMessage";
     case ToastId::kTranslate:
       return "Translate";
-    case ToastId::kAutofillAiWalletErrorMessage:
-      return "AutofillAiWalletErrorMessage";
+    case ToastId::kAutofillAiSaveToWalletErrorMessage:
+      return "AutofillAiSaveToWalletErrorMessage";
     case ToastId::kRecordReplay:
       return "RecordReplay";
+    case ToastId::kAutoSignIn:
+      return "AutoSignIn";
+    case ToastId::kMultistepFilterSuggestion:
+      return "MultistepFilterSuggestion";
+    case ToastId::kMultistepFilterSuggestionRecent:
+      return "MultistepFilterSuggestionRecent";
+    case ToastId::kSkillSavedWithoutInvokeButton:
+      return "SkillSavedWithoutInvokeButton";
+    case ToastId::kSendTabToSelfTabOpened:
+      return "SendTabToSelfOpened";
+    case ToastId::kSendTabToSelfTabsOpenedInBackground:
+      return "SendTabToSelfTabsOpenedInBackground";
+    case ToastId::kSendTabToSelfSuccess:
+      return "SendTabToSelfSuccess";
+    case ToastId::kSendTabToSelfFailure:
+      return "SendTabToSelfFailure";
+    case ToastId::kSendTabToSelfSuccessThrottled:
+      return "SendTabToSelfSuccessThrottled";
+    case ToastId::kReportUnsafeSiteConfirmation:
+      return "ReportUnsafeSiteConfirmation";
+    case ToastId::kDefaultBrowserUpdateSuccess:
+      return "DefaultBrowserUpdateSuccess";
+    case ToastId::kSendTabToSelfNoInternetConnection:
+      return "SendTabToSelfNoInternetConnection";
+    case ToastId::kIndigoInvokeError:
+      return "IndigoInvokeError";
+    case ToastId::kTabStripSwitchDelayedHorizontal:
+      return "TabStripSwitchDelayedHorizontal";
+    case ToastId::kTabStripSwitchDelayedVertical:
+      return "TabStripSwitchDelayedVertical";
+    case ToastId::kAutofillAiPreFetchErrorMessage:
+      return "AutofillAiPreFetchErrorMessage";
   }
 
   NOTREACHED();

@@ -15,9 +15,9 @@
 #include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/immersive_mode_controller.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/tabs/tab.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
@@ -178,6 +178,13 @@ void TabScrubber::OnScrollEvent(ui::ScrollEvent* event) {
   // left, positive means right.
   BrowserView* browser_view =
       BrowserView::GetBrowserViewForBrowser(&browser->GetBrowser());
+
+  if (browser_view->ShouldDrawVerticalTabStrip()) {
+    // TODO(crbug.com/484364227): TabScrubbing is not supported in VerticalTabs
+    // at this point in time.
+    return;
+  }
+
   float x_offset = event->x_offset();
   if (!scrubbing_) {
     BeginScrub(browser_view, x_offset);
@@ -196,13 +203,18 @@ void TabScrubber::OnScrollEvent(ui::ScrollEvent* event) {
     return;
   }
 
-  int new_index = tab_strip_->GetModelIndexOf(new_tab).value();
-  if (highlighted_tab_ == -1 &&
-      new_index == browser_->GetBrowser().tab_strip_model()->active_index()) {
+  std::optional<int> new_index = tab_strip_->GetModelIndexOf(new_tab);
+  if (!new_index) {
     return;
   }
 
-  if (new_index != highlighted_tab_) {
+  if (highlighted_tab_ == -1 &&
+      new_index.value() ==
+          browser_->GetBrowser().tab_strip_model()->active_index()) {
+    return;
+  }
+
+  if (new_index.value() != highlighted_tab_) {
     if (activate_timer_.IsRunning()) {
       activate_timer_.Reset();
     } else {
@@ -210,7 +222,7 @@ void TabScrubber::OnScrollEvent(ui::ScrollEvent* event) {
     }
   }
 
-  UpdateHighlightedTab(new_tab, new_index);
+  UpdateHighlightedTab(new_tab, new_index.value());
 
   if (highlighted_tab_ != -1) {
     gfx::Point hover_point(swipe_x_, swipe_y_);
@@ -276,6 +288,12 @@ void TabScrubber::OnTabRemoved(int index) {
 void TabScrubber::BeginScrub(BrowserView* browser_view, float x_offset) {
   DCHECK(browser_view);
   DCHECK(browser_view->browser());
+
+  if (browser_view->ShouldDrawVerticalTabStrip()) {
+    // TODO(crbug.com/484364227): TabScrubbing is not supported in VerticalTabs
+    // at this point in time.
+    return;
+  }
 
   scrubbing_start_time_ = base::TimeTicks::Now();
   // TODO(crbug.com/465835455): Move TabScrubber into
@@ -394,12 +412,8 @@ void TabScrubber::UpdateSwipeX(float x_offset) {
   Tab* last_tab = tab_strip_->tab_at(last_tab_index);
   int last_tab_center = last_tab->GetMirroredBounds().CenterPoint().x();
 
-  if (swipe_x_ < first_tab_center) {
-    swipe_x_ = first_tab_center;
-  }
-  if (swipe_x_ > last_tab_center) {
-    swipe_x_ = last_tab_center;
-  }
+  swipe_x_ = std::clamp(swipe_x_, static_cast<float>(first_tab_center),
+                        static_cast<float>(last_tab_center));
 }
 
 void TabScrubber::UpdateHighlightedTab(Tab* new_tab, int new_index) {

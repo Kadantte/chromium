@@ -24,13 +24,14 @@
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/i18n/rtl.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
 #include "base/task/thread_pool.h"
 #include "components/android_system_error_page/error_page_populator.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/cdm/renderer/key_system_support_update.h"
 #include "components/js_injection/renderer/js_communication.h"
+#include "components/metrics/call_stacks/call_stack_profile_builder.h"
+#include "components/metrics/public/mojom/call_stack_profile_collector.mojom.h"
 #include "components/network_hints/renderer/web_prescient_networking_impl.h"
 #include "components/page_load_metrics/renderer/metrics_render_frame_observer.h"
 #include "components/printing/renderer/print_render_frame_helper.h"
@@ -78,25 +79,9 @@ void AwContentRendererClient::RenderThreadStarted() {
       blink::Platform::Current()->GetBrowserInterfaceBroker();
 
 #if BUILDFLAG(SUPPORTS_CODE_ORDERING)
-  // Default behavior.
   bool shouldPrefetchNativeLibrary =
       base::FeatureList::IsEnabled(features::kWebViewPrefetchNativeLibrary) &&
       features::kWebViewPrefetchFromRenderer.Get();
-
-  // The new API can override the default.
-  if (base::FeatureList::IsEnabled(
-          features::kWebViewConfigurableLibraryPrefetch)) {
-    base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-    if (command_line->HasSwitch(switches::kWebViewRendererLibraryPrefetch)) {
-      std::string value = command_line->GetSwitchValueASCII(
-          switches::kWebViewRendererLibraryPrefetch);
-      if (value == switches::kWebViewRendererLibraryPrefetchEnabled) {
-        shouldPrefetchNativeLibrary = true;
-      } else if (value == switches::kWebViewRendererLibraryPrefetchDisabled) {
-        shouldPrefetchNativeLibrary = false;
-      }
-    }
-  }
 
   if (shouldPrefetchNativeLibrary) {
     base::ThreadPool::PostTask(
@@ -110,6 +95,15 @@ void AwContentRendererClient::RenderThreadStarted() {
   if (!spellcheck_)
     spellcheck_ = std::make_unique<SpellCheck>(this);
 #endif
+
+  // Set up the profile collector pipe that the renderer process uses to send
+  // profiles to the browser_process.
+  if (base::FeatureList::IsEnabled(features::kWebViewMemoryProfilingClient)) {
+    mojo::PendingRemote<metrics::mojom::CallStackProfileCollector> collector;
+    thread->BindHostReceiver(collector.InitWithNewPipeAndPassReceiver());
+    metrics::CallStackProfileBuilder::SetParentProfileCollectorForChildProcess(
+        std::move(collector));
+  }
 }
 
 void AwContentRendererClient::ExposeInterfacesToBrowser(

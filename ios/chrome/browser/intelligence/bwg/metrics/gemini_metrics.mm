@@ -7,9 +7,9 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
-#import "base/time/time.h"
-#import "ios/chrome/browser/intelligence/bwg/utils/bwg_constants.h"
-#import "ios/public/provider/chrome/browser/bwg/bwg_api.h"
+#import "components/optimization_guide/core/hints/optimization_guide_decision.h"
+#import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
+#import "ios/public/provider/chrome/browser/bwg/gemini_api.h"
 
 namespace {
 // Minimum time between FRE entry point impression logs.
@@ -75,6 +75,14 @@ const char kEligibilityHistogram[] = "IOS.Gemini.Eligibility";
 
 const char kEntryPointHistogram[] = "IOS.Gemini.EntryPoint";
 
+const char kSignInRequiredSnackbarShownHistogram[] =
+    "IOS.Gemini.SignInRequiredSnackbarShown";
+
+const char kEntryPointImpressionHistogram[] =
+    "IOS.Gemini.EntryPoint.Impression";
+
+const char kEntryPointAvailableHistogram[] = "IOS.Gemini.EntryPoint.Available";
+
 const char kFeedbackHistogram[] = "IOS.Gemini.Feedback";
 
 const char kImageActionButtonHistogram[] = "IOS.Gemini.ImageActionButton";
@@ -82,18 +90,27 @@ const char kImageActionButtonHistogram[] = "IOS.Gemini.ImageActionButton";
 const char kInputPlateAttachmentOptionHistogram[] =
     "IOS.Gemini.InputPlateAttachmentOption";
 
-const char kFREEntryPointHistogram[] = "IOS.Gemini.FRE.EntryPoint";
+const char kFirstRunEntryPointHistogram[] = "IOS.Gemini.FRE.EntryPoint";
 
-const char kPromoActionHistogram[] = "IOS.Gemini.FRE.PromoAction";
+const char kFirstRunPromoActionHistogram[] = "IOS.Gemini.FRE.PromoAction";
 
-const char kConsentActionHistogram[] = "IOS.Gemini.FRE.ConsentAction";
+const char kFirstRunConsentActionHistogram[] = "IOS.Gemini.FRE.ConsentAction";
+
+const char kGeminiInvocationPageTypeHistogram[] =
+    "IOS.Gemini.InvocationPageType";
+
+const char kGeminiPageAvailabilityHistogram[] = "IOS.Gemini.PageAvailability";
 
 const char kGeminiIneligibilityReasonHistogram[] =
     "IOS.Gemini.IneligibilityReason";
 
-const char kStartupTimeWithFREHistogram[] = "IOS.Gemini.StartupTime.FirstRun";
+const char kStartupTimeWithFirstRunHistogram[] =
+    "IOS.Gemini.StartupTime.FirstRun";
 
-const char kStartupTimeNoFREHistogram[] = "IOS.Gemini.StartupTime.NotFirstRun";
+const char kStartupTimeNoFirstRunHistogram[] =
+    "IOS.Gemini.StartupTime.NotFirstRun";
+
+const char kGeminiFirstRunStateHistogram[] = "IOS.Gemini.FRE.State";
 
 const char kGeminiSessionCancellationHistogram[] =
     "IOS.Gemini.Session.CancellationReason";
@@ -104,16 +121,19 @@ const char kGeminiSessionLengthWithPromptHistogram[] =
 const char kGeminiSessionLengthAbandonedHistogram[] =
     "IOS.Gemini.SessionLength.Abandoned";
 
-const char kGeminiSessionLengthFREWithPromptHistogram[] =
+const char kGeminiSessionLengthFirstRunWithPromptHistogram[] =
     "IOS.Gemini.SessionLength.FRE.WithPrompt";
 
-const char kGeminiSessionLengthFREAbandonedHistogram[] =
+const char kGeminiSessionLengthFirstRunAbandonedHistogram[] =
     "IOS.Gemini.SessionLength.FRE.Abandoned";
 
 const char kGeminiSessionTimeHistogram[] = "IOS.Gemini.Session.Time";
 
 const char kFirstPromptSubmissionMethodHistogram[] =
     "IOS.Gemini.FirstPrompt.SubmissionMethod";
+
+const char kPromptSubmissionMethodHistogram[] =
+    "IOS.Gemini.Prompt.SubmissionMethod";
 
 const char kPromptImagesAttachedCountHistogram[] =
     "IOS.Gemini.Prompt.ImagesAttached.Count";
@@ -129,6 +149,9 @@ const char kPromptContextAttachmentHistogram[] =
 
 const char kResponseGeneratedImageIncluded[] =
     "IOS.Gemini.Response.GeneratedImage.Included";
+
+const char kRegenerateButtonTappedHistogram[] =
+    "IOS.Gemini.RegenerateButton.Tapped";
 
 const char kResponseLatencyWithContextHistogram[] =
     "IOS.Gemini.Response.Latency.WithContext";
@@ -157,6 +180,9 @@ const char kFloatyShownFromSourceHistogram[] =
 const char kFloatyHiddenFromSourceHistogram[] =
     "IOS.Gemini.Floaty.HiddenFromSource";
 
+const char kFloatyDismissedStateHistogram[] =
+    "IOS.Gemini.Floaty.DismissedState";
+
 const char kImageRemixContextMenuEntryPointAspectRatioTappedHistogram[] =
     "IOS.Gemini.ImageRemix.ContextMenuEntryPoint.AspectRatio.Tapped";
 
@@ -178,39 +204,57 @@ const char kCameraFlowGeminiCameraPermissionAlertResultHistogram[] =
 const char kCameraFlowCameraPickerResultHistogram[] =
     "IOS.Gemini.CameraFlow.CameraPicker.Result";
 
-void RecordFREPromoAction(IOSGeminiFREAction action) {
+const char kEditMenuSelectedTextLengthHistogram[] =
+    "IOS.Gemini.EditMenuPrompt.SelectedText.Length";
+
+const char kGlicContextualCueDecisionHistogram[] =
+    "IOS.Gemini.GlicContextualCue.Decision";
+
+void RecordFirstRunPromoAction(IOSGeminiFirstRunAction action) {
   switch (action) {
-    case IOSGeminiFREAction::kAccept:
-      RecordFREPromoAccept();
+    case IOSGeminiFirstRunAction::kAccept:
+      RecordFirstRunPromoAccept();
       break;
-    case IOSGeminiFREAction::kDismiss:
-      RecordFREPromoDismiss();
+    case IOSGeminiFirstRunAction::kDismiss:
+      RecordFirstRunPromoDismiss();
       break;
     default:
       break;
   }
-  base::UmaHistogramEnumeration(kPromoActionHistogram, action);
+  base::UmaHistogramEnumeration(kFirstRunPromoActionHistogram, action);
 }
 
-void RecordFREConsentAction(IOSGeminiFREAction action) {
+void RecordFirstRunConsentAction(IOSGeminiFirstRunAction action) {
   switch (action) {
-    case IOSGeminiFREAction::kAccept:
-      RecordFREConsentAccept();
+    case IOSGeminiFirstRunAction::kAccept:
+      RecordFirstRunConsentAccept();
       break;
-    case IOSGeminiFREAction::kDismiss:
-      RecordFREConsentDismiss();
+    case IOSGeminiFirstRunAction::kDismiss:
+      RecordFirstRunConsentDismiss();
       break;
-    case IOSGeminiFREAction::kLinkClick:
-      RecordFREConsentLinkClick();
+    case IOSGeminiFirstRunAction::kLinkClick:
+      RecordFirstRunConsentLinkClick();
       break;
     default:
       break;
   }
-  base::UmaHistogramEnumeration(kConsentActionHistogram, action);
+  base::UmaHistogramEnumeration(kFirstRunConsentActionHistogram, action);
+}
+
+void RecordGeminiInvocationPageType(IOSGeminiInvocationPageType page_type) {
+  base::UmaHistogramEnumeration(kGeminiInvocationPageTypeHistogram, page_type);
+}
+
+void RecordGeminiPageAvailability(IOSGeminiPageAvailability reason) {
+  base::UmaHistogramEnumeration(kGeminiPageAvailabilityHistogram, reason);
 }
 
 void RecordGeminiEligibility(bool eligible) {
   base::UmaHistogramBoolean(kEligibilityHistogram, eligible);
+}
+
+void RecordGeminiFirstRunState(gemini::FirstRunState state) {
+  base::UmaHistogramEnumeration(kGeminiFirstRunStateHistogram, state);
 }
 
 void RecordGeminiIneligibilityReasons(gemini::IneligibilityReasons reasons) {
@@ -252,11 +296,11 @@ void RecordGeminiSessionLengthByType(base::TimeDelta session_duration,
     switch (session_type) {
       case IOSGeminiSessionType::kWithPrompt:
         base::UmaHistogramLongTimes100(
-            kGeminiSessionLengthFREWithPromptHistogram, session_duration);
+            kGeminiSessionLengthFirstRunWithPromptHistogram, session_duration);
         break;
       case IOSGeminiSessionType::kAbandoned:
         base::UmaHistogramLongTimes100(
-            kGeminiSessionLengthFREAbandonedHistogram, session_duration);
+            kGeminiSessionLengthFirstRunAbandonedHistogram, session_duration);
         break;
       case IOSGeminiSessionType::kUnknown:
         break;
@@ -277,7 +321,7 @@ void RecordGeminiSessionLengthByType(base::TimeDelta session_duration,
   }
 }
 
-void RecordGeminiEntryPointImpression() {
+void RecordGeminiEntryPointImpression(gemini::EntryPoint entry_point) {
   base::TimeTicks now = base::TimeTicks::Now();
   base::TimeTicks& last_impression_time = GetLastGeminiImpressionTime();
 
@@ -286,11 +330,18 @@ void RecordGeminiEntryPointImpression() {
       (now - last_impression_time) >= kGeminiImpressionThrottleInterval) {
     base::RecordAction(
         base::UserMetricsAction("MobileGeminiEntryPointImpression"));
+    base::UmaHistogramEnumeration(kEntryPointImpressionHistogram, entry_point);
     last_impression_time = now;
   }
 }
 
-void RecordFREShown() {
+void RecordGeminiEntryPointAvailable(gemini::EntryPoint entry_point) {
+  base::RecordAction(
+      base::UserMetricsAction("MobileGeminiEntryPointAvailable"));
+  base::UmaHistogramEnumeration(kEntryPointAvailableHistogram, entry_point);
+}
+
+void RecordFirstRunShown() {
   base::RecordAction(base::UserMetricsAction("MobileGeminiFREShown"));
 }
 
@@ -305,29 +356,33 @@ void RecordFirstPromptSubmission(IOSGeminiFirstPromptSubmissionMethod method) {
   base::UmaHistogramEnumeration(kFirstPromptSubmissionMethodHistogram, method);
 }
 
+void RecordPromptSubmissionMethod(IOSGeminiFirstPromptSubmissionMethod method) {
+  base::UmaHistogramEnumeration(kPromptSubmissionMethodHistogram, method);
+}
+
 void RecordGeminiResponseReceived(bool generated_image_included) {
   base::RecordAction(base::UserMetricsAction("MobileGeminiResponseReceived"));
   base::UmaHistogramBoolean(kResponseGeneratedImageIncluded,
                             generated_image_included);
 }
 
-void RecordFREPromoAccept() {
+void RecordFirstRunPromoAccept() {
   base::RecordAction(base::UserMetricsAction("MobileGeminiFREPromoAccept"));
 }
 
-void RecordFREPromoDismiss() {
+void RecordFirstRunPromoDismiss() {
   base::RecordAction(base::UserMetricsAction("MobileGeminiFREPromoCancel"));
 }
 
-void RecordFREConsentAccept() {
+void RecordFirstRunConsentAccept() {
   base::RecordAction(base::UserMetricsAction("MobileGeminiFREConsentAccept"));
 }
 
-void RecordFREConsentDismiss() {
+void RecordFirstRunConsentDismiss() {
   base::RecordAction(base::UserMetricsAction("MobileGeminiFREConsentDismiss"));
 }
 
-void RecordFREConsentLinkClick() {
+void RecordFirstRunConsentLinkClick() {
   base::RecordAction(
       base::UserMetricsAction("MobileGeminiFREConsentLinkClick"));
 }
@@ -374,9 +429,16 @@ void RecordFloatyCollapsedToExpanded() {
       IOSGeminiViewStateTransition::kCollapsedToExpanded);
 }
 
-void RecordFloatyDismissedWhileCollapsed() {
-  base::RecordAction(
-      base::UserMetricsAction("MobileGeminiFloatyCollapsedToDismissed"));
+void RecordFloatyDismissedState(ios::provider::GeminiViewState state) {
+  base::UmaHistogramEnumeration(kFloatyDismissedStateHistogram, state);
+
+  if (state == ios::provider::GeminiViewState::kCollapsed) {
+    base::RecordAction(
+        base::UserMetricsAction("MobileGeminiFloatyCollapsedToDismissed"));
+  } else if (state == ios::provider::GeminiViewState::kExpanded) {
+    base::RecordAction(
+        base::UserMetricsAction("MobileGeminiFloatyExpandedToDismissed"));
+  }
 }
 
 void RecordFloatyMinimizedTime(base::TimeTicks elapsed_minimized_floaty_time) {
@@ -433,12 +495,23 @@ void RecordGeminiEntryPointClick(gemini::EntryPoint entry_point,
   }
   base::UmaHistogramEnumeration(kEntryPointHistogram, entry_point);
   if (is_fre_flow) {
-    base::UmaHistogramEnumeration(kFREEntryPointHistogram, entry_point);
+    base::UmaHistogramEnumeration(kFirstRunEntryPointHistogram, entry_point);
   }
+}
+
+void RecordSignInRequiredSnackbarShown(gemini::EntryPoint entry_point) {
+  base::UmaHistogramEnumeration(kSignInRequiredSnackbarShownHistogram,
+                                entry_point);
 }
 
 void RecordGeminiNewChatButtonTapped() {
   base::RecordAction(base::UserMetricsAction("MobileGeminiNewChatTapped"));
+}
+
+void RecordGeminiRegenerateButtonTapped(gemini::RegenerateOptionType option) {
+  base::RecordAction(
+      base::UserMetricsAction("MobileGeminiRegenerateButtonTapped"));
+  base::UmaHistogramEnumeration(kRegenerateButtonTappedHistogram, option);
 }
 
 void RecordAIHubNewBadgeTapped() {
@@ -585,4 +658,13 @@ void RecordGeminiInputPlateAttachmentOptionTapped(
   base::RecordAction(
       base::UserMetricsAction("MobileGeminiInputPlateAttachmentOptionTapped"));
   base::UmaHistogramEnumeration(kInputPlateAttachmentOptionHistogram, option);
+}
+
+void RecordGeminiEditMenuSelectedTextLength(int length) {
+  base::UmaHistogramCounts1000(kEditMenuSelectedTextLengthHistogram, length);
+}
+
+void RecordGeminiGlicContextualCueDecision(
+    optimization_guide::OptimizationGuideDecision decision) {
+  base::UmaHistogramEnumeration(kGlicContextualCueDecisionHistogram, decision);
 }

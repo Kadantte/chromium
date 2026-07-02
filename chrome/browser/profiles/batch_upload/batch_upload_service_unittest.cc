@@ -6,7 +6,6 @@
 
 #include <memory>
 
-#include "base/feature_list.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
@@ -145,8 +144,7 @@ TEST_F(BatchUploadServiceTest, SignedPending) {
 }
 
 TEST_F(BatchUploadServiceTest, Syncing) {
-  if (base::FeatureList::IsEnabled(
-          syncer::kReplaceSyncPromosWithSignInPromos)) {
+  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
     GTEST_SKIP() << "Sync is deprecated";
   }
   SigninWithFullInfo();
@@ -465,6 +463,7 @@ TEST_F(BatchUploadServiceTest,
   EXPECT_FALSE(service.IsDialogOpened());
 }
 
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
 struct AvatarEntryPointParam {
   signin::ProfileMenuAvatarButtonPromoInfo::Type promo_type;
   BatchUploadService::EntryPoint batch_upload_entry_point;
@@ -572,3 +571,4 @@ TEST_P(BatchUploadServiceWithAvatarPromoEntryPointTest,
 INSTANTIATE_TEST_SUITE_P(,
                          BatchUploadServiceWithAvatarPromoEntryPointTest,
                          testing::ValuesIn(kAvatarEntryPointTestParams));
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)

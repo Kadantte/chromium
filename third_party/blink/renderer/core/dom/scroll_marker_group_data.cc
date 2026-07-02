@@ -2,14 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <third_party/blink/renderer/core/dom/scroll_marker_group_data.h>
+#include "third_party/blink/renderer/core/dom/scroll_marker_group_data.h"
 
 #include "third_party/blink/renderer/core/dom/column_pseudo_element.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/layout_tree_builder_traversal.h"
 #include "third_party/blink/renderer/core/dom/scroll_marker_group_pseudo_element.h"
 #include "third_party/blink/renderer/core/html/html_anchor_element.h"
+#include "third_party/blink/renderer/core/layout/geometry/axis.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
+#include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
 #include "third_party/blink/renderer/core/scroll/scroll_into_view_util.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 
@@ -30,9 +32,9 @@ Element* ScrollTargetElement(Element* scroll_marker) {
 }
 
 mojom::blink::ScrollAlignment GetAlignmentForScrollTarget(
-    ScrollOrientation axis,
+    PhysicalAxis axis,
     const LayoutObject* target_object) {
-  cc::ScrollSnapAlign snap = target_object->Style()->GetScrollSnapAlign();
+  cc::ScrollSnapAlign snap = target_object->StyleRef().GetScrollSnapAlign();
 
   cc::SnapAlignment x_snap_align =
       snap.alignment_inline == cc::SnapAlignment::kNone
@@ -49,7 +51,7 @@ mojom::blink::ScrollAlignment GetAlignmentForScrollTarget(
       scroll_into_view_util::SnapAlignmentToV8ScrollLogicalPosition(
           y_snap_align);
   return scroll_into_view_util::ResolveToPhysicalAlignment(
-      x_position, y_position, axis, *target_object->Style());
+      x_position, y_position, axis, target_object->StyleRef());
 }
 
 // Returns the ColumnPseudoElement that is the direct parent of this scroll
@@ -97,7 +99,7 @@ std::optional<double> ScrollMarkerChooser::GetScrollTargetPosition(
           : target_object;
   CHECK(bounding_box_object);
   PhysicalBoxStrut scroll_margin =
-      target_object->Style() ? target_object->Style()->ScrollMarginStrut()
+      target_object->Style() ? target_object->StyleRef().ScrollMarginStrut()
                              : PhysicalBoxStrut();
   // Ignore sticky position offsets for the purposes of scrolling elements
   // into view. See https://www.w3.org/TR/css-position-3/#stickypos-scroll for
@@ -111,9 +113,9 @@ std::optional<double> ScrollMarkerChooser::GetScrollTargetPosition(
   rect_to_scroll.Expand(scroll_margin);
 
   mojom::blink::ScrollAlignment align_y =
-      GetAlignmentForScrollTarget(kVerticalScroll, target_object);
+      GetAlignmentForScrollTarget(PhysicalAxis::kVertical, target_object);
   mojom::blink::ScrollAlignment align_x =
-      GetAlignmentForScrollTarget(kHorizontalScroll, target_object);
+      GetAlignmentForScrollTarget(PhysicalAxis::kHorizontal, target_object);
   ScrollOffset target_scroll_offset =
       scroll_into_view_util::GetScrollOffsetToExpose(
           *scrollable_area_, rect_to_scroll, scroll_margin, align_x, align_y);
@@ -166,8 +168,8 @@ HeapVector<Member<Element>> ScrollMarkerChooser::ComputeTargetPositions(
     candidates.push_back(candidate);
   }
 
-  if (!min_candidate_position || !max_candidate_position) {
-    return candidates_;
+  if (candidates.empty()) {
+    return candidates;
   }
 
   // Update the target positions to account for unreachable targets.
@@ -321,6 +323,8 @@ void ScrollMarkerGroupData::RemoveFromFocusGroup(Element& scroll_marker) {
       }
       selected_marker_ = focus_group_[index];
     }
+  } else if (selected_marker_ == scroll_marker) {
+    selected_marker_ = nullptr;
   }
 }
 
@@ -448,7 +452,7 @@ Element* ScrollMarkerGroupData::ChooseMarker(
   using ScrollAxis = ScrollMarkerChooser::ScrollAxis;
   // The primary axis is, by default, the block axis.
   ScrollAxis primary_axis =
-      IsHorizontalWritingMode(scroller_box->Style()->GetWritingMode())
+      IsHorizontalWritingMode(scroller_box->StyleRef().GetWritingMode())
           ? ScrollAxis::kY
           : ScrollAxis::kX;
 
@@ -612,12 +616,24 @@ void ScrollMarkerGroupData::UpdateScrollableAreaSubscriptions() {
     scrollable_area->RemoveScrollMarkerGroupContainerData(this);
   }
   scrollable_areas_.clear();
-  for (Element* anchor_scroll_marker : focus_group_) {
-    if (PaintLayerScrollableArea* scrollable_area =
-            To<HTMLAnchorElement>(anchor_scroll_marker)
-                ->AncestorScrollableAreaOfScrollTargetElement()) {
-      scrollable_areas_.insert(scrollable_area);
-      scrollable_area->AddScrollMarkerGroupContainerData(this);
+  for (Element* scroll_marker : focus_group_) {
+    Element* target = ScrollTargetElement(scroll_marker);
+    if (!target || !target->GetLayoutObject()) {
+      continue;
+    }
+    // Find the closest ancestor scrollable area of this anchor's scroll target
+    // element.
+    if (const LayoutBox* scroller =
+            target->GetLayoutObject()->ContainingScrollContainer()) {
+      ScrollableArea* scrollable_area =
+          scroll_into_view_util::GetScrollableAreaForLayoutBox(
+              *scroller,
+              /*make_visible_in_visual_viewport=*/false);
+      if (auto* paint_scrollable_area =
+              DynamicTo<PaintLayerScrollableArea>(scrollable_area)) {
+        scrollable_areas_.insert(paint_scrollable_area);
+        paint_scrollable_area->AddScrollMarkerGroupContainerData(this);
+      }
     }
   }
   needs_scrollers_map_update_ = false;
@@ -646,6 +662,7 @@ Element* ScrollMarkerGroupData::FindPreviousScrollMarker(
 }
 
 bool ScrollMarkerGroupData::UpdateSnapshot() {
+  UpdateScrollableAreaSubscriptions();
   if (invalidation_state_ == InvalidationState::kNeedsFullUpdate) {
     if (Element* selected = ChooseMarkerRecursively()) {
       // We avoid calling ScrollMarkerPseudoElement::SetSelected here so as not
@@ -671,7 +688,7 @@ void ScrollMarkerGroupData::Trace(Visitor* v) const {
   v->Trace(focus_group_);
   v->Trace(scrollable_areas_);
   PostLayoutSnapshotClient::Trace(v);
-  ElementRareDataField::Trace(v);
+  NodeRareDataField::Trace(v);
 }
 
 }  // namespace blink

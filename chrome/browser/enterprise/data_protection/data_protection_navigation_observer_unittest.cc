@@ -27,6 +27,7 @@
 #include "components/enterprise/connectors/core/common.h"
 #include "components/enterprise/connectors/core/connectors_prefs.h"
 #include "components/enterprise/data_controls/core/browser/test_utils.h"
+#include "components/enterprise/data_protection/utils.h"
 #include "components/policy/core/common/cloud/dm_token.h"
 #include "components/policy/core/common/cloud/mock_cloud_policy_client.h"
 #include "components/policy/core/common/cloud/realtime_reporting_job_configuration.h"
@@ -195,10 +196,8 @@ class DataProtectionNavigationObserverTest
     enterprise_connectors::RealtimeReportingClientFactory::GetInstance()
         ->SetTestingFactory(
             profile(),
-            base::BindRepeating([](content::BrowserContext* context) {
-              return std::unique_ptr<KeyedService>(
-                  new enterprise_connectors::RealtimeReportingClient(context));
-            }));
+            base::BindRepeating(
+                &enterprise_connectors::test::BuildRealtimeReportingClient));
     enterprise_connectors::RealtimeReportingClientFactory::GetForProfile(
         profile())
         ->SetBrowserCloudPolicyClientForTesting(client_.get());
@@ -292,12 +291,7 @@ TEST_F(DataProtectionNavigationObserverTest, MatchedAuditRuleHasEvent) {
   base::RunLoop run_loop;
   validator.SetDoneClosure(run_loop.QuitClosure());
 
-  if (base::FeatureList::IsEnabled(
-          policy::kUploadRealtimeReportingEventsUsingProto)) {
-    validator.ExpectProtoBasedUrlFilteringInterstitialEvent(expected_event);
-  } else {
-    validator.ExpectURLFilteringInterstitialEvent(expected_event);
-  }
+  validator.ExpectProtoBasedUrlFilteringInterstitialEvent(expected_event);
 
   lookup_service_.SetShouldHaveMatchedRule(true);
   lookup_service_.SetWatermarkTextForURL(GURL("https://example.com/"),
@@ -980,12 +974,7 @@ TEST_P(OrderedDataProtectionNavigationObserverTest, TestWatermarkTextUpdated) {
   enterprise_connectors::test::EventReportValidator validator(client_.get());
   base::RunLoop run_loop;
   validator.SetDoneClosure(run_loop.QuitClosure());
-  if (base::FeatureList::IsEnabled(
-          policy::kUploadRealtimeReportingEventsUsingProto)) {
-    validator.ExpectProtoBasedUrlFilteringInterstitialEvent(expected_event);
-  } else {
-    validator.ExpectURLFilteringInterstitialEvent(expected_event);
-  }
+  validator.ExpectProtoBasedUrlFilteringInterstitialEvent(expected_event);
 
   base::test::TestFuture<const UrlSettings&> future;
   FakeDataProtectionNavigationController controller(

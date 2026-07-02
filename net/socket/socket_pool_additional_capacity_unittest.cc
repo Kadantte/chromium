@@ -24,7 +24,7 @@ TEST(SocketPoolAdditionalCapacityTest, CreateWithDisabledFeature) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndDisableFeature(
       features::kTcpSocketPoolLimitRandomization);
-  EXPECT_EQ(SocketPoolAdditionalCapacity::Create(),
+  EXPECT_EQ(SocketPoolAdditionalCapacity::Create(0),
             SocketPoolAdditionalCapacity::CreateEmpty());
 }
 
@@ -38,10 +38,6 @@ TEST(SocketPoolAdditionalCapacityTest, CreateWithEnabledFeature) {
               "0.1",
           },
           {
-              "TcpSocketPoolLimitRandomizationCapacity",
-              "2",
-          },
-          {
               "TcpSocketPoolLimitRandomizationMinimum",
               "0.3",
           },
@@ -50,7 +46,7 @@ TEST(SocketPoolAdditionalCapacityTest, CreateWithEnabledFeature) {
               "0.4",
           },
       });
-  EXPECT_EQ(SocketPoolAdditionalCapacity::Create(),
+  EXPECT_EQ(SocketPoolAdditionalCapacity::Create(2),
             SocketPoolAdditionalCapacity::CreateForTest(0.1, 2, 0.3, 0.4));
 }
 
@@ -59,6 +55,12 @@ TEST(SocketPoolAdditionalCapacityTest, CreateForTest) {
                 SocketPoolAdditionalCapacity::CreateForTest(0.1, 2, 0.3, 0.4)),
             "SocketPoolAdditionalCapacity(base:1.000000e-01,capacity:2,minimum:"
             "3.000000e-01,noise:4.000000e-01)");
+}
+
+TEST(SocketPoolAdditionalCapacityTest, CreateDefault) {
+  EXPECT_EQ(std::string(SocketPoolAdditionalCapacity::Create(256)),
+            "SocketPoolAdditionalCapacity(base:1.000000e-06,capacity:256,"
+            "minimum:1.000000e-02,noise:2.000000e-01)");
 }
 
 TEST(SocketPoolAdditionalCapacityTest, InvalidCreation) {
@@ -246,6 +248,7 @@ TEST(SocketPoolAdditionalCapacityTest, EmptyPool) {
 
 TEST(SocketPoolAdditionalCapacityTest,
      TestDefaultDistributionForFieldTrialConfig) {
+  SocketPoolAdditionalCapacity pool = SocketPoolAdditionalCapacity::Create(256);
 
   // In order to do that we need an easy way to measure distributions.
   // Since we are applying noise, we run a ten thousand variants.
@@ -255,13 +258,13 @@ TEST(SocketPoolAdditionalCapacityTest,
     size_t transition_release_count = 0;
     for (size_t i = 0; i < 10000; ++i) {
       if (SocketPoolState::kCapped ==
-          kFieldTrialPool.NextStateBeforeAllocation(SocketPoolState::kUncapped,
-                                                    sockets_in_use, 256)) {
+          pool.NextStateBeforeAllocation(SocketPoolState::kUncapped,
+                                         sockets_in_use, 256)) {
         ++transition_allocation_count;
       }
       if (SocketPoolState::kUncapped ==
-          kFieldTrialPool.NextStateAfterRelease(SocketPoolState::kCapped,
-                                                sockets_in_use, 256)) {
+          pool.NextStateAfterRelease(SocketPoolState::kCapped, sockets_in_use,
+                                     256)) {
         ++transition_release_count;
       }
     }
@@ -346,7 +349,7 @@ class MockClientSocketPool : public ClientSocketPool {
  public:
   MockClientSocketPool()
       : ClientSocketPool(/*socket_soft_cap=*/256,
-                         kFieldTrialPool,
+                         SocketPoolAdditionalCapacity::Create(256),
                          ProxyChain::Direct(),
                          /*is_for_websockets=*/false,
                          /*common_connect_job_params*/ nullptr,
@@ -390,7 +393,7 @@ class MockClientSocketPool : public ClientSocketPool {
       scoped_refptr<SocketParams> params,
       const std::optional<NetworkTrafficAnnotationTag>& proxy_annotation_tag,
       size_t num_sockets,
-      CompletionOnceCallback callback,
+      PreconnectCompletionCallback callback,
       const NetLogWithSource& net_log) override {
     NOTIMPLEMENTED();
     return ERR_IO_PENDING;

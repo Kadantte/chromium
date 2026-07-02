@@ -10,7 +10,6 @@
 #include "base/functional/callback_helpers.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/time/default_tick_clock.h"
 #include "base/time/tick_clock.h"
@@ -31,6 +30,8 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/features.h"
 #include "net/base/reconnect_notifier.h"
+#include "net/socket/next_proto.h"
+#include "services/network/public/cpp/constants.h"
 
 namespace {
 
@@ -123,6 +124,9 @@ BASE_FEATURE_PARAM(base::TimeDelta,
                    &kAdjustPreconnectRetryInterval,
                    "kPreconnectInitialRetryInterval",
                    base::Milliseconds(kPreconnectRetryDelayMs));
+
+BASE_FEATURE(kResetConnectionFailureOnSessionUsed,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 }  // namespace features
 
 WebContentVisibilityManager::WebContentVisibilityManager()
@@ -217,14 +221,16 @@ void SearchEnginePreconnector::PreconnectDSE() {
   DCHECK(ShouldBeEnabledForOffTheRecord() ||
          !browser_context_->IsOffTheRecord());
   DCHECK(!timer_.IsRunning());
-  if (!base::FeatureList::IsEnabled(features::kPreconnectToSearch))
+  if (!base::FeatureList::IsEnabled(features::kPreconnectToSearch)) {
     return;
+  }
 
   // Don't preconnect unless the user allows search suggestions.
   if (!Profile::FromBrowserContext(browser_context_)
            ->GetPrefs()
-           ->GetBoolean(prefs::kSearchSuggestEnabled))
+           ->GetBoolean(prefs::kSearchSuggestEnabled)) {
     return;
+  }
 
   GURL preconnect_url = GetDefaultSearchEngineOriginURL();
   if (preconnect_url.GetScheme() != url::kHttpScheme &&
@@ -271,11 +277,16 @@ void SearchEnginePreconnector::PreconnectDSE() {
       is_browser_app_likely_in_foreground) {
     net::SchemefulSite schemeful_site(preconnect_url);
     auto network_anonymziation_key =
-        net::NetworkAnonymizationKey::CreateSameSite(schemeful_site);
+        net::NetworkAnonymizationKey::CreateSameSite(std::move(schemeful_site));
+
+    // Preconnection initiated by search engine is out of scope of connection
+    // allowlist, so there is no-op `network_restrictions_id`.
+    // See https://wicg.github.io/connection-allowlists/#threat-model.
     GetPreconnectManager().StartPreconnectUrl(
         preconnect_url, /*allow_credentials=*/true, network_anonymziation_key,
         predictors::kSearchEnginePreconnectTrafficAnnotation,
-        /*storage_partition_config=*/nullptr, std::move(keepalive_config),
+        /*storage_partition_config=*/nullptr,
+        network::GetNoOpNetworkRestrictionsId(), std::move(keepalive_config),
         std::move(observer));
   }
 
@@ -292,11 +303,13 @@ void SearchEnginePreconnector::PreconnectDSE() {
 GURL SearchEnginePreconnector::GetDefaultSearchEngineOriginURL() const {
   auto* template_service = TemplateURLServiceFactory::GetForProfile(
       Profile::FromBrowserContext(browser_context_));
-  if (!template_service)
+  if (!template_service) {
     return GURL();
+  }
   const auto* search_provider = template_service->GetDefaultSearchProvider();
-  if (!search_provider || !search_provider->data().preconnect_to_search_url)
+  if (!search_provider || !search_provider->data().preconnect_to_search_url) {
     return GURL();
+  }
   return search_provider->GenerateSearchURL({}).DeprecatedGetOriginAsURL();
 }
 
@@ -415,18 +428,39 @@ bool SearchEnginePreconnector::IsPreconnectEnabled() {
       Profile::FromBrowserContext(browser_context_));
 }
 
-void SearchEnginePreconnector::OnSessionClosed() {
-  if (IsShortSession()) {
-    // If we have a short session, we consider that the session was closed due
-    // to an error, and will consider as a failed connection as well.
-    consecutive_connection_failure_++;
-  } else {
-    // If the last session was not short, then it must mean that the connection
-    // was successful. Reset the failure count.
+void SearchEnginePreconnector::OnConnectionEstablished(
+    const net::ConnectionChangeNotifier::EstablishedConnectionInfo& info) {
+  base::UmaHistogramEnumeration(
+      "NavigationPredictor.SearchEnginePreconnector.SessionEstablished."
+      "ConnectionInfo",
+      info.connection_info);
+  base::UmaHistogramTimes(
+      "NavigationPredictor.SearchEnginePreconnector.SessionEstablished."
+      "ConnectionSetupTime",
+      info.connection_setup_time);
+  base::UmaHistogramEnumeration(
+      "NavigationPredictor.SearchEnginePreconnector.SessionEstablished."
+      "Initiator",
+      info.initiator);
+}
+
+void SearchEnginePreconnector::OnSessionClosed(
+    bool was_ever_used_to_create_streams) {
+  bool reset_on_used = base::FeatureList::IsEnabled(
+      features::kResetConnectionFailureOnSessionUsed);
+  if ((reset_on_used && was_ever_used_to_create_streams) || !IsShortSession()) {
+    // If the session was used or it was not a short session (likely closed due
+    // to idle timeout), then it must mean that the connection was successful.
+    // Reset the failure count.
     base::UmaHistogramCounts1000(
         "NavigationPredictor.SearchEnginePreconnector.ConsecutiveFailures",
         consecutive_connection_failure_);
     consecutive_connection_failure_ = 0;
+  } else {
+    // If we have a short session and it was not used, we consider that the
+    // session was closed due to an error, and will consider as a failed
+    // connection as well.
+    consecutive_connection_failure_++;
   }
   if (RebindPreconnectReceiversEnabled() &&
       OnlyBindOnConnectionClosedOrFailed()) {

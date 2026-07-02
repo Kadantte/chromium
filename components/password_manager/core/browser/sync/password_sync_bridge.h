@@ -61,8 +61,6 @@ class PasswordSyncBridge : public syncer::DataTypeSyncBridge {
                                  const PasswordStoreChangeList& changes);
 
   // DataTypeSyncBridge implementation.
-  std::unique_ptr<syncer::MetadataChangeList> CreateMetadataChangeList()
-      override;
   std::optional<syncer::ModelError> MergeFullSyncData(
       std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
       syncer::EntityChangeList entity_data) override;
@@ -93,6 +91,11 @@ class PasswordSyncBridge : public syncer::DataTypeSyncBridge {
   // store. So during merge, the data in sync will be added to the password
   // store. This should be called during MergeFullSyncData().
   std::optional<syncer::ModelError> CleanupPasswordStore();
+
+  // Reads local credentials. If decryption failure is encountered, tries to
+  // clean up the database and re-read. Returns the error if fails.
+  std::optional<syncer::ModelError> ReadCredentialsOrCleanup(
+      PrimaryKeyToPasswordSpecificsDataMap* key_to_local_specifics_map);
 
   // If available, returns cached possibly trimmed PasswordSpecificsData for
   // given |storage_key|. By default, empty PasswordSpecificsData is returned.

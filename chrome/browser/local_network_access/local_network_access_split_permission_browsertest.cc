@@ -59,19 +59,7 @@ std::string WaitForPermissionScript(std::string_view permission) {
 
 }  // namespace
 
-class LocalNetworkAccessSplitPermissionOffBrowserTest
-    : public LocalNetworkAccessBrowserTestBase {
- public:
-  LocalNetworkAccessSplitPermissionOffBrowserTest() {
-    feature_list_.InitAndDisableFeature(
-        network::features::kLocalNetworkAccessChecksSplitPermissions);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-class LocalNetworkAccessSplitPermissionOnBrowserTest
+class LocalNetworkAccessSplitPermissionBrowserTest
     : public LocalNetworkAccessBrowserTestBase {
  public:
   void RunIframeNavigationTest(const GURL& initial_url,
@@ -94,10 +82,9 @@ class LocalNetworkAccessSplitPermissionOnBrowserTest
       child.allow = $2;
       document.body.appendChild(child);
     )";
-    EXPECT_THAT(content::EvalJs(web_contents(),
-                                content::JsReplace(script_template, iframe_url,
-                                                   permission_policy)),
-                content::EvalJsResult::IsOk());
+    EXPECT_TRUE(content::ExecJs(
+        web_contents(),
+        content::JsReplace(script_template, iframe_url, permission_policy)));
     // Check that the child iframe was successfully fetched.
     ASSERT_TRUE(iframe_url_nav_manager.WaitForNavigationFinished());
     EXPECT_TRUE(iframe_url_nav_manager.was_successful());
@@ -109,30 +96,9 @@ class LocalNetworkAccessSplitPermissionOnBrowserTest
       EXPECT_TRUE(nav_url_nav_manager.was_successful());
     }
   }
-
- private:
-  base::test::ScopedFeatureList feature_list_{
-      network::features::kLocalNetworkAccessChecksSplitPermissions};
 };
 
-IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOffBrowserTest,
-                       QueryPermissions) {
-  ASSERT_TRUE(content::NavigateToURL(
-      web_contents(),
-      https_server().GetURL("a.com", kTreatAsPublicAddressPath)));
-
-  ASSERT_EQ("prompt",
-            content::EvalJs(web_contents(),
-                            QueryPermissionScript("local-network-access")));
-  EXPECT_THAT(
-      content::EvalJs(web_contents(), QueryPermissionScript("local-network")),
-      content::EvalJsResult::IsError());
-  EXPECT_THAT(content::EvalJs(web_contents(),
-                              QueryPermissionScript("loopback-network")),
-              content::EvalJsResult::IsError());
-}
-
-IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionBrowserTest,
                        QueryPermissions) {
   ASSERT_TRUE(content::NavigateToURL(
       web_contents(),
@@ -147,7 +113,7 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
                                                           "loopback-network")));
 }
 
-IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionBrowserTest,
                        FetchDenyPermissionLoopback) {
   ASSERT_TRUE(content::NavigateToURL(
       web_contents(),
@@ -158,11 +124,10 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
       permissions::PermissionRequestManager::AutoResponseType::DENY_ALL);
 
   // LNA fetch should fail.
-  EXPECT_THAT(content::EvalJs(
-                  web_contents(),
-                  content::JsReplace("fetch($1).then(response => response.ok)",
-                                     https_server().GetURL("b.com", kLnaPath))),
-              content::EvalJsResult::IsError());
+  EXPECT_FALSE(content::ExecJs(
+      web_contents(),
+      content::JsReplace("fetch($1).then(response => response.ok)",
+                         https_server().GetURL("b.com", kLnaPath))));
 
   // It should be the loopback-network permission that is denied ...
   ASSERT_EQ("denied", content::EvalJs(web_contents(), QueryPermissionScript(
@@ -177,7 +142,7 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
                             QueryPermissionScript("local-network-access")));
 }
 
-IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionBrowserTest,
                        FetchDenyPermissionLocal) {
   ASSERT_TRUE(content::NavigateToURL(
       web_contents(),
@@ -188,12 +153,10 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
       permissions::PermissionRequestManager::AutoResponseType::DENY_ALL);
 
   // LNA fetch should fail.
-  EXPECT_THAT(
-      content::EvalJs(
-          web_contents(),
-          content::JsReplace("fetch($1).then(response => response.ok)",
-                             https_local_server().GetURL("b.com", kLnaPath))),
-      content::EvalJsResult::IsError());
+  EXPECT_FALSE(content::ExecJs(
+      web_contents(),
+      content::JsReplace("fetch($1).then(response => response.ok)",
+                         https_local_server().GetURL("b.com", kLnaPath))));
 
   // It should not be the loopback-network permission that is denied ...
   ASSERT_EQ("prompt", content::EvalJs(web_contents(), QueryPermissionScript(
@@ -208,7 +171,7 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
                             QueryPermissionScript("local-network-access")));
 }
 
-IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionBrowserTest,
                        FetchAcceptPermissionLoopback) {
   ASSERT_TRUE(content::NavigateToURL(
       web_contents(),
@@ -239,7 +202,7 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
                             QueryPermissionScript("local-network-access")));
 }
 
-IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionBrowserTest,
                        FetchAcceptPermissionLocal) {
   ASSERT_TRUE(content::NavigateToURL(
       web_contents(),
@@ -269,7 +232,7 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
                             QueryPermissionScript("local-network-access")));
 }
 
-IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionBrowserTest,
                        FetchAcceptPermissionLocalDenyPermissionLoopback) {
   ASSERT_TRUE(content::NavigateToURL(
       web_contents(),
@@ -291,11 +254,10 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
       permissions::PermissionRequestManager::AutoResponseType::DENY_ALL);
 
   // Loopback LNA fetch should fail.
-  EXPECT_THAT(content::EvalJs(
-                  web_contents(),
-                  content::JsReplace("fetch($1).then(response => response.ok)",
-                                     https_server().GetURL("b.com", kLnaPath))),
-              content::EvalJsResult::IsError());
+  EXPECT_FALSE(content::ExecJs(
+      web_contents(),
+      content::JsReplace("fetch($1).then(response => response.ok)",
+                         https_server().GetURL("b.com", kLnaPath))));
 
   // local-network permission should be granted.
   ASSERT_EQ("granted", content::EvalJs(web_contents(),
@@ -311,7 +273,7 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
                             QueryPermissionScript("local-network-access")));
 }
 
-IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionBrowserTest,
                        FetchDenyPermissionLocalAcceptPermissionLoopback) {
   ASSERT_TRUE(content::NavigateToURL(
       web_contents(),
@@ -322,12 +284,10 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
       permissions::PermissionRequestManager::AutoResponseType::DENY_ALL);
 
   // Local LNA fetch should fail.
-  EXPECT_THAT(
-      content::EvalJs(
-          web_contents(),
-          content::JsReplace("fetch($1).then(response => response.ok)",
-                             https_local_server().GetURL("b.com", kLnaPath))),
-      content::EvalJsResult::IsError());
+  EXPECT_FALSE(content::ExecJs(
+      web_contents(),
+      content::JsReplace("fetch($1).then(response => response.ok)",
+                         https_local_server().GetURL("b.com", kLnaPath))));
 
   // Enable auto-accept of LNA permission request.
   bubble_factory()->set_response_type(
@@ -357,7 +317,7 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
 
 // Test of the permissionStatus.onchange handler for the LOOBPACK_NETWORK
 // permission.
-IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionBrowserTest,
                        PermissionStatusOnchangeNewPermission) {
   ASSERT_TRUE(content::NavigateToURL(
       web_contents(),
@@ -384,7 +344,7 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
 
 // Test of the permissionStatus.onchange handler for the LOCAL_NETWORK_ACCESS
 // permission alias. Regression test for crbug.com/480069043.
-IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionBrowserTest,
                        PermissionStatusOnchangeOldPermission) {
   ASSERT_TRUE(content::NavigateToURL(
       web_contents(),
@@ -412,7 +372,7 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
 // Open a public page that iframes a public page, then navigate it to a loopback
 // page.
 IN_PROC_BROWSER_TEST_F(
-    LocalNetworkAccessSplitPermissionOnBrowserTest,
+    LocalNetworkAccessSplitPermissionBrowserTest,
     IframeNavigationPublicPagePublicIframeLoopbackDestination) {
   GURL initial_url = https_server().GetURL(
       "a.com", "/local_network_access/no-favicon-treat-as-public-address.html");
@@ -431,7 +391,7 @@ IN_PROC_BROWSER_TEST_F(
 
 // Open a public page that iframes a public page, then navigate it to a local
 // page.
-IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionBrowserTest,
                        IframeNavigationPublicPagePublicIframeLocalDestination) {
   GURL initial_url = https_server().GetURL(
       "a.com", "/local_network_access/no-favicon-treat-as-public-address.html");
@@ -448,7 +408,7 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
                           /*expect_nav_failure=*/false);
 }
 
-IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionBrowserTest,
                        LocalNetworkAccessAllowedForUrlsPolicy) {
   policy::PolicyMap policies;
   base::ListValue allowlist;
@@ -478,7 +438,7 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
                           https_local_server().GetURL("b.com", kLnaPath))));
 }
 
-IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionBrowserTest,
                        LocalNetworkAccessBlockedForUrlsPolicy) {
   // Set both policies. Block should override Allow
   policy::PolicyMap policies;
@@ -504,19 +464,16 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
       permissions::PermissionRequestManager::AutoResponseType::ACCEPT_ALL);
 
   // LNA fetch should fail, both for loopback requests...
-  EXPECT_THAT(content::EvalJs(
-                  web_contents(),
-                  content::JsReplace("fetch($1).then(response => response.ok)",
-                                     https_server().GetURL("b.com", kLnaPath))),
-              content::EvalJsResult::IsError());
+  EXPECT_FALSE(content::ExecJs(
+      web_contents(),
+      content::JsReplace("fetch($1).then(response => response.ok)",
+                         https_server().GetURL("b.com", kLnaPath))));
 
   // ... and for local requests.
-  EXPECT_THAT(
-      content::EvalJs(
-          web_contents(),
-          content::JsReplace("fetch($1).then(response => response.ok)",
-                             https_local_server().GetURL("b.com", kLnaPath))),
-      content::EvalJsResult::IsError());
+  EXPECT_FALSE(content::ExecJs(
+      web_contents(),
+      content::JsReplace("fetch($1).then(response => response.ok)",
+                         https_local_server().GetURL("b.com", kLnaPath))));
 }
 
 // Tests for forwards compatibility of the "local-network-access" permissions
@@ -528,7 +485,7 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
 // local page should trigger the permission prompt and succeed. Navigating the
 // subframe to a loopback page should also trigger the permission prompt and
 // succeed.
-IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionBrowserTest,
                        PermissionsPolicyForwardsCompatible) {
   GURL initial_url = https_public_server().GetURL(
       "a.com", "/local_network_access/no-favicon.html");
@@ -559,7 +516,7 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
 // the subframe should return "prompt" for all three features, and
 // FeaturePolicy.allowsFeature() in the subframe should return true for all
 // three features.
-IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionBrowserTest,
                        PermissionPolicyForwardsCompatibleReflectionApis) {
   GURL mainframe_url = https_public_server().GetURL(
       "a.com", "/local_network_access/no-favicon.html");
@@ -573,9 +530,8 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
     child.allow = "local-network-access";
     document.body.appendChild(child);
   )";
-  EXPECT_THAT(content::EvalJs(web_contents(),
-                              content::JsReplace(script_template, iframe_url)),
-              content::EvalJsResult::IsOk());
+  EXPECT_TRUE(content::ExecJs(web_contents(),
+                              content::JsReplace(script_template, iframe_url)));
   // Check that the child iframe was successfully fetched.
   ASSERT_TRUE(nav_manager.WaitForNavigationFinished());
   EXPECT_TRUE(nav_manager.was_successful());
@@ -615,7 +571,7 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
 
 // Tests forward compatibility for disallowing "local-network-access" in
 // permissions policy headers.
-IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionOnBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessSplitPermissionBrowserTest,
                        PermissionPolicyForwardsCompatibleHeaderDisallow) {
   // Navigate to public page that includes a permissions policy header
   // disallowing LNA:
@@ -689,7 +645,7 @@ constexpr WebRtcTestParam kWebRtcTestParams[] = {
 };
 
 class LocalNetworkAccessSplitPermissionWebRtcBrowserTest
-    : public LocalNetworkAccessSplitPermissionOnBrowserTest,
+    : public LocalNetworkAccessSplitPermissionBrowserTest,
       public testing::WithParamInterface<WebRtcTestParam> {
  public:
   static std::string DescribeParams(

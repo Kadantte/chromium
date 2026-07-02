@@ -59,6 +59,17 @@ class ChromiumSystemIdentityManager final : public SystemIdentityManager {
   void FetchCapabilities(id<SystemIdentity> identity,
                          const std::vector<std::string>& names,
                          FetchCapabilitiesCallback callback) final;
+  void FetchCapabilitiesWithPartial(
+      id<SystemIdentity> identity,
+      const std::vector<std::string>& names,
+      FetchCapabilitiesCompletion completion,
+      FetchPartialCapabilitiesCallback partial_callback) final;
+  void RegisterExternalPrivacyContextProvider(
+      id<ExternalPrivacyContextUIProvider> provider) final;
+  void UnregisterExternalPrivacyContextProvider(
+      id<ExternalPrivacyContextUIProvider> provider) final;
+  void ExternalPrivacyContextProviderReady(
+      id<ExternalPrivacyContextUIProvider> provider) final;
   bool HandleMDMNotification(id<SystemIdentity> identity,
                              NSArray<id<SystemIdentity>>* active_identities,
                              id<RefreshAccessTokenError> error,
@@ -179,6 +190,29 @@ void ChromiumSystemIdentityManager::FetchCapabilities(
     id<SystemIdentity> identity,
     const std::vector<std::string>& names,
     FetchCapabilitiesCallback callback) {
+  NOTREACHED();
+}
+
+void ChromiumSystemIdentityManager::FetchCapabilitiesWithPartial(
+    id<SystemIdentity> identity,
+    const std::vector<std::string>& names,
+    FetchCapabilitiesCompletion completion,
+    FetchPartialCapabilitiesCallback partial_callback) {
+  NOTREACHED();
+}
+
+void ChromiumSystemIdentityManager::RegisterExternalPrivacyContextProvider(
+    id<ExternalPrivacyContextUIProvider> provider) {
+  NOTREACHED();
+}
+
+void ChromiumSystemIdentityManager::UnregisterExternalPrivacyContextProvider(
+    id<ExternalPrivacyContextUIProvider> provider) {
+  NOTREACHED();
+}
+
+void ChromiumSystemIdentityManager::ExternalPrivacyContextProviderReady(
+    id<ExternalPrivacyContextUIProvider> provider) {
   NOTREACHED();
 }
 

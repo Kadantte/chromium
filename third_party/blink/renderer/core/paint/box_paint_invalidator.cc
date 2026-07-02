@@ -4,14 +4,19 @@
 
 #include "third_party/blink/renderer/core/paint/box_paint_invalidator.h"
 
+#include "base/memory/values_equivalent.h"
+#include "base/types/zip.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
+#include "third_party/blink/renderer/core/layout/gap/gap_geometry.h"
 #include "third_party/blink/renderer/core/layout/ink_overflow.h"
 #include "third_party/blink/renderer/core/layout/layout_replaced.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
+#include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
 #include "third_party/blink/renderer/core/paint/object_paint_invalidator.h"
 #include "third_party/blink/renderer/core/paint/paint_invalidator.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -182,8 +187,10 @@ PaintInvalidationReason BoxPaintInvalidator::ComputePaintInvalidationReason() {
   // Incremental invalidation is not applicable if there is border in the
   // direction of border box size change because we don't know the border
   // width when issuing incremental raster invalidations.
-  if (box_.BorderRight() || box_.BorderBottom())
+  const PhysicalBoxStrut borders = box_.BorderOutsets();
+  if (borders.right || borders.bottom) {
     return PaintInvalidationReason::kLayout;
+  }
 
   if (style.HasVisualOverflowingEffect() || style.HasEffectiveAppearance() ||
       style.HasFilterInducingProperty() || style.HasMask() ||
@@ -404,6 +411,7 @@ void BoxPaintInvalidator::InvalidateBackground() {
 
 void BoxPaintInvalidator::InvalidatePaint() {
   InvalidateBackground();
+  InvalidateGapDecorations();
 
   ObjectPaintInvalidatorWithContext(box_, context_)
       .InvalidatePaintWithComputedReason(ComputePaintInvalidationReason());
@@ -453,6 +461,65 @@ bool BoxPaintInvalidator::NeedsToSavePreviousOverflowData() {
   return false;
 }
 
+bool BoxPaintInvalidator::NeedsToSavePreviousGapGeometries() {
+  if (!RuntimeEnabledFeatures::CSSGapDecorationEnabled()) {
+    return false;
+  }
+  if (!box_.StyleRef().IsGapDecorationsContainer() ||
+      !box_.StyleRef().HasGapRule()) {
+    return false;
+  }
+  for (const PhysicalBoxFragment& fragment : box_.PhysicalFragments()) {
+    if (fragment.GetGapGeometry()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void BoxPaintInvalidator::InvalidateGapDecorations() {
+  if (!RuntimeEnabledFeatures::CSSGapDecorationEnabled()) {
+    return;
+  }
+  if (!box_.StyleRef().IsGapDecorationsContainer() ||
+      !box_.StyleRef().HasGapRule()) {
+    return;
+  }
+
+  const auto* previous = box_.PreviousGapGeometries();
+
+  // If there's no previous gap geometry, nothing to do.
+  if (!previous) {
+    return;
+  }
+
+  // Compare previous vs current gap geometries. The previous vector is indexed
+  // by fragment position (including nullptr entries for fragments without gap
+  // geometry), so each fragment's previous geometry is compared against the
+  // same fragment's current geometry.
+  const bool changed = [&]() {
+    if (previous->size() != box_.PhysicalFragmentCount()) {
+      // Different fragment count means gap geometry may have changed.
+      return true;
+    }
+    auto fragments = box_.PhysicalFragments();
+    for (const auto [previous_geometry, fragment] :
+         base::zip(*previous, fragments)) {
+      if (!base::ValuesEquivalent(previous_geometry.Get(),
+                                  fragment.GetGapGeometry())) {
+        return true;
+      }
+    }
+    return false;
+  }();
+
+  if (changed) {
+    box_.GetMutableForPainting()
+        .SetShouldDoFullPaintInvalidationWithoutLayoutChange(
+            PaintInvalidationReason::kBackground);
+  }
+}
+
 void BoxPaintInvalidator::SavePreviousBoxGeometriesIfNeeded() {
   auto mutable_box = box_.GetMutableForPainting();
   mutable_box.SavePreviousSize();
@@ -470,6 +537,12 @@ void BoxPaintInvalidator::SavePreviousBoxGeometriesIfNeeded() {
     mutable_box.SavePreviousContentBoxRect();
   else
     mutable_box.ClearPreviousContentBoxRect();
+
+  if (NeedsToSavePreviousGapGeometries()) {
+    mutable_box.SavePreviousGapGeometries();
+  } else {
+    mutable_box.ClearPreviousGapGeometries();
+  }
 }
 
 }  // namespace blink

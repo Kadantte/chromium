@@ -146,6 +146,12 @@ export class CheckupListItemElement extends CheckupListItemElementBase {
         {bubbles: true, composed: true, detail: this.item.id}));
   }
 
+  private onAutoChangePasswordClick_() {
+    if (this.item && this.item.isAutomaticPasswordChangeSupported) {
+      PasswordManagerImpl.getInstance().requestChangePassword(this.item.id);
+    }
+  }
+
   private onAlreadyChangedClick_(e: Event) {
     this.showEditPasswordDisclaimer_ = true;
     e.preventDefault();
@@ -191,6 +197,12 @@ export class CheckupListItemElement extends CheckupListItemElementBase {
 
   private getChangeButtonAriaLabel_(): string {
     return this.i18n('changePasswordAriaDescription', this.getGroupName_());
+  }
+
+  private getAutoChangeButtonAriaLabel_(): string {
+    return this.i18n(
+        'automatedPasswordChangeCheckupButtonAriaDescription',
+        this.getGroupName_());
   }
 
   private getMoreButtonAriaLabel_(): string {

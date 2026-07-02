@@ -33,7 +33,7 @@ import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bu
 
 import type {PasswordsMovedEvent, ValueCopiedEvent} from '../password_manager_app.js';
 import {PasswordManagerImpl, PasswordViewPageInteractions} from '../password_manager_proxy.js';
-import {PasswordSharingActions, recordPasswordSharingInteraction} from '../sharing/metrics_utils.js';
+import {MoveToAccountStoreTrigger, PasswordSharingActions, recordMoveToAccountStoreAccepted, recordPasswordSharingInteraction} from '../sharing/metrics_utils.js';
 import {ShowPasswordMixin} from '../show_password_mixin.js';
 import {UserUtilMixin} from '../user_utils_mixin.js';
 
@@ -136,7 +136,21 @@ export class PasswordDetailsCardElement extends PasswordDetailsCardElementBase {
       },
 
       isUsingAccountStore: Boolean,
+      trigger_: {
+        type: Object,
+        value: () =>
+            MoveToAccountStoreTrigger
+                .EXPLICITLY_TRIGGERED_FOR_SINGLE_PASSWORD_IN_DETAILS_IN_SETTINGS,
+      },
     };
+  }
+
+  static get observers() {
+    return [
+      'maybeRegisterSharingHelpBubble_(' +
+          'shouldRegisterSharingPromo, showShareButton_, ' +
+          'passwordSharingDisabled_)',
+    ];
   }
 
   declare password: chrome.passwordsPrivate.PasswordUiEntry;
@@ -154,11 +168,8 @@ export class PasswordDetailsCardElement extends PasswordDetailsCardElementBase {
   declare private showShareButton_: boolean;
   declare private showMovePasswordDialog_: boolean;
   declare private showSingleClickUploadUi_: boolean;
+  declare private trigger_: MoveToAccountStoreTrigger;
 
-  override connectedCallback() {
-    super.connectedCallback();
-    this.maybeRegisterSharingHelpBubble_();
-  }
 
   private isFederated_(): boolean {
     return !!this.password.federationText;
@@ -326,6 +337,17 @@ export class PasswordDetailsCardElement extends PasswordDetailsCardElementBase {
             this.getCredentialTypeString_());
   }
 
+  private getAriaLabelForShareButton_(): string {
+    return this.password.username ?
+        this.i18n(
+            'passwordDetailsCardShareButtonAriaLabel',
+            this.getCredentialTypeString_(),
+            htmlEscape(this.password.username)) :
+        this.i18n(
+            'passwordDetailsCardShareButtonNoUsernameAriaLabel',
+            this.getCredentialTypeString_());
+  }
+
   private computeMovePasswordText_(): TrustedHTML {
     return this.i18nAdvanced('moveSinglePassword');
   }
@@ -346,6 +368,7 @@ export class PasswordDetailsCardElement extends PasswordDetailsCardElementBase {
       composed: true,
       detail: {accountEmail: this.accountEmail, numberOfPasswords: 1},
     }));
+    recordMoveToAccountStoreAccepted(this.trigger_);
   }
 
   private showMovePasswordEntry_(): boolean {
@@ -367,12 +390,14 @@ export class PasswordDetailsCardElement extends PasswordDetailsCardElementBase {
     this.isPasswordVisible = false;
   }
 
-  private maybeRegisterSharingHelpBubble_(): void {
+  private maybeRegisterSharingHelpBubble_(
+      shouldRegisterSharingPromo: boolean, showShareButton: boolean,
+      passwordSharingDisabled: boolean): void {
     // Register the help bubble only if this is the first card in the list
     // (`shouldRegisterSharingPromo` is true), and the share button is visible
     // and not disabled.
-    if (!this.shouldRegisterSharingPromo ||
-        (!this.showShareButton_ && !this.passwordSharingDisabled_)) {
+    if (!shouldRegisterSharingPromo || !showShareButton ||
+        passwordSharingDisabled) {
       return;
     }
 

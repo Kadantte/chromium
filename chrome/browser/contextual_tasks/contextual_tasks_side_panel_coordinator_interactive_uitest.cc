@@ -16,13 +16,14 @@
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_ui.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
+#include "components/constrained_window/constrained_window_views.h"
 #include "components/contextual_tasks/public/contextual_tasks_service.h"
 #include "components/contextual_tasks/public/features.h"
 #include "components/sessions/content/session_tab_helper.h"
@@ -30,7 +31,11 @@
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/url_loader_interceptor.h"
 #include "content/public/test/web_contents_tester.h"
+#include "net/dns/mock_host_resolver.h"
+#include "ui/base/models/dialog_model.h"
+#include "ui/views/widget/widget_deletion_observer.h"
 
 using testing::AtLeast;
 using testing::Field;
@@ -52,19 +57,26 @@ class MockContextualTasksComposeboxHandler
       mojo::PendingRemote<composebox::mojom::Page> pending_page,
       mojo::PendingReceiver<searchbox::mojom::PageHandler>
           pending_searchbox_handler,
-      GetSessionHandleCallback get_session_callback)
-      : ContextualTasksComposeboxHandler(ui_controller,
-                                         profile,
-                                         web_contents,
-                                         std::move(pending_handler),
-                                         std::move(pending_page),
-                                         std::move(pending_searchbox_handler),
-                                         std::move(get_session_callback)) {}
+      mojo::PendingRemote<searchbox::mojom::Page> pending_searchbox_page,
+      GetSessionHandleCallback get_session_callback,
+      ClearSessionHandleCallback clear_session_callback,
+      TakeInputStateModelCallback get_inputstatemodel_callback)
+      : ContextualTasksComposeboxHandler(
+            ui_controller,
+            profile,
+            web_contents,
+            std::move(pending_handler),
+            std::move(pending_page),
+            std::move(pending_searchbox_handler),
+            std::move(pending_searchbox_page),
+            std::move(get_session_callback),
+            std::move(clear_session_callback),
+            std::move(get_inputstatemodel_callback)) {}
   ~MockContextualTasksComposeboxHandler() override = default;
 
   MOCK_METHOD(void,
               UpdateSuggestedTabContext,
-              (searchbox::mojom::TabInfoPtr tab_info),
+              (const contextual_tasks::SuggestedTabInfo* suggested_tab),
               (override));
 };
 
@@ -84,6 +96,10 @@ class ContextualTasksSidePanelCoordinatorInteractiveUiTest
     scoped_feature_list_.InitAndEnableFeature(kContextualTasks);
   }
   ~ContextualTasksSidePanelCoordinatorInteractiveUiTest() override = default;
+
+  void SetPanelSuppressed(bool suppressed) {
+    GetCoordinator()->SetPanelSuppressedForTesting(suppressed);
+  }
 
   void SetUpTasks() {
     ActiveTaskContextProvider::From(browser())->AddObserver(
@@ -130,6 +146,27 @@ class ContextualTasksSidePanelCoordinatorInteractiveUiTest
 
   void SetUpOnMainThread() override {
     InteractiveBrowserTest::SetUpOnMainThread();
+    host_resolver()->AddRule("*", "127.0.0.1");
+    ASSERT_TRUE(embedded_test_server()->Start());
+    url_loader_interceptor_ = std::make_unique<content::URLLoaderInterceptor>(
+        base::BindLambdaForTesting(
+            [&](content::URLLoaderInterceptor::RequestParams* params) {
+              const GURL& url = params->url_request.url;
+              LOG(INFO) << "URLLoaderInterceptor intercepted URL: "
+                        << url.spec();
+              if (url.host() == "www.google.com") {
+                content::URLLoaderInterceptor::WriteResponse(
+                    "chrome/test/data/mock_aim_page.html",
+                    params->client.get());
+                return true;
+              }
+              return false;
+            }));
+  }
+
+  void TearDownOnMainThread() override {
+    url_loader_interceptor_.reset();
+    InteractiveBrowserTest::TearDownOnMainThread();
   }
 
   ContextualTasksUI* GetContextualTasksUI() {
@@ -157,6 +194,7 @@ class ContextualTasksSidePanelCoordinatorInteractiveUiTest
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
+  std::unique_ptr<content::URLLoaderInterceptor> url_loader_interceptor_;
 };
 
 MATCHER(IsNullSuggestedTabContext, "is a null TabContextPtr") {
@@ -590,17 +628,17 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksSidePanelCoordinatorInteractiveUiTest,
             new_task.GetTaskId(), sessions::SessionTabHelper::IdForTab(
                                       tab_list->GetActiveTab()->GetContents()));
         coordinator->OnTaskChanged(web_contents1, new_task.GetTaskId());
-        EXPECT_TRUE(coordinator->IsSidePanelOpen());
+        EXPECT_TRUE(coordinator->IsPanelOpenForContextualTask());
 
         // Activate tab1, it associates with the task2 WebContents.
         tab_list->ActivateTab(tab_list->GetTab(1)->GetHandle());
         EXPECT_NE(web_contents1, coordinator->GetActiveWebContents());
-        EXPECT_TRUE(coordinator->IsSidePanelOpen());
+        EXPECT_TRUE(coordinator->IsPanelOpenForContextualTask());
 
         // Activate tab0, it associates with the new WebContents.
         tab_list->ActivateTab(tab_list->GetTab(0)->GetHandle());
         EXPECT_EQ(web_contents1, coordinator->GetActiveWebContents());
-        EXPECT_TRUE(coordinator->IsSidePanelOpen());
+        EXPECT_TRUE(coordinator->IsPanelOpenForContextualTask());
       }));
 }
 
@@ -625,17 +663,17 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksSidePanelCoordinatorInteractiveUiTest,
             task_id2_, sessions::SessionTabHelper::IdForTab(
                            tab_list->GetActiveTab()->GetContents()));
         coordinator->OnTaskChanged(web_contents1, task_id2_);
-        EXPECT_TRUE(coordinator->IsSidePanelOpen());
+        EXPECT_TRUE(coordinator->IsPanelOpenForContextualTask());
 
         // Activate tab1, now it associates with the current WebContents.
         tab_list->ActivateTab(tab_list->GetTab(1)->GetHandle());
         EXPECT_EQ(web_contents1, coordinator->GetActiveWebContents());
-        EXPECT_TRUE(coordinator->IsSidePanelOpen());
+        EXPECT_TRUE(coordinator->IsPanelOpenForContextualTask());
 
         // Activate tab0, it still associates with the current WebContents.
         tab_list->ActivateTab(tab_list->GetTab(0)->GetHandle());
         EXPECT_EQ(web_contents1, coordinator->GetActiveWebContents());
-        EXPECT_TRUE(coordinator->IsSidePanelOpen());
+        EXPECT_TRUE(coordinator->IsPanelOpenForContextualTask());
       }));
 }
 
@@ -672,21 +710,25 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksSidePanelCoordinatorInteractiveUiTest,
           std::move(composebox_handler_receiver),
           std::move(composebox_page_remote),
           std::move(searchbox_handler_receiver),
+          std::move(searchbox_page_remote),
           base::BindRepeating(
               &ContextualTasksUI::GetOrCreateContextualSessionHandle,
-              base::Unretained(ui)));
+              base::Unretained(ui)),
+          base::DoNothing(),
+          base::BindRepeating(&ContextualTasksUI::TakeInputStateModel,
+                              base::Unretained(ui)));
   MockContextualTasksComposeboxHandler* mock_handler =
       mock_composebox_handler.get();
   ui->SetComposeboxHandlerForTesting(std::move(mock_composebox_handler));
   coordinator->Close();
 
   // Define expectations on the mock handler.
-  using TabInfo = searchbox::mojom::TabInfo;
+  using SuggestedTabInfo = contextual_tasks::SuggestedTabInfo;
 
   // Expectations are set before running the sequence.
   // This should trigger UpdateSuggestedTabContext with valid tab info.
-  EXPECT_CALL(*mock_handler,
-              UpdateSuggestedTabContext(Pointee(Field(&TabInfo::url, foo))))
+  EXPECT_CALL(*mock_handler, UpdateSuggestedTabContext(
+                                 Pointee(Field(&SuggestedTabInfo::url, foo))))
       .Times(1);
 
   RunTestSequence(
@@ -701,9 +743,7 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksSidePanelCoordinatorInteractiveUiTest,
         Mock::VerifyAndClearExpectations(mock_handler);
         // Set next expectation. Because the other tab has a chrome:// URL,
         // `UpdateSuggestedTabContext` will be called with a nullptr.
-        searchbox::mojom::TabInfoPtr null_tab_info;
-        EXPECT_CALL(*mock_handler,
-                    UpdateSuggestedTabContext(IsNullSuggestedTabContext()))
+        EXPECT_CALL(*mock_handler, UpdateSuggestedTabContext(testing::IsNull()))
             .Times(1);
         return true;
       }),
@@ -880,18 +920,13 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksSidePanelCoordinatorInteractiveUiTest,
 }
 
 IN_PROC_BROWSER_TEST_F(ContextualTasksSidePanelCoordinatorInteractiveUiTest,
-                       DoNotOpenSidePanelOnTabChanged) {
+                       DoNotOpenPanelWhenSuppressed) {
   SetUpTasks();
 
   TabListInterface* tab_list = TabListInterface::From(browser());
   ContextualTasksSidePanelCoordinator* coordinator = GetCoordinator();
 
-  // Set Customize Chrome side panel not to override.
-  // Customize Chrome side panel is much easier to setup and always available.
-  coordinator->SetSidePanelIdNotToOverrideForTesting(
-      SidePanelEntry::Id::kCustomizeChrome);
-
-  // Show next side panel.
+  // Show panel.
   coordinator->Show(false,
                     omnibox::ChromeAimEntryPoint::UNKNOWN_AIM_ENTRY_POINT);
   EXPECT_TRUE(coordinator->IsPanelOpenForContextualTask());
@@ -899,18 +934,21 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksSidePanelCoordinatorInteractiveUiTest,
   // Show Customize Chrome side panel.
   chrome::ExecuteCommand(browser(), IDC_SHOW_CUSTOMIZE_CHROME_SIDE_PANEL);
 
-  // Verify next side panel is closed.
+  // Verify the panel is closed.
   EXPECT_FALSE(coordinator->IsPanelOpenForContextualTask());
+
+  // Set the panel to be suppressed. This mimics the behavior where the glic
+  // panel is open and suppresses the Contextual Tasks panel.
+  SetPanelSuppressed(true);
 
   // Add a new foreground tab not associated with a task.
   chrome::AddTabAt(browser(), GURL(chrome::kChromeUISettingsURL), -1, true);
 
-  // Verify the side panel is closed.
+  // Verify the panel is closed.
   EXPECT_FALSE(coordinator->IsPanelOpenForContextualTask());
 
   // Activate the previous tab.
-  // Verify the next side panel is still closed because Customize Chrome side
-  // panel is open.
+  // Verify the panel is still closed because it is suppressed.
   tab_list->ActivateTab(tab_list->GetTab(0)->GetHandle());
   EXPECT_FALSE(coordinator->IsPanelOpenForContextualTask());
 }
@@ -932,64 +970,217 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksSidePanelCoordinatorInteractiveUiTest,
   EXPECT_FALSE(coordinator->IsPanelOpenForContextualTask());
 }
 
-class TabScopedContextualTasksSidePanelCoordinatorInteractiveUiTest
-    : public ContextualTasksSidePanelCoordinatorInteractiveUiTest {
- public:
-  TabScopedContextualTasksSidePanelCoordinatorInteractiveUiTest() {
-    scoped_feature_list_.InitAndEnableFeatureWithParameters(
-        kContextualTasks, {{"ContextualTasksTaskScopedSidePanel", "false"}});
-  }
-  ~TabScopedContextualTasksSidePanelCoordinatorInteractiveUiTest() override =
-      default;
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_F(
-    TabScopedContextualTasksSidePanelCoordinatorInteractiveUiTest,
-    SwitchTabChangeSidePanelWebContents) {
+IN_PROC_BROWSER_TEST_F(ContextualTasksSidePanelCoordinatorInteractiveUiTest,
+                       WebContentsVisibilityChanged) {
   SetUpTasks();
 
+  TabListInterface* tab_list = TabListInterface::From(browser());
   ContextualTasksSidePanelCoordinator* coordinator = GetCoordinator();
+
+  // Show side panel. Current WebContents is visible.
+  coordinator->Show(false,
+                    omnibox::ChromeAimEntryPoint::UNKNOWN_AIM_ENTRY_POINT);
+  EXPECT_TRUE(coordinator->IsPanelOpenForContextualTask());
+  content::WebContents* web_contents1 = coordinator->GetActiveWebContents();
+  web_contents1->WasShown();
+  EXPECT_EQ(content::Visibility::VISIBLE, web_contents1->GetVisibility());
+
+  // Switch to tab1. Previous WebContents is hidden. Current WebContents is
+  // visible.
+  tab_list->ActivateTab(tab_list->GetTab(1)->GetHandle());
+  content::WebContents* web_contents2 = coordinator->GetActiveWebContents();
+  EXPECT_EQ(content::Visibility::HIDDEN, web_contents1->GetVisibility());
+  EXPECT_EQ(content::Visibility::VISIBLE, web_contents2->GetVisibility());
+
+  // Close the side panel. Both WebContents are hidden.
+  coordinator->Close();
+  EXPECT_EQ(content::Visibility::HIDDEN, web_contents1->GetVisibility());
+  EXPECT_EQ(content::Visibility::HIDDEN, web_contents2->GetVisibility());
+}
+
+// Regression test for crbug.com/517906613: On a buggy build, trying to show the
+// pending dialog during SetWebContents when the view's web_contents() is stale
+// would result in a null host crash in the dialog manager.
+IN_PROC_BROWSER_TEST_F(ContextualTasksSidePanelCoordinatorInteractiveUiTest,
+                       ModalDialogSwitchTabsDoesNotCrash) {
+  SetUpTasks();
+  ContextualTasksSidePanelCoordinator* coordinator = GetCoordinator();
+
+  views::Widget* dialog_widget = nullptr;
+  std::unique_ptr<views::WidgetDeletionObserver> deletion_observer;
+
   RunTestSequence(
       Do([&]() {
-        // Open side panel.
+        // Open the side panel for the active tab (Tab 0).
         coordinator->Show(
             false, omnibox::ChromeAimEntryPoint::UNKNOWN_AIM_ENTRY_POINT);
       }),
       WaitForShow(kContextualTasksSidePanelWebViewElementId), Do([&]() {
-        // Verify the first side panel WebContents is created for the first tab.
-        content::WebContents* side_panel_web_contents1 =
+        // Show a modal dialog on the active side panel's WebContents.
+        content::WebContents* side_panel_contents =
             coordinator->GetActiveWebContents();
-        ASSERT_NE(nullptr, side_panel_web_contents1);
-        EXPECT_EQ(true, coordinator->IsPanelOpenForContextualTask());
+        ASSERT_NE(side_panel_contents, nullptr);
 
-        // Activate the second tab, verify the second side panel WebContents is
-        // created for the second tab.
+        auto dialog_model = ui::DialogModel::Builder()
+                                .SetTitle(u"Test Modal Dialog")
+                                .AddOkButton(base::DoNothing())
+                                .Build();
+        dialog_widget = constrained_window::ShowWebModal(
+            std::move(dialog_model), side_panel_contents);
+        ASSERT_NE(dialog_widget, nullptr);
+        deletion_observer =
+            std::make_unique<views::WidgetDeletionObserver>(dialog_widget);
+
+        // Switch to a tab with no associated task to close the side panel.
+        // This destroys the side panel view, leaving the WebContents with the
+        // pending dialog cached in the coordinator.
         TabListInterface* tab_list = TabListInterface::From(browser());
-        tab_list->ActivateTab(tab_list->GetTab(1)->GetHandle());
-        content::WebContents* side_panel_web_contents2 =
-            coordinator->GetActiveWebContents();
-        ASSERT_NE(nullptr, side_panel_web_contents2);
-        ASSERT_NE(side_panel_web_contents1, side_panel_web_contents2);
-        EXPECT_EQ(true, coordinator->IsPanelOpenForContextualTask());
-
-        // Activate the third tab, verify the active side panel WebContents is
-        // swapped back.
-        tab_list->ActivateTab(tab_list->GetTab(2)->GetHandle());
-        ASSERT_EQ(side_panel_web_contents1,
-                  coordinator->GetActiveWebContents());
-        EXPECT_EQ(true, coordinator->IsPanelOpenForContextualTask());
-
-        // Close the side panel for the third tab.
-        coordinator->Close();
-        EXPECT_EQ(false, coordinator->IsPanelOpenForContextualTask());
-
-        // Switch back to first tab, verify the side panel is still open because
-        // the open state is tab scoped.
+        tab_list->ActivateTab(tab_list->GetTab(3)->GetHandle());
+      }),
+      WaitForHide(kContextualTasksSidePanelWebViewElementId), Do([&]() {
+        // Switch back to Tab 0. This recreates the side panel view and triggers
+        // SetWebContents with the cached WebContents.
+        TabListInterface* tab_list = TabListInterface::From(browser());
         tab_list->ActivateTab(tab_list->GetTab(0)->GetHandle());
-        EXPECT_EQ(true, coordinator->IsPanelOpenForContextualTask());
+      }),
+      Do([&]() {
+        // If we didn't crash, verify the side panel is open again.
+        EXPECT_TRUE(coordinator->IsPanelOpenForContextualTask());
+
+        // Cleanup the dialog widget if it's still alive.
+        if (deletion_observer && deletion_observer->IsWidgetAlive()) {
+          dialog_widget->CloseNow();
+        }
+      }));
+}
+
+DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kElementExistsEvent);
+DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kFrameLoadedEvent);
+DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kComposeboxFocusedEvent);
+
+IN_PROC_BROWSER_TEST_F(ContextualTasksSidePanelCoordinatorInteractiveUiTest,
+                       ComposeboxFocusOnBoundsUpdateWhenComposeboxHidden) {
+  SetUpTasks();
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  ContextualTasksSidePanelCoordinator* coordinator = GetCoordinator();
+
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kSidePanelWebContentsId);
+
+  StateChange contextual_tasks_app_exists;
+  contextual_tasks_app_exists.type = StateChange::Type::kExists;
+  contextual_tasks_app_exists.where = {"contextual-tasks-app"};
+  contextual_tasks_app_exists.event = kElementExistsEvent;
+
+  StateChange frame_loaded;
+  frame_loaded.type = StateChange::Type::kExistsAndConditionTrue;
+  frame_loaded.where = {"contextual-tasks-app"};
+  frame_loaded.test_function = "(app) => !app.isFrameLoading";
+  frame_loaded.event = kFrameLoadedEvent;
+
+  StateChange composebox_focused;
+  composebox_focused.type = StateChange::Type::kExistsAndConditionTrue;
+  composebox_focused.where = {"contextual-tasks-app"};
+  composebox_focused.test_function =
+      "(app) => app.shadowRoot.activeElement && "
+      "app.shadowRoot.activeElement.id === 'composebox'";
+  composebox_focused.event = kComposeboxFocusedEvent;
+
+  RunTestSequence(
+      Do([&]() {
+        coordinator->Show(
+            false, omnibox::ChromeAimEntryPoint::UNKNOWN_AIM_ENTRY_POINT);
+      }),
+      WaitForShow(kContextualTasksSidePanelWebViewElementId),
+      InstrumentNonTabWebView(kSidePanelWebContentsId,
+                              kContextualTasksSidePanelWebViewElementId),
+      FocusWebContents(kSidePanelWebContentsId),
+      WaitForStateChange(kSidePanelWebContentsId, contextual_tasks_app_exists),
+      Do([&]() {
+        content::WebContents* side_panel_contents =
+            coordinator->GetActiveWebContents();
+        ASSERT_NE(side_panel_contents, nullptr);
+        // Use Object.defineProperty to mock the app's state properties. This
+        // freezes the values for the duration of the test and prevents
+        // asynchronous Mojo callbacks or page-load event handlers from
+        // overwriting them in the background, which would cause flakiness.
+        EXPECT_TRUE(content::ExecJs(
+            side_panel_contents,
+            "(() => {"
+            "  const app = document.querySelector('contextual-tasks-app');"
+            "  Object.defineProperty(app, 'isErrorDialogVisible_', {"
+            "    get() { return false; },"
+            "    set() {}"
+            "  });"
+            "  Object.defineProperty(app, 'isAimEligible_', {"
+            "    get() { return true; },"
+            "    set() {}"
+            "  });"
+            "  Object.defineProperty(app, 'isZeroState_', {"
+            "    get() { return false; },"
+            "    set() {}"
+            "  });"
+            "  Object.defineProperty(app, 'isAiPage_', {"
+            "    get() { return true; },"
+            "    set() {}"
+            "  });"
+            "  Object.defineProperty(app, 'enableComposeboxJumpFix_', {"
+            "    get() { return true; },"
+            "    set() {}"
+            "  });"
+            "  Object.defineProperty(app, 'isInputHidden_', {"
+            "    get() { return false; },"
+            "    set() {}"
+            "  });"
+            "  Object.defineProperty(app, 'enableBasicMode_', {"
+            "    get() { return false; },"
+            "    set() {}"
+            "  });"
+            "  Object.defineProperty(app, 'inNlm_', {"
+            "    get() { return false; },"
+            "    set() {}"
+            "  });"
+            "  app.forcedComposeboxBounds_ = null;"
+            "})()"));
+      }),
+      WaitForStateChange(kSidePanelWebContentsId, frame_loaded), Do([&]() {
+        content::WebContents* side_panel_contents =
+            coordinator->GetActiveWebContents();
+        ASSERT_NE(side_panel_contents, nullptr);
+        EXPECT_EQ(
+            true,
+            content::EvalJs(
+                side_panel_contents,
+                "(() => {"
+                "  const app = document.querySelector('contextual-tasks-app');"
+                "  return app.isComposeboxHidden_();"
+                "})()"));
+      }),
+      Do([&]() {
+        content::WebContents* side_panel_contents =
+            coordinator->GetActiveWebContents();
+        ASSERT_NE(side_panel_contents, nullptr);
+        EXPECT_TRUE(content::ExecJs(
+            side_panel_contents,
+            "(() => {"
+            "  const app = document.querySelector('contextual-tasks-app');"
+            "  const mockRect = {top: 10, left: 10, width: 200, height: "
+            "50, right: 210, bottom: 60};"
+            "  app.onInputPlateBoundsUpdateForTesting(mockRect, []);"
+            "})()"));
+      }),
+      WaitForStateChange(kSidePanelWebContentsId, composebox_focused),
+      Do([&]() {
+        content::WebContents* side_panel_contents =
+            coordinator->GetActiveWebContents();
+        ASSERT_NE(side_panel_contents, nullptr);
+        EXPECT_EQ(
+            false,
+            content::EvalJs(
+                side_panel_contents,
+                "(() => {"
+                "  const app = document.querySelector('contextual-tasks-app');"
+                "  return app.isComposeboxHidden_();"
+                "})()"));
       }));
 }
 

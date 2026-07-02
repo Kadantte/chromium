@@ -10,7 +10,7 @@
 #include <utility>
 
 #include "ash/constants/ash_features.h"
-#include "ash/webui/scanning/mojom/scanning_type_converters.h"
+#include "ash/webui/scanning/mojom/scanning_mojom_traits.h"
 #include "ash/webui/scanning/scanning_uma.h"
 #include "base/check.h"
 #include "base/check_op.h"
@@ -599,7 +599,7 @@ void ScanService::OnPageSaved(const base::FilePath& saved_file_path) {
 }
 
 void ScanService::OnAllPagesSaved(lorgnette::ScanFailureMode failure_mode) {
-  std::optional<scanning::ScanJobFailureReason> failure_reason = std::nullopt;
+  std::optional<scanning::ScanJobFailureReason> failure_reason;
   if (failure_mode != lorgnette::SCAN_FAILURE_MODE_NO_FAILURE) {
     failure_reason = GetScanJobFailureReason(failure_mode);
     scanned_file_paths_.clear();

@@ -18,19 +18,20 @@ import './home_url_input.js';
 import '../controls/settings_dropdown_menu.js';
 
 import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
-import {CustomizeColorSchemeModeBrowserProxy} from 'chrome://resources/cr_components/customize_color_scheme_mode/browser_proxy.js';
-import type {CustomizeColorSchemeModeClientCallbackRouter, CustomizeColorSchemeModeHandlerInterface} from 'chrome://resources/cr_components/customize_color_scheme_mode/customize_color_scheme_mode.mojom-webui.js';
-import {ColorSchemeMode} from 'chrome://resources/cr_components/customize_color_scheme_mode/customize_color_scheme_mode.mojom-webui.js';
+import {browserProxyFactory, ColorSchemeMode} from 'chrome://resources/cr_components/customize_color_scheme_mode/customize_color_scheme_mode.mojom-webui.js';
+import type {BrowserProxy as CustomizeColorSchemeModeBrowserProxy} from 'chrome://resources/cr_components/customize_color_scheme_mode/customize_color_scheme_mode.mojom-webui.js';
 import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
-import {assert} from 'chrome://resources/js/assert.js';
+import {assert, assertNotReached} from 'chrome://resources/js/assert.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import type {DropdownMenuOptionList, SettingsDropdownMenuElement} from '../controls/settings_dropdown_menu.js';
 import type {SettingsToggleButtonElement} from '../controls/settings_toggle_button.js';
 import {loadTimeData} from '../i18n_setup.js';
+import type {MetricsBrowserProxy} from '../metrics_browser_proxy.js';
+import {MetricsBrowserProxyImpl} from '../metrics_browser_proxy.js';
 import {pageVisibility} from '../page_visibility.js';
 import type {AppearancePageVisibility} from '../page_visibility.js';
-import {RelaunchMixin, RestartType} from '../relaunch_mixin.js';
+import {RelaunchMixin} from '../relaunch_mixin.js';
 import {routes} from '../route.js';
 import {Router} from '../router.js';
 import {SettingsViewMixin} from '../settings_page/settings_view_mixin.js';
@@ -41,7 +42,7 @@ import {getTemplate} from './appearance_page.html.js';
 
 /**
  * This is the absolute difference maintained between standard and
- * fixed-width font sizes. http://crbug.com/91922.
+ * fixed-width font sizes. http://crbug.com/40608310.
  */
 const SIZE_DIFFERENCE_FIXED_STANDARD: number = 3;
 
@@ -67,7 +68,6 @@ export interface SettingsAppearancePageElement {
     colorSchemeModeSelect: HTMLSelectElement,
     defaultFontSize: SettingsDropdownMenuElement,
     zoomLevel: HTMLSelectElement,
-    tabSearchPositionDropdown: SettingsDropdownMenuElement,
   };
 }
 
@@ -192,23 +192,6 @@ export class SettingsAppearancePageElement extends
 
       showManagedThemeDialog_: Boolean,
 
-      sidePanelOptions_: {
-        readOnly: true,
-        type: Array,
-        value() {
-          return [
-            {
-              value: 'true',
-              name: loadTimeData.getString('uiFeatureAlignRight'),
-            },
-            {
-              value: 'false',
-              name: loadTimeData.getString('uiFeatureAlignLeft'),
-            },
-          ];
-        },
-      },
-
       tabStripOptions_: {
         readOnly: true,
         type: Array,
@@ -233,9 +216,51 @@ export class SettingsAppearancePageElement extends
         },
       },
 
-      showTabSearchPositionRestartButton_: {
+      ntpSimplificationBookmarksBarEnabled_: {
         type: Boolean,
-        value: false,
+        value() {
+          return loadTimeData.getBoolean(
+              'ntpSimplificationBookmarksBarEnabled');
+        },
+      },
+
+      // The values in this array must match the BookmarkBarVisibilityState enum
+      // defined in components/bookmarks/common/bookmark_bar_visibility_state.h.
+      bookmarksBarOptions_: {
+        readOnly: true,
+        type: Array,
+        value() {
+          return [
+            {value: 0, name: loadTimeData.getString('bookmarksBarAlwaysShow')},
+            {
+              value: 1,
+              name: loadTimeData.getString('bookmarksBarOnlyShowOnNtp'),
+            },
+            {value: 2, name: loadTimeData.getString('bookmarksBarAlwaysHide')},
+          ];
+        },
+      },
+
+      showVerticalTabsExpandOnHoverEnabled_: {
+        type: Boolean,
+        value() {
+          return loadTimeData.getBoolean(
+              'showVerticalTabsExpandOnHoverEnabled');
+        },
+      },
+
+      showProjectsPanelEnabled_: {
+        type: Boolean,
+        value() {
+          return loadTimeData.getBoolean('showProjectsPanelEnabled');
+        },
+      },
+
+      showEverythingMenuEnabled_: {
+        type: Boolean,
+        value() {
+          return loadTimeData.getBoolean('showEverythingMenuEnabled');
+        },
       },
 
       showResetPinnedActionsButton_: {
@@ -243,20 +268,38 @@ export class SettingsAppearancePageElement extends
         value: false,
       },
 
-      tabSearchOptions_: {
+      showCtrlTabMru_: {
+        type: Boolean,
+        value() {
+          return loadTimeData.getBoolean('showCtrlTabMru');
+        },
+      },
+      sidePanelAlignmentOptions_: {
         readOnly: true,
         type: Array,
         value() {
           return [
             {
-              value: 'true',
-              name: loadTimeData.getString('uiFeatureAlignRight'),
-            },
-            {
               value: 'false',
               name: loadTimeData.getString('uiFeatureAlignLeft'),
             },
+            {
+              value: 'true',
+              name: loadTimeData.getString('uiFeatureAlignRight'),
+            },
           ];
+        },
+      },
+
+      configurableSidePanels_: {
+        readOnly: true,
+        type: Array,
+        value() {
+          const json =
+              loadTimeData.valueExists('configurableSidePanelAlignments') ?
+              loadTimeData.getString('configurableSidePanelAlignments') :
+              '[]';
+          return JSON.parse(json);
         },
       },
     };
@@ -267,14 +310,15 @@ export class SettingsAppearancePageElement extends
       'defaultFontSizeChanged_(prefs.webkit.webprefs.default_font_size.value)',
       'themeChanged_(' +
           'prefs.extensions.theme.id.value, systemTheme_, isForcedTheme_)',
-      'updateShowTabSearchRestartButton_(' +
-          'prefs.tab_search.is_right_aligned.value)',
       // <if expr="is_linux">
       'systemThemePrefChanged_(prefs.extensions.theme.system_theme.value)',
       // </if>
+      // Keep this list in sync with `PinnedToolbarActionsModel::IsDefault()`.
       'toolbarPinningStateChanged_(prefs.toolbar.pinned_actions.value,' +
           'prefs.browser.show_home_button.value,' +
-          'prefs.browser.show_forward_button.value)',
+          'prefs.browser.show_forward_button.value,' +
+          'prefs.browser.pin_split_tab_button.value,' +
+          'prefs.browser.pin_contextual_task_button.value)',
     ];
   }
 
@@ -292,25 +336,29 @@ export class SettingsAppearancePageElement extends
   declare private isForcedTheme_: boolean;
   declare private showHoverCardImagesOption_: boolean;
   declare private showResetPinnedActionsButton_: boolean;
+  declare private showCtrlTabMru_: boolean;
 
   // <if expr="is_linux">
   declare private showCustomChromeFrame_: boolean;
   // </if>
 
   declare private showVerticalTabsEnabled_: boolean;
-  declare private showTabSearchPositionRestartButton_: boolean;
+  declare private ntpSimplificationBookmarksBarEnabled_: boolean;
+  declare private bookmarksBarOptions_: DropdownMenuOptionList;
+  declare private showVerticalTabsExpandOnHoverEnabled_: boolean;
+  declare private showProjectsPanelEnabled_: boolean;
+  declare private showEverythingMenuEnabled_: boolean;
   declare private showManagedThemeDialog_: boolean;
-  declare private sidePanelOptions_: DropdownMenuOptionList;
+  declare private sidePanelAlignmentOptions_: DropdownMenuOptionList;
+  declare private configurableSidePanels_: Array<{id: string, label: string}>;
   declare private tabStripOptions_: DropdownMenuOptionList;
-  declare private tabSearchOptions_: DropdownMenuOptionList;
   private appearanceBrowserProxy_: AppearanceBrowserProxy =
       AppearanceBrowserProxyImpl.getInstance();
-  private colorSchemeModeHandler_: CustomizeColorSchemeModeHandlerInterface =
-      CustomizeColorSchemeModeBrowserProxy.getInstance().handler;
-  private colorSchemeModeCallbackRouter_:
-      CustomizeColorSchemeModeClientCallbackRouter =
-          CustomizeColorSchemeModeBrowserProxy.getInstance().callbackRouter;
+  private colorSchemeModeBrowserProxy_: CustomizeColorSchemeModeBrowserProxy =
+      browserProxyFactory.getInstance();
   private setColorSchemeModeListenerId_: number|null = null;
+  private metricsBrowserProxy_: MetricsBrowserProxy =
+      MetricsBrowserProxyImpl.getInstance();
 
   override ready() {
     super.ready();
@@ -326,20 +374,20 @@ export class SettingsAppearancePageElement extends
         JSON.parse(loadTimeData.getString('presetZoomFactors'));
 
     this.setColorSchemeModeListenerId_ =
-        this.colorSchemeModeCallbackRouter_.setColorSchemeMode.addListener(
-            (colorSchemeMode: ColorSchemeMode) => {
+        this.colorSchemeModeBrowserProxy_.callbackRouter.setColorSchemeMode
+            .addListener((colorSchemeMode: ColorSchemeMode) => {
               this.selectedColorSchemeMode_ =
                   this.colorSchemeModeOptions_
                       .find(mode => colorSchemeMode === mode.value)
                       ?.value;
             });
-    this.colorSchemeModeHandler_.initializeColorSchemeMode();
+    this.colorSchemeModeBrowserProxy_.handler.initializeColorSchemeMode();
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
     assert(this.setColorSchemeModeListenerId_);
-    this.colorSchemeModeCallbackRouter_.removeListener(
+    this.colorSchemeModeBrowserProxy_.callbackRouter.removeListener(
         this.setColorSchemeModeListenerId_);
   }
 
@@ -368,7 +416,7 @@ export class SettingsAppearancePageElement extends
     Router.getInstance().navigateTo(routes.FONTS);
   }
 
-  private onDisableExtension_() {
+  private onDisableExtensionClick_() {
     this.dispatchEvent(new CustomEvent(
         'refresh-pref', {bubbles: true, composed: true, detail: 'homepage'}));
   }
@@ -518,7 +566,7 @@ export class SettingsAppearancePageElement extends
   }
 
   private onColorSchemeModeChange_(): void {
-    this.colorSchemeModeHandler_.setColorSchemeMode(
+    this.colorSchemeModeBrowserProxy_.handler.setColorSchemeMode(
         parseInt(this.$.colorSchemeModeSelect.value, 10) as ColorSchemeMode);
   }
 
@@ -535,25 +583,102 @@ export class SettingsAppearancePageElement extends
     return previousIsVisible && nextIsVisible;
   }
 
+  private onTabStripPositionChanged_(event: Event) {
+    const dropdown = event.target as SettingsDropdownMenuElement;
+    const enabled = dropdown.getSelectedValue() === 'true';
+    this.appearanceBrowserProxy_.recordVerticalTabStripModeChanged(enabled);
+  }
+
+  private showEverythingMenuToggle_(): boolean {
+    return !this.showProjectsPanelEnabled_ && this.showEverythingMenuEnabled_;
+  }
+
+  private onShowTabSearchButtonChange_(event: CustomEvent<boolean>) {
+    this.metricsBrowserProxy_.recordAction(
+        event.detail ? 'TabStripComboButton.TabSearch.Pinned' :
+                       'TabStripComboButton.TabSearch.Unpinned');
+  }
+
+  private onShowProjectsPanelButtonChange_(event: CustomEvent<boolean>) {
+    this.metricsBrowserProxy_.recordAction(
+        event.detail ? 'TabStripComboButton.ProjectsPanel.Pinned' :
+                       'TabStripComboButton.ProjectsPanel.Unpinned');
+  }
+
+  private onShowEverythingMenuButtonChange_(event: CustomEvent<boolean>) {
+    this.metricsBrowserProxy_.recordAction(
+        event.detail ? 'TabStripComboButton.EverythingMenu.Pinned' :
+                       'TabStripComboButton.EverythingMenu.Unpinned');
+  }
+
+  private onBookmarksBarVisibilitySettingChange_(event: Event) {
+    const dropdown = event.target as SettingsDropdownMenuElement;
+    const value = Number.parseInt(dropdown.getSelectedValue(), 10);
+    // These values map to the BookmarkBarVisibilityState enum in
+    // components/bookmarks/common/bookmark_bar_visibility_state.h.
+    switch (value) {
+      // Equivalent to `BookmarkBarVisibilityState::kAlwaysShow`.
+      case 0:
+        this.metricsBrowserProxy_.recordAction(
+            'Settings_BookmarkBar_AlwaysShow');
+        break;
+      // Equivalent to `BookmarkBarVisibilityState::kOnlyShowOnNtp`.
+      case 1:
+        this.metricsBrowserProxy_.recordAction(
+            'Settings_BookmarkBar_OnlyShowOnNtp');
+        break;
+      // Equivalent to `BookmarkBarVisibilityState::kAlwaysHide`.
+      case 2:
+        this.metricsBrowserProxy_.recordAction(
+            'Settings_BookmarkBar_AlwaysHide');
+        break;
+      default:
+        assertNotReached();
+    }
+  }
+
   private onHoverCardImagesToggleChange_(event: Event) {
     const enabled = (event.target as SettingsToggleButtonElement).checked;
     this.appearanceBrowserProxy_.recordHoverCardImagesEnabledChanged(enabled);
   }
 
+  private onHoverCardMemoryUsageToggleChange_(event: Event) {
+    const enabled = (event.target as SettingsToggleButtonElement).checked;
+    this.appearanceBrowserProxy_.recordHoverCardMemoryUsageEnabledChanged(enabled);
+  }
+
+  private showVerticalTabsExpandOnHoverSetting_(): boolean {
+    if (this.prefs === undefined) {
+      return false;
+    }
+    return this.showVerticalTabsExpandOnHoverEnabled_ &&
+        this.getPref<boolean>('vertical_tabs.enabled').value;
+  }
+
+
   private onManagedDialogClosed_() {
     this.showManagedThemeDialog_ = false;
   }
 
-  private onTabSearchPositionRestartClick_(e: Event) {
-    // Prevent event from bubbling up to the toggle button.
-    e.stopPropagation();
-    this.performRestart(RestartType.RESTART);
+  private getOverrideValue_(
+      id: string, overrides: Record<string, boolean>|undefined,
+      defaultIsRight: boolean|undefined): string {
+    if (defaultIsRight === undefined) {
+      return '';
+    }
+    const isRight = (overrides && overrides[id] !== undefined) ? overrides[id] :
+                                                                 defaultIsRight;
+    return isRight.toString();
   }
 
-  private updateShowTabSearchRestartButton_(newValue: boolean): void {
-    this.showTabSearchPositionRestartButton_ = newValue !==
-        loadTimeData.getBoolean('tabSearchIsRightAlignedAtStartup');
+  private onOverrideAlignmentChange_(event: Event) {
+    const dropdown = event.target as SettingsDropdownMenuElement;
+    const entryId = dropdown.dataset['entryId']!;
+    const newValue = dropdown.getSelectedValue() === 'true';
+    this.set(`prefs.side_panel.alignment_overrides.value.${entryId}`, newValue);
   }
+
+
 
   // SettingsViewMixin
   override getFocusConfig() {
@@ -569,7 +694,9 @@ export class SettingsAppearancePageElement extends
     assert(childViewId === 'fonts');
     const control = this.shadowRoot!.querySelector<HTMLElement>(
         '#customize-fonts-subpage-trigger');
-    assert(control);
+    assert(
+        control,
+        `Failed to find associated control for child '${childViewId}'`);
     return control;
   }
 }

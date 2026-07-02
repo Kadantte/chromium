@@ -8,7 +8,7 @@ from codegen import header_common
 import common
 
 
-def _return_type_cpp(java_type):
+def _return_type_cpp_non_mirror(java_type):
   if converted_type := java_type.converted_type:
     return converted_type
   if java_type.is_primitive():
@@ -16,7 +16,14 @@ def _return_type_cpp(java_type):
   return f'jni_zero::ScopedJavaLocalRef<{java_type.to_cpp()}>'
 
 
-def _param_type_cpp(java_type, use_const=False):
+def _return_type_cpp_mirror(java_type):
+  if java_type.enable_mirror():
+    jobject_type = java_type.to_mirror_cpp()
+    return f'jni_zero::ScopedJavaLocalRef<{jobject_type}>'
+  return _return_type_cpp_non_mirror(java_type)
+
+
+def _param_type_cpp_non_mirror(java_type, use_const=False):
   if converted_type := java_type.converted_type:
     # Drop & when the type is obviously a pointer to avoid "const char *&".
     if not java_type.is_primitive() and not converted_type.endswith('*'):
@@ -31,16 +38,23 @@ def _param_type_cpp(java_type, use_const=False):
   return f'const jni_zero::JavaRef<{ret}>&'
 
 
+def _param_type_cpp_mirror(java_type, use_const=False):
+  if java_type.enable_mirror():
+    jobject_type = java_type.to_mirror_cpp()
+    return f'const jni_zero::JavaRef<{jobject_type}>&'
+  return _param_type_cpp_non_mirror(java_type, use_const)
+
+
 def _impl_forward_declaration(sb, native, params):
   sb('// Forward declaration. To be implemented by the including .cc file.\n')
   with sb.statement():
     name = f'JNI_{native.java_class.name}_{native.capitalized_name}'
-    sb(f'static {_return_type_cpp(native.return_type)} {name}')
+    sb(f'static {_return_type_cpp_non_mirror(native.return_type)} {name}')
     with sb.param_list() as plist:
       plist.append('JNIEnv* env')
       if not native.static:
         plist.append('const jni_zero::JavaRef<jobject>& jcaller')
-      plist.extend(f'{_param_type_cpp(p.java_type)} {p.cpp_name()}'
+      plist.extend(f'{_param_type_cpp_non_mirror(p.java_type)} {p.cpp_name()}'
                    for p in params)
 
 
@@ -55,16 +69,16 @@ def _entry_point_example(sb, native):
   with sb.statement():
     if not native.first_param_cpp_type:
       sb('static ')
-    sb(f'{_return_type_cpp(native.return_type)} {name}')
+    sb(f'{_return_type_cpp_mirror(native.return_type)} {name}')
     with sb.param_list() as plist:
       plist.append('JNIEnv* env')
       if not native.static:
         plist.append('const jni_zero::JavaRef<jobject>& jcaller')
-      plist.extend(f'{_param_type_cpp(p.java_type, True)} {p.cpp_name()}'
-                   for p in params)
+      plist.extend(f'{_param_type_cpp_mirror(p.java_type, True)} '
+                   f'{p.cpp_name()}' for p in params)
 
 
-def _prep_param(sb, is_proxy, param):
+def _prep_param(sb, param, native, include_forward_declaration):
   """Returns the snippet to use for the parameter."""
   orig_name = param.cpp_name()
   java_type = param.java_type
@@ -74,23 +88,26 @@ def _prep_param(sb, is_proxy, param):
     with sb.statement():
       sb(f'{java_type.converted_type} {ret} = ')
       convert_type.from_jni_expression(sb, orig_name, java_type)
-    # TODO(crbug.com/469809169): Remove these exceptions.
-    if not java_type.converted_type.startswith(
-        'std::') and java_type.converted_type not in ('GURL', 'url::Origin'):
+    if not include_forward_declaration:
       ret = f'std::move({ret})'
     return ret
 
   if java_type.is_primitive():
     return orig_name
 
-  ret = f'{param.name}_ref'
-  with sb.statement():
+  if java_type.enable_mirror():
+    cpp_type = java_type.to_mirror_cpp()
+    orig_name = f'static_cast<{cpp_type}>({orig_name})'
+  else:
     cpp_type = java_type.to_cpp()
-    sb(f'jni_zero::JavaRef<{cpp_type}> {ret} = ')
-    if is_proxy and cpp_type != java_type.to_proxy().to_cpp():
+    if native.is_proxy and cpp_type != java_type.to_proxy().to_cpp():
       # E.g. jobject -> jstring
       orig_name = f'static_cast<{cpp_type}>({orig_name})'
-    sb(f'jni_zero::JavaRef<{cpp_type}>::CreateLeaky(env, {orig_name})')
+
+  ret = f'{param.name}_ref'
+  with sb.statement():
+    sb(f'auto {ret} = jni_zero::JavaRef<{cpp_type}>::CreateLeaky(env,\n')
+    sb(f'    {orig_name})')
   return ret
 
 
@@ -100,11 +117,11 @@ def _param_type_for_assert_message(param):
     return param_type.converted_type
   if param_type.is_primitive():
     return param_type.to_cpp()
-  jtype = param_type.to_cpp()
+  jtype = param_type.to_mirror_cpp(fully_qualified=False)
   return f'const jni_zero::JavaRef<{jtype}>&'
 
 
-def entry_point_declaration(sb, jni_mode, jni_obj, native, gen_jni_class):
+def entry_point_declaration(sb, jni_mode, jni_obj, native, gen_jni_class=None):
   """The method called by JNI, or by multiplexing methods."""
   if jni_mode.is_muxing and native.is_proxy:
     # In this case, it's not the symbol that JNI resolves, but the one the
@@ -165,8 +182,10 @@ def entry_point_method(sb,
       sb('/* Prevent -Wunused-function warning. */\n')
       sb(f'{marker_func_name}();\n')
       sb('\n')
+
     param_rvalues = [
-        _prep_param(sb, native.is_proxy, param) for param in params
+        _prep_param(sb, param, native, include_forward_declaration)
+        for param in params
     ]
     if not native.static:
       param_rvalues.insert(
@@ -247,7 +266,7 @@ def entry_point_method(sb,
       else:
         clazz_snippet = None
       convert_type.to_jni_expression(sb,
-                                     'return_value',
+                                     'std::move(return_value)',
                                      return_type,
                                      clazz_snippet=clazz_snippet)
       if not return_type.is_primitive():

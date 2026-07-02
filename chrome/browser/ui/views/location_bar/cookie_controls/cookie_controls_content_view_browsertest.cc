@@ -11,7 +11,6 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/content_settings/core/common/cookie_controls_enforcement.h"
 #include "components/strings/grit/privacy_sandbox_strings.h"
-#include "components/vector_icons/vector_icons.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -48,13 +47,6 @@ class CookieControlsContentViewBrowserTest : public InProcessBrowserTest {
   }
 
  protected:
-  views::View* GetFeedbackButton() {
-    return views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
-        CookieControlsContentView::kFeedbackButton,
-        views::ElementTrackerViews::GetContextForView(
-            view_->feedback_section_));
-  }
-
   views::ToggleButton* GetToggleButton() { return view_->toggle_button_; }
   CookieControlsContentView* GetContentView() { return view_.get(); }
 
@@ -62,17 +54,6 @@ class CookieControlsContentViewBrowserTest : public InProcessBrowserTest {
 };
 
 namespace {
-
-IN_PROC_BROWSER_TEST_F(CookieControlsContentViewBrowserTest, FeedbackSection) {
-  EXPECT_THAT(
-      GetFeedbackButton()->GetViewAccessibility().GetCachedName(),
-      Eq(base::JoinString(
-          {l10n_util::GetStringUTF16(
-               IDS_COOKIE_CONTROLS_BUBBLE_SEND_FEEDBACK_BUTTON_TITLE),
-           l10n_util::GetStringUTF16(
-               IDS_COOKIE_CONTROLS_BUBBLE_SEND_FEEDBACK_BUTTON_DESCRIPTION)},
-          u"\n")));
-}
 
 IN_PROC_BROWSER_TEST_F(CookieControlsContentViewBrowserTest,
                        ToggleButton_Initial) {

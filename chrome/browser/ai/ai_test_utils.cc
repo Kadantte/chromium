@@ -8,7 +8,14 @@
 #include <utility>
 
 #include "chrome/browser/ai/ai_manager.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
+#include "components/optimization_guide/core/optimization_guide_features.h"
+#include "components/optimization_guide/core/optimization_guide_switches.h"
+#include "components/policy/core/common/policy_pref_names.h"
+#include "components/prefs/pref_service.h"
+#include "content/public/test/navigation_simulator.h"
+#include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom.h"
 
 AITestUtils::TestStreamingResponder::TestStreamingResponder() = default;
 AITestUtils::TestStreamingResponder::~TestStreamingResponder() = default;
@@ -23,8 +30,13 @@ bool AITestUtils::TestStreamingResponder::WaitForCompletion() {
   return !error_status_.has_value();
 }
 
-void AITestUtils::TestStreamingResponder::WaitForQuotaOverflow() {
-  quota_overflow_run_loop_.Run();
+bool AITestUtils::TestStreamingResponder::WaitForToolCalls() {
+  tool_calls_run_loop_.Run();
+  return !tool_calls_.empty();
+}
+
+void AITestUtils::TestStreamingResponder::WaitForContextOverflow() {
+  context_overflow_run_loop_.Run();
 }
 
 void AITestUtils::TestStreamingResponder::OnError(
@@ -47,8 +59,14 @@ void AITestUtils::TestStreamingResponder::OnCompletion(
   run_loop_.Quit();
 }
 
-void AITestUtils::TestStreamingResponder::OnQuotaOverflow() {
-  quota_overflow_run_loop_.Quit();
+void AITestUtils::TestStreamingResponder::OnToolCalls(
+    std::vector<blink::mojom::ToolCallPtr> tool_calls) {
+  tool_calls_ = std::move(tool_calls);
+  tool_calls_run_loop_.Quit();
+}
+
+void AITestUtils::TestStreamingResponder::OnContextOverflow() {
+  context_overflow_run_loop_.Quit();
 }
 
 AITestUtils::AITestBase::AITestBase()
@@ -59,10 +77,17 @@ AITestUtils::AITestBase::~AITestBase() = default;
 void AITestUtils::AITestBase::SetUp() {
   ChromeRenderViewHostTestHarness::SetUp();
 
+#if BUILDFLAG(IS_ANDROID)
+  fake_broker_ = std::make_unique<optimization_guide::FakeModelBrokerAndroid>(
+      optimization_guide::FakeModelBrokerAndroid::Options{});
+  fake_broker_->java_helper().settings().SetDefaultStatusCheckResult(
+      on_device_model::ModelDownloaderAndroid::ModelStatus::kDownloadable);
+#else
   optimization_guide::FakeModelBroker::Options options{
       .performance_class =
           optimization_guide::OnDeviceModelPerformanceClass::kUnknown};
   fake_broker_ = std::make_unique<optimization_guide::FakeModelBroker>(options);
+#endif
   optimization_guide::FakeAdaptationAsset::Content content{.config =
                                                                CreateConfig()};
   fake_asset_ = std::make_unique<optimization_guide::FakeAdaptationAsset>(
@@ -93,12 +118,6 @@ void AITestUtils::AITestBase::SetupMockOptimizationGuideKeyedService() {
                     return std::make_unique<
                         testing::NiceMock<MockOptimizationGuideKeyedService>>();
                   })));
-  ON_CALL(*mock_optimization_guide_keyed_service_,
-          GetOnDeviceModelEligibilityAsync(testing::_, testing::_, testing::_))
-      .WillByDefault([](auto feature, auto capabilities, auto callback) {
-        std::move(callback).Run(
-            optimization_guide::OnDeviceModelEligibilityReason::kSuccess);
-      });
   ON_CALL(*mock_optimization_guide_keyed_service_, CreateModelBrokerClient())
       .WillByDefault([&]() {
         return std::make_unique<optimization_guide::ModelBrokerClient>(
@@ -118,6 +137,42 @@ void AITestUtils::AITestBase::SetupNullOptimizationGuideKeyedService() {
       std::make_unique<AIManager>(main_rfh()->GetBrowserContext(), main_rfh());
 }
 
+AITestUtils::AITestManifestBase::AITestManifestBase() = default;
+AITestUtils::AITestManifestBase::~AITestManifestBase() = default;
+
+void AITestUtils::AITestManifestBase::SetupManifest() {}
+
+void AITestUtils::AITestManifestBase::SetupMockOptimizationGuideKeyedService() {
+  mock_optimization_guide_keyed_service_ =
+      static_cast<MockOptimizationGuideKeyedService*>(
+          OptimizationGuideKeyedServiceFactory::GetInstance()
+              ->SetTestingFactoryAndUse(
+                  profile(),
+                  base::BindRepeating([](content::BrowserContext* context)
+                                          -> std::unique_ptr<KeyedService> {
+                    return std::make_unique<
+                        testing::NiceMock<MockOptimizationGuideKeyedService>>();
+                  })));
+  ON_CALL(*mock_optimization_guide_keyed_service_, CreateModelBrokerClient())
+      .WillByDefault([&]() {
+        if (!fake_manifest_broker_) {
+          fake_manifest_broker_ =
+              std::make_unique<optimization_guide::FakeManifestBroker>();
+
+          SetupManifest();
+
+          fake_manifest_broker_->Startup();
+        }
+        return std::make_unique<optimization_guide::ModelBrokerClient>(
+            fake_manifest_broker_->state().BindAndPassRemoteBroker(), nullptr);
+      });
+}
+
+void AITestUtils::AITestManifestBase::TearDown() {
+  fake_manifest_broker_.reset();
+  AITestBase::TearDown();
+}
+
 blink::mojom::AIManager* AITestUtils::AITestBase::GetAIManagerInterface() {
   return ai_manager_.get();
 }
@@ -131,6 +186,74 @@ AITestUtils::AITestBase::GetAIManagerRemote() {
 
 size_t AITestUtils::AITestBase::GetAIManagerContextBoundObjectSetSize() {
   return ai_manager_->GetContextBoundObjectSetSizeForTesting();
+}
+
+void AITestUtils::AITestBase::DisablePolicy(
+    network::mojom::PermissionsPolicyFeature feature) {
+  auto navigation = content::NavigationSimulator::CreateRendererInitiated(
+      GURL("https://example.com"), main_rfh());
+  navigation->SetPermissionsPolicyHeader(
+      {{feature, /*allowed_origins=*/{}, /*self_if_matches=*/std::nullopt,
+        /*matches_all_origins=*/false, /*matches_opaque_src=*/false}});
+  navigation->Commit();
+
+  // Re-create AIManager as it's bound to the RFH.
+  ai_manager_ = std::make_unique<AIManager>(
+      navigation->GetFinalRenderFrameHost()->GetBrowserContext(),
+      navigation->GetFinalRenderFrameHost());
+}
+
+void AITestUtils::AITestBase::InstallBaseModel() {
+#if BUILDFLAG(IS_ANDROID)
+  fake_broker_->InstallBaseModel();
+#else
+  fake_broker_->InstallBaseModel(
+      std::make_unique<optimization_guide::FakeBaseModelAsset>());
+#endif  // BUILDFLAG(IS_ANDROID)
+}
+
+void AITestUtils::AITestBase::UnInstallBaseModel() {
+#if BUILDFLAG(IS_ANDROID)
+  fake_broker_->UnInstallBaseModel();
+#else
+  fake_broker_->InstallBaseModel(nullptr);
+#endif  // BUILDFLAG(IS_ANDROID)
+}
+
+void AITestUtils::AITestBase::SetSizeInTokens(uint32_t size) {
+#if BUILDFLAG(IS_ANDROID)
+  fake_broker_->java_helper().settings().SetSizeInTokens(size);
+#else
+  fake_broker_->settings().set_size_in_tokens(size);
+#endif
+}
+
+void AITestUtils::AITestBase::SetExecuteResult(
+    const std::vector<std::string>& result) {
+#if BUILDFLAG(IS_ANDROID)
+  fake_broker_->java_helper().settings().SetExecuteResult(result);
+#else
+  fake_broker_->settings().set_execute_result(result);
+#endif
+}
+
+void AITestUtils::AITestBase::SetBuiltInAIAPIsEnterprisePolicy(bool allowed) {
+  profile()->GetPrefs()->SetBoolean(policy::policy_prefs::kBuiltInAIAPIsEnabled,
+                                    allowed);
+}
+
+void AITestUtils::AITestBase::SetGenAILocalEnterprisePolicy(bool allowed) {
+  g_browser_process->local_state()->SetInteger(
+      optimization_guide::model_execution::prefs::localstate::
+          kGenAILocalFoundationalModelEnterprisePolicySettings,
+      allowed ? 0 : 1);
+}
+
+void AITestUtils::AITestBase::SetOnDeviceAiUserSetting(bool allowed) {
+  g_browser_process->local_state()->SetBoolean(
+      optimization_guide::model_execution::prefs::localstate::
+          kOnDeviceAiUserSettingsEnabled,
+      allowed);
 }
 
 // static

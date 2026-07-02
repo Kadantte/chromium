@@ -220,6 +220,10 @@ void LogLocalHeuristicMatchedAttribute(
 
 void LogFieldPredictionOverlapMetrics(const AutofillField& field);
 
+// Records the html, server, heuristic, overall and possible type of a field.
+// Also records the prediction source for the overall type of the field.
+void LogFieldTypeAtSubmissionMetrics(const AutofillField& field);
+
 }  // namespace autofill::autofill_metrics
 
 #endif  // COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_PREDICTION_QUALITY_METRICS_H_

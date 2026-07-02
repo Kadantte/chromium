@@ -6,9 +6,9 @@
 
 #include <utility>
 
-#include "chrome/browser/extensions/webstore_installer.h"
 #include "chrome/browser/profiles/profile.h"
 #include "content/public/browser/web_contents.h"
+#include "extensions/browser/webstore_installer.h"
 
 using content::WebContents;
 
@@ -42,10 +42,9 @@ bool WebstoreInstallWithPrompt::CheckRequestorAlive() const {
   return !parent_window_tracker_->WasNativeWindowDestroyed();
 }
 
-std::unique_ptr<ExtensionInstallPrompt::Prompt>
+std::unique_ptr<InstallPromptData>
 WebstoreInstallWithPrompt::CreateInstallPrompt() const {
-  return std::make_unique<ExtensionInstallPrompt::Prompt>(
-      ExtensionInstallPrompt::INSTALL_PROMPT);
+  return std::make_unique<InstallPromptData>(InstallPromptData::INSTALL_PROMPT);
 }
 
 std::unique_ptr<ExtensionInstallPrompt>

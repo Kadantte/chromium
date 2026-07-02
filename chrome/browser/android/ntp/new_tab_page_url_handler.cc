@@ -6,15 +6,19 @@
 
 #include <string>
 
+#include "base/command_line.h"
 #include "base/strings/string_util.h"
-#include "chrome/browser/flags/android/chrome_feature_list.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/search/search.h"
+#include "chrome/common/chrome_switches.h"
 #include "chrome/common/url_constants.h"
+#include "chrome/common/webui_url_constants.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/url_constants.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
-#include "chrome/browser/extensions/extension_web_ui.h"
+#include "chrome/browser/extensions/extension_url_overrides.h"
 #endif
 
 namespace {
@@ -27,19 +31,22 @@ namespace android {
 bool HandleAndroidNativePageURL(GURL* url,
                                 content::BrowserContext* browser_context) {
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
-  if (base::FeatureList::IsEnabled(
-          chrome::android::kChromeNativeUrlOverriding)) {
-    // If an extension is overriding this URL, do not redirect it.
-    if (ExtensionWebUI::GetNumberOfExtensionsOverridingURL(
-            *url, browser_context) > 0) {
-      return false;
-    }
+  // If an extension is overriding this URL, do not redirect it.
+  if (ExtensionUrlOverrides::GetNumberOfExtensionsOverridingURL(
+          *url, browser_context) > 0) {
+    return false;
   }
 #endif
 
   if (url->SchemeIs(content::kChromeUIScheme)) {
     if (url->GetHost() == chrome::kChromeUINewTabHost) {
-      *url = GURL(chrome::kChromeUINativeNewTabURL);
+      if (search::IsWebUiNtpEnabled() &&
+          search::DefaultSearchProviderIsGoogle(
+              Profile::FromBrowserContext(browser_context))) {
+        *url = GURL(chrome::kChromeUINewTabPageURL);
+      } else {
+        *url = GURL(chrome::kChromeUINativeNewTabURL);
+      }
       return true;
     }
   }

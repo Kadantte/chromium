@@ -21,11 +21,10 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/memory/memory_pressure_monitor.h"
 #include "base/memory/ptr_util.h"
+#include "base/message_loop/message_pump_wakeup_counter.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/path_service.h"
 #include "base/pending_task.h"
@@ -69,7 +68,6 @@
 #include "components/viz/host/host_frame_sink_manager.h"
 #include "content/browser/accessibility/browser_accessibility_state_impl.h"
 #include "content/browser/browser_thread_impl.h"
-#include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/compositor/viz_process_transport_factory.h"
 #include "content/browser/cpu_performance/cpu_performance.h"
 #include "content/browser/download/save_file_manager.h"
@@ -99,8 +97,6 @@
 #include "content/browser/speech/tts_controller_impl.h"
 #include "content/browser/startup_data_impl.h"
 #include "content/browser/startup_task_runner.h"
-#include "content/browser/tracing/background_tracing_manager_impl.h"
-#include "content/browser/tracing/startup_tracing_controller.h"
 #include "content/browser/tracing/tracing_controller_impl.h"
 #include "content/browser/webrtc/webrtc_internals.h"
 #include "content/browser/webui/content_web_ui_configs.h"
@@ -111,7 +107,7 @@
 #include "content/common/skia_utils.h"
 #include "content/common/thread_pool_util.h"
 #include "content/public/browser/audio_service.h"
-#include "content/public/browser/background_tracing_manager.h"
+#include "content/public/browser/background_tracing.h"
 #include "content/public/browser/browser_main_parts.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -153,6 +149,8 @@
 #include "services/network/public/cpp/network_switches.h"
 #include "services/network/public/mojom/network_service.mojom.h"
 #include "services/network/transitional_url_loader_factory_owner.h"
+#include "services/tracing/public/cpp/background_tracing/background_tracing_manager.h"
+#include "services/tracing/public/cpp/startup_tracing_controller.h"
 #include "services/tracing/public/cpp/trace_startup_config.h"
 #include "services/video_capture/public/cpp/features.h"
 #include "skia/ext/event_tracer_impl.h"
@@ -359,8 +357,8 @@ void SetFileUrlPathAliasForIpcFuzzer() {
 }
 #endif
 
-std::unique_ptr<base::MemoryPressureMonitor> CreateMemoryPressureMonitor(
-    const base::CommandLine& command_line) {
+std::unique_ptr<memory_pressure::MultiSourceMemoryPressureMonitor>
+CreateMemoryPressureMonitor(const base::CommandLine& command_line) {
   // Behavior of browser tests should not depend on things outside of their
   // control (like the amount of memory on the system running the tests).
   if (command_line.HasSwitch(switches::kBrowserTest))
@@ -369,7 +367,7 @@ std::unique_ptr<base::MemoryPressureMonitor> CreateMemoryPressureMonitor(
   std::unique_ptr<memory_pressure::MultiSourceMemoryPressureMonitor> monitor;
 
 #if BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_FUCHSIA) || \
-    BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+    BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
   monitor =
       std::make_unique<memory_pressure::MultiSourceMemoryPressureMonitor>();
 #endif
@@ -377,6 +375,13 @@ std::unique_ptr<base::MemoryPressureMonitor> CreateMemoryPressureMonitor(
 
   if (monitor)
     monitor->MaybeStartPlatformVoter();
+
+#if BUILDFLAG(IS_ANDROID)
+  if (auto evaluator = UserLevelMemoryPressureSignalGenerator::MaybeCreate(
+          monitor->CreateVoter())) {
+    monitor->SetSystemEvaluator(std::move(evaluator));
+  }
+#endif
 
   return monitor;
 }
@@ -639,10 +644,12 @@ void BrowserMainLoop::CreateMainMessageLoop() {
 void BrowserMainLoop::PostCreateMainMessageLoop() {
   TRACE_EVENT0("startup", "BrowserMainLoop::PostCreateMainMessageLoop");
   mojo::InterfaceEndpointClient::SetThreadNameSuffixForMetrics("BrowserMain");
+  base::MessagePumpWakeupCounter::InitializeForCurrentThread("BrowserMain");
   GetIOThreadTaskRunner({})->PostTask(
       FROM_HERE, base::BindOnce([]() {
         mojo::InterfaceEndpointClient::SetThreadNameSuffixForMetrics(
             "BrowserIO");
+        base::MessagePumpWakeupCounter::InitializeForCurrentThread("BrowserIO");
       }));
   {
     TRACE_EVENT0("startup", "BrowserMainLoop::Subsystem:SystemMonitor");
@@ -741,9 +748,7 @@ void BrowserMainLoop::PostCreateMainMessageLoop() {
     InitializeSkia();
   } else {
     // Just enable memory-infra dump providers
-    InitSkiaEventTracer();
-    base::trace_event::MemoryDumpManager::GetInstance()->RegisterDumpProvider(
-        skia::SkiaMemoryDumpProvider::GetInstance(), "Skia", nullptr);
+    InitializeSkiaLite();
   }
 
   base::trace_event::MemoryDumpManager::GetInstance()->RegisterDumpProvider(
@@ -765,8 +770,8 @@ int BrowserMainLoop::PreCreateThreads() {
   // ChromeBrowserMainParts::PreCreateThreads() because it's used in
   // BackgroundTracingMetricsProvider.
   tracing_controller_ = std::make_unique<TracingControllerImpl>();
-  background_tracing_manager_ = BackgroundTracingManagerImpl::CreateInstance(
-      tracing_controller_->tracing_delegate());
+  background_tracing_manager_ =
+      CreateBackgroundTracingManager(tracing_controller_->tracing_delegate());
 
   // Make sure no accidental call to initialize GpuDataManager earlier.
   DCHECK(!GpuDataManagerImpl::Initialized());
@@ -775,9 +780,6 @@ int BrowserMainLoop::PreCreateThreads() {
   }
 
   InitializeMemoryManagementComponent();
-#if BUILDFLAG(IS_ANDROID)
-  content::UserLevelMemoryPressureSignalGenerator::Initialize();
-#endif
 
 #if BUILDFLAG(ENABLE_PLUGINS)
   // Prior to any processing happening on the IO thread, we create the
@@ -1126,6 +1128,10 @@ void BrowserMainLoop::PreShutdown() {
   idle_callback_subscription_ = {};
 
   ui::Clipboard::OnPreShutdownForCurrentThread();
+
+  if (startup_tracing_controller_) {
+    startup_tracing_controller_->ShutdownAndWaitForStopIfNeeded();
+  }
 }
 
 void BrowserMainLoop::ShutdownThreadsAndCleanUp() {
@@ -1442,8 +1448,7 @@ void BrowserMainLoop::PostCreateThreadsImpl() {
   bool should_post_task_to_launch_gpu_process =
       always_uses_gpu && !establish_gpu_channel;
   if (should_post_task_to_launch_gpu_process) {
-    TRACE_EVENT_INSTANT0("gpu", "Post task to launch GPU process",
-                         TRACE_EVENT_SCOPE_THREAD);
+    TRACE_EVENT_INSTANT("gpu", "Post task to launch GPU process");
     GpuProcessHost::Get(GPU_PROCESS_KIND_SANDBOXED, true /* force_create */);
   }
 
@@ -1465,9 +1470,7 @@ void BrowserMainLoop::PostCreateThreadsImpl() {
   // all CDMs are part of the OS, so no file checks are involved.
   CdmRegistry::GetInstance()->Init();
 
-  if (base::FeatureList::IsEnabled(features::kFontSrcLocalMatching)) {
-    FontUniqueNameLookup::GetInstance();
-  }
+  FontUniqueNameLookup::GetInstance();
 #endif
 
 #if defined(ENABLE_IPC_FUZZER)
@@ -1539,7 +1542,15 @@ void BrowserMainLoop::InitializeMojo() {
   // need to start tracing for all other tracing agents, which require threads.
   // We can only do this after starting the main message loop to avoid calling
   // MessagePumpForUI::ScheduleWork() before MessagePumpForUI::Start().
-  StartupTracingController::GetInstance().StartIfNeeded();
+  startup_tracing_controller_ =
+      std::make_unique<tracing::StartupTracingController>(
+#if BUILDFLAG(IS_ANDROID)
+          base::BindRepeating(
+              &content::TracingControllerAndroid::GenerateTracingFilePath),
+#endif
+          content::GetIOThreadTaskRunner({}));
+
+  startup_tracing_controller_->StartIfNeeded();
 
 #if BUILDFLAG(MOJO_RANDOM_DELAYS_ENABLED)
   mojo::BeginRandomMojoDelays();
@@ -1568,8 +1579,7 @@ void BrowserMainLoop::InitializeAudio() {
   // Iff |audio_manager_| is instantiated, the audio service will run
   // in-process. Complete the setup for that:
   if (audio_manager_) {
-    TRACE_EVENT_INSTANT0("startup", "Starting Audio service task runner",
-                         TRACE_EVENT_SCOPE_THREAD);
+    TRACE_EVENT_INSTANT("startup", "Starting Audio service task runner");
 #if BUILDFLAG(IS_MAC)
     // On Mac, the audio task runner must belong to the main thread.
     // See audio_thread_impl.cc and https://crbug.com/158170.
@@ -1577,15 +1587,6 @@ void BrowserMainLoop::InitializeAudio() {
 #endif
     audio::Service::GetInProcessTaskRunner()->StartWithTaskRunner(
         audio_manager_->GetTaskRunner());
-  }
-
-  if (base::FeatureList::IsEnabled(features::kAudioServiceLaunchOnStartup)) {
-    // Schedule the audio service startup on the main thread.
-    GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT})
-        ->PostTask(FROM_HERE, base::BindOnce([]() {
-                     TRACE_EVENT0("audio", "Starting audio service");
-                     GetAudioService();
-                   }));
   }
 
   audio_system_ = CreateAudioSystemForAudioService();

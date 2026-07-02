@@ -9,6 +9,7 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
+#include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/views/content_setting_bubble_contents.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/infobars/confirm_infobar.h"
@@ -18,6 +19,7 @@
 #include "chrome/browser/ui/views/permissions/permission_prompt_bubble_base_view.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/common/chrome_switches.h"
+#include "chrome/grit/generated_resources.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "chrome/test/permissions/permission_request_manager_test_api.h"
 #include "components/infobars/content/content_infobar_manager.h"
@@ -43,12 +45,12 @@
 
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsElementId);
 const char kLocationBarView[] = "LocationBarView";
-const auto QuietChipElementId = PermissionChipView::kElementIdForTesting;
+const auto QuietChipElementId =
+    PermissionChipView::kPermissionRequestChipElementId;
 const auto QuietBubbleAllowElementId =
     views::DialogClientView::kOkButtonElementId;
 const auto QuietBubbleElementId = ContentSettingBubbleContents::kMainElementId;
 const auto InfobarElementId = ConfirmInfoBar::kInfoBarElementId;
-using ::base::test::ScopedFeatureList;
 using ::testing::ValuesIn;
 
 class QuietPromptInteractiveUITest : public InteractiveBrowserTest {
@@ -110,7 +112,7 @@ class QuietPromptInteractiveUITest : public InteractiveBrowserTest {
     test_location_bar_model_->set_formatted_full_url(text);
 
     // Normally the URL for display has portions elided. We aren't doing that in
-    // this case, because that is irrevelant for these tests.
+    // this case, because that is irrelevant for these tests.
     test_location_bar_model_->set_url_for_display(text);
 
     omnibox_view->Update();

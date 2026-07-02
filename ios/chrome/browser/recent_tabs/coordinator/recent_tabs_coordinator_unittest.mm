@@ -13,6 +13,7 @@
 #import "base/memory/raw_ptr.h"
 #import "base/test/ios/wait_util.h"
 #import "components/sessions/core/serialized_navigation_entry_test_helper.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/signin/public/identity_manager/identity_test_environment.h"
 #import "components/signin/public/identity_manager/primary_account_mutator.h"
@@ -21,6 +22,7 @@
 #import "components/sync/test/fake_data_type_controller_delegate.h"
 #import "components/sync/test/test_sync_service.h"
 #import "components/sync/test/test_sync_user_settings.h"
+#import "components/sync_sessions/mock_session_sync_service.h"
 #import "components/sync_sessions/open_tabs_ui_delegate.h"
 #import "components/sync_sessions/session_sync_service.h"
 #import "components/sync_sessions/synced_session.h"
@@ -51,6 +53,7 @@
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/sync/model/session_sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/test/block_cleanup_test.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/chrome/test/scoped_key_window.h"
@@ -66,33 +69,12 @@ using testing::DoAll;
 using testing::Return;
 using testing::SetArgPointee;
 
+using MockSessionSyncService = sync_sessions::MockSessionSyncService;
+
 namespace {
 
-class SessionSyncServiceMockForRecentTabsTableCoordinator
-    : public sync_sessions::SessionSyncService {
- public:
-  SessionSyncServiceMockForRecentTabsTableCoordinator() {}
-  ~SessionSyncServiceMockForRecentTabsTableCoordinator() override {}
-
-  MOCK_CONST_METHOD0(GetGlobalIdMapper, syncer::GlobalIdMapper*());
-  MOCK_METHOD0(GetOpenTabsUIDelegate, sync_sessions::OpenTabsUIDelegate*());
-  MOCK_METHOD1(
-      SubscribeToForeignSessionsChanged,
-      base::CallbackListSubscription(const base::RepeatingClosure& cb));
-  MOCK_METHOD0(ScheduleGarbageCollection, void());
-  MOCK_METHOD0(GetControllerDelegate,
-               base::WeakPtr<syncer::DataTypeControllerDelegate>());
-};
-
-std::unique_ptr<KeyedService>
-BuildMockSessionSyncServiceForRecentTabsTableCoordinator(ProfileIOS* profile) {
-  return std::make_unique<
-      testing::NiceMock<SessionSyncServiceMockForRecentTabsTableCoordinator>>();
-}
-
-// Returns a TestSyncService.
-std::unique_ptr<KeyedService> BuildFakeSyncServiceFactory(ProfileIOS* profile) {
-  return std::make_unique<syncer::TestSyncService>();
+std::unique_ptr<KeyedService> BuildMockSessionSyncService(ProfileIOS* profile) {
+  return std::make_unique<testing::NiceMock<MockSessionSyncService>>();
 }
 
 class OpenTabsUIDelegateMock : public sync_sessions::OpenTabsUIDelegate {
@@ -156,14 +138,12 @@ class RecentTabsTableCoordinatorTest : public BlockCleanupTest {
     builder.AddTestingFactory(ios::HistoryServiceFactory::GetInstance(),
                               ios::HistoryServiceFactory::GetDefaultFactory());
 
-    builder.AddTestingFactory(
-        SyncServiceFactory::GetInstance(),
-        base::BindRepeating(&BuildFakeSyncServiceFactory));
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
 
     builder.AddTestingFactory(
         SessionSyncServiceFactory::GetInstance(),
-        base::BindRepeating(
-            &BuildMockSessionSyncServiceForRecentTabsTableCoordinator));
+        base::BindRepeating(&BuildMockSessionSyncService));
     builder.AddTestingFactory(
         IOSChromeTabRestoreServiceFactory::GetInstance(),
         IOSChromeTabRestoreServiceFactory::GetDefaultFactory());
@@ -185,8 +165,8 @@ class RecentTabsTableCoordinatorTest : public BlockCleanupTest {
   }
 
   void SetupSyncState(BOOL signed_in, BOOL has_foreign_sessions) {
-    SessionSyncServiceMockForRecentTabsTableCoordinator* session_sync_service =
-        static_cast<SessionSyncServiceMockForRecentTabsTableCoordinator*>(
+    MockSessionSyncService* session_sync_service =
+        static_cast<MockSessionSyncService*>(
             SessionSyncServiceFactory::GetForProfile(profile_.get()));
 
     sync_service_ = static_cast<syncer::TestSyncService*>(

@@ -21,7 +21,7 @@
 #include "chrome/browser/ui/views/autofill/payments/filled_card_information_icon_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
-#include "chrome/grit/generated_resources.h"
+#include "chrome/browser/ui/views/page_action/test_support/page_action_test_support.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -37,6 +37,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/prerender_test_util.h"
 #include "ui/base/clipboard/clipboard.h"
+#include "ui/base/clipboard/test/clipboard_test_util.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/test/ui_controls.h"
@@ -112,17 +113,13 @@ class FilledCardInformationBubbleViewsInteractiveUiTest
           features::kAutofillShowBubblesBasedOnPriorities);
     }
 
-    if (GetParam().is_page_action_migration_enabled) {
-      enabled_features.push_back({
-          ::features::kPageActionsMigration,
-          {{
-              ::features::kPageActionsMigrationFilledCardInformation.name,
-              "true",
-          }},
-      });
-    } else {
-      disabled_features.emplace_back(::features::kPageActionsMigration);
-    }
+    enabled_features.push_back({
+        ::features::kPageActionsMigration,
+        {{
+            ::features::kPageActionsMigrationFilledCardInformation.name,
+            GetParam().is_page_action_migration_enabled ? "true" : "false",
+        }},
+    });
 
     feature_list_.InitWithFeaturesAndParameters(enabled_features,
                                                 disabled_features);
@@ -209,9 +206,10 @@ class FilledCardInformationBubbleViewsInteractiveUiTest
   IconLabelBubbleView* GetIconView() {
     BrowserView* browser_view =
         BrowserView::GetBrowserViewForBrowser(browser());
-    IconLabelBubbleView* icon =
-        browser_view->toolbar_button_provider()->GetPageActionView(
-            kActionFilledCardInformation);
+    auto* provider = browser_view->toolbar_button_provider();
+    IconLabelBubbleView* icon = page_actions::GetIconLabelBubbleViewForTesting(
+        provider->GetPageActionViewInterface(kActionFilledCardInformation),
+        kActionFilledCardInformation);
     DCHECK(icon);
     return icon;
   }
@@ -240,7 +238,7 @@ IN_PROC_BROWSER_TEST_P(FilledCardInformationBubbleViewsInteractiveUiTest,
 }
 
 // Invokes the bubble and verifies the bubble is dismissed upon page navigation.
-// Flaky on macOS, Linux, and Win. crbug.com/1254101
+// Flaky on macOS, Linux, and Win. crbug.com/40794138
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
 #define MAYBE_DismissBubbleUponNavigation DISABLED_DismissBubbleUponNavigation
 #else
@@ -294,8 +292,8 @@ IN_PROC_BROWSER_TEST_P(FilledCardInformationBubbleViewsInteractiveUiTest,
 
   // Card number (also ensure it doesn't contain spaces):
   ClickOnField(FilledCardInformationBubbleField::kCardNumber);
-  clipboard->ReadText(ui::ClipboardBuffer::kCopyPaste, /* data_dst = */ nullptr,
-                      &clipboard_text);
+  clipboard_text = ui::clipboard_test_util::ReadText(
+      clipboard, ui::ClipboardBuffer::kCopyPaste, /* data_dst = */ nullptr);
   EXPECT_EQ(clipboard_text, u"5454545454545454");
   histogram_tester.ExpectBucketCount(
       "Autofill.FilledCardInformationBubble.FieldClicked",
@@ -304,8 +302,8 @@ IN_PROC_BROWSER_TEST_P(FilledCardInformationBubbleViewsInteractiveUiTest,
 
   // Expiration month:
   ClickOnField(FilledCardInformationBubbleField::kExpirationMonth);
-  clipboard->ReadText(ui::ClipboardBuffer::kCopyPaste, /* data_dst = */ nullptr,
-                      &clipboard_text);
+  clipboard_text = ui::clipboard_test_util::ReadText(
+      clipboard, ui::ClipboardBuffer::kCopyPaste, /* data_dst = */ nullptr);
   EXPECT_EQ(clipboard_text, base::ASCIIToUTF16(test::NextMonth().c_str()));
   histogram_tester.ExpectBucketCount(
       "Autofill.FilledCardInformationBubble.FieldClicked",
@@ -315,8 +313,8 @@ IN_PROC_BROWSER_TEST_P(FilledCardInformationBubbleViewsInteractiveUiTest,
 
   // Expiration year:
   ClickOnField(FilledCardInformationBubbleField::kExpirationYear);
-  clipboard->ReadText(ui::ClipboardBuffer::kCopyPaste, /* data_dst = */ nullptr,
-                      &clipboard_text);
+  clipboard_text = ui::clipboard_test_util::ReadText(
+      clipboard, ui::ClipboardBuffer::kCopyPaste, /* data_dst = */ nullptr);
   EXPECT_EQ(clipboard_text, base::ASCIIToUTF16(test::NextYear().c_str()));
   histogram_tester.ExpectBucketCount(
       "Autofill.FilledCardInformationBubble.FieldClicked",
@@ -326,8 +324,8 @@ IN_PROC_BROWSER_TEST_P(FilledCardInformationBubbleViewsInteractiveUiTest,
 
   // Cardholder name:
   ClickOnField(FilledCardInformationBubbleField::kCardholderName);
-  clipboard->ReadText(ui::ClipboardBuffer::kCopyPaste, /* data_dst = */ nullptr,
-                      &clipboard_text);
+  clipboard_text = ui::clipboard_test_util::ReadText(
+      clipboard, ui::ClipboardBuffer::kCopyPaste, /* data_dst = */ nullptr);
   EXPECT_EQ(clipboard_text, u"John Smith");
   histogram_tester.ExpectBucketCount(
       "Autofill.FilledCardInformationBubble.FieldClicked",
@@ -337,8 +335,8 @@ IN_PROC_BROWSER_TEST_P(FilledCardInformationBubbleViewsInteractiveUiTest,
 
   // CVC:
   ClickOnField(FilledCardInformationBubbleField::kCvc);
-  clipboard->ReadText(ui::ClipboardBuffer::kCopyPaste, /* data_dst = */ nullptr,
-                      &clipboard_text);
+  clipboard_text = ui::clipboard_test_util::ReadText(
+      clipboard, ui::ClipboardBuffer::kCopyPaste, /* data_dst = */ nullptr);
   EXPECT_EQ(clipboard_text, u"345");
   histogram_tester.ExpectBucketCount(
       "Autofill.FilledCardInformationBubble.FieldClicked",
@@ -377,8 +375,8 @@ IN_PROC_BROWSER_TEST_P(FilledCardInformationBubbleViewsInteractiveUiTest,
 
   // Card number (also ensure it doesn't contain spaces):
   ClickOnField(FilledCardInformationBubbleField::kCardNumber);
-  clipboard->ReadText(ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr,
-                      &clipboard_text);
+  clipboard_text = ui::clipboard_test_util::ReadText(
+      clipboard, ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr);
   EXPECT_EQ(clipboard_text, u"5454545454545454");
   histogram_tester.ExpectBucketCount(
       "Autofill.FilledCardInformationBubble.FieldClicked",
@@ -387,8 +385,8 @@ IN_PROC_BROWSER_TEST_P(FilledCardInformationBubbleViewsInteractiveUiTest,
 
   // Expiration month:
   ClickOnField(FilledCardInformationBubbleField::kExpirationMonth);
-  clipboard->ReadText(ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr,
-                      &clipboard_text);
+  clipboard_text = ui::clipboard_test_util::ReadText(
+      clipboard, ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr);
   EXPECT_EQ(clipboard_text, base::ASCIIToUTF16(test::NextMonth().c_str()));
   histogram_tester.ExpectBucketCount(
       "Autofill.FilledCardInformationBubble.FieldClicked",
@@ -398,8 +396,8 @@ IN_PROC_BROWSER_TEST_P(FilledCardInformationBubbleViewsInteractiveUiTest,
 
   // Expiration year:
   ClickOnField(FilledCardInformationBubbleField::kExpirationYear);
-  clipboard->ReadText(ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr,
-                      &clipboard_text);
+  clipboard_text = ui::clipboard_test_util::ReadText(
+      clipboard, ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr);
   EXPECT_EQ(clipboard_text, base::ASCIIToUTF16(test::NextYear().c_str()));
   histogram_tester.ExpectBucketCount(
       "Autofill.FilledCardInformationBubble.FieldClicked",
@@ -409,8 +407,8 @@ IN_PROC_BROWSER_TEST_P(FilledCardInformationBubbleViewsInteractiveUiTest,
 
   // Cardholder name:
   ClickOnField(FilledCardInformationBubbleField::kCardholderName);
-  clipboard->ReadText(ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr,
-                      &clipboard_text);
+  clipboard_text = ui::clipboard_test_util::ReadText(
+      clipboard, ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr);
   EXPECT_EQ(clipboard_text, u"John Smith");
   histogram_tester.ExpectBucketCount(
       "Autofill.FilledCardInformationBubble.FieldClicked",
@@ -420,8 +418,8 @@ IN_PROC_BROWSER_TEST_P(FilledCardInformationBubbleViewsInteractiveUiTest,
 
   // CVC:
   ClickOnField(FilledCardInformationBubbleField::kCvc);
-  clipboard->ReadText(ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr,
-                      &clipboard_text);
+  clipboard_text = ui::clipboard_test_util::ReadText(
+      clipboard, ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr);
   EXPECT_EQ(clipboard_text, u"345");
   histogram_tester.ExpectBucketCount(
       "Autofill.FilledCardInformationBubble.FieldClicked",
@@ -471,7 +469,7 @@ IN_PROC_BROWSER_TEST_P(FilledCardInformationBubbleViewsInteractiveUiTest,
 
   // Bubble is reshown by the user. Closing a reshown bubble makes the browser
   // inactive for some reason, so we must reactivate it first.
-  browser()->window()->Activate();
+  browser()->GetWindow()->Activate();
   ReshowBubble();
 
   histogram_tester.ExpectBucketCount(
@@ -545,6 +543,7 @@ IN_PROC_BROWSER_TEST_P(FilledCardInformationBubbleViewsInteractiveUiTest,
 
 IN_PROC_BROWSER_TEST_P(FilledCardInformationBubbleViewsInteractiveUiTest,
                        IconViewAccessibleName) {
+  ShowBubble();
   EXPECT_EQ(
       GetIconView()->GetViewAccessibility().GetCachedName(),
       l10n_util::GetStringUTF16(

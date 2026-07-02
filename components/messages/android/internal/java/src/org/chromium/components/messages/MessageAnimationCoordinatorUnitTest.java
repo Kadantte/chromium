@@ -18,7 +18,6 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.robolectric.Shadows.shadowOf;
-import static org.robolectric.annotation.LooperMode.Mode.PAUSED;
 
 import android.animation.Animator;
 import android.animation.ValueAnimator;
@@ -36,7 +35,6 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.LooperMode;
 
 import org.chromium.base.Callback;
 import org.chromium.base.FeatureOverrides;
@@ -51,7 +49,6 @@ import java.util.concurrent.TimeoutException;
 
 /** Unit tests for {@link MessageAnimationCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@LooperMode(PAUSED)
 public class MessageAnimationCoordinatorUnitTest {
     private final MessageQueueDelegate mQueueDelegate =
             Mockito.spy(
@@ -111,7 +108,7 @@ public class MessageAnimationCoordinatorUnitTest {
     // [m1, m2] -> [m1, m2]
     @Test
     @SmallTest
-    public void testDoNothing() throws java.util.concurrent.TimeoutException {
+    public void testDoNothing() throws TimeoutException {
         MessageState m1 = buildMessageState();
         MessageState m2 = buildMessageState();
         // Initial setup

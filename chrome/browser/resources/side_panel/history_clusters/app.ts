@@ -3,17 +3,16 @@
 // found in the LICENSE file.
 
 import '/strings.m.js';
-import 'chrome://resources/cr_components/history_clusters/browser_proxy.js';
 import 'chrome://resources/cr_components/history_clusters/clusters.js';
 import 'chrome://resources/cr_components/history_embeddings/history_embeddings.js';
 import 'chrome://resources/cr_components/history_embeddings/icons.html.js';
 import 'chrome://resources/cr_elements/cr_toolbar/cr_toolbar_search_field.js';
 
 import {ColorChangeUpdater} from 'chrome://resources/cr_components/color_change_listener/colors_css_updater.js';
-import {BrowserProxyImpl} from 'chrome://resources/cr_components/history_clusters/browser_proxy.js';
 import type {HistoryClustersElement} from 'chrome://resources/cr_components/history_clusters/clusters.js';
-import {HistoryEmbeddingsBrowserProxyImpl} from 'chrome://resources/cr_components/history_embeddings/browser_proxy.js';
+import {browserProxyFactory} from 'chrome://resources/cr_components/history_clusters/history_clusters.mojom-webui.js';
 import type {HistoryEmbeddingsMoreActionsClickEvent, HistoryEmbeddingsResultClickEvent, HistoryEmbeddingsResultContextMenuEvent} from 'chrome://resources/cr_components/history_embeddings/history_embeddings.js';
+import {browserProxyFactory as historyEmbeddingsBrowserProxyFactory} from 'chrome://resources/cr_components/history_embeddings/history_embeddings.mojom-webui.js';
 import type {CrToolbarSearchFieldElement} from 'chrome://resources/cr_elements/cr_toolbar/cr_toolbar_search_field.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
@@ -81,15 +80,15 @@ export class HistoryClustersAppElement extends CrLitElement {
   accessor query: string = '';
   protected accessor nonEmbeddingsResultClicked_: boolean = false;
   protected accessor numCharsTypedInSearch_: number = 0;
-  protected accessor scrollTarget_: HTMLElement|undefined;
+  protected accessor scrollTarget_: HTMLElement = document.documentElement;
   protected accessor searchIcon_: string|undefined;
 
   //============================================================================
   // Event Handlers
   //============================================================================
 
-  protected onContextMenu_(event: MouseEvent) {
-    BrowserProxyImpl.getInstance().handler.showContextMenuForSearchbox(
+  protected onContextmenu_(event: MouseEvent) {
+    browserProxyFactory.getInstance().handler.showContextMenuForSearchbox(
         this.query, {x: event.clientX, y: event.clientY});
   }
 
@@ -122,10 +121,15 @@ export class HistoryClustersAppElement extends CrLitElement {
         'sp-scroller sp-scroller-bottom-of-page';
   }
 
+  protected onHistoryEmbeddingsDisclaimerLinkAuxclick_(e: Event) {
+    this.onHistoryEmbeddingsDisclaimerLinkClick_(e);
+  }
+
   protected onHistoryEmbeddingsDisclaimerLinkClick_(e: Event) {
     e.preventDefault();
     this.historyEmbeddingsDisclaimerLinkClicked_ = true;
-    HistoryEmbeddingsBrowserProxyImpl.getInstance().openSettingsPage();
+    historyEmbeddingsBrowserProxyFactory.getInstance()
+        .handler.openSettingsPage();
   }
 
   /**
@@ -138,9 +142,14 @@ export class HistoryClustersAppElement extends CrLitElement {
     this.nonEmbeddingsResultClicked_ = false;
   }
 
+  protected onHistoryEmbeddingsAnswerClick_(
+      event: HistoryEmbeddingsResultClickEvent) {
+    this.onHistoryEmbeddingsResultClick_(event);
+  }
+
   protected onHistoryEmbeddingsResultClick_(
       event: HistoryEmbeddingsResultClickEvent) {
-    BrowserProxyImpl.getInstance().handler.openHistoryUrl(
+    browserProxyFactory.getInstance().handler.openHistoryUrl(
         event.detail.item.url, {
           middleButton: event.detail.middleButton,
           altKey: event.detail.altKey,
@@ -150,10 +159,15 @@ export class HistoryClustersAppElement extends CrLitElement {
         });
   }
 
+  protected onAnswerContextMenu_(
+      event: HistoryEmbeddingsResultContextMenuEvent) {
+    this.onHistoryEmbeddingsResultContextMenu_(event);
+  }
+
   protected onHistoryEmbeddingsResultContextMenu_(
       event: HistoryEmbeddingsResultContextMenuEvent) {
     event.preventDefault();
-    BrowserProxyImpl.getInstance().handler.showContextMenuForURL(
+    browserProxyFactory.getInstance().handler.showContextMenuForURL(
         event.detail.item.url, {
           x: event.detail.x,
           y: event.detail.y,
@@ -165,11 +179,11 @@ export class HistoryClustersAppElement extends CrLitElement {
     this.hasHistoryEmbeddingsResults_ = !e.detail.value;
   }
 
-  protected onHistoryEmbeddingsItemRemoveClick_(
+  protected onHistoryEmbeddingsRemoveItemClick_(
       e: HistoryEmbeddingsMoreActionsClickEvent) {
     e.preventDefault();
     const historyEmbeddingsItem = e.detail;
-    BrowserProxyImpl.getInstance().handler.removeVisitByUrlAndTime(
+    browserProxyFactory.getInstance().handler.removeVisitByUrlAndTime(
         historyEmbeddingsItem.url, historyEmbeddingsItem.lastUrlVisitTimestamp);
   }
 
@@ -183,11 +197,11 @@ export class HistoryClustersAppElement extends CrLitElement {
     }
   }
 
-  protected onClusterLinkClick_() {
+  protected onClusterRecordHistoryLinkClick_() {
     this.nonEmbeddingsResultClicked_ = true;
   }
 
-  protected onSearchCleared_() {
+  protected onSearchTermCleared_() {
     if (!this.enableHistoryEmbeddings_) {
       return;
     }
@@ -195,7 +209,7 @@ export class HistoryClustersAppElement extends CrLitElement {
     this.numCharsTypedInSearch_ = 0;
   }
 
-  protected onSearchNativeInput_(
+  protected onSearchTermNativeInput_(
       e: CustomEvent<{e: InputEvent, inputValue: string}>) {
     if (!this.enableHistoryEmbeddings_) {
       return;

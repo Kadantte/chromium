@@ -7,9 +7,9 @@
 <a name="TOC-How-do-i-report-a-security-vulnerability"></a>
 ### How do I report a security vulnerability?
 
-Please report all Chromium security bugs using [this
-form](https://issues.chromium.org/issues/new?noWizard=true&component=1363614&template=1922342)
-or via [Google Bughunters](https://bughunters.google.com/report/vrp) and select Chrome VRP.
+Please report all Chromium security bugs via
+[Google Bughunters](https://bughunters.google.com/report/vrp) and select
+Chrome VRP. (Direct intake to the Chromium issuetracker is deprecated.)
 
 <a name="TOC-Which-bugs-are-valid-for-rewards-under-the-Chrome-Vulnerability-Rewards-program-"></a>
 ### Which bugs are valid for rewards under the Chrome Vulnerability Rewards program?
@@ -23,7 +23,8 @@ We must balance a commitment to openness with a commitment to avoiding
 unnecessary risk for users of widely-used open source libraries. All critical,
 high, and medium severity bugs are visible only to the security team and to the
 engineers directly involved in fixing them. Low-severity security bugs may be
-visible to all project contributors after an initial triage phase.
+visible to all project contributors after an initial triage phase. Low severity
+bugs that are not being actively worked on may be made public after four weeks.
 
 <a name="TOC-Can-you-please-un-hide-old-security-bugs-"></a>
 ### Can you please un-hide old security bugs?
@@ -789,6 +790,13 @@ external lists like the [HSTS preload list](https://hstspreload.org) or the
 If you believe Chrome's copies of these lists are notably out-of-date, we are
 happy to field bug reports but we do not consider this to be a vulnerability.
 
+### I can demonstrate memory corruption in a test binary!
+
+Test binaries (`unit_tests`, `browser_tests`, etc) do not have the same security
+scrutiny as `chrome` or `d8`. Memory corruption in these binaries does not harm
+Chrome's users, and are not valid reports. Please ensure all of your PoCs
+demonstrate an issue in `chrome` or `d8`.
+
 ## AI Features
 
 Chrome deeply integrates AI both in user-facing features like [Gemini Live
@@ -1280,7 +1288,7 @@ biometrics are unavailable (e.g. on a laptop with a closed lid).
 
 If you can demonstrate bypassing the user verification challenge where the
 request user verification parameter is set to 'required', please
-[report it](https://issues.chromium.org/issues/new?noWizard=true&component=1363614&template=1922342).
+[report it](https://bughunters.google.com/report/vrp).
 
 ## Other
 
@@ -1414,3 +1422,8 @@ Security Issues report and request a review from there. There is no separate
 appeal form or process at this time. Please follow these
 [guidelines](https://developers.google.com/search/docs/monitor-debug/security/malware#guidelines)
 to avoid having your binary show warnings from Safe Browsing.
+
+<a name="TOC-What-is-the-security-model-for-Split-View-"></a>
+### What's the security model for Split View?
+
+See our [Split View Security FAQ](https://chromium.googlesource.com/chromium/src/+/main/chrome/browser/ui/tabs/docs/split_view_security_faq.md).

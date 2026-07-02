@@ -25,6 +25,7 @@
 #include "services/network/public/cpp/content_security_policy/content_security_policy.h"
 #include "services/network/public/cpp/cross_origin_embedder_policy_parser.h"
 #include "services/network/public/cpp/cross_origin_opener_policy_parser.h"
+#include "services/network/public/cpp/declarative_performance_observer_parser.h"
 #include "services/network/public/cpp/document_isolation_policy_parser.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/fence_event_reporting_parser.h"
@@ -63,6 +64,8 @@ mojom::ParsedHeadersPtr PopulateParsedHeaders(
   if (base::FeatureList::IsEnabled(network::features::kConnectionAllowlists)) {
     parsed_headers->connection_allowlists =
         ParseConnectionAllowlistsFromHeaders(*headers, url);
+    parsed_headers->allow_connection_allowlist_from =
+        ParseAllowConnectionAllowlistFromHeader(*headers);
   }
 
   if (base::FeatureList::IsEnabled(network::features::kIntegrityPolicyScript)) {
@@ -170,6 +173,18 @@ mojom::ParsedHeadersPtr PopulateParsedHeaders(
 
   parsed_headers->allow_cross_origin_event_reporting =
       ParseAllowCrossOriginEventReportingFromHeader(*headers);
+
+  if (std::optional<std::string> performance_observer_header =
+          headers->GetNormalizedHeader("Performance-Observer")) {
+    parsed_headers->declarative_performance_observer_policy =
+        ParseDeclarativePerformanceObserverPolicy(*performance_observer_header);
+  }
+
+  if (std::optional<std::string> prefetch_activation_beacon =
+          headers->GetNormalizedHeader("on-prefetch-activation")) {
+    parsed_headers->prefetch_activation_beacon_endpoint =
+        url.Resolve(*prefetch_activation_beacon);
+  }
 
   return parsed_headers;
 }

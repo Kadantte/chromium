@@ -8,10 +8,12 @@
 
 #include "base/functional/callback.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/types/strong_alias.h"
 #include "components/autofill/core/browser/data_manager/payments/test_payments_data_manager.h"
 #include "components/autofill/core/browser/payments/payments_customer_data.h"
+#include "components/autofill/core/browser/strike_databases/payments/test_strike_database.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/facilitated_payments/core/browser/device_delegate.h"
@@ -19,6 +21,8 @@
 #include "components/facilitated_payments/core/browser/mock_facilitated_payments_client.h"
 #include "components/facilitated_payments/core/browser/network_api/mock_facilitated_payments_network_interface.h"
 #include "components/facilitated_payments/core/browser/pix_account_linking_manager_test_api.h"
+#include "components/facilitated_payments/core/browser/strike_databases/pix_account_linking_strike_database.h"
+#include "components/facilitated_payments/core/features/features.h"
 #include "components/facilitated_payments/core/metrics/facilitated_payments_metrics.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
@@ -74,11 +78,12 @@ class PixAccountLinkingManagerTest : public testing::Test {
     // account linking.
     ON_CALL(*payments_network_interface(),
             GetDetailsForCreatePaymentInstrument(testing::_, testing::_,
-                                                 testing::_))
-        .WillByDefault([](long, auto callback, const std::string&) {
+                                                 testing::_, testing::_))
+        .WillByDefault([](long, const std::vector<uint8_t>&, auto callback,
+                          const std::string&) {
           std::move(callback).Run(autofill::payments::PaymentsAutofillClient::
                                       PaymentsRpcResult::kSuccess,
-                                  true);
+                                  true, std::vector<uint8_t>{});
           return base::StrongAlias<autofill::payments::RequestIdTag,
                                    std::string>();
         });
@@ -89,6 +94,9 @@ class PixAccountLinkingManagerTest : public testing::Test {
             [](base::OnceClosure callback) { std::move(callback).Run(); });
     ON_CALL(client_, HasScreenlockOrBiometricSetup)
         .WillByDefault(testing::Return(true));
+    test_strike_database_ = std::make_unique<autofill::TestStrikeDatabase>();
+    ON_CALL(client_, GetStrikeDatabase)
+        .WillByDefault(testing::Return(test_strike_database_.get()));
   }
 
   void TearDown() override {
@@ -112,6 +120,7 @@ class PixAccountLinkingManagerTest : public testing::Test {
   const url::Origin kPixPaymentPageOrigin =
       url::Origin::Create(GURL("https://example.com"));
   const base::TimeDelta kShowPromptDelay = base::Seconds(3);
+  std::unique_ptr<autofill::TestStrikeDatabase> test_strike_database_;
 
  private:
   // Order matters here because `manager_` keeps a reference to `client_`.
@@ -130,10 +139,30 @@ TEST_F(PixAccountLinkingManagerTest, SuccessPathShowsPrompt) {
   manager()->MaybeShowPixAccountLinkingPrompt(kPixPaymentPageOrigin);
 
   // Expect the prompt to be shown then.
-  EXPECT_CALL(client(), ShowPixAccountLinkingPrompt);
+  EXPECT_CALL(client(), ShowPixAccountLinkingPrompt(0, testing::_, testing::_));
 
   // Fast-forward time by 3 seconds to trigger the delayed task.
   task_environment_.FastForwardBy(kShowPromptDelay);
+}
+
+TEST_F(PixAccountLinkingManagerTest, CustomDelayShowsPrompt) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      kEnablePixAccountLinkingNative, {{"trigger_delay_seconds", "7"}});
+
+  // The prompt should not be shown synchronously.
+  EXPECT_CALL(client(), ShowPixAccountLinkingPrompt).Times(0);
+  manager()->MaybeShowPixAccountLinkingPrompt(kPixPaymentPageOrigin);
+
+  // Fast-forward time by 3 seconds (default delay). The prompt should NOT be
+  // shown yet.
+  task_environment_.FastForwardBy(base::Seconds(3));
+
+  // Expect the prompt to be shown then.
+  EXPECT_CALL(client(), ShowPixAccountLinkingPrompt(0, testing::_, testing::_));
+
+  // Fast-forward time by another 4 seconds to reach 7 seconds.
+  task_environment_.FastForwardBy(base::Seconds(4));
 }
 
 TEST_F(PixAccountLinkingManagerTest,
@@ -165,11 +194,11 @@ TEST_F(PixAccountLinkingManagerTest,
 
   // Backend call for GetDetailsForPaymentInstrument should not be called if
   // user is not a payments customer. But, the prompt should still be shown.
-  EXPECT_CALL(
-      *payments_network_interface(),
-      GetDetailsForCreatePaymentInstrument(testing::_, testing::_, testing::_))
+  EXPECT_CALL(*payments_network_interface(),
+              GetDetailsForCreatePaymentInstrument(testing::_, testing::_,
+                                                   testing::_, testing::_))
       .Times(0);
-  EXPECT_CALL(client(), ShowPixAccountLinkingPrompt);
+  EXPECT_CALL(client(), ShowPixAccountLinkingPrompt(0, testing::_, testing::_));
 
   manager()->MaybeShowPixAccountLinkingPrompt(kPixPaymentPageOrigin);
   task_environment_.FastForwardBy(kShowPromptDelay);
@@ -178,9 +207,9 @@ TEST_F(PixAccountLinkingManagerTest,
 TEST_F(PixAccountLinkingManagerTest,
        ServerEligibilityCheckNotCompleted_PromptNotShown) {
   // Simulate that the payments server hasn't yet returned eligibility.
-  EXPECT_CALL(
-      *payments_network_interface(),
-      GetDetailsForCreatePaymentInstrument(testing::_, testing::_, testing::_))
+  EXPECT_CALL(*payments_network_interface(),
+              GetDetailsForCreatePaymentInstrument(testing::_, testing::_,
+                                                   testing::_, testing::_))
       .WillOnce(testing::Return(
           base::StrongAlias<autofill::payments::RequestIdTag, std::string>()));
 
@@ -193,13 +222,14 @@ TEST_F(PixAccountLinkingManagerTest,
 TEST_F(PixAccountLinkingManagerTest,
        ServerEligibilityCheckReturnsIneligible_PromptNotShown) {
   // Simulate that the payments server hasn't yet returned eligibility.
-  EXPECT_CALL(
-      *payments_network_interface(),
-      GetDetailsForCreatePaymentInstrument(testing::_, testing::_, testing::_))
-      .WillOnce([](long, auto callback, const std::string&) {
+  EXPECT_CALL(*payments_network_interface(),
+              GetDetailsForCreatePaymentInstrument(testing::_, testing::_,
+                                                   testing::_, testing::_))
+      .WillOnce([](long, const std::vector<uint8_t>&, auto callback,
+                   const std::string&) {
         std::move(callback).Run(autofill::payments::PaymentsAutofillClient::
                                     PaymentsRpcResult::kSuccess,
-                                false);
+                                false, std::vector<uint8_t>{});
         return base::StrongAlias<autofill::payments::RequestIdTag,
                                  std::string>();
       });
@@ -283,10 +313,17 @@ TEST_F(PixAccountLinkingManagerTest, AccountInfoNotValid_WalletNotLaunched) {
   test_api().OnAccepted();
 }
 
-TEST_F(PixAccountLinkingManagerTest, PromptDeclined_UserPrefUpdated) {
-  // The account linking user pref should be default enabled .
+TEST_F(PixAccountLinkingManagerTest,
+       PromptDeclined_StrikeAdded_PrefNotDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kEnablePixAccountLinkingNative);
+
+  // The account linking user pref should be default enabled.
   ASSERT_TRUE(autofill::prefs::IsFacilitatedPaymentsPixAccountLinkingEnabled(
       pref_service_.get()));
+
+  PixAccountLinkingStrikeDatabase strike_database(test_strike_database_.get());
+  ASSERT_EQ(strike_database.GetStrikes(), 0);
 
   EXPECT_CALL(client(), DismissPrompt);
 
@@ -295,8 +332,12 @@ TEST_F(PixAccountLinkingManagerTest, PromptDeclined_UserPrefUpdated) {
   task_environment_.FastForwardBy(kShowPromptDelay);
   test_api().OnDeclined();
 
-  // Verify that declining the prompt disables the account linking user pref.
-  EXPECT_FALSE(autofill::prefs::IsFacilitatedPaymentsPixAccountLinkingEnabled(
+  // Verify that declining the prompt adds a strike.
+  EXPECT_EQ(strike_database.GetStrikes(), 1);
+
+  // Verify that declining the prompt DOES NOT disable the account linking user
+  // pref.
+  EXPECT_TRUE(autofill::prefs::IsFacilitatedPaymentsPixAccountLinkingEnabled(
       pref_service_.get()));
 }
 
@@ -402,7 +443,8 @@ TEST_P(PixAccountLinkingManagerParameterizedTest,
   test_api().OnGetDetailsForCreatePaymentInstrumentResponseReceived(
       base::TimeTicks::Now() - base::Seconds(2),
       autofill::payments::PaymentsAutofillClient::PaymentsRpcResult::kSuccess,
-      /*is_eligible_for_pix_account_linking=*/GetParam());
+      /*is_eligible_for_pix_account_linking=*/GetParam(),
+      /*action_token=*/std::vector<uint8_t>{});
 
   histogram_tester.ExpectUniqueSample(
       "FacilitatedPayments.Pix.AccountLinking."
@@ -429,15 +471,15 @@ TEST_F(PixAccountLinkingManagerTest, PromptDeclined_ExitedReasonLogged) {
 
   histogram_tester.ExpectUniqueSample(
       "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason",
-      /*sample=*/PixAccountLinkingFlowExitedReason::kUserDeclined,
+      /*sample=*/AccountLinkingFlowExitedReason::kUserDeclined,
       /*expected_bucket_count=*/1);
   histogram_tester.ExpectBucketCount(
       "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason",
-      /*sample=*/PixAccountLinkingFlowExitedReason::kScreenClosedNotByUser,
+      /*sample=*/AccountLinkingFlowExitedReason::kScreenClosedNotByUser,
       /*expected_count=*/0);
   histogram_tester.ExpectBucketCount(
       "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason",
-      /*sample=*/PixAccountLinkingFlowExitedReason::kScreenClosedByUser,
+      /*sample=*/AccountLinkingFlowExitedReason::kScreenClosedByUser,
       /*expected_count=*/0);
 }
 
@@ -451,7 +493,7 @@ TEST_F(PixAccountLinkingManagerTest, WalletNotInstalled_ExitedReasonLogged) {
 
   histogram_tester.ExpectUniqueSample(
       "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason",
-      /*sample=*/PixAccountLinkingFlowExitedReason::kWalletNotInstalled,
+      /*sample=*/AccountLinkingFlowExitedReason::kWalletNotInstalled,
       /*expected_bucket_count=*/1);
 }
 
@@ -466,7 +508,7 @@ TEST_F(PixAccountLinkingManagerTest,
 
   histogram_tester.ExpectUniqueSample(
       "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason",
-      /*sample=*/PixAccountLinkingFlowExitedReason::kWalletVersionNotSupported,
+      /*sample=*/AccountLinkingFlowExitedReason::kWalletVersionNotSupported,
       /*expected_bucket_count=*/1);
 }
 
@@ -480,7 +522,7 @@ TEST_F(PixAccountLinkingManagerTest,
 
   histogram_tester.ExpectUniqueSample(
       "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason",
-      /*sample=*/PixAccountLinkingFlowExitedReason::kUserOptedOut,
+      /*sample=*/AccountLinkingFlowExitedReason::kUserOptedOut,
       /*expected_bucket_count=*/1);
 }
 
@@ -494,7 +536,7 @@ TEST_F(PixAccountLinkingManagerTest, ScreenlockNotEnabled_ExitedReasonLogged) {
   histogram_tester.ExpectUniqueSample(
       "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason",
       /*sample=*/
-      PixAccountLinkingFlowExitedReason::kNoScreenlockOrBiometricSetup,
+      AccountLinkingFlowExitedReason::kNoScreenlockOrBiometricSetup,
       /*expected_bucket_count=*/1);
 }
 
@@ -502,9 +544,9 @@ TEST_F(PixAccountLinkingManagerTest,
        ServerEligibilityCheckNotCompleted_ExitedReasonLogged) {
   base::HistogramTester histogram_tester;
   // Simulate that the payments server hasn't yet returned eligibility.
-  EXPECT_CALL(
-      *payments_network_interface(),
-      GetDetailsForCreatePaymentInstrument(testing::_, testing::_, testing::_))
+  EXPECT_CALL(*payments_network_interface(),
+              GetDetailsForCreatePaymentInstrument(testing::_, testing::_,
+                                                   testing::_, testing::_))
       .WillOnce(testing::Return(
           base::StrongAlias<autofill::payments::RequestIdTag, std::string>()));
 
@@ -512,7 +554,7 @@ TEST_F(PixAccountLinkingManagerTest,
 
   histogram_tester.ExpectUniqueSample(
       "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason",
-      /*sample=*/PixAccountLinkingFlowExitedReason::kServerSideIneligible,
+      /*sample=*/AccountLinkingFlowExitedReason::kServerSideIneligible,
       /*expected_bucket_count=*/1);
 }
 
@@ -520,13 +562,14 @@ TEST_F(PixAccountLinkingManagerTest,
        ServerEligibilityCheckReturnsIneligible_ExitedReasonLogged) {
   base::HistogramTester histogram_tester;
   // Simulate that the payments server hasn't yet returned eligibility.
-  EXPECT_CALL(
-      *payments_network_interface(),
-      GetDetailsForCreatePaymentInstrument(testing::_, testing::_, testing::_))
-      .WillOnce([](long, auto callback, const std::string&) {
+  EXPECT_CALL(*payments_network_interface(),
+              GetDetailsForCreatePaymentInstrument(testing::_, testing::_,
+                                                   testing::_, testing::_))
+      .WillOnce([](long, const std::vector<uint8_t>&, auto callback,
+                   const std::string&) {
         std::move(callback).Run(autofill::payments::PaymentsAutofillClient::
                                     PaymentsRpcResult::kSuccess,
-                                false);
+                                false, std::vector<uint8_t>{});
         return base::StrongAlias<autofill::payments::RequestIdTag,
                                  std::string>();
       });
@@ -535,7 +578,7 @@ TEST_F(PixAccountLinkingManagerTest,
 
   histogram_tester.ExpectUniqueSample(
       "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason",
-      /*sample=*/PixAccountLinkingFlowExitedReason::kServerSideIneligible,
+      /*sample=*/AccountLinkingFlowExitedReason::kServerSideIneligible,
       /*expected_bucket_count=*/1);
 }
 
@@ -548,7 +591,7 @@ TEST_F(PixAccountLinkingManagerTest, TabNotActive_ExitedReasonLogged) {
 
   histogram_tester.ExpectUniqueSample(
       "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason",
-      /*sample=*/PixAccountLinkingFlowExitedReason::kTabIsNotActive,
+      /*sample=*/AccountLinkingFlowExitedReason::kTabIsNotActive,
       /*expected_bucket_count=*/1);
 }
 
@@ -565,18 +608,18 @@ TEST_F(PixAccountLinkingManagerTest, DifferentOrigin_ExitedReasonLogged) {
 
   histogram_tester.ExpectUniqueSample(
       "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason",
-      /*sample=*/PixAccountLinkingFlowExitedReason::kUserSwitchedWebsite,
+      /*sample=*/AccountLinkingFlowExitedReason::kUserSwitchedWebsite,
       /*expected_bucket_count=*/1);
 }
 
 class PixAccountLinkingManagerTestForExitedReasons
     : public PixAccountLinkingManagerTest,
       public testing::WithParamInterface<
-          std::tuple<UiEvent, PixAccountLinkingFlowExitedReason>> {
+          std::tuple<UiEvent, AccountLinkingFlowExitedReason>> {
  public:
   UiEvent ui_event() const { return std::get<0>(GetParam()); }
 
-  PixAccountLinkingFlowExitedReason pix_account_linking_flow_exited_reason()
+  AccountLinkingFlowExitedReason pix_account_linking_flow_exited_reason()
       const {
     return std::get<1>(GetParam());
   }
@@ -600,12 +643,108 @@ INSTANTIATE_TEST_SUITE_P(
     PixAccountLinkingManagerTestForExitedReasons,
     testing::ValuesIn({
         std::make_tuple(UiEvent::kScreenCouldNotBeShown,
-                        PixAccountLinkingFlowExitedReason::kScreenNotShown),
-        std::make_tuple(
-            UiEvent::kScreenClosedNotByUser,
-            PixAccountLinkingFlowExitedReason::kScreenClosedNotByUser),
+                        AccountLinkingFlowExitedReason::kScreenNotShown),
+        std::make_tuple(UiEvent::kScreenClosedNotByUser,
+                        AccountLinkingFlowExitedReason::kScreenClosedNotByUser),
         std::make_tuple(UiEvent::kScreenClosedByUser,
-                        PixAccountLinkingFlowExitedReason::kScreenClosedByUser),
+                        AccountLinkingFlowExitedReason::kScreenClosedByUser),
     }));
+
+TEST_F(PixAccountLinkingManagerTest,
+       TriggerPixAccountLinking_MaxStrike_PromptNotShown) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kEnablePixAccountLinkingNative);
+
+  base::HistogramTester histogram_tester;
+  PixAccountLinkingStrikeDatabase strike_database(test_strike_database_.get());
+  strike_database.AddStrike();
+  strike_database.AddStrike();
+  strike_database.AddStrike();
+
+  EXPECT_CALL(client(), ShowPixAccountLinkingPrompt).Times(0);
+
+  manager()->MaybeShowPixAccountLinkingPrompt(kPixPaymentPageOrigin);
+  task_environment_.FastForwardBy(kShowPromptDelay);
+
+  histogram_tester.ExpectUniqueSample(
+      "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason",
+      /*sample=*/AccountLinkingFlowExitedReason::kMaxStrikes,
+      /*expected_bucket_count=*/1);
+}
+
+TEST_F(
+    PixAccountLinkingManagerTest,
+    TriggerPixAccountLinking_RequiredDelayNotPassed_JustBeforeLimit_PromptNotShown) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kEnablePixAccountLinkingNative);
+
+  base::HistogramTester histogram_tester;
+  PixAccountLinkingStrikeDatabase strike_database(test_strike_database_.get());
+  strike_database.AddStrike();
+
+  // Fast-forward time to just before 7 days (e.g., 6 days and 23 hours).
+  task_environment_.FastForwardBy(base::Days(6) + base::Hours(23));
+
+  EXPECT_CALL(client(), ShowPixAccountLinkingPrompt).Times(0);
+
+  manager()->MaybeShowPixAccountLinkingPrompt(kPixPaymentPageOrigin);
+  task_environment_.FastForwardBy(kShowPromptDelay);
+
+  histogram_tester.ExpectUniqueSample(
+      "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason",
+      /*sample=*/AccountLinkingFlowExitedReason::kRequiredDelayNotPassed,
+      /*expected_bucket_count=*/1);
+}
+
+TEST_F(PixAccountLinkingManagerTest,
+       TriggerPixAccountLinking_NotEnoughStrike_PromptShown) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kEnablePixAccountLinkingNative);
+
+  PixAccountLinkingStrikeDatabase strike_database(test_strike_database_.get());
+  strike_database.AddStrike();
+  strike_database.AddStrike();
+
+  // Fast-forward time by 7 days to pass the required delay.
+  task_environment_.FastForwardBy(base::Days(7));
+
+  EXPECT_CALL(client(), ShowPixAccountLinkingPrompt(2, testing::_, testing::_));
+
+  manager()->MaybeShowPixAccountLinkingPrompt(kPixPaymentPageOrigin);
+  task_environment_.FastForwardBy(kShowPromptDelay);
+}
+
+TEST_F(PixAccountLinkingManagerTest, PromptDismissedByUser_StrikeNotAdded) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kEnablePixAccountLinkingNative);
+
+  PixAccountLinkingStrikeDatabase strike_database(test_strike_database_.get());
+  ASSERT_EQ(strike_database.GetStrikes(), 0);
+
+  manager()->MaybeShowPixAccountLinkingPrompt(kPixPaymentPageOrigin);
+  task_environment_.FastForwardBy(kShowPromptDelay);
+
+  // Simulate user dismissing the prompt (swiping away).
+  test_api().OnUiScreenEvent(UiEvent::kScreenClosedByUser);
+
+  EXPECT_EQ(strike_database.GetStrikes(), 0);
+}
+
+TEST_F(PixAccountLinkingManagerTest, PromptAccepted_StrikesCleared) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kEnablePixAccountLinkingNative);
+
+  PixAccountLinkingStrikeDatabase strike_database(test_strike_database_.get());
+  strike_database.AddStrike();
+  strike_database.AddStrike();
+  ASSERT_EQ(strike_database.GetStrikes(), 2);
+
+  manager()->MaybeShowPixAccountLinkingPrompt(kPixPaymentPageOrigin);
+  task_environment_.FastForwardBy(kShowPromptDelay);
+
+  test_api().OnAccepted();
+
+  EXPECT_EQ(strike_database.GetStrikes(), 0);
+}
 
 }  // namespace payments::facilitated

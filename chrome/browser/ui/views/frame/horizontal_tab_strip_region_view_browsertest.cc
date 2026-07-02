@@ -14,7 +14,6 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/layout_constants.h"
-#include "chrome/browser/ui/tab_search_feature.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_prefs.h"
@@ -189,7 +188,7 @@ IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewTest, DISABLED_NewTabButtonIn
   // Add a few tabs and simulate the new tab button's ink drop animation. This
   // should not cause any crashes since the ink drop layer size as well as the
   // ink drop container size should remain equal to the new tab button visible
-  // bounds size. https://crbug.com/814105.
+  // bounds size. https://crbug.com/40563841.
   auto* button = static_cast<TabStripControlButton*>(
       tab_strip_region_view()->new_tab_button_for_testing());
   for (int i = 0; i < 10; ++i) {
@@ -239,11 +238,23 @@ IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewTest,
   EXPECT_EQ(0, new_tab_button_origin.y());
 }
 
-IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewTest, HasMultiselectableState) {
+IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewTest, HasPaneRole) {
   ui::AXNodeData ax_node_data;
   tab_strip_region_view()->GetViewAccessibility().GetAccessibleNodeData(
       &ax_node_data);
-  EXPECT_TRUE(ax_node_data.HasState(ax::mojom::State::kMultiselectable));
+  EXPECT_EQ(ax::mojom::Role::kPane, ax_node_data.role);
+  EXPECT_FALSE(ax_node_data.HasState(ax::mojom::State::kMultiselectable));
+}
+
+IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewTest,
+                       IncognitoLeadingButtonsCheckDoesntCrash) {
+  Browser* incognito_browser = CreateIncognitoBrowser();
+  HorizontalTabStripRegionView* incognito_tab_strip_region_view =
+      views::AsViewClass<HorizontalTabStripRegionView>(
+          BrowserView::GetBrowserViewForBrowser(incognito_browser)
+              ->tab_strip_view());
+  // This should not crash.
+  incognito_tab_strip_region_view->HasLeadingButtons();
 }
 
 // When scrolling is disabled, the tab strip cannot be larger than the container
@@ -294,37 +305,4 @@ IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewTest,
   EXPECT_LT(tab_strip()->width(), tab_strip_region_view()->width());
   EXPECT_FALSE(
       tab_strip()->tab_at(tab_strip()->GetModelCount() - 1)->GetVisible());
-}
-
-class HorizontalTabStripRegionViewWithTabstripTabSearchTest
-    : public HorizontalTabStripRegionViewTest {
- public:
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    scoped_feature_list_.InitWithFeaturesAndParameters({}, {
-#if BUILDFLAG(ENABLE_GLIC)
-                                                               features::kGlic
-#endif
-                                                           });
-    HorizontalTabStripRegionViewTest::SetUpCommandLine(command_line);
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewWithTabstripTabSearchTest,
-                       TabSearchPositionLoggedOnConstruction) {
-  using TabSearchPositionEnum =
-      HorizontalTabStripRegionView::TabSearchPositionEnum;
-  const bool tab_search_trailing_tabstrip =
-      tabs::GetTabSearchPosition(browser()->profile()) ==
-      tabs::TabSearchPosition::kTrailingHorizontalTabstrip;
-  TabSearchPositionEnum expected_enum_val =
-      tab_search_trailing_tabstrip ? TabSearchPositionEnum::kTrailing
-                                   : TabSearchPositionEnum::kLeading;
-
-  base::HistogramTester histogram_tester;
-  tab_strip_region_view()->LogTabSearchPositionForTesting();  // IN-TEST
-  histogram_tester.ExpectUniqueSample("Tabs.TabSearch.PositionInTabstrip2",
-                                      expected_enum_val, 1);
 }

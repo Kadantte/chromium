@@ -13,6 +13,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/types/zip.h"
 #include "components/autofill/core/browser/autofill_field.h"
+#include "components/autofill/core/browser/autofill_format_string.h"
 #include "components/autofill/core/browser/crowdsourcing/autofill_crowdsourcing_encoding.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_parsing/determine_regex_types.h"
@@ -283,8 +284,6 @@ TEST_F(FormStructureRationalizerTest, RationalizePhoneNumberTrunkTypes) {
 // PHONE_HOME_CITY_AND_NUMBER_WITHOUT_TRUNK_PREFIX)`.
 TEST_F(FormStructureRationalizerTest,
        RationalizePhoneNumberTrunkTypes_CountryCodeAndWholeNumber) {
-  base::test::ScopedFeatureList scoped_feature_list{
-      features::kAutofillImprovePhoneNumberRationalization};
   std::unique_ptr<FormStructure> form_structure = BuildFormStructure({
       {"Name", "name", NAME_FULL},
       {"Country Code", "country_code", PHONE_HOME_COUNTRY_CODE},

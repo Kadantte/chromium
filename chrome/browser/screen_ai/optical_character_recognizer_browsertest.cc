@@ -14,6 +14,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_run_loop_timeout.h"
 #include "base/test/test_future.h"
+#include "base/timer/timer.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/screen_ai/screen_ai_install_state.h"
@@ -75,7 +76,7 @@ SkBitmap LoadImageFromTestFile(
 }
 
 void WaitForStatus(scoped_refptr<screen_ai::OpticalCharacterRecognizer> ocr,
-                   base::OnceCallback<void(void)> callback,
+                   base::OnceClosure callback,
                    int remaining_tries) {
   if (ocr->StatusAvailableForTesting() || !remaining_tries) {
     std::move(callback).Run();
@@ -186,6 +187,10 @@ double StringMatch(std::string_view expected, std::string_view extracted) {
 
 namespace screen_ai {
 
+// This test fixture tests different running configurations of the OCR service,
+// the availability of the ScreenAI library, and usage pattern of the OCR
+// service API. It is NOT focused on the OCR results.
+// Params: (OCR service enabled, ScreenAI library available)
 class OpticalCharacterRecognizerTest
     : public InProcessBrowserTest,
       public ScreenAIInstallState::Observer,
@@ -214,7 +219,8 @@ class OpticalCharacterRecognizerTest
   bool IsOcrServiceEnabled() const { return std::get<0>(GetParam()); }
   bool IsLibraryAvailable() const {
 #if BUILDFLAG(ENABLE_SCREEN_AI_BROWSERTESTS)
-    return std::get<1>(GetParam());
+    return std::get<1>(GetParam()) &&
+           ScreenAIInstallState::IsDeviceCompatible();
 #else
     return false;
 #endif
@@ -271,11 +277,51 @@ class OpticalCharacterRecognizerTest
 
   scoped_refptr<OpticalCharacterRecognizer> ocr() { return ocr_; }
 
+  // If OCR service crashes while performing OCR, `perform_future_`'s callback
+  // will not be called. A timer is used to check the connection state and stop
+  // the waiting if connection state changes. This is done to reduce test time
+  // when the test is bound to fail due to timeout.
+  void PerformOCRWithDisconnectTimerAndAndWait(SkBitmap* bitmap) {
+    screen_ai::ScreenAIServiceRouter* router =
+        ScreenAIServiceRouterFactory::GetForBrowserContext(
+            browser()->profile());
+    if (router->IsProcessRunningForTesting(
+            screen_ai::ScreenAIServiceRouter::Service::kOCR)) {
+      disconnect_timer_.Start(
+          FROM_HERE, base::Milliseconds(100),
+          base::BindRepeating(
+              [](screen_ai::ScreenAIServiceRouter* router,
+                 base::test::TestFuture<mojom::VisualAnnotationPtr>*
+                     perform_future,
+                 base::RepeatingTimer* timer) {
+                if (!router->IsProcessRunningForTesting(
+                        screen_ai::ScreenAIServiceRouter::Service::kOCR)) {
+                  perform_future->SetValue(mojom::VisualAnnotation::New());
+                  timer->Stop();
+                  ADD_FAILURE()
+                      << "OCR service disconnected while performing OCR.";
+                }
+              },
+              base::Unretained(router), base::Unretained(&perform_future_),
+              base::Unretained(&disconnect_timer_)));
+    }
+
+    ocr()->PerformOCR(*bitmap, perform_future_.GetCallback());
+    ASSERT_TRUE(perform_future_.Wait());
+    disconnect_timer_.Stop();
+  }
+
+  const mojom::VisualAnnotationPtr& perform_result() {
+    return perform_future_.Get();
+  }
+
  private:
   base::ScopedObservation<ScreenAIInstallState, ScreenAIInstallState::Observer>
       component_download_observer_{this};
   scoped_refptr<OpticalCharacterRecognizer> ocr_;
   base::test::ScopedFeatureList feature_list_;
+  base::RepeatingTimer disconnect_timer_;
+  base::test::TestFuture<mojom::VisualAnnotationPtr> perform_future_;
 };
 
 IN_PROC_BROWSER_TEST_P(OpticalCharacterRecognizerTest, Create) {
@@ -330,15 +376,14 @@ IN_PROC_BROWSER_TEST_P(OpticalCharacterRecognizerTest,
   EXPECT_TRUE(future.Wait());
 }
 
+// Test OCR on an blank white image with no text.
 IN_PROC_BROWSER_TEST_P(OpticalCharacterRecognizerTest, PerformOCR_Empty) {
   ASSERT_EQ(CreateAndInitOCR(mojom::OcrClientType::kTest), IsOcrAvailable());
 
   SkBitmap bitmap =
       LoadImageFromTestFile(base::FilePath(FILE_PATH_LITERAL("ocr/empty.png")));
-  base::test::TestFuture<mojom::VisualAnnotationPtr> perform_future;
-  ocr()->PerformOCR(bitmap, perform_future.GetCallback());
-  ASSERT_TRUE(perform_future.Wait());
-  ASSERT_TRUE(perform_future.Get<mojom::VisualAnnotationPtr>()->lines.empty());
+  PerformOCRWithDisconnectTimerAndAndWait(&bitmap);
+  ASSERT_TRUE(perform_result()->lines.empty());
 }
 
 // The image used in this test is very simple to reduce the possibility of
@@ -352,9 +397,7 @@ IN_PROC_BROWSER_TEST_P(OpticalCharacterRecognizerTest, PerformOCR_Simple) {
 
   SkBitmap bitmap = LoadImageFromTestFile(
       base::FilePath(FILE_PATH_LITERAL("ocr/just_one_letter.png")));
-  base::test::TestFuture<mojom::VisualAnnotationPtr> perform_future;
-  ocr()->PerformOCR(bitmap, perform_future.GetCallback());
-  ASSERT_TRUE(perform_future.Wait());
+  PerformOCRWithDisconnectTimerAndAndWait(&bitmap);
 
 // Fake library always returns empty.
 #if BUILDFLAG(USE_FAKE_SCREEN_AI)
@@ -363,7 +406,7 @@ IN_PROC_BROWSER_TEST_P(OpticalCharacterRecognizerTest, PerformOCR_Simple) {
   bool expected_call_success = true;
 #endif
 
-  auto& results = perform_future.Get<mojom::VisualAnnotationPtr>();
+  auto& results = perform_result();
   unsigned expected_lines_count =
       (expected_call_success && IsOcrAvailable()) ? 1 : 0;
   ASSERT_EQ(expected_lines_count, results->lines.size());
@@ -412,7 +455,15 @@ IN_PROC_BROWSER_TEST_P(OpticalCharacterRecognizerTest, PerformOCR_Simple) {
       "Accessibility.ScreenAI.OCR.MostDetectedLanguage.PDF", 0);
 }
 
-IN_PROC_BROWSER_TEST_P(OpticalCharacterRecognizerTest, PerformOCR_PdfMetrics) {
+// TODO(crbug.com/470431038): Tests time out flakily on Linux debug and release
+// builders.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_PerformOCR_PdfMetrics DISABLED_PerformOCR_PdfMetrics
+#else
+#define MAYBE_PerformOCR_PdfMetrics PerformOCR_PdfMetrics
+#endif
+IN_PROC_BROWSER_TEST_P(OpticalCharacterRecognizerTest,
+                       MAYBE_PerformOCR_PdfMetrics) {
   base::HistogramTester histograms;
 
   ASSERT_EQ(CreateAndInitOCR(mojom::OcrClientType::kPdfViewer),
@@ -463,8 +514,16 @@ IN_PROC_BROWSER_TEST_P(OpticalCharacterRecognizerTest, PerformOCR_PdfMetrics) {
                               expected_no_text_calls);
 }
 
+// TODO(518868853): Fix flaky test.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_PerformOCR_ImmediatelyAfterServiceInit \
+  DISABLED_PerformOCR_ImmediatelyAfterServiceInit
+#else
+#define MAYBE_PerformOCR_ImmediatelyAfterServiceInit \
+  PerformOCR_ImmediatelyAfterServiceInit
+#endif
 IN_PROC_BROWSER_TEST_P(OpticalCharacterRecognizerTest,
-                       PerformOCR_ImmediatelyAfterServiceInit) {
+                       MAYBE_PerformOCR_ImmediatelyAfterServiceInit) {
   if (!IsOcrAvailable()) {
     GTEST_SKIP() << "This test is only available when service is available";
   }
@@ -493,8 +552,16 @@ IN_PROC_BROWSER_TEST_P(OpticalCharacterRecognizerTest,
 #endif
 }
 
+// TODO(crbug.com/470431038): Tests time out flakily on Linux debug and release
+// builders.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_PerformOCR_AfterServiceRevive \
+  DISABLED_PerformOCR_AfterServiceRevive
+#else
+#define MAYBE_PerformOCR_AfterServiceRevive PerformOCR_AfterServiceRevive
+#endif
 IN_PROC_BROWSER_TEST_P(OpticalCharacterRecognizerTest,
-                       PerformOCR_AfterServiceRevive) {
+                       MAYBE_PerformOCR_AfterServiceRevive) {
   if (!IsOcrAvailable()) {
     GTEST_SKIP() << "This test is only available when service is available";
   }
@@ -533,8 +600,15 @@ IN_PROC_BROWSER_TEST_P(OpticalCharacterRecognizerTest,
 #endif
 }
 
+// TODO(crbug.com/470431038): Tests time out flakily on Linux debug and release
+// builders.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_PerformOCR_AfterDisconnect DISABLED_PerformOCR_AfterDisconnect
+#else
+#define MAYBE_PerformOCR_AfterDisconnect PerformOCR_AfterDisconnect
+#endif
 IN_PROC_BROWSER_TEST_P(OpticalCharacterRecognizerTest,
-                       PerformOCR_AfterDisconnect) {
+                       MAYBE_PerformOCR_AfterDisconnect) {
   if (!IsOcrAvailable()) {
     GTEST_SKIP() << "This test is only available when service is available";
   }
@@ -584,6 +658,8 @@ TEST(OpticalCharacterRecognizer, StringMatchTest) {
   ASSERT_LE(StringMatch("ABCD", "ABXD"), 0.75);
 }
 
+// This test fixture is used for testing the OCR results on different
+// languages and image conditions and covers OCR accuracy.
 // Param: Test name.
 class OpticalCharacterRecognizerResultsTest
     : public InProcessBrowserTest,
@@ -598,6 +674,10 @@ class OpticalCharacterRecognizerResultsTest
   // InProcessBrowserTest:
   void SetUpOnMainThread() override {
     InProcessBrowserTest::SetUpOnMainThread();
+    if (!ScreenAIInstallState::IsDeviceCompatible()) {
+      GTEST_SKIP()
+          << "ScreenAI library is not available / compatible on this device.";
+    }
     ScreenAIInstallState::GetInstance()->SetComponentFolder(
         GetComponentBinaryPathForTests().DirName());
   }
@@ -625,7 +705,15 @@ class OpticalCharacterRecognizerResultsTest
 // minor changes in recognition results of the library. The failed cases can be
 // checked and if the new result is acceptable. For each test case, the last
 // line in the .txt file is the minimum acceptable match and it can be updated.
-IN_PROC_BROWSER_TEST_P(OpticalCharacterRecognizerResultsTest, PerformOCR) {
+// TODO(crbug.com/470431038): Tests time out flakily on Linux debug and release
+// builders.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_PerformOCR DISABLED_PerformOCR
+#else
+#define MAYBE_PerformOCR PerformOCR
+#endif
+IN_PROC_BROWSER_TEST_P(OpticalCharacterRecognizerResultsTest,
+                       MAYBE_PerformOCR) {
   base::ScopedAllowBlockingForTesting allow_blocking;
   ASSERT_TRUE(CreateAndInitOCR());
 
@@ -674,7 +762,8 @@ INSTANTIATE_TEST_SUITE_P(All,
 
 // This test is slow and most probably failing on debug builds and ASAN builds
 // which are slower than the other tests.
-#if !defined(NDEBUG) || defined(ADDRESS_SANITIZER)
+// TODO(crbug.com/509294498): Re-enable this test on Linux and ASan/Debug.
+#if BUILDFLAG(IS_LINUX) || !defined(NDEBUG) || defined(ADDRESS_SANITIZER)
 #define MAYBE_PerformOCRLargeImage DISABLED_PerformOCRLargeImage
 #else
 #define MAYBE_PerformOCRLargeImage PerformOCRLargeImage
@@ -714,8 +803,15 @@ IN_PROC_BROWSER_TEST_F(OpticalCharacterRecognizerResultsTest,
       "Accessibility.ScreenAI.OCR.Downsampled.ClientType", 1);
 }
 
+// TODO(crbug.com/470431038): Tests time out flakily on Linux and Mac
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
+#define MAYBE_PerformOCRMultipleFilesOneByOne \
+  DISABLED_PerformOCRMultipleFilesOneByOne
+#else
+#define MAYBE_PerformOCRMultipleFilesOneByOne PerformOCRMultipleFilesOneByOne
+#endif
 IN_PROC_BROWSER_TEST_F(OpticalCharacterRecognizerResultsTest,
-                       PerformOCRMultipleFilesOneByOne) {
+                       MAYBE_PerformOCRMultipleFilesOneByOne) {
   base::ScopedAllowBlockingForTesting allow_blocking;
   ASSERT_TRUE(CreateAndInitOCR());
 
@@ -732,8 +828,16 @@ IN_PROC_BROWSER_TEST_F(OpticalCharacterRecognizerResultsTest,
   }
 }
 
+// TODO(crbug.com/470431038): Tests time out flakily on Linux and Mac
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
+#define MAYBE_PerformOCRMultipleFilesNoWaitBetween \
+  DISABLED_PerformOCRMultipleFilesNoWaitBetween
+#else
+#define MAYBE_PerformOCRMultipleFilesNoWaitBetween \
+  PerformOCRMultipleFilesNoWaitBetween
+#endif
 IN_PROC_BROWSER_TEST_F(OpticalCharacterRecognizerResultsTest,
-                       PerformOCRMultipleFilesNoWaitBetween) {
+                       MAYBE_PerformOCRMultipleFilesNoWaitBetween) {
   base::ScopedAllowBlockingForTesting allow_blocking;
   ASSERT_TRUE(CreateAndInitOCR());
 
@@ -868,8 +972,14 @@ IN_PROC_BROWSER_TEST_F(OpticalCharacterRecognizerResultsTest,
   histograms.ExpectUniqueSample("Accessibility.ScreenAI.OCR.ModeSwitch", 0, 1);
 }
 
+// TODO(crbug.com/509294498): Re-enable this test on Linux.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_PerformOCRLightModeEnglish DISABLED_PerformOCRLightModeEnglish
+#else
+#define MAYBE_PerformOCRLightModeEnglish PerformOCRLightModeEnglish
+#endif
 IN_PROC_BROWSER_TEST_F(OpticalCharacterRecognizerResultsTest,
-                       PerformOCRLightModeEnglish) {
+                       MAYBE_PerformOCRLightModeEnglish) {
   base::ScopedAllowBlockingForTesting allow_blocking;
   SkBitmap bitmap =
       LoadImageFromTestFile(base::FilePath(FILE_PATH_LITERAL("ocr"))
@@ -925,8 +1035,14 @@ IN_PROC_BROWSER_TEST_F(OpticalCharacterRecognizerResultsTest,
   }
 }
 
+// TODO(crbug.com/509294498): Re-enable this test on Linux.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_PerformOCRLightModeChinese DISABLED_PerformOCRLightModeChinese
+#else
+#define MAYBE_PerformOCRLightModeChinese PerformOCRLightModeChinese
+#endif
 IN_PROC_BROWSER_TEST_F(OpticalCharacterRecognizerResultsTest,
-                       PerformOCRLightModeChinese) {
+                       MAYBE_PerformOCRLightModeChinese) {
   base::ScopedAllowBlockingForTesting allow_blocking;
   SkBitmap bitmap = LoadImageFromTestFile(
       base::FilePath(FILE_PATH_LITERAL("ocr")).AppendASCII("chinese.png"));
@@ -983,8 +1099,16 @@ IN_PROC_BROWSER_TEST_F(OpticalCharacterRecognizerResultsTest,
   }
 }
 
+// TODO(crbug.com/509669183): Re-enable this test on Linux.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_PerformOCRMultipleClientsLightMode \
+  DISABLED_PerformOCRMultipleClientsLightMode
+#else
+#define MAYBE_PerformOCRMultipleClientsLightMode \
+  PerformOCRMultipleClientsLightMode
+#endif
 IN_PROC_BROWSER_TEST_F(OpticalCharacterRecognizerResultsTest,
-                       PerformOCRMultipleClientsLightMode) {
+                       MAYBE_PerformOCRMultipleClientsLightMode) {
   base::HistogramTester histograms;
   base::ScopedAllowBlockingForTesting allow_blocking;
 

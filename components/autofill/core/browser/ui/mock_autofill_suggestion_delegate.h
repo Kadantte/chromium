@@ -8,8 +8,9 @@
 #include <variant>
 
 #include "base/memory/weak_ptr.h"
+#include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
 #include "components/autofill/core/browser/ui/autofill_suggestion_delegate.h"
-#include "components/autofill/core/browser/ui/suggestion_button_action.h"
+#include "components/autofill/core/browser/ui/tabbed_pane_enums.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 namespace autofill {
@@ -29,7 +30,16 @@ class MockAutofillSuggestionDelegate : public AutofillSuggestionDelegate {
               OnSuggestionsShown,
               (base::span<const Suggestion>),
               (override));
-  MOCK_METHOD(void, OnSuggestionsHidden, (), (override));
+  MOCK_METHOD(void, OnSuggestionsHidden, (SuggestionHidingReason), (override));
+  MOCK_METHOD(bool,
+              OnFilterChanged,
+              (const std::u16string& filter),
+              (override));
+  MOCK_METHOD(bool,
+              OnSearchSubmitted,
+              (const std::u16string& filter),
+              (override));
+  MOCK_METHOD(bool, IsSearching, (), (const, override));
   MOCK_METHOD(void,
               DidSelectSuggestion,
               (const Suggestion& suggestion),
@@ -39,13 +49,10 @@ class MockAutofillSuggestionDelegate : public AutofillSuggestionDelegate {
               (const Suggestion& suggestion,
                const AutofillSuggestionDelegate::SuggestionMetadata& metadata),
               (override));
-  MOCK_METHOD(void,
-              DidPerformButtonActionForSuggestion,
-              (const Suggestion&, const SuggestionButtonAction&),
-              (override));
   MOCK_METHOD(bool, RemoveSuggestion, (const Suggestion&), (override));
   MOCK_METHOD(void, ClearPreviewedForm, (), (override));
-  MOCK_METHOD(FillingProduct, GetMainFillingProduct, (), (const, override));
+  MOCK_METHOD(FillingProduct, GetMainFillingProduct, (), (const override));
+  MOCK_METHOD(void, OnTabSelected, (TabbedPaneTabType tab_type), (override));
 
   base::WeakPtr<MockAutofillSuggestionDelegate> GetWeakPtr();
 

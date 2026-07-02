@@ -26,6 +26,9 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_COMMANDS_COMPOSITE_EDIT_COMMAND_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_COMMANDS_COMPOSITE_EDIT_COMMAND_H_
 
+#include <optional>
+#include <utility>
+
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/editing/commands/edit_command.h"
@@ -39,6 +42,7 @@ namespace blink {
 
 class DataTransfer;
 class DeleteSelectionOptions;
+class DocumentFragment;
 class EditingStyle;
 class Element;
 class HTMLBRElement;
@@ -60,8 +64,25 @@ class CORE_EXPORT CompositeEditCommand : public EditCommand {
     return ending_selection_;
   }
 
+  // Raw-DOM lane: never VP-canonicalized at command birth. Migrated
+  // commands prefer these accessors under EditingUseDomPositionApi so
+  // they see the selection as the user authored it, not the layout-
+  // canonicalized form. Unmigrated commands keep using the legacy
+  // accessors above and observe no behavior change.
+  const SelectionForUndoStep& StartingDomSelection() const {
+    return starting_dom_selection_;
+  }
+  const SelectionForUndoStep& EndingDomSelection() const {
+    return ending_dom_selection_;
+  }
+
   void SetStartingSelection(const SelectionForUndoStep&);
   void SetEndingSelection(const SelectionForUndoStep&);
+
+  // Raw-DOM lane setters. Migrated commands call these to update the
+  // dom lane without going through the legacy (VP-aware) setter path.
+  void SetStartingDomSelection(const SelectionForUndoStep&);
+  void SetEndingDomSelection(const SelectionForUndoStep&);
 
   void SetParent(CompositeEditCommand*) override;
 
@@ -135,8 +156,10 @@ class CORE_EXPORT CompositeEditCommand : public EditCommand {
   void PrepareWhitespaceAtPositionForSplit(Position&);
   void ReplaceCollapsibleWhitespaceWithNonBreakingSpaceIfNeeded(
       const VisiblePosition&);
+  void ReplaceCollapsibleWhitespaceWithNonBreakingSpaceIfNeeded(
+      const Position&);
   bool CanRebalance(const Position&) const;
-  void RemoveCSSProperty(Element*, CSSPropertyID);
+  void RemoveCssProperty(Element*, CSSPropertyID);
   void RemoveElementAttribute(Element*, const QualifiedName& attribute);
   // Remove all children if possible
   void RemoveAllChildrenIfPossible(
@@ -223,6 +246,7 @@ class CORE_EXPORT CompositeEditCommand : public EditCommand {
                                      Element* block_element,
                                      EditingState*);
   void CleanupAfterDeletion(EditingState*, VisiblePosition destination);
+  void CleanupAfterDeletion(EditingState*, const Position& destination);
   void CleanupAfterDeletion(EditingState*);
 
   bool BreakOutOfEmptyListItem(EditingState*);
@@ -241,10 +265,84 @@ class CORE_EXPORT CompositeEditCommand : public EditCommand {
   Member<DataTransfer> data_transfer_;
 
  private:
+  // Inserts a placeholder <br> at |before_paragraph| when pruning collapsed
+  // adjacent paragraphs onto the same line. Canonicalizes the boundary
+  // positions through VisiblePosition before testing paragraph boundaries.
+  void InsertPlaceholderBrIfPruningCollapsed(const Position& before_paragraph,
+                                             const Position& after_paragraph,
+                                             EditingState* editing_state);
+
+  // Returns true when the move may proceed to the paste phase. With the
+  // `PartialCompletionNotAllowedInMoveParagraphs` flag enabled, verifies that
+  // both `destination` and the post-delete ending selection still have
+  // editable roots; returns false (without aborting) to signal the caller to
+  // bail out silently.
+  bool DestinationStillEditableForPaste(const VisiblePosition& destination);
+
+  // Returns the plain-text offset of `destination` from the document root,
+  // selecting the TextIteratorBehavior based on the EnterInOpenShadowRoots
+  // flag. Requires clean layout.
+  int ComputeDestinationIndex(const VisiblePosition& destination);
+
+  // Sets the ending selection to `destination` (mirroring into the raw-DOM
+  // lane when EditingUseDomPositionApi is enabled) and runs the
+  // ReplaceSelectionCommand for `fragment`. Returns false when the caller
+  // should return early; `editing_state` is aborted in the cases that
+  // previously called ABORT_EDITING_COMMAND_IF or editing_state->Abort()
+  // inline.
+  bool SetDestinationSelectionAndPasteFragment(
+      const VisiblePosition& destination,
+      DocumentFragment* fragment,
+      ShouldPreserveStyle should_preserve_style,
+      EditingState* editing_state);
+
+  // Restores the final ending selection from plain-text offsets
+  // `destination_index + start_index` and `destination_index + end_index`
+  // relative to `document_element`. Silently no-ops when either offset
+  // cannot be reconstituted (collapsed-whitespace edge cases). Mirrors into
+  // the raw-DOM lane when EditingUseDomPositionApi is enabled.
+  void RestoreSelectionFromPlainText(int destination_index,
+                                     int start_index,
+                                     int end_index,
+                                     Element& document_element);
+
   bool IsCompositeEditCommand() const final { return true; }
+
+  // Helpers extracted from MoveParagraphs. VP callers compute the inputs
+  // (Position via `.DeepEquivalent()`).
+  std::pair<Position, Position> ComputeNormalizedMoveRange(
+      const Position& start_of_paragraph,
+      const Position& end_of_paragraph);
+  // Returns preserved endpoints from the VisiblePosition lane, or std::nullopt
+  // when nothing should be preserved.
+  std::optional<std::pair<Position, Position>>
+  ComputePreservedVisibleSelectionEndpoints(
+      ShouldPreserveSelection should_preserve_selection);
+  // Returns preserved endpoints from the raw-DOM lane, or std::nullopt when
+  // nothing should be preserved or endpoints are stale.
+  std::optional<std::pair<Position, Position>>
+  ComputePreservedDomSelectionEndpoints(
+      ShouldPreserveSelection should_preserve_selection);
+  // True when a raw-DOM endpoint is non-null and still valid in this document.
+  bool IsPreservedSelectionEndpointUsable(const Position& position) const;
+  // Computes selection offsets relative to paragraph start, or std::nullopt
+  // when selection is entirely outside the moved paragraph.
+  std::optional<std::pair<int, int>> ComputePreservedSelectionIndices(
+      const Position& start_of_paragraph,
+      const Position& end_of_paragraph,
+      const Position& selection_start,
+      const Position& selection_end);
+  EditingStyle* CaptureStyleInEmptyParagraph(
+      const Position& start_of_paragraph);
+  // Sets the ending selection to the delete range [start, end]. Mirrors into
+  // the raw-DOM lane when EditingUseDomPositionApi is enabled.
+  void SetEndingSelectionToDelete(const Position& start, const Position& end);
 
   SelectionForUndoStep starting_selection_;
   SelectionForUndoStep ending_selection_;
+  // Raw-DOM lane mirroring starting_/ending_selection_.
+  SelectionForUndoStep starting_dom_selection_;
+  SelectionForUndoStep ending_dom_selection_;
   Member<UndoStep> undo_step_;
 };
 

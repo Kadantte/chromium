@@ -502,7 +502,7 @@ bool Transform::GetInverse(Transform* transform) const {
 Transform Transform::GetCheckedInverse() const {
   Transform inverse;
   if (!GetInverse(&inverse))
-    DUMP_WILL_BE_NOTREACHED() << ToString() << " is not invertible";
+    DCHECK(false) << ToString() << " is not invertible";
   return inverse;
 }
 
@@ -734,7 +734,7 @@ void Transform::TransformVector4(base::span<float, 4> vector) const {
       vector[i] = ClampFloatGeometry(vector[i]);
   } else {
     std::array<double, 4> v = {vector[0], vector[1], vector[2], vector[3]};
-    matrix_.MapVector4(v.data());
+    matrix_.MapVector4(v);
     for (int i = 0; i < 4; i++)
       vector[i] = ClampFloatGeometry(v[i]);
   }

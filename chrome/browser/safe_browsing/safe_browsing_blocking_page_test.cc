@@ -2397,8 +2397,15 @@ class SafeBrowsingBlockingPageDelayedWarningBrowserTest
   TestThreatDetailsFactory details_factory_;
 };
 
+#if BUILDFLAG(IS_WIN)
+// Flaky on Windows CI bots (e.g. win11-arm64-rel-tests). See https://crbug.com/523387896.
+#define MAYBE_NoInteraction_WarningNotShown \
+  DISABLED_NoInteraction_WarningNotShown
+#else
+#define MAYBE_NoInteraction_WarningNotShown NoInteraction_WarningNotShown
+#endif
 IN_PROC_BROWSER_TEST_P(SafeBrowsingBlockingPageDelayedWarningBrowserTest,
-                       NoInteraction_WarningNotShown) {
+                       MAYBE_NoInteraction_WarningNotShown) {
   base::HistogramTester histograms;
   NavigateAndAssertNoInterstitial();
 
@@ -2427,7 +2434,7 @@ IN_PROC_BROWSER_TEST_P(SafeBrowsingBlockingPageDelayedWarningBrowserTest,
 IN_PROC_BROWSER_TEST_P(SafeBrowsingBlockingPageDelayedWarningBrowserTest,
                        CloseTab_ShouldNotCrash) {
   base::HistogramTester histograms;
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   NavigateAndAssertNoInterstitial();
   chrome::CloseTab(browser());
 }
@@ -3449,12 +3456,7 @@ IN_PROC_BROWSER_TEST_F(
   SetupUrlRealTimeVerdictInCacheManager(prerender_url, browser()->profile(),
                                         RTLookupResponse::ThreatInfo::SAFE,
                                         /*threat_type=*/std::nullopt);
-  content::PrerenderHostId host_id =
-      prerender_helper().AddPrerender(prerender_url);
-  content::RenderFrameHost* prerender_render_frame_host =
-      prerender_helper().GetPrerenderedMainFrameHost(host_id);
-  EXPECT_NE(prerender_render_frame_host, nullptr);
-  EXPECT_EQ(prerender_url, prerender_render_frame_host->GetLastCommittedURL());
+  prerender_helper().AddPrerenderAsync(prerender_url);
 
   // Return unsafe for the Safe Browsing lookup, which displays a post-commit
   // interstitial.
@@ -3829,7 +3831,7 @@ IN_PROC_BROWSER_TEST_P(SafeBrowsingBlockingPageAsyncChecksTimingTest,
 
 // Tests that commands work in a post commit interstitial if a pre commit
 // interstitial has been shown previously on the same webcontents. Regression
-// test for crbug.com/1021334
+// test for crbug.com/40657015
 #if BUILDFLAG(IS_LINUX) && defined(MEMORY_SANITIZER)
 // TODO(crbug.com/325491320): re-enable test
 #define MAYBE_PostCommitInterstitialProceedAfterPreCommitInterstitial \

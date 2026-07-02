@@ -151,10 +151,9 @@ const int kMinNoteCharAmountForWarning = 901;
 
   // Adds 'Cancel' and 'Save' buttons to Navigation bar.
   self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
-      initWithTitle:l10n_util::GetNSString(IDS_IOS_NAVIGATION_BAR_CANCEL_BUTTON)
-              style:UIBarButtonItemStylePlain
-             target:self
-             action:@selector(didTapCancelButton:)];
+      initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
+                           target:self
+                           action:@selector(didTapCancelButton:)];
   self.navigationItem.leftBarButtonItem.accessibilityIdentifier =
       kPasswordsAddPasswordCancelButtonID;
 
@@ -208,13 +207,10 @@ const int kMinNoteCharAmountForWarning = 901;
   [model addItem:_passwordTextItem
       toSectionWithIdentifier:SectionIdentifierPassword];
 
-  if (password_manager::features::
-          IsSuggestStrongPasswordInAddPasswordEnabled()) {
-    if ([self.delegate shouldShowSuggestPasswordItem]) {
-      _suggestPasswordTextItem = [self suggestPasswordItem];
-      [model addItem:_suggestPasswordTextItem
-          toSectionWithIdentifier:SectionIdentifierPassword];
-    }
+  if ([self.delegate shouldShowSuggestPasswordItem]) {
+    _suggestPasswordTextItem = [self suggestPasswordItem];
+    [model addItem:_suggestPasswordTextItem
+        toSectionWithIdentifier:SectionIdentifierPassword];
   }
 
   _noteTextItem = [self noteItem];

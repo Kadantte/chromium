@@ -8,12 +8,13 @@
 #include <utility>
 
 #include "base/debug/crash_logging.h"
+#include "base/debug/dump_without_crashing.h"
 #include "base/strings/to_string.h"
 #include "content/browser/bad_message.h"
 #include "content/browser/blob_storage/chrome_blob_storage_context.h"
-#include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/common/features.h"
 #include "content/common/frame.mojom.h"
 #include "content/common/navigation_params_utils.h"
@@ -23,11 +24,37 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/url_constants.h"
 #include "mojo/public/cpp/system/message_pipe.h"
+#include "net/http/http_request_headers.h"
 #include "third_party/blink/public/mojom/navigation/navigation_params.mojom.h"
+#include "ui/base/window_open_disposition.h"
 
 namespace content {
 
 namespace {
+
+// Validates that the specified `disposition` could be legitimately sent by the
+// renderer, as defined by NavigationPolicyToDisposition() in
+// render_frame_impl.cc.
+bool IsValidRendererDisposition(WindowOpenDisposition disposition) {
+  switch (disposition) {
+    case WindowOpenDisposition::CURRENT_TAB:
+    case WindowOpenDisposition::NEW_FOREGROUND_TAB:
+    case WindowOpenDisposition::NEW_BACKGROUND_TAB:
+    case WindowOpenDisposition::NEW_POPUP:
+    case WindowOpenDisposition::NEW_WINDOW:
+    case WindowOpenDisposition::SAVE_TO_DISK:
+    case WindowOpenDisposition::NEW_PICTURE_IN_PICTURE:
+    case WindowOpenDisposition::NEW_SPLIT_VIEW:
+      return true;
+    default:
+      // Certain dispositions, such as SWITCH_TO_TAB, are only used internally
+      // within the browser process and should not be triggerable by a renderer
+      // process. Allowing a compromised renderer to send those could let it
+      // manipulate other tabs in unintended ways. See
+      // https://crbug.com/486761170.
+      return false;
+  }
+}
 
 // Validates that |received_token| is non-null iff associated with a blob: URL.
 bool VerifyBlobToken(
@@ -237,6 +264,10 @@ bool VerifyOpenURLParams(RenderFrameHostImpl* current_rfh,
     return false;
   }
 
+  if (!VerifyNavigationHeaders(process, params->extra_headers)) {
+    return false;
+  }
+
   if (params->initiator_base_url) {
     // `initiator_base_url` should only be defined for about:blank and
     // about:srcdoc navigations, and should never be an empty GURL (if it is not
@@ -262,6 +293,14 @@ bool VerifyOpenURLParams(RenderFrameHostImpl* current_rfh,
           "container initiated navigation from non-parent process");
       return false;
     }
+  }
+
+  // Certain dispositions should never be sent from the renderer, so terminate
+  // the renderer process if an unexpected disposition is encountered.
+  if (!IsValidRendererDisposition(params->disposition)) {
+    bad_message::ReceivedBadMessage(
+        process, bad_message::RFH_OPEN_URL_INVALID_DISPOSITION);
+    return false;
   }
 
   // Verification succeeded.
@@ -341,6 +380,30 @@ bool VerifyBeginNavigationCommonParams(
   return true;
 }
 
+bool VerifyCreateNewWindowParams(const RenderFrameHostImpl& current_rfh,
+                                 const mojom::CreateNewWindowParams& params) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  RenderProcessHost* process = current_rfh.GetProcess();
+
+  // Certain dispositions should never be sent from the renderer, so terminate
+  // the renderer process if an unexpected disposition is encountered.
+  if (!IsValidRendererDisposition(params.disposition)) {
+    bad_message::ReceivedBadMessage(
+        process, bad_message::RFH_CREATE_NEW_WINDOW_INVALID_DISPOSITION);
+    return false;
+  }
+
+  // Verify `form_submission_post_data`.
+  auto* policy = ChildProcessSecurityPolicyImpl::GetInstance();
+  if (!policy->CanReadRequestBody(process, params.form_submission_post_data)) {
+    bad_message::ReceivedBadMessage(process,
+                                    bad_message::ILLEGAL_UPLOAD_PARAMS);
+    return false;
+  }
+
+  return true;
+}
+
 bool VerifyNavigationInitiator(
     RenderFrameHostImpl* current_rfh,
     const std::optional<blink::LocalFrameToken>& initiator_frame_token,
@@ -397,6 +460,37 @@ bool VerifyNavigationInitiator(
     }
   }
 
+  return true;
+}
+
+bool VerifyNavigationHeaders(RenderProcessHost* process,
+                             const std::string& headers) {
+  net::HttpRequestHeaders parsed_headers;
+  parsed_headers.AddHeadersFromString(headers);
+  for (net::HttpRequestHeaders::Iterator header(parsed_headers);
+       header.GetNext();) {
+    // Headers should be strictly allowlisted because there can be security
+    // consequences if a compromised renderer can set arbitrary headers (e.g.,
+    // for CSRF prevention).
+    //
+    // This list allowlists `Origin`, but the value of the `Origin` header is
+    // further validated in NavigationRequest::AddAdditionalRequestHeaders.
+    if (header.name() != net::HttpRequestHeaders::kUpgradeInsecureRequests &&
+        header.name() != net::HttpRequestHeaders::kOrigin &&
+        header.name() != net::HttpRequestHeaders::kContentType &&
+        header.name() != net::HttpRequestHeaders::kUserAgent &&
+        header.name() != net::HttpRequestHeaders::kSecPurpose &&
+        header.name() != net::HttpRequestHeaders::kDNT) {
+      if (base::FeatureList::IsEnabled(
+              features::kKillOnInvalidNavigationHeaders)) {
+        SCOPED_CRASH_KEY_STRING64("Bug487795397", "invalid_header",
+                                  header.name());
+        bad_message::ReceivedBadMessage(
+            process, bad_message::RFH_INVALID_NAVIGATION_HEADERS);
+        return false;
+      }
+    }
+  }
   return true;
 }
 

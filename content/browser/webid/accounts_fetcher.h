@@ -67,6 +67,7 @@ class AccountsFetcher {
     GURL idp_config_url;
     std::unique_ptr<IdentityProviderInfo> idp_info;
     std::optional<IdpNetworkRequestManager::AccountsResponse> accounts;
+    std::vector<IdentityRequestAccountPtr> filtered_accounts;
     std::optional<blink::mojom::FederatedAuthRequestResult> error;
     std::optional<webid::RequestIdTokenStatus> token_status;
     // Whether the callback should be delayed for this result.
@@ -132,30 +133,32 @@ class AccountsFetcher {
       std::unique_ptr<IdentityProviderInfo> idp_info,
       FetchStatus status,
       IdpNetworkRequestManager::AccountsResponse accounts,
+      std::vector<IdentityRequestAccountPtr> filtered_accounts,
       base::TimeTicks accounts_fetched_time);
 
   void OnClientMetadataResponseReceived(
       std::unique_ptr<IdentityProviderInfo> idp_info,
       IdpNetworkRequestManager::AccountsResponse&& accounts,
+      std::vector<IdentityRequestAccountPtr> filtered_accounts,
       base::TimeTicks accounts_fetched_time,
       FetchStatus status,
       IdpNetworkRequestManager::ClientMetadata client_metadata);
 
   void OnFetchDataForIdpSucceeded(
       const IdpNetworkRequestManager::ClientMetadata& client_metadata,
+      std::vector<IdentityRequestAccountPtr> filtered_accounts,
       base::TimeTicks accounts_fetched_time,
       base::TimeTicks client_metadata_fetched_time,
       IdpNetworkRequestManager::AccountsResponse accounts,
       std::unique_ptr<IdentityProviderInfo> idp_info,
       const gfx::Image& rp_brand_icon);
 
-  void FilterAccountsWithLabel(
-      const std::string& label,
-      std::vector<IdentityRequestAccountPtr>& accounts);
-  void FilterAccountsWithLoginHint(
+  void MarkAccountsWithLabel(const std::string& label,
+                             std::vector<IdentityRequestAccountPtr>& accounts);
+  void MarkAccountsWithLoginHint(
       const std::string& login_hint,
       std::vector<IdentityRequestAccountPtr>& accounts);
-  void FilterAccountsWithDomainHint(
+  void MarkAccountsWithDomainHint(
       const std::string& domain_hint,
       std::vector<IdentityRequestAccountPtr>& accounts);
 
@@ -163,6 +166,7 @@ class AccountsFetcher {
   // it had been populated. Otherwise, it uses the browser knowledge on which
   // accounts are returning and which are not.
   void ComputeLoginStates(const GURL& idp_config_url,
+                          const std::string& client_id,
                           std::vector<IdentityRequestAccountPtr>& accounts);
 
   // Updates the IdpSigninStatus in case of accounts fetch failure and shows a
@@ -173,6 +177,7 @@ class AccountsFetcher {
       blink::mojom::FederatedAuthRequestResult result,
       std::optional<webid::RequestIdTokenStatus> token_status,
       const FetchStatus& status,
+      std::vector<IdentityRequestAccountPtr> filtered_accounts,
       base::TimeTicks accounts_fetched_time);
 
   void OnIdpMismatch(base::TimeTicks accounts_fetched_time,
@@ -197,7 +202,7 @@ class AccountsFetcher {
   // Populated in OnAllConfigAndWellKnownFetched().
   base::flat_map<GURL, GURL> metrics_endpoints_;
 
-  // Owned by RequestService.
+  // Owned by Request.
   raw_ref<RenderFrameHost> render_frame_host_;
   raw_ptr<IdpNetworkRequestManager> network_manager_;
   raw_ptr<FederatedIdentityApiPermissionContextDelegate>

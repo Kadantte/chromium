@@ -44,7 +44,6 @@
 #include "chrome/browser/ash/crostini/crostini_port_forwarder_factory.h"
 #include "chrome/browser/ash/crostini/crostini_shared_devices_factory.h"
 #include "chrome/browser/ash/crostini/throttle/crostini_throttle_factory.h"
-#include "chrome/browser/ash/data_migration/data_migration_factory.h"
 #include "chrome/browser/ash/early_prefs/early_prefs_export_service_factory.h"
 #include "chrome/browser/ash/eche_app/eche_app_manager_factory.h"
 #include "chrome/browser/ash/extensions/file_manager/event_router_factory.h"
@@ -78,7 +77,7 @@
 #include "chrome/browser/ash/login/signin/offline_signin_limiter_factory.h"
 #include "chrome/browser/ash/login/signin/signin_error_notifier_factory.h"
 #include "chrome/browser/ash/login/signin/token_handle_service_factory.h"
-#include "chrome/browser/ash/login/signin_partition_manager.h"
+#include "chrome/browser/ash/login/signin_partition_manager_factory.h"
 #include "chrome/browser/ash/login/smart_lock/smart_lock_service_factory.h"
 #include "chrome/browser/ash/multidevice_setup/auth_token_validator_factory.h"
 #include "chrome/browser/ash/multidevice_setup/multidevice_setup_service_factory.h"
@@ -94,7 +93,6 @@
 #include "chrome/browser/ash/platform_keys/key_permissions/key_permissions_service_factory.h"
 #include "chrome/browser/ash/platform_keys/key_permissions/user_private_token_kpm_service_factory.h"
 #include "chrome/browser/ash/platform_keys/keystore_service_factory.h"
-#include "chrome/browser/ash/plugin_vm/plugin_vm_engagement_metrics_service.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_installer_factory.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_manager_factory.h"
 #include "chrome/browser/ash/policy/core/user_cloud_policy_manager_ash.h"
@@ -170,7 +168,6 @@ void EnsureBrowserContextKeyedServiceFactoriesBuilt() {
   crostini::CrostiniThrottleFactory::GetInstance();
   CupsPrintersManagerFactory::GetInstance();
   CupsPrintJobManagerFactory::GetInstance();
-  data_migration::DataMigrationFactory::GetInstance();
   EarlyPrefsExportServiceFactory::GetInstance();
   eche_app::EcheAppManagerFactory::GetInstance();
   EventBasedStatusReportingServiceFactory::GetInstance();
@@ -200,7 +197,7 @@ void EnsureBrowserContextKeyedServiceFactoriesBuilt() {
   LockScreenReauthManagerFactory::GetInstance();
   LockedSessionWindowTrackerFactory::GetInstance();
   login::SecurityTokenSessionControllerFactory::GetInstance();
-  login::SigninPartitionManager::Factory::GetInstance();
+  login::SigninPartitionManagerFactory::GetInstance();
   LoginScreenExtensionsContentScriptManagerFactory::GetInstance();
   LoginScreenExtensionsLifetimeManagerFactory::GetInstance();
   multidevice_setup::AuthTokenValidatorFactory::GetInstance();
@@ -221,7 +218,6 @@ void EnsureBrowserContextKeyedServiceFactoriesBuilt() {
   platform_keys::KeyPermissionsServiceFactory::GetInstance();
   platform_keys::UserPrivateTokenKeyPermissionsManagerServiceFactory::
       GetInstance();
-  plugin_vm::PluginVmEngagementMetricsService::Factory::GetInstance();
   plugin_vm::PluginVmInstallerFactory::GetInstance();
   plugin_vm::PluginVmManagerFactory::GetInstance();
   policy::UserCloudPolicyManagerAsh::EnsureFactoryBuilt();

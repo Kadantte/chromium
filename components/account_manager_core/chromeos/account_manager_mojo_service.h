@@ -20,8 +20,8 @@
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/bindings/remote_set.h"
 
-namespace ash {
-class SigninHelper;
+namespace account_manager {
+enum class AccountAdditionSource : int;
 }
 
 namespace crosapi {
@@ -29,9 +29,15 @@ namespace crosapi {
 // Implements the |crosapi::mojom::AccountManager| interface in ash-chrome.
 // It enables lacros-chrome to interact with accounts stored in the Chrome OS
 // Account Manager.
+//
+// TODO(b/365741912, b/365902693): This service is a temporary stepping stone
+// for direct Ash callers that still need the current Account Manager dialog
+// path. After all callers are off AccountManagerFacade, create an Ash-owned
+// dialog coordinator and switch those direct callers from this service to that
+// coordinator. Furthermore, once the remaining crosapi/facade users are gone,
+// delete this service and the crosapi::mojom::AccountManager interface.
 class COMPONENT_EXPORT(ACCOUNT_MANAGER_CORE) AccountManagerMojoService
-    : public mojom::AccountManager,
-      public account_manager::AccountManager::Observer {
+    : public mojom::AccountManager {
  public:
   explicit AccountManagerMojoService(
       account_manager::AccountManager* account_manager);
@@ -45,13 +51,23 @@ class COMPONENT_EXPORT(ACCOUNT_MANAGER_CORE) AccountManagerMojoService
   void SetAccountManagerUI(
       std::unique_ptr<account_manager::AccountManagerUI> account_manager_ui);
 
-  void OnAccountUpsertionFinishedForTesting(
-      const account_manager::AccountUpsertionResult& result);
+  // TODO(b/365741912, b/365902693): Remove this temporary completion callback
+  // once inline login is routed through the Ash-owned dialog coordinator.
+  base::OnceCallback<void(const account_manager::AccountUpsertionResult&)>
+  CreateInlineLoginAccountUpsertionFinishedCallback();
+
+  // Helpers for direct Ash callers. These record launch-source UMA before
+  // opening the dialog and result-status UMA before forwarding the completion
+  // callback.
+  void ShowAddAccountDialog(account_manager::AccountAdditionSource source,
+                            mojom::AccountAdditionOptionsPtr options,
+                            ShowAddAccountDialogCallback callback);
+  void ShowReauthAccountDialog(account_manager::AccountAdditionSource source,
+                               const std::string& email,
+                               ShowReauthAccountDialogCallback callback);
 
   // crosapi::mojom::AccountManager:
-  void IsInitialized(IsInitializedCallback callback) override;
   void AddObserver(AddObserverCallback callback) override;
-  void GetAccounts(GetAccountsCallback callback) override;
   void GetPersistentErrorForAccount(
       mojom::AccountKeyPtr mojo_account_key,
       GetPersistentErrorForAccountCallback callback) override;
@@ -60,26 +76,15 @@ class COMPONENT_EXPORT(ACCOUNT_MANAGER_CORE) AccountManagerMojoService
   void ShowReauthAccountDialog(
       const std::string& email,
       ShowReauthAccountDialogCallback callback) override;
-  void ShowManageAccountsSettings() override;
   void CreateAccessTokenFetcher(
       mojom::AccountKeyPtr mojo_account_key,
       const std::string& oauth_consumer_name,
       CreateAccessTokenFetcherCallback callback) override;
-  void ReportAuthError(mojom::AccountKeyPtr account,
-                       mojom::GoogleServiceAuthErrorPtr error) override;
-
-  // account_manager::AccountManager::Observer:
-  void OnTokenUpserted(const account_manager::Account& account) override;
-  void OnAccountRemoved(const account_manager::Account& account) override;
 
  private:
   friend class AccountManagerMojoServiceTest;
-  friend class TestAccountManagerObserver;
-  friend class AccountManagerFacadeAshTest;
-  friend class ash::SigninHelper;
 
-  // This method is called by `ash::SigninHelper` which passes `AccountKey`
-  // of account that was added.
+  // Handles the result reported after the inline login flow finishes.
   void OnAccountUpsertionFinished(
       const account_manager::AccountUpsertionResult& result);
   // A callback for `AccountManagerUI::ShowAccountAdditionDialog`.
@@ -88,14 +93,6 @@ class COMPONENT_EXPORT(ACCOUNT_MANAGER_CORE) AccountManagerMojoService
       const account_manager::AccountUpsertionResult& result);
   // Deletes `request` from `pending_access_token_requests_`, if present.
   void DeletePendingAccessTokenFetchRequest(AccessTokenFetcher* request);
-
-  // Notifies observers about a change in the error status of `account_key`.
-  // Does nothing if `account_key` does not correspond to any account in
-  // `known_accounts`.
-  void MaybeNotifyAuthErrorObservers(
-      const account_manager::AccountKey& account_key,
-      const GoogleServiceAuthError& error,
-      const std::vector<account_manager::Account>& known_accounts);
 
   // Notifies observers that the account addition / re-authentication dialog was
   // closed (either successfully, or the user cancelled the flow).

@@ -184,10 +184,6 @@ def __step_config(ctx, step_config):
             "name": "android/dex",
             "command_prefix": "python3 ../../build/android/gyp/dex.py",
             "handler": "android_dex",
-            # TODO(crbug.com/40270798): include only required jar, dex files in GN config.
-            "indirect_inputs": {
-                "includes": ["*.dex", "*.ijar.jar", "*.turbine.jar"],
-            },
             "exclude_input_patterns": [
                 "*.a",
                 "*.cc",
@@ -277,11 +273,17 @@ def __step_config(ctx, step_config):
             "timeout": "10m",
         },
         {
-            "name": "android/partition_action",
-            "command_prefix": "python3 ../../build/extract_partition.py",
-            "remote": config.get(ctx, "remote-link") or config.get(ctx, "builder"),
+            "name": "android/apkbuilder",
+            "command_prefix": "python3 ../../build/android/gyp/apkbuilder.py",
+            "handler": "android_apkbuilder",
+            "remote": config.get(ctx, "remote-link") or config.get(ctx, "default-remote") or config.get(ctx, "builder"),
             "platform_ref": "large",
-            "timeout": "4m",
+            "timeout": "5m",
+            "exclude_input_patterns": [
+                "*.a",
+                "*.proto",
+                "*.o",
+            ],
         },
     ])
     return step_config
@@ -400,7 +402,7 @@ def __android_dex_handler(ctx, cmd):
     for i, arg in enumerate(cmd.args):
         if arg == "--desugar-dependencies":
             outputs.append(ctx.fs.canonpath(cmd.args[i + 1]))
-        for k in ["--class-inputs=", "--bootclasspath=", "--classpath=", "--class-inputs-filearg=", "--dex-inputs-filearg="]:
+        for k in ["--class-inputs=", "--bootclasspath=", "--classpath=", "--class-inputs-filearg=", "--dex-inputs-filearg=", "--dex-inputs="]:
             if arg.startswith(k):
                 arg = arg.removeprefix(k)
                 _, v = __filearg(ctx, arg)
@@ -606,7 +608,24 @@ def __android_write_build_config_handler(ctx, cmd):
 
     ctx.actions.fix(inputs = cmd.inputs + inputs)
 
+def __android_apkbuilder_handler(ctx, cmd):
+    inputs = []
+    for i, arg in enumerate(cmd.args):
+        for k in ["--assets=", "--uncompressed-assets=", "--java-resources=", "--native-libs=", "--secondary-native-libs=", "--dex-file="]:
+            if arg.startswith(k):
+                arg = arg.removeprefix(k)
+                fn, v = __filearg(ctx, arg)
+                if fn:
+                    inputs.append(ctx.fs.canonpath(fn))
+                for f in v:
+                    f, _, _ = f.partition(":")
+                    inputs.append(ctx.fs.canonpath(f))
+                break
+
+    ctx.actions.fix(inputs = cmd.inputs + inputs)
+
 __handlers = {
+    "android_apkbuilder": __android_apkbuilder_handler,
     "android_compile_java": __android_compile_java_handler,
     "android_compile_resources": __android_compile_resources_handler,
     "android_dex": __android_dex_handler,

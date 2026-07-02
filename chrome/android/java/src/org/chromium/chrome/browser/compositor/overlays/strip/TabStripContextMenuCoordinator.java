@@ -12,27 +12,41 @@ import static org.chromium.ui.listmenu.ListMenuUtils.createAdapter;
 import android.app.Activity;
 import android.content.Context;
 import android.graphics.drawable.Drawable;
-import android.graphics.drawable.GradientDrawable;
 import android.view.LayoutInflater;
 import android.view.View;
 
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.MathUtils;
+import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.bookmarks.BookmarkAllTabsHandler;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.glic.GlicEnabling;
+import org.chromium.chrome.browser.glic.GlicUtils;
+import org.chromium.chrome.browser.multiwindow.MultiInstanceManager;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
+import org.chromium.chrome.browser.multiwindow.UiUtils.NameWindowDialogSource;
+import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModel.RecentlyClosedEntryType;
+import org.chromium.chrome.browser.task_manager.TaskManager;
+import org.chromium.chrome.browser.task_manager.TaskManagerFactory;
 import org.chromium.chrome.browser.tasks.tab_management.TabOverflowMenuCoordinator;
+import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.widget.ListItemBuilder;
+import org.chromium.components.browser_ui.widget.MenuOrKeyboardActionController;
 import org.chromium.components.browser_ui.widget.list_view.TouchTrackingListView;
+import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.listmenu.BasicListMenu;
 import org.chromium.ui.listmenu.ListMenu.Delegate;
 import org.chromium.ui.listmenu.ListMenuItemAdapter;
+import org.chromium.ui.listmenu.ListMenuUtils;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
-import org.chromium.ui.util.AttrUtils;
 import org.chromium.ui.widget.AnchoredPopupWindow;
 import org.chromium.ui.widget.AnchoredPopupWindow.HorizontalOrientation;
 import org.chromium.ui.widget.RectProvider;
@@ -46,16 +60,35 @@ import java.util.Set;
 @NullMarked
 public class TabStripContextMenuCoordinator {
     private final Context mContext;
-    private final TabStripContextMenuDelegate mDelegate;
+    private final TabModel mTabModel;
+    private final MultiInstanceManager mMultiInstanceManager;
+    private final WindowAndroid mWindowAndroid;
+    private final SnackbarManager mSnackbarManager;
+    private final Runnable mOnNewTabClick;
     private @Nullable AnchoredPopupWindow mMenuWindow;
 
-    /**
-     * @param context The {@link Context} to build the menu with.
-     * @param delegate The {@link TabStripContextMenuDelegate} to handle menu actions.
-     */
-    public TabStripContextMenuCoordinator(Context context, TabStripContextMenuDelegate delegate) {
-        mContext = context;
-        mDelegate = delegate;
+    public static TabStripContextMenuCoordinator createContextMenuCoordinator(
+            TabModel tabModel,
+            MultiInstanceManager multiInstanceManager,
+            WindowAndroid windowAndroid,
+            SnackbarManager snackbarManager,
+            Runnable onNewTabClick) {
+        return new TabStripContextMenuCoordinator(
+                tabModel, multiInstanceManager, windowAndroid, snackbarManager, onNewTabClick);
+    }
+
+    private TabStripContextMenuCoordinator(
+            TabModel tabModel,
+            MultiInstanceManager multiInstanceManager,
+            WindowAndroid windowAndroid,
+            SnackbarManager snackbarManager,
+            Runnable onNewTabClick) {
+        mTabModel = tabModel;
+        mMultiInstanceManager = multiInstanceManager;
+        mWindowAndroid = windowAndroid;
+        mContext = assumeNonNull(windowAndroid.getActivity().get());
+        mSnackbarManager = snackbarManager;
+        mOnNewTabClick = onNewTabClick;
     }
 
     /**
@@ -77,7 +110,7 @@ public class TabStripContextMenuCoordinator {
         View contentView =
                 LayoutInflater.from(mContext)
                         .inflate(R.layout.tab_switcher_action_menu_layout, null);
-        clipContentViewOutline(contentView);
+        ListMenuUtils.clipContentViewOutline(contentView, R.attr.popupBgCornerRadius);
 
         // TODO (crbug.com/436283175): Update the name of this resource for generic use.
         TouchTrackingListView touchTrackingListView =
@@ -107,6 +140,7 @@ public class TabStripContextMenuCoordinator {
                         .setOutsideTouchable(true)
                         .setHorizontalOverlapAnchor(true)
                         .setVerticalOverlapAnchor(true)
+                        .setAllowOverlapCaptionBar(true)
                         .setPreferredHorizontalOrientation(HorizontalOrientation.LAYOUT_DIRECTION)
                         .setMaxWidth(popupWidthPx)
                         .setAllowNonTouchableSize(true)
@@ -120,45 +154,41 @@ public class TabStripContextMenuCoordinator {
     }
 
     private void configureMenuItems(ModelList itemList, boolean isIncognito) {
-        if (ChromeFeatureList.isEnabled(
-                ChromeFeatureList.TAB_STRIP_EMPTY_SPACE_CONTEXT_MENU_ANDROID)) {
-            // Add "New tab" option.
+        // Add "New tab" option.
+        itemList.add(
+                new ListItemBuilder()
+                        .withTitleRes(R.string.menu_new_tab)
+                        .withMenuId(R.id.new_tab_menu_id)
+                        .withIsIncognito(isIncognito)
+                        .build());
+        // Add "Reopen closed tab/tabs/group" option.
+        @RecentlyClosedEntryType
+        int recentlyClosedEntryType = mTabModel.getMostRecentlyClosedEntryType();
+        if (recentlyClosedEntryType != RecentlyClosedEntryType.NONE) {
+            int titleRes = R.string.menu_reopen_closed_tab;
+            if (recentlyClosedEntryType == RecentlyClosedEntryType.TABS) {
+                titleRes = R.string.menu_reopen_closed_tabs;
+            } else if (recentlyClosedEntryType == RecentlyClosedEntryType.GROUP) {
+                titleRes = R.string.menu_reopen_closed_group;
+            }
             itemList.add(
                     new ListItemBuilder()
-                            .withTitleRes(R.string.menu_new_tab)
-                            .withMenuId(R.id.new_tab_menu_id)
-                            .withIsIncognito(isIncognito)
+                            .withTitleRes(titleRes)
+                            .withMenuId(R.id.reopen_closed_entry)
+                            .withIsIncognito(false)
                             .build());
-            // Add "Reopen closed tab/tabs/group" option.
-            @RecentlyClosedEntryType
-            int recentlyClosedEntryType = mDelegate.getRecentlyClosedEntryType();
-            if (recentlyClosedEntryType != RecentlyClosedEntryType.NONE) {
-                int titleRes = R.string.menu_reopen_closed_tab;
-                if (recentlyClosedEntryType == RecentlyClosedEntryType.TABS) {
-                    titleRes = R.string.menu_reopen_closed_tabs;
-                } else if (recentlyClosedEntryType == RecentlyClosedEntryType.GROUP) {
-                    titleRes = R.string.menu_reopen_closed_group;
-                }
-                itemList.add(
-                        new ListItemBuilder()
-                                .withTitleRes(titleRes)
-                                .withMenuId(R.id.reopen_closed_entry)
-                                .withIsIncognito(false)
-                                .build());
-            }
-            // Add "Bookmark all tabs" option.
-            if (!isIncognito && mDelegate.getTabCount() > 1) {
-                itemList.add(
-                        new ListItemBuilder()
-                                .withTitleRes(R.string.menu_bookmark_all_tabs)
-                                .withMenuId(R.id.bookmark_all_tabs)
-                                .withIsIncognito(false)
-                                .build());
-            }
+        }
+        // Add "Bookmark all tabs" option.
+        if (!isIncognito && mTabModel.getCount() > 1) {
+            itemList.add(
+                    new ListItemBuilder()
+                            .withTitleRes(R.string.menu_bookmark_all_tabs)
+                            .withMenuId(R.id.bookmark_all_tabs)
+                            .withIsIncognito(false)
+                            .build());
         }
         // Add "Name window" option.
-        if (MultiWindowUtils.isMultiInstanceApi31Enabled()
-                && ChromeFeatureList.sRobustWindowManagement.isEnabled()) {
+        if (MultiWindowUtils.isMultiInstanceApi31Enabled()) {
             itemList.add(
                     new ListItemBuilder()
                             .withTitleRes(R.string.menu_name_window)
@@ -166,32 +196,47 @@ public class TabStripContextMenuCoordinator {
                             .withIsIncognito(isIncognito)
                             .build());
         }
+        if (VerticalTabUtils.isVerticalTabsEligible(mContext)) {
+            itemList.add(BasicListMenu.buildMenuDivider(isIncognito));
+
+            int layoutTitleRes =
+                    VerticalTabUtils.isVerticalTabsEnabled(mContext)
+                            ? R.string.show_tabs_horizontally
+                            : R.string.show_tabs_vertically;
+
+            itemList.add(
+                    new ListItemBuilder()
+                            .withTitleRes(layoutTitleRes)
+                            .withMenuId(R.id.toggle_tab_layout_menu_id)
+                            .withIsIncognito(isIncognito)
+                            .build());
+        }
         // Add "Pin Gemini" option with divider
-        if (ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.TAB_STRIP_EMPTY_SPACE_CONTEXT_MENU_ANDROID)
-                && ChromeFeatureList.isEnabled(ChromeFeatureList.GLIC)) {
-            // TODO(crbug.com/483810144): Add unpinning functionality.
-            // TODO(crbug.com/483509451): Only show when Glic button not already visible
-            if (!isIncognito) {
-                itemList.add(BasicListMenu.buildMenuDivider(/* isIncognito= */ false));
+        Profile profile = mTabModel.getProfile();
+        if (profile != null) {
+            profile = profile.getOriginalProfile();
+            if (GlicEnabling.isEnabledForProfile(profile)) {
+                itemList.add(BasicListMenu.buildMenuDivider(isIncognito));
+
+                boolean isPinned = GlicUtils.isButtonPinnedToTabStrip(profile);
                 itemList.add(
                         new ListItemBuilder()
-                                .withTitleRes(R.string.menu_pin_glic)
-                                .withMenuId(R.id.pin_glic)
-                                .withIsIncognito(false)
+                                .withTitleRes(isPinned ? R.string.glic_unpin : R.string.glic_pin)
+                                .withMenuId(isPinned ? R.id.unpin_glic : R.id.pin_glic)
+                                .withIsIncognito(isIncognito)
                                 .build());
             }
         }
-    }
-
-    private void clipContentViewOutline(View contentView) {
-        GradientDrawable outlineDrawable = new GradientDrawable();
-        outlineDrawable.setShape(GradientDrawable.RECTANGLE);
-        outlineDrawable.setCornerRadius(
-                AttrUtils.getDimensionPixelSize(
-                        contentView.getContext(), R.attr.popupBgCornerRadius));
-        contentView.setBackground(outlineDrawable);
-        contentView.setClipToOutline(true);
+        // Add "Task Manager" option with divider.
+        if (ChromeFeatureList.isEnabled(ChromeFeatureList.TASK_MANAGER_CLANK)) {
+            itemList.add(BasicListMenu.buildMenuDivider(isIncognito));
+            itemList.add(
+                    new ListItemBuilder()
+                            .withTitleRes(R.string.menu_task_manager)
+                            .withMenuId(R.id.task_manager)
+                            .withIsIncognito(isIncognito)
+                            .build());
+        }
     }
 
     @VisibleForTesting
@@ -208,16 +253,38 @@ public class TabStripContextMenuCoordinator {
                 model.get(CLICK_LISTENER).onClick(contentView);
                 return;
             }
+            Profile profile = mTabModel.getProfile();
+            if (profile != null) {
+                profile = profile.getOriginalProfile();
+            }
             if (model.get(MENU_ITEM_ID) == R.id.new_tab_menu_id) {
-                mDelegate.onNewTab();
+                mOnNewTabClick.run();
             } else if (model.get(MENU_ITEM_ID) == R.id.reopen_closed_entry) {
-                mDelegate.onReopenClosedEntry();
+                RecordUserAction.record("Android.TabStripMenu.ReopenClosedEntry");
+                mTabModel.openMostRecentlyClosedEntry();
             } else if (model.get(MENU_ITEM_ID) == R.id.bookmark_all_tabs) {
-                mDelegate.onBookmarkAllTabs();
+                BookmarkAllTabsHandler.bookmarkAllTabs(mTabModel, mWindowAndroid, mSnackbarManager);
             } else if (model.get(MENU_ITEM_ID) == R.id.name_window) {
-                mDelegate.onNameWindow();
-            } else if (model.get(MENU_ITEM_ID) == R.id.pin_glic) {
-                mDelegate.onPinGlic();
+                mMultiInstanceManager.showNameWindowDialog(NameWindowDialogSource.TAB_STRIP);
+            } else if (model.get(MENU_ITEM_ID) == R.id.toggle_tab_layout_menu_id) {
+                RecordUserAction.record("Android.TabStripMenu.ToggleTabLayout");
+                if (mContext instanceof MenuOrKeyboardActionController controller) {
+                    controller.onMenuOrKeyboardAction(
+                            R.id.toggle_tab_layout_menu_id, /* fromMenu= */ false);
+                }
+            } else if (model.get(MENU_ITEM_ID) == R.id.pin_glic
+                    || model.get(MENU_ITEM_ID) == R.id.unpin_glic) {
+                boolean isPin = model.get(MENU_ITEM_ID) == R.id.pin_glic;
+                if (isPin) {
+                    RecordUserAction.record("Android.TabStripMenu.PinGlic");
+                } else {
+                    RecordUserAction.record("Android.TabStripMenu.UnpinGlic");
+                }
+                if (profile != null) GlicUtils.setButtonPinnedToTabStrip(profile, isPin);
+            } else if (model.get(MENU_ITEM_ID) == R.id.task_manager) {
+                RecordUserAction.record("Android.TabStripMenu.TaskManager");
+                TaskManager taskManager = TaskManagerFactory.createTaskManager();
+                taskManager.launch(ContextUtils.getApplicationContext());
             }
             assumeNonNull(mMenuWindow).dismiss();
         };

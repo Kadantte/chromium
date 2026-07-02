@@ -24,9 +24,9 @@
 #include "ash/shell.h"
 #include "ash/style/dark_light_mode_controller_impl.h"
 #include "ash/webui/file_manager/url_constants.h"
-#include "ash/webui/system_apps/public/system_web_app_type.h"
 #include "base/base_paths.h"
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/containers/circular_deque.h"
@@ -118,7 +118,6 @@
 #include "chrome/browser/ash/smb_client/smb_service.h"
 #include "chrome/browser/ash/smb_client/smb_service_factory.h"
 #include "chrome/browser/ash/smb_client/smbfs_share.h"
-#include "chrome/browser/ash/system/timezone_util.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/download/download_dir_util.h"
@@ -136,12 +135,13 @@
 #include "chrome/browser/ui/ash/sharesheet/sharesheet_util.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_select_file_dialog_controller.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/select_file_dialog_extension/select_file_dialog_extension.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/extensions/api/file_system_provider_capabilities/file_system_provider_capabilities_handler.h"
@@ -161,6 +161,8 @@
 #include "chromeos/ash/components/smbfs/mojom/smbfs.mojom.h"
 #include "chromeos/ash/components/smbfs/smbfs_host.h"
 #include "chromeos/ash/components/smbfs/smbfs_mounter.h"
+#include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
+#include "chromeos/ash/components/timezone/timezone_util.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
 #include "chromeos/ash/experiences/arc/mojom/file_system.mojom.h"
@@ -1850,8 +1852,9 @@ class DocumentsProviderTestVolume : public TestVolume {
       file_system_instance_->AddRecentDocument(root_document_id_, document);
     }
 
-    std::string canonical_url = base::StrCat(
-        {"content://", authority_, "/document/", EncodeURI(entry.name_text)});
+    std::string canonical_url =
+        base::StrCat({"content://", authority_, "/document/",
+                      url::EncodeUriComponent(entry.name_text)});
     arc::FakeFileSystemInstance::File file(
         canonical_url, GetTestFileContent(entry.source_file_name),
         GetMimeType(entry), arc::FakeFileSystemInstance::File::Seekable::NO);
@@ -1909,12 +1912,6 @@ class DocumentsProviderTestVolume : public TestVolume {
     CHECK(base::ReadFileToString(path, &contents))
         << "failed reading test data file " << test_file_name;
     return contents;
-  }
-
-  std::string EncodeURI(const std::string& component) {
-    url::RawCanonOutputT<char> encoded;
-    url::EncodeURIComponent(component, &encoded);
-    return std::string(encoded.view());
   }
 };
 
@@ -2359,12 +2356,6 @@ void FileManagerBrowserTestBase::SetUpCommandLine(
   std::vector<base::test::FeatureRef> enabled_features;
   std::vector<base::test::FeatureRef> disabled_features;
 
-  if (options.enable_conflict_dialog) {
-    enabled_features.push_back(ash::features::kFilesConflictDialog);
-  } else {
-    disabled_features.push_back(ash::features::kFilesConflictDialog);
-  }
-
   if (options.arc) {
     arc::SetArcAvailableCommandLineForTesting(command_line);
   }
@@ -2380,15 +2371,17 @@ void FileManagerBrowserTestBase::SetUpCommandLine(
   }
 
   if (options.enable_dlp_files_restriction) {
-    enabled_features.push_back(features::kDataLeakPreventionFilesRestriction);
+    enabled_features.push_back(
+        ash::features::kDataLeakPreventionFilesRestriction);
   } else {
-    disabled_features.push_back(features::kDataLeakPreventionFilesRestriction);
+    disabled_features.push_back(
+        ash::features::kDataLeakPreventionFilesRestriction);
   }
 
   if (options.enable_files_policy_new_ux) {
-    enabled_features.push_back(features::kNewFilesPolicyUX);
+    enabled_features.push_back(ash::features::kNewFilesPolicyUX);
   } else {
-    disabled_features.push_back(features::kNewFilesPolicyUX);
+    disabled_features.push_back(ash::features::kNewFilesPolicyUX);
   }
 
   if (options.enable_mirrorsync) {
@@ -2414,15 +2407,18 @@ void FileManagerBrowserTestBase::SetUpCommandLine(
   }
 
   if (options.enable_file_transfer_connector) {
-    enabled_features.push_back(features::kFileTransferEnterpriseConnector);
+    enabled_features.push_back(ash::features::kFileTransferEnterpriseConnector);
   } else {
-    disabled_features.push_back(features::kFileTransferEnterpriseConnector);
+    disabled_features.push_back(
+        ash::features::kFileTransferEnterpriseConnector);
   }
 
   if (options.enable_file_transfer_connector_new_ux) {
-    enabled_features.push_back(features::kFileTransferEnterpriseConnectorUI);
+    enabled_features.push_back(
+        ash::features::kFileTransferEnterpriseConnectorUI);
   } else {
-    disabled_features.push_back(features::kFileTransferEnterpriseConnectorUI);
+    disabled_features.push_back(
+        ash::features::kFileTransferEnterpriseConnectorUI);
   }
 
   if (options.enable_local_image_search) {
@@ -2479,12 +2475,12 @@ void FileManagerBrowserTestBase::SetUpCommandLine(
 
   if (options.enable_skyvault) {
     enabled_features.push_back(features::kSkyVault);
-    enabled_features.push_back(features::kSkyVaultV2);
-    enabled_features.push_back(features::kSkyVaultV3);
+    enabled_features.push_back(ash::features::kSkyVaultV2);
+    enabled_features.push_back(ash::features::kSkyVaultV3);
   } else {
     disabled_features.push_back(features::kSkyVault);
-    disabled_features.push_back(features::kSkyVaultV2);
-    disabled_features.push_back(features::kSkyVaultV3);
+    disabled_features.push_back(ash::features::kSkyVaultV2);
+    disabled_features.push_back(ash::features::kSkyVaultV3);
   }
 
 #if BUILDFLAG(ENABLE_PDF)
@@ -3486,7 +3482,7 @@ void FileManagerBrowserTestBase::OnCommand(const std::string& name,
     std::optional<int64_t> timestamp = value.FindDouble("timestamp");
     ASSERT_TRUE(timestamp.has_value());
     profile()->GetPrefs()->SetTime(
-        prefs::kOfficeFileMovedToGoogleDrive,
+        ash::prefs::kOfficeFileMovedToGoogleDrive,
         base::Time::FromMillisecondsSinceUnixEpoch(timestamp.value()));
     return;
   }
@@ -3757,7 +3753,11 @@ void FileManagerBrowserTestBase::OnCommand(const std::string& name,
   // stores the navigation observer, which later could be used via the
   // `waitForSelectFileDialogNavigation` message.
   if (name == "runSelectFileDialog") {
-    browser()->OpenFile();
+    browser()
+        ->GetFeatures()
+        .browser_select_file_dialog_controller()
+        ->OpenFile();
+
     test_navigation_observer_ =
         std::make_unique<content::TestNavigationObserver>(
             browser()->tab_strip_model()->GetActiveWebContents(), 1);
@@ -3820,7 +3820,8 @@ void FileManagerBrowserTestBase::OnCommand(const std::string& name,
     const std::string* timezone = value.FindString("timezone");
     ASSERT_TRUE(timezone);
     auto* user = user_manager::UserManager::Get()->GetActiveUser();
-    ash::system::SetSystemTimezone(user, *timezone);
+    ash::system::SetSystemTimezone(
+        CHECK_DEREF(g_browser_process->local_state()), user, *timezone);
     base::RunLoop().RunUntilIdle();
     return;
   }
@@ -4295,9 +4296,11 @@ bool FileManagerBrowserTestBase::PostKeyEvent(ui::KeyEvent* key_event) {
     web_contents = std::prev(swa_web_contents_.end())->second;
   }
   if (web_contents) {
-    const Browser* browser = chrome::FindBrowserWithTab(web_contents);
+    BrowserWindowInterface* browser =
+        GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+            web_contents);
     if (browser) {
-      BrowserWindow* window = browser->window();
+      ui::BaseWindow* window = browser->GetWindow();
       if (window) {
         native_window = window->GetNativeWindow();
       }

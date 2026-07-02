@@ -8,6 +8,7 @@
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/with_feature_override.h"
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/extensions/extension_action_dispatcher.h"
 #include "chrome/browser/extensions/extension_apitest.h"
@@ -81,51 +82,7 @@ constexpr char kCheckApiAvailability[] =
          chrome.test.sendScriptResult(message);
        })";
 
-constexpr char kCheckApiAvailabilityUserScripts[] =
-    R"(const script =
-           {
-             id: 'script',
-             matches: ['*://*/*'],
-             js: [{file: 'script.js'}]
-           };
-       async function verifyApiIsAvailable() {
-         let message;
-         try {
-           await chrome.userScripts.register([script]);
-           const registered = await chrome.userScripts.getScripts();
-           message =
-               (registered.length == 1 &&
-                registered[0].id == 'script')
-                   ? 'success'
-                   : 'Unexpected registration result: ' +
-                         JSON.stringify(registered);
-           await chrome.userScripts.unregister();
-         } catch (e) {
-           message = 'Unexpected error: ' + e.toString();
-         }
-         chrome.test.sendScriptResult(message);
-       }
 
-       async function verifyApiIsNotAvailable() {
-         let message;
-         try {
-           // Note: we try to call a method on the API (and not just test
-           // accessing it) since, if it was previously instantiated when the
-           // API was available, it would still be present.
-           await chrome.userScripts.register([script]);
-           message = 'API unexpectedly available.';
-           await chrome.userScripts.unregister();
-         } catch(e) {
-           const expectedError =
-               `Error: Failed to read the 'userScripts' property from ` +
-               `'Object': The 'userScripts' API is only available for users ` +
-               'in developer mode.';
-           message = e.toString() == expectedError
-               ? 'success'
-               : 'Unexpected error: ' + e.toString();
-         }
-         chrome.test.sendScriptResult(message);
-       })";
 
 bool ApiExists(content::WebContents* web_contents,
                const std::string& api_name) {
@@ -174,6 +131,9 @@ IN_PROC_BROWSER_TEST_F(NativeBindingsApiTest, SimpleEndToEndTest) {
   ASSERT_TRUE(RunExtensionTest("native_bindings/extension")) << message_;
 }
 
+// The following test is executed as Chrome App, which is only supported on
+// ChromeOS.
+#if BUILDFLAG(IS_CHROMEOS)
 // A simplistic app test for app-specific APIs.
 IN_PROC_BROWSER_TEST_F(NativeBindingsApiTest, SimpleAppTest) {
   ExtensionTestMessageListener ready_listener("ready",
@@ -190,6 +150,7 @@ IN_PROC_BROWSER_TEST_F(NativeBindingsApiTest, SimpleAppTest) {
   ASSERT_TRUE(close_listener.WaitUntilSatisfied());
   EXPECT_EQ("success", close_listener.message());
 }
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // Tests the declarativeContent API and declarative events.
 IN_PROC_BROWSER_TEST_F(NativeBindingsApiTest, DeclarativeEvents) {
@@ -557,19 +518,13 @@ IN_PROC_BROWSER_TEST_F(NativeBindingsApiTest, PromiseBasedAPI) {
 
 class NativeBindingsBrowserNamespaceTest : public NativeBindingsApiTest {
  public:
-  NativeBindingsBrowserNamespaceTest() {
-    scoped_feature_list_.InitAndEnableFeature(
-        extensions_features::kExtensionBrowserNamespaceAndPolyfillSupport);
-  }
+  NativeBindingsBrowserNamespaceTest() = default;
 
   NativeBindingsBrowserNamespaceTest(
       const NativeBindingsBrowserNamespaceTest&) = delete;
   const NativeBindingsBrowserNamespaceTest& operator=(
       const NativeBindingsBrowserNamespaceTest&) = delete;
   ~NativeBindingsBrowserNamespaceTest() override = default;
-
- protected:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Tests that extension background script contexts have access to
@@ -967,29 +922,105 @@ IN_PROC_BROWSER_TEST_F(NativeBindingsBrowserNamespaceTest,
   ASSERT_TRUE(catcher.GetNextResult()) << catcher.message();
 }
 
+class NativeBindingsBrowserNamespaceOnWebPagesTest
+    : public base::test::WithFeatureOverride,
+      public NativeBindingsApiTest {
+ public:
+  NativeBindingsBrowserNamespaceOnWebPagesTest()
+      : base::test::WithFeatureOverride(
+            extensions_features::kExtensionBrowserNamespaceOnWebPages) {}
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    NativeBindingsApiTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(switches::kExtensionTestApiOnWebPages);
+  }
+};
+
+// Tests that the `browser` namespace is defined on web pages if and only if
+// the `extensions_features::kExtensionBrowserNamespaceOnWebPages` feature
+// is enabled. Also confirms that when enabled, attributes on `chrome` and
+// `browser` (like `test` API) point to the exact same object.
+IN_PROC_BROWSER_TEST_P(NativeBindingsBrowserNamespaceOnWebPagesTest,
+                       BrowserObjectOnWebPages) {
+  // Start the test server and navigate to a non-extension web page `a.com`.
+  ASSERT_TRUE(StartEmbeddedTestServer());
+  const GURL& test_website =
+      embedded_test_server()->GetURL("a.com", "/title1.html");
+  auto* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(NavigateToURL(web_contents, test_website));
+
+  // The `chrome` namespace should always be defined on web pages.
+  EXPECT_TRUE(ObjectIsDefined(web_contents, "chrome"));
+
+  // The `browser` namespace should be defined if the feature is enabled,
+  // and undefined otherwise.
+  if (IsParamFeatureEnabled()) {
+    EXPECT_TRUE(ObjectIsDefined(web_contents, "browser"));
+    // Confirm that the `test` API on both namespaces points to the exact same
+    // object.
+    EXPECT_TRUE(ApiExists(web_contents, "chrome.test"));
+    EXPECT_TRUE(ApiExists(web_contents, "browser.test"));
+    EXPECT_TRUE(content::EvalJs(web_contents, "chrome.test === browser.test")
+                    .ExtractBool());
+  } else {
+    EXPECT_FALSE(ObjectIsDefined(web_contents, "browser"));
+  }
+}
+
+INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
+    NativeBindingsBrowserNamespaceOnWebPagesTest);
+
+class NativeBindingsBrowserNamespaceOnWebPagesNoTestApiTest
+    : public base::test::WithFeatureOverride,
+      public NativeBindingsApiTest {
+ public:
+  NativeBindingsBrowserNamespaceOnWebPagesNoTestApiTest()
+      : base::test::WithFeatureOverride(
+            extensions_features::kExtensionBrowserNamespaceOnWebPages) {}
+};
+
+// Tests that the `browser` namespace is defined on web pages if and only if
+// the `extensions_features::kExtensionBrowserNamespaceOnWebPages` feature
+// is enabled, even if there are no features available to the page.
+IN_PROC_BROWSER_TEST_P(NativeBindingsBrowserNamespaceOnWebPagesNoTestApiTest,
+                       BrowserObjectOnWebPagesWithoutAPIs) {
+  ASSERT_TRUE(StartEmbeddedTestServer());
+  const GURL& test_website =
+      embedded_test_server()->GetURL("a.com", "/title1.html");
+  auto* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(NavigateToURL(web_contents, test_website));
+
+  EXPECT_TRUE(ObjectIsDefined(web_contents, "chrome"));
+
+  if (IsParamFeatureEnabled()) {
+    EXPECT_TRUE(ObjectIsDefined(web_contents, "browser"));
+    // Note: We cannot test that `browser` has the same attributes as `chrome`
+    // here because the only attributes present on `chrome` for a regular
+    // web page without any extension APIs are legacy properties like
+    // `chrome.loadTimes` and `chrome.csi` (and `chrome.app` which is explicitly
+    // skipped for `browser` in `NativeExtensionBindingsSystem`).
+    // `loadTimes` and `csi` are injected via a separate V8 extension script
+    // (v8/LoadTimes) which explicitly only populates the `chrome` object and
+    // does not alias to `browser`. `browser` is not a generic proxy of
+    // `chrome`, but rather a separate object where extension APIs are
+    // explicitly mirrored.
+  } else {
+    EXPECT_FALSE(ObjectIsDefined(web_contents, "browser"));
+  }
+}
+
+INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
+    NativeBindingsBrowserNamespaceOnWebPagesNoTestApiTest);
+
 // TODO(crbug.com/401226626): Test that the browser object also has dev mode
 // restricted APIs set on correctly as well.
 
-class DeveloperModeNativeBindingsApiTest
-    : public NativeBindingsApiTest,
-      public testing::WithParamInterface<bool> {
+class DeveloperModeNativeBindingsApiTest : public NativeBindingsApiTest {
  public:
   DeveloperModeNativeBindingsApiTest() {
-    if (GetParam()) {
-      // Ensure chrome.debugger is controlled by Developer Mode.
-      scoped_feature_list_.InitWithFeatures(
-          /*enabled_features=*/
-          {extensions_features::kUserScriptUserExtensionToggle,
-           extensions_features::kDebuggerAPIRestrictedToDevMode},
-          /*disabled_features=*/{});
-
-    } else {
-      // Ensure chrome.userScripts is controlled by Developer Mode.
-      scoped_feature_list_.InitWithFeatures(
-          /*enabled_features=*/{}, /*disabled_features=*/{
-              extensions_features::kUserScriptUserExtensionToggle,
-              extensions_features::kDebuggerAPIRestrictedToDevMode});
-    }
+    // Ensure chrome.debugger is controlled by Developer Mode.
+    scoped_feature_list_.InitAndEnableFeature(
+        extensions_features::kDebuggerAPIRestrictedToDevMode);
   }
 
  private:
@@ -998,77 +1029,51 @@ class DeveloperModeNativeBindingsApiTest
 
 // TODO(crbug.com/390138269): Revert the user scripts specific testing once the
 // extensions::kUserScriptUserExtensionToggle feature is launched.
-IN_PROC_BROWSER_TEST_P(
+IN_PROC_BROWSER_TEST_F(
     DeveloperModeNativeBindingsApiTest,
     DeveloperModeOnlyWithAPIPermissionUserIsNotInDeveloperMode) {
   // Developer mode-only APIs should not be available if the user is not in
   // developer mode.
   SetCustomArg("not_in_developer_mode");
   util::SetDeveloperModeForProfile(profile(), false);
-  if (GetParam()) {
-    ASSERT_TRUE(RunExtensionTest(
-        "native_bindings/developer_mode_only_with_api_permission"))
-        << message_;
-  } else {
-    ASSERT_TRUE(RunExtensionTest(
-        "native_bindings/developer_mode_only_with_user_scripts_api_permission"))
-        << message_;
-  }
+  ASSERT_TRUE(RunExtensionTest(
+      "native_bindings/developer_mode_only_with_api_permission"))
+      << message_;
 }
 
-IN_PROC_BROWSER_TEST_P(
+IN_PROC_BROWSER_TEST_F(
     DeveloperModeNativeBindingsApiTest,
     DeveloperModeOnlyWithAPIPermissionUserIsInDeveloperMode) {
   // Developer mode-only APIs should be available if the user is in developer
   // mode.
   SetCustomArg("in_developer_mode");
   util::SetDeveloperModeForProfile(profile(), true);
-  if (GetParam()) {
-    ASSERT_TRUE(RunExtensionTest(
-        "native_bindings/developer_mode_only_with_api_permission"))
-        << message_;
-  } else {
-    ASSERT_TRUE(RunExtensionTest(
-        "native_bindings/developer_mode_only_with_user_scripts_api_permission"))
-        << message_;
-  }
+  ASSERT_TRUE(RunExtensionTest(
+      "native_bindings/developer_mode_only_with_api_permission"))
+      << message_;
 }
 
-IN_PROC_BROWSER_TEST_P(
+IN_PROC_BROWSER_TEST_F(
     DeveloperModeNativeBindingsApiTest,
     DeveloperModeOnlyWithoutAPIPermissionUserIsNotInDeveloperMode) {
   util::SetDeveloperModeForProfile(profile(), false);
-  if (GetParam()) {
-    ASSERT_TRUE(RunExtensionTest(
-        "native_bindings/developer_mode_only_without_api_permission"))
-        << message_;
-  } else {
-    ASSERT_TRUE(RunExtensionTest(
-        "native_bindings/"
-        "developer_mode_only_without_user_scripts_api_permission"))
-        << message_;
-  }
+  ASSERT_TRUE(RunExtensionTest(
+      "native_bindings/developer_mode_only_without_api_permission"))
+      << message_;
 }
 
-IN_PROC_BROWSER_TEST_P(
+IN_PROC_BROWSER_TEST_F(
     DeveloperModeNativeBindingsApiTest,
     DeveloperModeOnlyWithoutAPIPermissionUserIsInDeveloperMode) {
   util::SetDeveloperModeForProfile(profile(), true);
-  if (GetParam()) {
-    ASSERT_TRUE(RunExtensionTest(
-        "native_bindings/developer_mode_only_without_api_permission"))
-        << message_;
-  } else {
-    ASSERT_TRUE(RunExtensionTest(
-        "native_bindings/"
-        "developer_mode_only_without_user_scripts_api_permission"))
-        << message_;
-  }
+  ASSERT_TRUE(RunExtensionTest(
+      "native_bindings/developer_mode_only_without_api_permission"))
+      << message_;
 }
 
 // Tests that changing the developer mode setting affects existing renderers
 // for page-based contexts (i.e., the main renderer thread).
-IN_PROC_BROWSER_TEST_P(DeveloperModeNativeBindingsApiTest,
+IN_PROC_BROWSER_TEST_F(DeveloperModeNativeBindingsApiTest,
                        SwitchingDeveloperModeAffectsExistingRenderers_Pages) {
   static constexpr char kManifest[] =
       R"({
@@ -1084,12 +1089,9 @@ IN_PROC_BROWSER_TEST_P(DeveloperModeNativeBindingsApiTest,
          </html>)";
 
   TestExtensionDir test_dir;
-  test_dir.WriteManifest(
-      base::StringPrintf(kManifest, GetParam() ? "debugger" : "userScripts"));
+  test_dir.WriteManifest(base::StringPrintf(kManifest, "debugger"));
   test_dir.WriteFile(FILE_PATH_LITERAL("page.html"), kPageHtml);
-  test_dir.WriteFile(
-      FILE_PATH_LITERAL("page.js"),
-      GetParam() ? kCheckApiAvailability : kCheckApiAvailabilityUserScripts);
+  test_dir.WriteFile(FILE_PATH_LITERAL("page.js"), kCheckApiAvailability);
   test_dir.WriteFile(FILE_PATH_LITERAL("script.js"), "// blank");
 
   const Extension* extension = LoadExtension(test_dir.UnpackedPath());
@@ -1122,7 +1124,7 @@ IN_PROC_BROWSER_TEST_P(DeveloperModeNativeBindingsApiTest,
 // Tests that incognito windows use the developer mode setting from the
 // original, on-the-record profile (since incognito windows can't separately
 // set developer mode).
-IN_PROC_BROWSER_TEST_P(DeveloperModeNativeBindingsApiTest,
+IN_PROC_BROWSER_TEST_F(DeveloperModeNativeBindingsApiTest,
                        IncognitoRenderersUseOriginalProfilesDevModeSetting) {
   static constexpr char kManifest[] =
       R"({
@@ -1139,12 +1141,9 @@ IN_PROC_BROWSER_TEST_P(DeveloperModeNativeBindingsApiTest,
          </html>)";
 
   TestExtensionDir test_dir;
-  test_dir.WriteManifest(
-      base::StringPrintf(kManifest, GetParam() ? "debugger" : "userScripts"));
+  test_dir.WriteManifest(base::StringPrintf(kManifest, "debugger"));
   test_dir.WriteFile(FILE_PATH_LITERAL("page.html"), kPageHtml);
-  test_dir.WriteFile(
-      FILE_PATH_LITERAL("page.js"),
-      GetParam() ? kCheckApiAvailability : kCheckApiAvailabilityUserScripts);
+  test_dir.WriteFile(FILE_PATH_LITERAL("page.js"), kCheckApiAvailability);
   test_dir.WriteFile(FILE_PATH_LITERAL("script.js"), "// blank");
 
   const Extension* extension =
@@ -1178,7 +1177,7 @@ IN_PROC_BROWSER_TEST_P(DeveloperModeNativeBindingsApiTest,
 // Tests that changing the developer mode setting affects existing renderers
 // for service worker contexts (which run off the main thread in the renderer).
 // TODO(crbug.com/40946312): Test flaky on multiple platforms
-IN_PROC_BROWSER_TEST_P(
+IN_PROC_BROWSER_TEST_F(
     DeveloperModeNativeBindingsApiTest,
     DISABLED_SwitchingDeveloperModeAffectsExistingRenderers_ServiceWorkers) {
   static constexpr char kManifest[] =
@@ -1191,11 +1190,8 @@ IN_PROC_BROWSER_TEST_P(
          })";
 
   TestExtensionDir test_dir;
-  test_dir.WriteManifest(
-      base::StringPrintf(kManifest, GetParam() ? "debugger" : "userScripts"));
-  test_dir.WriteFile(
-      FILE_PATH_LITERAL("background.js"),
-      GetParam() ? kCheckApiAvailability : kCheckApiAvailabilityUserScripts);
+  test_dir.WriteManifest(base::StringPrintf(kManifest, "debugger"));
+  test_dir.WriteFile(FILE_PATH_LITERAL("background.js"), kCheckApiAvailability);
   test_dir.WriteFile(FILE_PATH_LITERAL("script.js"), "// blank");
 
   const Extension* extension = LoadExtension(test_dir.UnpackedPath());
@@ -1231,10 +1227,5 @@ IN_PROC_BROWSER_TEST_P(
   renderer_round_trip();
   EXPECT_EQ("success", call_in_service_worker("verifyApiIsNotAvailable();"));
 }
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         DeveloperModeNativeBindingsApiTest,
-                         // extensions_features::kDebuggerAPIRestrictedToDevMode
-                         testing::Bool());
 
 }  // namespace extensions

@@ -9,6 +9,7 @@
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/core/frame/connection_allowlist_violation_report_body.h"
 #include "third_party/blink/renderer/core/frame/csp/csp_hash_report_body.h"
 #include "third_party/blink/renderer/core/frame/csp/csp_violation_report_body.h"
 #include "third_party/blink/renderer/core/frame/deprecation/deprecation_report_body.h"
@@ -191,7 +192,8 @@ void ReportingContext::SendToReportingAPI(Report* report,
         type == ReportType::kPotentialPermissionsPolicyViolation ||
         type == ReportType::kIntegrityViolation ||
         type == ReportType::kIntervention ||
-        type == ReportType::kDocumentPolicyViolation)) {
+        type == ReportType::kDocumentPolicyViolation ||
+        type == ReportType::kConnectionAllowlistViolation)) {
     return;
   }
 
@@ -228,7 +230,8 @@ void ReportingContext::SendToReportingAPI(Report* report,
         body->effectiveDirective() ? body->effectiveDirective() : "",
         body->originalPolicy() ? body->originalPolicy() : "",
         body->sourceFile(), body->sample(), body->disposition().AsString(),
-        body->statusCode(), line_number, column_number);
+        body->statusCode(), line_number, column_number, body->urlHash(),
+        body->evalHash());
   } else if (type == ReportType::kDeprecation) {
     // Send the deprecation report.
     const DeprecationReportBody* body =
@@ -267,6 +270,12 @@ void ReportingContext::SendToReportingAPI(Report* report,
     GetReportingService()->QueueDocumentPolicyViolationReport(
         url, endpoint, body->featureId(), body->disposition(), body->message(),
         body->sourceFile(), line_number, column_number);
+  } else if (type == ReportType::kConnectionAllowlistViolation) {
+    const ConnectionAllowlistViolationReportBody* body =
+        static_cast<ConnectionAllowlistViolationReportBody*>(report->body());
+    GetReportingService()->QueueConnectionAllowlistViolationReport(
+        url, endpoint, body->url(), body->connection(), body->allowlist(),
+        body->disposition().AsString());
   }
 }
 

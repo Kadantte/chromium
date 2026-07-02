@@ -19,7 +19,7 @@
 #include "gpu/command_buffer/common/sync_token.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/web_graphics_context_3d_provider.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_resource_provider.h"
+#include "third_party/blink/renderer/platform/graphics/canvas_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
 #include "third_party/blink/renderer/platform/graphics/mailbox_ref.h"
@@ -34,7 +34,6 @@
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkSamplingOptions.h"
 #include "third_party/skia/include/gpu/ganesh/GrBackendSurface.h"
-#include "third_party/skia/include/gpu/ganesh/GrDirectContext.h"
 #include "third_party/skia/include/gpu/ganesh/GrTypes.h"
 #include "third_party/skia/include/gpu/ganesh/SkImageGanesh.h"
 #include "third_party/skia/include/gpu/ganesh/gl/GrGLBackendSurface.h"
@@ -48,12 +47,13 @@ AcceleratedStaticBitmapImage::CreateFromCanvasSharedImage(
     scoped_refptr<gpu::ClientSharedImage> shared_image,
     const gpu::SyncToken& sync_token,
     SkAlphaType alpha_type,
+    const gfx::HDRMetadata& hdr_metadata,
     base::WeakPtr<WebGraphicsContext3DProviderWrapper> context_provider_wrapper,
     base::PlatformThreadRef context_thread_ref,
     scoped_refptr<base::SingleThreadTaskRunner> context_task_runner,
     viz::ReleaseCallback release_callback) {
   return base::AdoptRef(new AcceleratedStaticBitmapImage(
-      std::move(shared_image), sync_token, alpha_type,
+      std::move(shared_image), sync_token, alpha_type, hdr_metadata,
       ImageOrientationEnum::kDefault, std::move(context_provider_wrapper),
       context_thread_ref, std::move(context_task_runner),
       std::move(release_callback)));
@@ -65,6 +65,7 @@ AcceleratedStaticBitmapImage::CreateFromExternalSharedImage(
     gpu::ExportedSharedImage exported_shared_image,
     const gpu::SyncToken& sync_token,
     SkAlphaType alpha_type,
+    const gfx::HDRMetadata& hdr_metadata,
     base::OnceCallback<void(const gpu::SyncToken&)> external_callback) {
   auto shared_gpu_context = blink::SharedGpuContext::ContextProviderWrapper();
   if (!shared_gpu_context) {
@@ -94,7 +95,7 @@ AcceleratedStaticBitmapImage::CreateFromExternalSharedImage(
       shared_gpu_context, shared_image);
 
   return base::AdoptRef(new AcceleratedStaticBitmapImage(
-      std::move(shared_image), sync_token, alpha_type,
+      std::move(shared_image), sync_token, alpha_type, hdr_metadata,
       ImageOrientationEnum::kDefault, shared_gpu_context,
       base::PlatformThreadRef(),
       ThreadScheduler::Current()->CleanupTaskRunner(),
@@ -105,6 +106,7 @@ AcceleratedStaticBitmapImage::AcceleratedStaticBitmapImage(
     scoped_refptr<gpu::ClientSharedImage> shared_image,
     const gpu::SyncToken& sync_token,
     SkAlphaType alpha_type,
+    const gfx::HDRMetadata& hdr_metadata,
     const ImageOrientation& orientation,
     base::WeakPtr<WebGraphicsContext3DProviderWrapper> context_provider_wrapper,
     base::PlatformThreadRef context_thread_ref,
@@ -119,7 +121,8 @@ AcceleratedStaticBitmapImage::AcceleratedStaticBitmapImage(
                                            context_thread_ref,
                                            std::move(context_task_runner),
                                            std::move(release_callback))),
-      paint_image_content_id_(cc::PaintImage::GetNextContentId()) {
+      paint_image_content_id_(cc::PaintImage::GetNextContentId()),
+      hdr_metadata_(hdr_metadata) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 }
 
@@ -200,28 +203,6 @@ bool AcceleratedStaticBitmapImage::CopyToTexture(
   return true;
 }
 
-bool AcceleratedStaticBitmapImage::CopyToResourceProvider(
-    CanvasNon2DResourceProviderSharedImage* resource_provider,
-    const gfx::Rect& copy_rect) {
-  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  DCHECK(resource_provider);
-
-  if (!IsValid())
-    return false;
-
-  const gpu::SyncToken& ready_sync_token = mailbox_ref_->sync_token();
-  gpu::SyncToken completion_sync_token;
-  if (!resource_provider->OverwriteImage(
-          shared_image_, copy_rect, ready_sync_token, completion_sync_token)) {
-    return false;
-  }
-
-  // We need to update the texture holder's sync token to ensure that when this
-  // mailbox is recycled or deleted, it is done after the copy operation above.
-  mailbox_ref_->set_sync_token(completion_sync_token);
-  return true;
-}
-
 PaintImage AcceleratedStaticBitmapImage::PaintImageForCurrentFrame() {
   // TODO(ccameron): This function should not ignore |colorBehavior|.
   // https://crbug.com/672306
@@ -234,6 +215,7 @@ PaintImage AcceleratedStaticBitmapImage::PaintImageForCurrentFrame() {
   return CreatePaintImageBuilder()
       .set_texture_backing(texture_backing_, paint_image_content_id_)
       .set_completion_state(PaintImage::CompletionState::kDone)
+      .set_hdr_metadata(hdr_metadata_)
       .TakePaintImage();
 }
 
@@ -299,8 +281,7 @@ void AcceleratedStaticBitmapImage::CreateImageFromMailboxIfNeeded() {
 
   skia_context_provider_wrapper_ = context_provider_wrapper;
   texture_backing_ = sk_make_sp<MailboxTextureBacking>(
-      shared_image_, mailbox_ref_, GetSize(), GetSharedImageFormat(),
-      GetAlphaType(), GetColorSpace(),
+      shared_image_, mailbox_ref_, GetAlphaType(),
       base::WrapRefCounted<viz::RasterContextProvider>(
           context_provider_wrapper->ContextProvider().RasterContextProvider()));
 }

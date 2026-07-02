@@ -12,7 +12,6 @@
 #include <vector>
 
 #include "base/containers/fixed_flat_map.h"
-#include "base/debug/dump_without_crashing.h"
 #include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
@@ -26,6 +25,7 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/common/child_process_id.h"
 #include "extensions/browser/api/declarative_net_request/action_tracker.h"
 #include "extensions/browser/api/declarative_net_request/constants.h"
 #include "extensions/browser/api/declarative_net_request/request_action.h"
@@ -46,7 +46,6 @@
 #include "extensions/browser/api_activity_monitor.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_navigation_registry.h"
-#include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/process_map.h"
@@ -54,8 +53,8 @@
 #include "extensions/browser/safe_browsing_delegate.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/api/web_request/web_request_activity_log_constants.h"
-#include "extensions/common/error_utils.h"
-#include "extensions/common/extension_features.h"
+#include "extensions/common/api/web_request/web_request_filter.h"
+#include "extensions/common/api/web_request/web_request_resource_type.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/mojom/event_dispatcher.mojom.h"
 
@@ -102,16 +101,6 @@ constexpr size_t kWebRequestEventPrefixLen =
     std::char_traits<char>::length(kWebRequestEventPrefix);
 constexpr size_t kWebViewEventPrefixLen =
     std::char_traits<char>::length(kWebViewEventPrefix);
-
-constexpr char kRequestFilterUrlsKey[] = "urls";
-constexpr char kRequestFilterTypesKey[] = "types";
-constexpr char kRequestFilterTabIdKey[] = "tabId";
-constexpr char kRequestFilterWindowIdKey[] = "windowId";
-constexpr char kRequestFilterOptionsKey[] = "_options";
-
-const char kListenerSubEventNameKey[] = "sub_event_name";
-const char kListenerFilterKey[] = "filter";
-const char kListenerExtraInfoSpecKey[] = "extra_info_spec";
 
 // List of all the webRequest events. Note: this doesn't include
 // "onActionIgnored" which is not related to a request's lifecycle and is
@@ -250,13 +239,13 @@ bool IsWebRequestEvent(std::string_view event_name) {
 // |context|.
 bool IsRequestFromExtension(const WebRequestInfo& request,
                             content::BrowserContext* context) {
-  if (request.render_process_id == -1) {
+  if (!request.global_id.child_id) {
     return false;
   }
 
   const Extension* extension =
       ProcessMap::Get(context)->GetEnabledExtensionByProcessID(
-          request.render_process_id);
+          request.global_id.child_id);
   return extension && !extension->is_hosted_app();
 }
 
@@ -523,9 +512,6 @@ void ClearCrossContextData(content::BrowserContext* browser_context) {
 
 }  // namespace
 
-const char WebRequestEventRouter::kFilteredLazyListeners[] =
-    "web_request.filtered_lazy_listeners";
-
 WebRequestEventRouter::WebRequestEventRouter(content::BrowserContext* context)
     : browser_context_(context) {}
 
@@ -570,70 +556,6 @@ WebRequestEventRouter::EventListener::EventListener(ID id)
     : id(std::move(id)) {}
 WebRequestEventRouter::EventListener::~EventListener() = default;
 
-// static
-std::unique_ptr<WebRequestEventRouter::EventListener>
-WebRequestEventRouter::EventListener::InitFromInactiveListenerValue(
-    const base::DictValue& value,
-    const ExtensionId& extension_id,
-    content::BrowserContext* context,
-    std::string* error) {
-  const std::string* sub_event_name =
-      value.FindString(kListenerSubEventNameKey);
-  const base::DictValue* filter_dict = value.FindDict(kListenerFilterKey);
-  std::optional<int> extra_info = value.FindInt(kListenerExtraInfoSpecKey);
-
-  if (!sub_event_name || !filter_dict || !extra_info) {
-    *error = "Missing required fields in serialized listener.";
-    return nullptr;
-  }
-
-  RequestFilter request_filter;
-  if (!request_filter.InitFromValue(*filter_dict, error)) {
-    if (error->empty()) {
-      *error = "Invalid filter format.";
-    }
-    return nullptr;
-  }
-
-  const Extension* extension =
-      ExtensionRegistry::Get(context)->enabled_extensions().GetByID(
-          extension_id);
-  if (!extension) {
-    *error = "Extension not enabled for serialized listener.";
-    return nullptr;
-  }
-
-  std::string event_name = EventRouter::GetBaseEventName(*sub_event_name);
-  if (!IsWebRequestEvent(event_name)) {
-    *error = "Invalid event name for serialized listener.";
-    return nullptr;
-  }
-
-  // Initialize as an inactive lazy listener.
-  EventListener::ID listener_id(context, extension_id, *sub_event_name,
-                                /*render_process_id=*/-1,
-                                /*web_view_instance_id=*/0,
-                                /*worker_thread_id=*/kMainThreadId,
-                                /*service_worker_version_id=*/
-                                blink::mojom::kInvalidServiceWorkerVersionId);
-
-  auto listener = std::make_unique<EventListener>(std::move(listener_id));
-  listener->extension_name = extension->name();
-  listener->histogram_value = GetEventHistogramValue(event_name);
-  listener->filter = std::move(request_filter);
-  listener->extra_info_spec = *extra_info;
-  return listener;
-}
-
-base::DictValue WebRequestEventRouter::EventListener::ToInactiveListenerValue()
-    const {
-  base::DictValue dict;
-  dict.Set(kListenerSubEventNameKey, id.sub_event_name);
-  dict.Set(kListenerExtraInfoSpecKey, extra_info_spec);
-  dict.Set(kListenerFilterKey, filter.ToValue());
-  return dict;
-}
-
 // Contains info about requests that are blocked waiting for a response from
 // an extension.
 struct WebRequestEventRouter::BlockedRequest {
@@ -648,8 +570,12 @@ struct WebRequestEventRouter::BlockedRequest {
   // The event that we're currently blocked on.
   EventTypes event = EventTypes::kInvalidEvent;
 
-  // The number of event handlers that we are awaiting a response from.
-  int num_handlers_blocking = 0;
+  // The number of blocking sources that we are awaiting a response from.
+  // A source is one of:
+  //   - a blocking listener (resolved by `OnEventHandled()`),
+  //   - a not-yet-ready declarative rules registry (see
+  //     `ProcessDeclarativeRules()`).
+  int num_blocking_sources = 0;
 
   // The callback to call when we get a response from all event handlers.
   net::CompletionOnceCallback callback;
@@ -844,65 +770,6 @@ base::DictValue SummarizeResponseDelta(
 
 }  // namespace
 
-bool WebRequestEventRouter::RequestFilter::InitFromValue(
-    const base::DictValue& value,
-    std::string* error) {
-  if (!value.Find(kRequestFilterUrlsKey)) {
-    return false;
-  }
-
-  for (const auto dict_item : value) {
-    if (dict_item.first == kRequestFilterUrlsKey &&
-        dict_item.second.is_list()) {
-      for (const auto& item : dict_item.second.GetList()) {
-        std::string url;
-        URLPattern pattern(kWebRequestFilterValidSchemes);
-        if (item.is_string()) {
-          url = item.GetString();
-        }
-
-        // Parse will fail on an empty url, so we don't need to distinguish
-        // between `item` not being a string and `item` being an empty string.
-        if (url.empty() ||
-            pattern.Parse(url) != URLPattern::ParseResult::kSuccess) {
-          *error = ErrorUtils::FormatErrorMessage(
-              keys::kInvalidRequestFilterUrl, url);
-          return false;
-        }
-        urls.AddPattern(pattern);
-      }
-    } else if (dict_item.first == kRequestFilterTypesKey &&
-               dict_item.second.is_list()) {
-      for (const auto& type : dict_item.second.GetList()) {
-        std::string type_str;
-        if (type.is_string()) {
-          type_str = type.GetString();
-        }
-        types.push_back(WebRequestResourceType::OTHER);
-        if (type_str.empty() ||
-            !ParseWebRequestResourceType(type_str, &types.back())) {
-          return false;
-        }
-      }
-    } else if (dict_item.first == kRequestFilterTabIdKey &&
-               dict_item.second.is_int()) {
-      tab_id = dict_item.second.GetInt();
-    } else if (dict_item.first == kRequestFilterWindowIdKey &&
-               dict_item.second.is_int()) {
-      window_id = dict_item.second.GetInt();
-    } else if (dict_item.first == kRequestFilterOptionsKey) {
-      // The renderer-side bindings inject an "_options" key into the
-      // filter to pass along some extra information (like `extraInfo` and
-      // `webViewInstanceId`). We ignore it here, as it's not a part of the
-      // RequestFilter.
-      continue;
-    } else {
-      return false;
-    }
-  }
-  return true;
-}
-
 base::DictValue WebRequestEventRouter::RequestFilter::ToValue() const {
   base::DictValue dict;
 
@@ -934,16 +801,6 @@ WebRequestEventRouter::EventResponse::EventResponse(
       cancel(false) {}
 
 WebRequestEventRouter::EventResponse::~EventResponse() = default;
-
-WebRequestEventRouter::RequestFilter::RequestFilter()
-    : tab_id(-1), window_id(-1) {}
-WebRequestEventRouter::RequestFilter::~RequestFilter() = default;
-
-WebRequestEventRouter::RequestFilter::RequestFilter(RequestFilter&& other) =
-    default;
-WebRequestEventRouter::RequestFilter&
-WebRequestEventRouter::RequestFilter::operator=(RequestFilter&& other) =
-    default;
 
 WebRequestEventRouter::SignaledRequestIDTracker::SignaledRequestIDTracker() =
     default;
@@ -983,7 +840,7 @@ WebRequestEventRouter::EventListener::ID::ID(
     content::BrowserContext* browser_context,
     const ExtensionId& extension_id,
     const std::string& sub_event_name,
-    int render_process_id,
+    content::ChildProcessId render_process_id,
     int web_view_instance_id,
     int worker_thread_id,
     int64_t service_worker_version_id)
@@ -1074,9 +931,6 @@ int WebRequestEventRouter::OnBeforeRequest(
     std::unique_ptr<WebRequestEventDetails> event_details(
         CreateEventDetails(*request, extra_info_spec));
     event_details->SetRequestBody(request);
-
-    GetExtensionWebRequestTimeTracker().LogBeforeRequestDispatchTime(
-        request->id, base::TimeTicks::Now());
 
     initialize_blocked_requests |= DispatchEvent(
         browser_context, request, listeners, std::move(event_details));
@@ -1183,8 +1037,8 @@ int WebRequestEventRouter::OnBeforeRequest(
   blocked_request.callback = std::move(callback);
   blocked_request.new_url = new_url;
 
-  if (blocked_request.num_handlers_blocking == 0) {
-    // If there are no blocking handlers, only the declarative rules tried
+  if (blocked_request.num_blocking_sources == 0) {
+    // If there are no blocking sources, only the declarative rules tried
     // to modify the request and we can respond synchronously.
     return ExecuteDeltas(browser_context, request, /*call_callback=*/false);
   }
@@ -1240,8 +1094,8 @@ int WebRequestEventRouter::OnBeforeSendHeaders(
   blocked_request.before_send_headers_callback = std::move(callback);
   blocked_request.request_headers = headers;
 
-  if (blocked_request.num_handlers_blocking == 0) {
-    // If there are no blocking handlers, only the declarative rules tried
+  if (blocked_request.num_blocking_sources == 0) {
+    // If there are no blocking sources, only the declarative rules tried
     // to modify the request and we can respond synchronously.
     return ExecuteDeltas(browser_context, request, false /* call_callback*/);
   }
@@ -1447,8 +1301,8 @@ int WebRequestEventRouter::OnHeadersReceived(
   blocked_request.original_response_headers = original_response_headers;
   blocked_request.new_url = preserve_fragment_on_redirect_url;
 
-  if (blocked_request.num_handlers_blocking == 0) {
-    // If there are no blocking handlers, only the declarative rules tried
+  if (blocked_request.num_blocking_sources == 0) {
+    // If there are no blocking sources, only the declarative rules tried
     // to modify the request and we can respond synchronously.
     return ExecuteDeltas(browser_context, request, false /* call_callback*/);
   }
@@ -1683,7 +1537,7 @@ bool WebRequestEventRouter::DispatchEvent(
     std::unique_ptr<WebRequestEventDetails> event_details) {
   // TODO(mpcomplete): Consider consolidating common (extension_id,json_args)
   // pairs into a single message sent to a list of sub_event_names.
-  int num_handlers_blocking = 0;
+  int num_blocking_sources = 0;
 
   auto listeners_to_dispatch = std::make_unique<ListenerIDs>();
   listeners_to_dispatch->reserve(listeners.size());
@@ -1691,19 +1545,19 @@ bool WebRequestEventRouter::DispatchEvent(
     listeners_to_dispatch->push_back(listener->id);
     if (listener->IsBlocking()) {
       listener->blocked_requests.insert(request->id);
-      ++num_handlers_blocking;
+      ++num_blocking_sources;
     }
   }
 
   DispatchEventToListeners(browser_context, std::move(listeners_to_dispatch),
                            request->id, std::move(event_details));
 
-  if (num_handlers_blocking > 0) {
+  if (num_blocking_sources > 0) {
     BlockedRequest& blocked_request =
         GetOrAddBlockedRequest(browser_context, request->id);
     blocked_request.request = request;
     blocked_request.is_incognito |= browser_context->IsOffTheRecord();
-    blocked_request.num_handlers_blocking += num_handlers_blocking;
+    blocked_request.num_blocking_sources += num_blocking_sources;
     blocked_request.blocking_time = base::Time::Now();
     return true;
   }
@@ -1743,22 +1597,9 @@ void WebRequestEventRouter::DispatchEventToListeners(
     cross_inactive_listeners = &cross_data.inactive_listeners[event_name];
   }
 
-  UMA_HISTOGRAM_COUNTS_10000("Extensions.ListenersContainerSize.Global",
-                             listener_ids ? listener_ids->size() : 0);
-  UMA_HISTOGRAM_COUNTS_10000("Extensions.ListenersContainerSize.Active",
-                             active_listeners.size());
-  UMA_HISTOGRAM_COUNTS_10000("Extensions.ListenersContainerSize.Inactive",
-                             inactive_listeners.size());
-  UMA_HISTOGRAM_COUNTS_10000(
-      "Extensions.ListenersContainerSize.CrossActive",
-      cross_active_listeners ? cross_active_listeners->size() : 0);
-  UMA_HISTOGRAM_COUNTS_10000(
-      "Extensions.ListenersContainerSize.CrossInactive",
-      cross_inactive_listeners ? cross_inactive_listeners->size() : 0);
-
   for (const EventListener::ID& id : *listener_ids) {
     // Look for the event listener in the different listener sources.
-    bool is_active = id.render_process_id != -1;
+    bool is_active = !id.render_process_id.is_null();
     Listeners* on_the_record_listeners =
         is_active ? &active_listeners : &inactive_listeners;
     Listeners* cross_listeners =
@@ -1827,12 +1668,13 @@ void WebRequestEventRouter::DispatchEventToListeners(
       // extension listener (as can happen if the extension fails to re-register
       // the event listener synchronously). If this happens, we treat the event
       // as handled so as to not block indefinitely.
+      // TODO(crbug.com/379869738): Remove GetUnsafeValue.
       event->cannot_dispatch_callback = base::BindRepeating(
           &WebRequestEventRouter::OnEventHandled,
           weak_ptr_factory_.GetWeakPtr(), id.browser_context, id.extension_id,
-          event_name, id.sub_event_name, request_id, id.render_process_id,
-          id.web_view_instance_id, id.worker_thread_id,
-          id.service_worker_version_id, nullptr);
+          event_name, id.sub_event_name, request_id,
+          id.render_process_id.GetUnsafeValue(), id.web_view_instance_id,
+          id.worker_thread_id, id.service_worker_version_id, nullptr);
       EventRouter::Get(id.browser_context)
           ->DispatchEventToExtension(id.extension_id, std::move(event));
     }
@@ -1852,9 +1694,11 @@ void WebRequestEventRouter::OnEventHandled(
     std::unique_ptr<EventResponse> response) {
   BrowserContextData& context_data =
       data_[GetBrowserContextID(browser_context)];
-  EventListener::ID id(browser_context, extension_id, sub_event_name,
-                       render_process_id, web_view_instance_id,
-                       worker_thread_id, service_worker_version_id);
+  // TODO(crbug.com/379869738): Remove FromUnsafeValue.
+  EventListener::ID id(
+      browser_context, extension_id, sub_event_name,
+      content::ChildProcessId::FromUnsafeValue(render_process_id),
+      web_view_instance_id, worker_thread_id, service_worker_version_id);
   EventListener* listener = nullptr;
 
   // Check if the "handled" event was for an inactive listener (indicated by
@@ -1882,8 +1726,8 @@ void WebRequestEventRouter::OnEventHandled(
   // listener that fails to re-register upon wake-up (via
   // `cannot_dispatch_callback`) causes the request to resume before other
   // blocking listeners have responded. See crbug.com/412695438.
-  if (listener->IsBlocking()) {
-    listener->blocked_requests.erase(request_id);
+  if (listener->IsBlocking() &&
+      listener->blocked_requests.erase(request_id) > 0) {
     DecrementBlockCount(browser_context, extension_id, event_name, request_id,
                         std::move(response), listener->extra_info_spec);
   }
@@ -1900,7 +1744,8 @@ bool WebRequestEventRouter::AddEventListener(
     int render_process_id,
     int web_view_instance_id,
     int worker_thread_id,
-    int64_t service_worker_version_id) {
+    int64_t service_worker_version_id,
+    bool is_lazy) {
   if (!IsWebRequestEvent(event_name)) {
     return false;
   }
@@ -1909,10 +1754,21 @@ bool WebRequestEventRouter::AddEventListener(
     return false;
   }
 
-  EventListener::ID id(browser_context, extension_id, sub_event_name,
-                       render_process_id, web_view_instance_id,
-                       worker_thread_id, service_worker_version_id);
-  if (FindEventListener(id) != nullptr) {
+  BrowserContextID browser_context_id = GetBrowserContextID(browser_context);
+
+  // TODO(crbug.com/379869738): Remove FromUnsafeValue.
+  EventListener::ID id(
+      browser_context, extension_id, sub_event_name,
+      content::ChildProcessId::FromUnsafeValue(render_process_id),
+      web_view_instance_id, worker_thread_id, service_worker_version_id);
+  if (is_lazy &&
+      FindEventListenerBySubEventName(browser_context_id, extension_id,
+                                      event_name, sub_event_name)) {
+    // If listener is already active, we shouldn't add it to the inactive list.
+    // NOTE: we return true since this was a no-op and not a failure.
+    return true;
+  }
+  if (!is_lazy && FindEventListener(id)) {
     // This is likely an abuse of the API by a malicious extension.
     return false;
   }
@@ -1922,14 +1778,30 @@ bool WebRequestEventRouter::AddEventListener(
   listener->histogram_value = GetEventHistogramValue(event_name);
   listener->filter = std::move(filter);
   listener->extra_info_spec = extra_info_spec;
+
+  if (is_lazy) {
+    // Replace any inactive listener that already exists for this sub-event
+    // name. This handles the case where prefs accumulated multiple filters
+    // under one sub-event-name in older builds. `ReplaceInactiveListeners`
+    // keeps exact registration matches and cleans up stale mismatches.
+    // See crbug.com/502402731.
+    auto& inactive = data_[browser_context_id].inactive_listeners[event_name];
+    bool has_exact_registration_match =
+        ReplaceInactiveListeners(inactive, extension_id, sub_event_name,
+                                 browser_context_id, *listener) > 0u;
+    ListenerCountUpdate count_update =
+        has_exact_registration_match ? ListenerCountUpdate::kAlreadyCounted
+                                     : ListenerCountUpdate::kIncrement;
+    AddListenerToList(browser_context, inactive, std::move(listener),
+                      count_update);
+    return true;
+  }
+
   if (web_view_instance_id) {
     base::RecordAction(
         base::UserMetricsAction("WebView.WebRequest.AddListener"));
   }
-
   RecordAddEventListenerUMAs(extra_info_spec);
-
-  BrowserContextID browser_context_id = GetBrowserContextID(browser_context);
 
   // This might be a reactivated listener - a listener being added for a
   // lazy context where it was shut down and then respawned. This can only
@@ -1944,36 +1816,35 @@ bool WebRequestEventRouter::AddEventListener(
     // the *same order* in the extension. In practice, this should pretty much
     // always be the case, because we require listeners to be set up
     // synchronously.
-    size_t erased = std::erase_if(
-        listeners, [browser_context, extension_id, sub_event_name](
-                       const std::unique_ptr<EventListener>& listener) {
-          return listener->id.browser_context == browser_context &&
-                 listener->id.extension_id == extension_id &&
-                 listener->id.sub_event_name == sub_event_name;
-        });
-    // Only a single listener should ever match. It's possible no listener will
-    // match if this is a new listener in a worker context.
-    DCHECK_LE(erased, 1u);
-    is_reactivated = erased > 0u;
+    is_reactivated =
+        ReplaceInactiveListeners(listeners, extension_id, sub_event_name,
+                                 browser_context_id, *listener) > 0u;
   }
 
-  // If the listener was previously registered, there's no need to adjust the
-  // extra headers count.
-  if (!is_reactivated && listener->HasExtraHeaders()) {
-    IncrementExtraHeadersListenerCount(browser_context);
-  }
-
-  // If this is a new listener, add it to the list of persisted listeners.
-  if (is_service_worker_listener && !is_reactivated) {
-    AddPersistedLazyListener(browser_context, extension_id, *listener);
-  }
-  if (!is_reactivated && listener->HasSecurityInfo()) {
-    IncrementSecurityInfoListenerCount(browser_context);
-  }
-  data_[browser_context_id].active_listeners[event_name].push_back(
-      std::move(listener));
+  AddListenerToList(browser_context,
+                    data_[browser_context_id].active_listeners[event_name],
+                    std::move(listener),
+                    is_reactivated ? ListenerCountUpdate::kAlreadyCounted
+                                   : ListenerCountUpdate::kIncrement);
 
   return true;
+}
+
+void WebRequestEventRouter::AddListenerToList(
+    content::BrowserContext* browser_context,
+    Listeners& listeners,
+    std::unique_ptr<EventListener> listener,
+    ListenerCountUpdate count_update) {
+  if (count_update == ListenerCountUpdate::kIncrement) {
+    if (listener->HasExtraHeaders()) {
+      IncrementExtraHeadersListenerCount(browser_context);
+    }
+    if (listener->HasSecurityInfo()) {
+      IncrementSecurityInfoListenerCount(browser_context);
+    }
+  }
+
+  listeners.push_back(std::move(listener));
 }
 
 WebRequestEventRouter::EventListener* WebRequestEventRouter::FindEventListener(
@@ -1983,6 +1854,23 @@ WebRequestEventRouter::EventListener* WebRequestEventRouter::FindEventListener(
   Listeners& listeners = data_[GetBrowserContextID(id.browser_context.get())]
                              .active_listeners[event_name];
   return FindEventListenerInContainer(id, listeners);
+}
+
+WebRequestEventRouter::EventListener*
+WebRequestEventRouter::FindEventListenerBySubEventName(
+    BrowserContextID browser_context_id,
+    const ExtensionId& extension_id,
+    const std::string& event_name,
+    const std::string& sub_event_name) {
+  const Listeners& listeners =
+      data_[browser_context_id].active_listeners[event_name];
+  auto it =
+      std::find_if(listeners.begin(), listeners.end(),
+                   [&extension_id, &sub_event_name](const auto& listener) {
+                     return listener->id.extension_id == extension_id &&
+                            listener->id.sub_event_name == sub_event_name;
+                   });
+  return it != listeners.end() ? it->get() : nullptr;
 }
 
 WebRequestEventRouter::EventListener*
@@ -2000,22 +1888,40 @@ WebRequestEventRouter::RemoveMatchingListeners(
     Listeners& listeners,
     const ExtensionId& extension_id,
     const std::string& sub_event_name,
+    std::optional<content::ChildProcessId> render_process_id,
     std::optional<int> worker_thread_id,
     std::optional<int64_t> service_worker_version_id,
-    BrowserContextID browser_context_id) {
+    BrowserContextID browser_context_id,
+    const std::optional<base::DictValue>& filter_value,
+    std::optional<int> extra_info_spec) {
   Listeners removed_listeners;
   for (auto iter = listeners.begin(); iter != listeners.end();) {
     std::unique_ptr<EventListener>& listener = *iter;
     const EventListener::ID& id = listener->id;
     DCHECK_EQ(browser_context_id,
               GetBrowserContextID(id.browser_context.get()));
+    // Active listener removals supply `render_process_id` so a renderer cannot
+    // remove another renderer's matching listener. Lazy cleanup passes
+    // std::nullopt because lazy registrations have no active process.
     bool listener_matches =
         extension_id == id.extension_id &&
         sub_event_name == id.sub_event_name &&
+        (!render_process_id || render_process_id == id.render_process_id) &&
         (!worker_thread_id || worker_thread_id == id.worker_thread_id) &&
         (!service_worker_version_id ||
-         service_worker_version_id == id.service_worker_version_id);
+         service_worker_version_id == id.service_worker_version_id) &&
+        (!extra_info_spec || listener->extra_info_spec == *extra_info_spec) &&
+        (!filter_value || listener->filter.ToValue() == *filter_value);
     if (!listener_matches) {
+      ++iter;
+      continue;
+    }
+
+    if (id.web_view_instance_id != 0) {
+      // WebView listeners are managed by RemoveWebViewEventListeners, not here.
+      // There is not enough information here to know if the matching listener
+      // is for a WebView that is being destroyed, or an existing WebView that
+      // still needs its listener to be active.
       ++iter;
       continue;
     }
@@ -2025,6 +1931,38 @@ WebRequestEventRouter::RemoveMatchingListeners(
   }
 
   return removed_listeners;
+}
+
+size_t WebRequestEventRouter::ReplaceInactiveListeners(
+    Listeners& inactive_listeners,
+    const ExtensionId& extension_id,
+    const std::string& sub_event_name,
+    BrowserContextID browser_context_id,
+    EventListener& replacement_listener) {
+  // Keep pending requests only when the replacement is the same registration.
+  Listeners matching_listeners = RemoveMatchingListeners(
+      inactive_listeners, extension_id, sub_event_name, std::nullopt,
+      std::nullopt, std::nullopt, browser_context_id,
+      replacement_listener.filter.ToValue(),
+      replacement_listener.extra_info_spec);
+  // Only a single exact registration should ever match. It's possible no
+  // listener will match if this is a new listener in a worker context.
+  DCHECK_LE(matching_listeners.size(), 1u);
+  if (replacement_listener.IsBlocking() && !matching_listeners.empty()) {
+    replacement_listener.blocked_requests.swap(
+        matching_listeners.front()->blocked_requests);
+  }
+
+  // Anything still left under this sub-event name is stale relative to the
+  // replacement listener, so remove it before it can block forever.
+  Listeners stale_listeners = RemoveMatchingListeners(
+      inactive_listeners, extension_id, sub_event_name, std::nullopt,
+      std::nullopt, std::nullopt, browser_context_id);
+  for (const auto& stale_listener : stale_listeners) {
+    CleanUpForListener(*stale_listener, ListenerUpdateType::kRemove);
+  }
+
+  return matching_listeners.size();
 }
 
 void WebRequestEventRouter::RemoveLazyListener(
@@ -2046,9 +1984,9 @@ void WebRequestEventRouter::RemoveLazyListener(
   auto check_list = [&removed_listeners, extension_id, sub_event_name](
                         Listeners& listeners,
                         BrowserContextID browser_context_id) {
-    auto newly_removed =
-        RemoveMatchingListeners(listeners, extension_id, sub_event_name,
-                                std::nullopt, std::nullopt, browser_context_id);
+    auto newly_removed = RemoveMatchingListeners(
+        listeners, extension_id, sub_event_name, std::nullopt, std::nullopt,
+        std::nullopt, browser_context_id);
     removed_listeners.insert(removed_listeners.end(),
                              std::make_move_iterator(newly_removed.begin()),
                              std::make_move_iterator(newly_removed.end()));
@@ -2070,15 +2008,8 @@ void WebRequestEventRouter::RemoveLazyListener(
   // must either be active *or* inactive.
   DCHECK_LE(removed_listeners.size(), 2u);
 
-  std::set<content::BrowserContext*> contexts_to_update;
   for (const auto& listener : removed_listeners) {
-    contexts_to_update.insert(listener->id.browser_context.get());
     CleanUpForListener(*listener, ListenerUpdateType::kRemove);
-  }
-
-  // Update the list of persisted listeners for each relevant context.
-  for (content::BrowserContext* context : contexts_to_update) {
-    RemovePersistedLazyListener(context, extension_id, sub_event_name);
   }
 }
 
@@ -2087,6 +2018,7 @@ void WebRequestEventRouter::UpdateActiveListener(
     ListenerUpdateType update_type,
     const ExtensionId& extension_id,
     const std::string& sub_event_name,
+    std::optional<content::ChildProcessId> render_process_id,
     int worker_thread_id,
     int64_t service_worker_version_id) {
   std::string event_name = EventRouter::GetBaseEventName(sub_event_name);
@@ -2096,7 +2028,8 @@ void WebRequestEventRouter::UpdateActiveListener(
   BrowserContextData& data = data_[browser_context_id];
   auto matching_listeners = RemoveMatchingListeners(
       data.active_listeners[event_name], extension_id, sub_event_name,
-      worker_thread_id, service_worker_version_id, browser_context_id);
+      render_process_id, worker_thread_id, service_worker_version_id,
+      browser_context_id);
   if (matching_listeners.empty()) {
     return;
   }
@@ -2110,7 +2043,7 @@ void WebRequestEventRouter::UpdateActiveListener(
       listener->id.worker_thread_id = kMainThreadId;
       listener->id.service_worker_version_id =
           blink::mojom::kInvalidServiceWorkerVersionId;
-      listener->id.render_process_id = -1;
+      listener->id.render_process_id = content::ChildProcessId();
       data.inactive_listeners[event_name].push_back(std::move(listener));
     } else if (update_type == ListenerUpdateType::kRemove) {
       // Service worker listeners should always be removed via
@@ -2121,7 +2054,7 @@ void WebRequestEventRouter::UpdateActiveListener(
   }
 }
 
-void WebRequestEventRouter::CleanUpForListener(const EventListener& listener,
+void WebRequestEventRouter::CleanUpForListener(EventListener& listener,
                                                ListenerUpdateType update_type) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   std::string event_name =
@@ -2138,6 +2071,7 @@ void WebRequestEventRouter::CleanUpForListener(const EventListener& listener,
                         event_name, blocked_request_id, nullptr,
                         0 /* extra_info_spec */);
   }
+  listener.blocked_requests.clear();
 
   // Update the extra headers count and clear the cache only if the listener is
   // fully removed; otherwise, these values are still correct.
@@ -2153,94 +2087,9 @@ void WebRequestEventRouter::CleanUpForListener(const EventListener& listener,
   }
 }
 
-void WebRequestEventRouter::AddPersistedLazyListener(
-    content::BrowserContext* browser_context,
-    const ExtensionId& extension_id,
-    const EventListener& listener) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  if (!base::FeatureList::IsEnabled(
-          extensions_features::kWebRequestPersistFilteredEvents)) {
-    return;
-  }
-  // Do not persist listeners from incognito contexts.
-  // TODO(crbug.com/448893426): support OTR contexts.
-  if (browser_context->IsOffTheRecord()) {
-    return;
-  }
-
-  ExtensionPrefs* prefs = ExtensionPrefs::Get(browser_context);
-  const base::ListValue* existing_listeners =
-      prefs->ReadPrefAsList(extension_id, kFilteredLazyListeners);
-
-  // Ensure we don't add duplicate listeners.
-  if (existing_listeners) {
-    for (const auto& entry : *existing_listeners) {
-      if (!entry.is_dict()) {
-        continue;
-      }
-      const std::string* name =
-          entry.GetDict().FindString(kListenerSubEventNameKey);
-      if (name && *name == listener.id.sub_event_name) {
-        return;
-      }
-    }
-  }
-
-  base::ListValue new_listeners;
-  if (existing_listeners) {
-    new_listeners = existing_listeners->Clone();
-  }
-
-  new_listeners.Append(listener.ToInactiveListenerValue());
-  prefs->UpdateExtensionPref(extension_id, kFilteredLazyListeners,
-                             base::Value(std::move(new_listeners)));
-}
-
-void WebRequestEventRouter::RemovePersistedLazyListener(
-    content::BrowserContext* browser_context,
-    const ExtensionId& extension_id,
-    const std::string& sub_event_name) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  if (!base::FeatureList::IsEnabled(
-          extensions_features::kWebRequestPersistFilteredEvents)) {
-    return;
-  }
-  if (browser_context->IsOffTheRecord()) {
-    return;
-  }
-
-  ExtensionPrefs* prefs = ExtensionPrefs::Get(browser_context);
-  const base::ListValue* existing_listeners =
-      prefs->ReadPrefAsList(extension_id, kFilteredLazyListeners);
-  if (!existing_listeners) {
-    return;
-  }
-
-  // Remove the listener(s) with the matching sub-event name.
-  base::ListValue new_listeners = existing_listeners->Clone();
-  new_listeners.EraseIf([&](const base::Value& entry) {
-    if (!entry.is_dict()) {
-      return false;
-    }
-    const std::string* name =
-        entry.GetDict().FindString(kListenerSubEventNameKey);
-    return name && *name == sub_event_name;
-  });
-
-  if (new_listeners.empty()) {
-    // If there's no registered listeners, clear the pref.
-    prefs->UpdateExtensionPref(extension_id, kFilteredLazyListeners,
-                               std::nullopt);
-  } else {
-    // Otherwise, persist the remaining listeners.
-    prefs->UpdateExtensionPref(extension_id, kFilteredLazyListeners,
-                               base::Value(std::move(new_listeners)));
-  }
-}
-
 void WebRequestEventRouter::RemoveWebViewEventListeners(
     content::BrowserContext* browser_context,
-    int render_process_id,
+    content::ChildProcessId render_process_id,
     int web_view_instance_id) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
@@ -2411,100 +2260,6 @@ void WebRequestEventRouter::OnBrowserContextShutdown(
   data_.erase(GetBrowserContextID(browser_context));
 }
 
-void WebRequestEventRouter::LoadPersistedLazyListeners(
-    content::BrowserContext* browser_context,
-    const ExtensionId& extension_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  // TODO(crbug.com/448893426): support OTR contexts.
-  DCHECK(!browser_context->IsOffTheRecord());
-
-  ExtensionPrefs* prefs = ExtensionPrefs::Get(browser_context);
-  if (!base::FeatureList::IsEnabled(
-          extensions_features::kWebRequestPersistFilteredEvents)) {
-    // If the feature was disabled, clean up redundant preferences.
-    prefs->UpdateExtensionPref(extension_id, kFilteredLazyListeners,
-                               std::nullopt);
-    return;
-  }
-
-  const base::ListValue* persisted_listeners =
-      prefs->ReadPrefAsList(extension_id, kFilteredLazyListeners);
-  if (!persisted_listeners) {
-    return;
-  }
-
-  // If there's already listeners registered for this extension, somehow
-  // its context has already been executed, and we don't need to load
-  // the listeners from the prefs.
-  BrowserContextData& data = data_[GetBrowserContextID(browser_context)];
-  for (const auto* listener_map :
-       {&data.active_listeners, &data.inactive_listeners}) {
-    for (const auto& [event_name, listeners] : *listener_map) {
-      for (const auto& listener : listeners) {
-        if (listener->id.extension_id == extension_id) {
-          // TODO(crbug.com/448893426): remove these for loops if we can verify
-          // this never happens.
-          base::debug::DumpWithoutCrashing();
-          return;
-        }
-      }
-    }
-  }
-
-  // Load all listeners or none at all. If the list is corrupted for any reason,
-  // the listeners are unlikely to work as intended.
-  bool failed = false;
-  base::flat_map<std::string, std::unique_ptr<EventListener>> loaded_listeners;
-  for (const base::Value& listener_value : *persisted_listeners) {
-    if (!listener_value.is_dict()) {
-      LOG(WARNING) << "Failed to load persisted webRequest listener for "
-                   << extension_id << ": not a dict";
-      failed = true;
-      break;
-    }
-
-    std::string error;
-    std::unique_ptr<EventListener> listener =
-        EventListener::InitFromInactiveListenerValue(
-            listener_value.GetDict(), extension_id, browser_context, &error);
-    if (!listener) {
-      LOG(WARNING) << "Failed to load persisted webRequest listener for "
-                   << extension_id << ": " << error;
-      failed = true;
-      break;
-    }
-
-    auto [_, inserted] = loaded_listeners.emplace(listener->id.sub_event_name,
-                                                  std::move(listener));
-    if (!inserted) {
-      LOG(WARNING) << "Failed to load persisted webRequest listener for "
-                   << extension_id << ": duplicated sub event name";
-      failed = true;
-      break;
-    }
-  }
-
-  // If the list was corrupted, clear it from the prefs.
-  if (failed) {
-    prefs->UpdateExtensionPref(extension_id, kFilteredLazyListeners,
-                               std::nullopt);
-    return;
-  }
-
-  // If we are here, all listeners were loaded successfully. Register them.
-  for (auto& [sub_event_name, listener] : loaded_listeners) {
-    if (listener->HasExtraHeaders()) {
-      IncrementExtraHeadersListenerCount(browser_context);
-    }
-    if (listener->HasSecurityInfo()) {
-      IncrementSecurityInfoListenerCount(browser_context);
-    }
-    std::string event_name =
-        EventRouter::GetBaseEventName(listener->id.sub_event_name);
-    data.inactive_listeners[event_name].push_back(std::move(listener));
-  }
-}
-
 size_t WebRequestEventRouter::GetListenerCountForTesting(
     content::BrowserContext* browser_context,
     const std::string& event_name) {
@@ -2513,12 +2268,39 @@ size_t WebRequestEventRouter::GetListenerCountForTesting(
       .size();
 }
 
-size_t WebRequestEventRouter::GetInactiveListenerCountForTesting(
+size_t WebRequestEventRouter::GetInactiveListenerCount(
     content::BrowserContext* browser_context,
     const std::string& event_name) {
   return data_[GetBrowserContextID(browser_context)]
       .inactive_listeners[event_name]
       .size();
+}
+
+bool WebRequestEventRouter::GetInactiveListenerDetailsForTesting(
+    content::BrowserContext* browser_context,
+    const ExtensionId& extension_id,
+    const std::string& event_name,
+    RequestFilter** filter,
+    int* extra_info_spec) {
+  const ListenerMap& inactive_listeners =
+      data_[GetBrowserContextID(browser_context)].inactive_listeners;
+  auto event_it = inactive_listeners.find(event_name);
+  if (event_it == inactive_listeners.end()) {
+    return false;
+  }
+
+  for (const auto& listener : event_it->second) {
+    if (listener->id.extension_id == extension_id) {
+      if (extra_info_spec) {
+        *extra_info_spec = listener->extra_info_spec;
+      }
+      if (filter) {
+        *filter = &listener->filter;
+      }
+      return true;
+    }
+  }
+  return false;
 }
 
 bool WebRequestEventRouter::HasAnyExtraHeadersListenerImpl(
@@ -2653,17 +2435,18 @@ bool WebRequestEventRouter::ListenerMatchesRequest(
   }
 
   if (request.is_web_view) {
-    if (listener.id.render_process_id !=
-            request.web_view_embedder_process_id.value() ||
+    if (listener.id.render_process_id != request.web_view_embedder_process_id ||
         listener.id.web_view_instance_id != request.web_view_instance_id) {
       return false;
     }
+  } else if (listener.id.web_view_instance_id != 0) {
+    return false;
   }
 
   // Filter requests from other extensions / apps. This does not work for
   // content scripts, or extension pages in non-extension processes.
   if (is_request_from_extension &&
-      listener.id.render_process_id != request.render_process_id) {
+      listener.id.render_process_id != request.global_id.child_id) {
     return false;
   }
 
@@ -2699,9 +2482,10 @@ bool WebRequestEventRouter::ListenerMatchesRequest(
     if (access != PermissionsData::PageAccess::kAllowed) {
       if (access == PermissionsData::PageAccess::kWithheld) {
         DCHECK(ExtensionsAPIClient::Get());
+        // TODO(crbug.com/379869738): Remove GetUnsafeValue.
         ExtensionsAPIClient::Get()->NotifyWebRequestWithheld(
-            request.render_process_id, request.frame_routing_id,
-            listener.id.extension_id);
+            request.global_id.child_id.GetUnsafeValue(),
+            request.global_id.frame_routing_id, listener.id.extension_id);
       }
 
       return false;
@@ -2756,11 +2540,9 @@ void WebRequestEventRouter::DecrementBlockCount(
 
   // Ensure that the response is for the event we are blocked on.
   DCHECK_EQ(blocked_request->event, GetEventTypeFromEventName(event_name));
-  // Cache the event type; we use it below.
-  EventTypes request_event = blocked_request->event;
 
-  int num_handlers_blocking = --blocked_request->num_handlers_blocking;
-  CHECK_GE(num_handlers_blocking, 0);
+  int num_blocking_sources = --blocked_request->num_blocking_sources;
+  CHECK_GE(num_blocking_sources, 0);
 
   if (response) {
     helpers::EventResponseDelta delta = CalculateDelta(
@@ -2774,15 +2556,11 @@ void WebRequestEventRouter::DecrementBlockCount(
     blocked_request->response_deltas.push_back(std::move(delta));
   }
 
-  if (num_handlers_blocking == 0) {
+  if (num_blocking_sources == 0) {
     ExecuteDeltas(browser_context, blocked_request->request, true);
     // Note: `blocked_request` can be deleted here, depending on the outcome
     // of ExecuteDeltas(). Use the cached `request_event` and `request_id`
     // instead of using `blocked_request`.
-    if (request_event == EventTypes::kOnBeforeRequest) {
-      GetExtensionWebRequestTimeTracker().LogBeforeRequestCompletionTime(
-          request_id, base::TimeTicks::Now());
-    }
   }
 }
 
@@ -2793,8 +2571,8 @@ void WebRequestEventRouter::SendMessages(
   for (const auto& delta : deltas) {
     const std::set<std::string>& messages = delta.messages_to_extension;
     for (const std::string& message : messages) {
-      std::unique_ptr<WebRequestEventDetails> event_details(CreateEventDetails(
-          *blocked_request.request, /* extra_info_spec */ 0));
+      std::unique_ptr<WebRequestEventDetails> event_details(
+          CreateEventDetails(*blocked_request.request, /*extra_info_spec=*/0));
       event_details->SetString(keys::kMessageKey, message);
       event_details->SetString(keys::kStageKey,
                                GetRequestStageAsString(blocked_request.event));
@@ -2812,7 +2590,7 @@ int WebRequestEventRouter::ExecuteDeltas(
     bool call_callback) {
   BlockedRequest& blocked_request =
       GetOrAddBlockedRequest(browser_context, request->id);
-  CHECK_EQ(0, blocked_request.num_handlers_blocking);
+  CHECK_EQ(0, blocked_request.num_blocking_sources);
   helpers::EventResponseDeltas& deltas = blocked_request.response_deltas;
   base::TimeDelta block_time =
       base::Time::Now() - blocked_request.blocking_time;
@@ -3012,7 +2790,7 @@ bool WebRequestEventRouter::ProcessDeclarativeRules(
                                   event_name, request->id, request_stage));
     BlockedRequest& blocked_request =
         GetOrAddBlockedRequest(browser_context, request->id);
-    blocked_request.num_handlers_blocking++;
+    blocked_request.num_blocking_sources++;
     blocked_request.request = request;
     blocked_request.is_incognito |= browser_context->IsOffTheRecord();
     blocked_request.blocking_time = base::Time::Now();

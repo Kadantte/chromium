@@ -4,7 +4,7 @@
 
 #import "ios/chrome/browser/profile/model/keyed_service_factories.h"
 
-#import "components/optimization_guide/machine_learning_tflite_buildflags.h"
+#import "ios/chrome/browser/account_settings/model/ios_account_setting_service_factory.h"
 #import "ios/chrome/browser/affiliations/model/ios_chrome_affiliation_service_factory.h"
 #import "ios/chrome/browser/aim/model/ios_chrome_aim_eligibility_service_factory.h"
 #import "ios/chrome/browser/app_store_bundle/model/app_store_bundle_service_factory.h"
@@ -20,12 +20,14 @@
 #import "ios/chrome/browser/autofill/model/autocomplete_history_manager_factory.h"
 #import "ios/chrome/browser/autofill/model/autofill_image_fetcher_factory.h"
 #import "ios/chrome/browser/autofill/model/autofill_log_router_factory.h"
-#import "ios/chrome/browser/autofill/model/ios_account_setting_service_factory.h"
 #import "ios/chrome/browser/autofill/model/ios_autofill_ai_model_cache_factory.h"
 #import "ios/chrome/browser/autofill/model/ios_autofill_ai_model_executor_factory.h"
 #import "ios/chrome/browser/autofill/model/ios_autofill_entity_data_manager_factory.h"
+#import "ios/chrome/browser/autofill/model/ios_autofill_field_classification_model_handler_factory.h"
+#import "ios/chrome/browser/autofill/model/ios_wallet_pass_access_manager_factory.h"
 #import "ios/chrome/browser/autofill/model/personal_data_manager_factory.h"
 #import "ios/chrome/browser/autofill/model/strike_database_factory.h"
+#import "ios/chrome/browser/backend_promo/model/backend_promo_service_factory.h"
 #import "ios/chrome/browser/bookmarks/model/account_bookmark_sync_service_factory.h"
 #import "ios/chrome/browser/bookmarks/model/bookmark_model_factory.h"
 #import "ios/chrome/browser/bookmarks/model/bookmark_undo_service_factory.h"
@@ -33,6 +35,7 @@
 #import "ios/chrome/browser/bookmarks/model/managed_bookmark_service_factory.h"
 #import "ios/chrome/browser/bring_android_tabs/model/bring_android_tabs_to_ios_service_factory.h"
 #import "ios/chrome/browser/browsing_data/model/browsing_data_remover_factory.h"
+#import "ios/chrome/browser/cobrowse/model/ios_contextual_tasks_service_factory.h"
 #import "ios/chrome/browser/collaboration/model/collaboration_service_factory.h"
 #import "ios/chrome/browser/collaboration/model/messaging/instant_messaging_service_factory.h"
 #import "ios/chrome/browser/collaboration/model/messaging/messaging_backend_service_factory.h"
@@ -50,6 +53,7 @@
 #import "ios/chrome/browser/cross_platform_promos/model/cross_platform_promos_service_factory.h"
 #import "ios/chrome/browser/data_sharing/model/data_sharing_service_factory.h"
 #import "ios/chrome/browser/device_reauth/model/ios_device_authenticator_factory.h"
+#import "ios/chrome/browser/device_reauth/model/reauthentication_service_factory.h"
 #import "ios/chrome/browser/device_sharing/model/device_sharing_manager_factory.h"
 #import "ios/chrome/browser/discover_feed/model/discover_feed_service_factory.h"
 #import "ios/chrome/browser/dom_distiller/model/distiller_service_factory.h"
@@ -58,10 +62,16 @@
 #import "ios/chrome/browser/download/model/download_file_service_factory.h"
 #import "ios/chrome/browser/download/model/download_record_service_factory.h"
 #import "ios/chrome/browser/drive/model/drive_service_factory.h"
+#import "ios/chrome/browser/enterprise/client_certificates/certificate_provisioning_service_factory_ios.h"
+#import "ios/chrome/browser/enterprise/client_certificates/certificate_store_factory.h"
+#import "ios/chrome/browser/enterprise/client_certificates/client_certificates_service_ios_factory.h"
+#import "ios/chrome/browser/enterprise/cloud_content_scanning/model/ios_cloud_binary_upload_service_factory.h"
 #import "ios/chrome/browser/enterprise/connectors/connectors_service_factory.h"
 #import "ios/chrome/browser/enterprise/connectors/reporting/ios_realtime_reporting_client_factory.h"
 #import "ios/chrome/browser/enterprise/connectors/reporting/ios_reporting_event_router_factory.h"
 #import "ios/chrome/browser/enterprise/data_controls/model/ios_rules_service_factory.h"
+#import "ios/chrome/browser/enterprise/data_protection/model/data_protection_url_lookup_service_factory.h"
+#import "ios/chrome/browser/enterprise/groups/model/enterprise_groups_profile_handler_factory.h"
 #import "ios/chrome/browser/enterprise/identifiers/profile_id_service_factory_ios.h"
 #import "ios/chrome/browser/enterprise/model/idle/idle_service_factory.h"
 #import "ios/chrome/browser/external_files/model/external_file_remover_factory.h"
@@ -83,8 +93,9 @@
 #import "ios/chrome/browser/home_customization/model/user_uploaded_image_manager_factory.h"
 #import "ios/chrome/browser/https_upgrades/model/https_upgrade_service_factory.h"
 #import "ios/chrome/browser/image_fetcher/model/image_fetcher_service_factory.h"
-#import "ios/chrome/browser/intelligence/actuation/model/actuation_service_factory.h"
-#import "ios/chrome/browser/intelligence/bwg/model/bwg_service_factory.h"
+#import "ios/chrome/browser/intelligence/actor/model/actor_service_factory.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_capabilities_manager_factory.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_service_factory.h"
 #import "ios/chrome/browser/intelligence/persist_tab_context/model/page_content_cache_service_factory.h"
 #import "ios/chrome/browser/invalidation/model/ios_chrome_profile_invalidation_provider_factory.h"
 #import "ios/chrome/browser/language/model/accept_languages_service_factory.h"
@@ -92,11 +103,14 @@
 #import "ios/chrome/browser/language/model/url_language_histogram_factory.h"
 #import "ios/chrome/browser/language_detection/model/language_detection_model_loader_service_ios_factory.h"
 #import "ios/chrome/browser/language_detection/model/language_detection_model_service_factory.h"
+#import "ios/chrome/browser/level_up/model/level_up_service_factory.h"
 #import "ios/chrome/browser/mailto_handler/model/mailto_handler_service_factory.h"
 #import "ios/chrome/browser/metrics/model/bookmark_model_metrics_service_factory.h"
 #import "ios/chrome/browser/metrics/model/google_groups_manager_factory.h"
+#import "ios/chrome/browser/metrics/model/ios_profile_metrics_service_factory.h"
 #import "ios/chrome/browser/metrics/model/ios_profile_session_durations_service_factory.h"
 #import "ios/chrome/browser/metrics/model/tab_usage_recorder_service_factory.h"
+#import "ios/chrome/browser/mini_map/model/mini_map_service_factory.h"
 #import "ios/chrome/browser/ntp/model/ntp_background_image_cache_service_factory.h"
 #import "ios/chrome/browser/omnibox/model/placeholder_service/placeholder_service_factory.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service_factory.h"
@@ -111,21 +125,21 @@
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_reuse_manager_factory.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_sender_service_factory.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_profile_password_store_factory.h"
+#import "ios/chrome/browser/passwords/model/ios_password_field_classification_model_handler_factory.h"
 #import "ios/chrome/browser/passwords/model/ios_password_manager_settings_service_factory.h"
 #import "ios/chrome/browser/passwords/model/ios_password_requirements_service_factory.h"
 #import "ios/chrome/browser/passwords/model/password_manager_log_router_factory.h"
 #import "ios/chrome/browser/photos/model/photos_service_factory.h"
-#import "ios/chrome/browser/plus_addresses/model/plus_address_service_factory.h"
-#import "ios/chrome/browser/plus_addresses/model/plus_address_setting_service_factory.h"
 #import "ios/chrome/browser/policy/model/cloud/user_policy_signin_service_factory.h"
+#import "ios/chrome/browser/policy/model/enterprise_management_metrics_service_factory.h"
 #import "ios/chrome/browser/policy/model/reporting/cloud_profile_reporting_service_factory_ios.h"
 #import "ios/chrome/browser/policy_url_blocking/model/policy_url_blocking_service_factory.h"
 #import "ios/chrome/browser/power_bookmarks/model/power_bookmark_service_factory.h"
 #import "ios/chrome/browser/price_insights/model/price_insights_model_factory.h"
+#import "ios/chrome/browser/private_ai/model/private_ai_service_factory.h"
 #import "ios/chrome/browser/promos_manager/model/promos_manager_factory.h"
 #import "ios/chrome/browser/push_notification/model/provisional_push_notification_service_factory.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_profile_service_factory.h"
-#import "ios/chrome/browser/reading_list/model/reading_list_download_service_factory.h"
 #import "ios/chrome/browser/reading_list/model/reading_list_model_factory.h"
 #import "ios/chrome/browser/regional_capabilities/model/regional_capabilities_service_factory.h"
 #import "ios/chrome/browser/safe_browsing/model/chrome_enterprise_url_lookup_service_factory.h"
@@ -166,6 +180,7 @@
 #import "ios/chrome/browser/signin/model/signin_metrics_service_factory.h"
 #import "ios/chrome/browser/signin/model/signin_profile_info_updater_factory.h"
 #import "ios/chrome/browser/signin/model/trusted_vault/trusted_vault_client_backend_factory.h"
+#import "ios/chrome/browser/subscription_eligibility/model/subscription_eligibility_service_factory.h"
 #import "ios/chrome/browser/supervised_user/model/child_account_service_factory.h"
 #import "ios/chrome/browser/supervised_user/model/family_link_settings_service_factory.h"
 #import "ios/chrome/browser/supervised_user/model/list_family_members_service_factory.h"
@@ -195,11 +210,8 @@
 #import "ios/chrome/browser/web/model/java_script_console/java_script_console_feature_factory.h"
 #import "ios/chrome/browser/webauthn/model/ios_passkey_model_factory.h"
 #import "ios/chrome/browser/webdata_services/model/web_data_service_factory.h"
-
-#if BUILDFLAG(BUILD_WITH_TFLITE_LIB)
-#import "ios/chrome/browser/autofill/model/ios_autofill_field_classification_model_handler_factory.h"
-#import "ios/chrome/browser/passwords/model/ios_password_field_classification_model_handler_factory.h"
-#endif
+#import "ios/public/provider/chrome/browser/cobalt/cobalt_api.h"
+#import "ios/web/common/features.h"
 
 #if BUILDFLAG(IOS_CREDENTIAL_PROVIDER_ENABLED)
 #import "ios/chrome/browser/credential_provider/model/credential_provider_service_factory.h"
@@ -213,23 +225,30 @@
 void EnsureProfileKeyedServiceFactoriesBuilt() {
   // Keep this list alphabetized -- namespaced factories first, followed by
   // non-namespaced factories.
+  actor::ActorServiceFactory::GetInstance();
   autofill::AutocompleteHistoryManagerFactory::GetInstance();
   autofill::AutofillImageFetcherFactory::GetInstance();
   autofill::AutofillLogRouterFactory::GetInstance();
   autofill::PersonalDataManagerFactory::GetInstance();
   autofill::StrikeDatabaseFactory::GetInstance();
+  client_certificates::CertificateStoreFactory::GetInstance();
+  client_certificates::CertificateProvisioningServiceFactoryIOS::GetInstance();
   collaboration::CollaborationServiceFactory::GetInstance();
   collaboration::messaging::InstantMessagingServiceFactory::GetInstance();
   collaboration::messaging::MessagingBackendServiceFactory::GetInstance();
   commerce::ShoppingServiceFactory::GetInstance();
+  client_certificates::ClientCertificatesServiceIOSFactory::GetInstance();
   data_controls::IOSRulesServiceFactory::GetInstance();
   data_sharing::DataSharingServiceFactory::GetInstance();
   drive::DriveServiceFactory::GetInstance();
+  DataProtectionUrlLookupServiceFactory::GetInstance();
   enterprise::ProfileIdServiceFactoryIOS::GetInstance();
   enterprise_reporting::CloudProfileReportingServiceFactoryIOS::GetInstance();
   enterprise_connectors::ConnectorsServiceFactory::GetInstance();
+  enterprise_connectors::IOSCloudBinaryUploadServiceFactory::GetInstance();
   enterprise_connectors::IOSRealtimeReportingClientFactory::GetInstance();
   enterprise_connectors::IOSReportingEventRouterFactory::GetInstance();
+  enterprise_groups::EnterpriseGroupsProfileHandlerFactory::GetInstance();
   enterprise_idle::IdleServiceFactory::GetInstance();
   feature_engagement::TrackerFactory::GetInstance();
   ios::AboutSigninInternalsFactory::GetInstance();
@@ -261,6 +280,7 @@ void EnsureProfileKeyedServiceFactoriesBuilt() {
   ios::WebDataServiceFactory::GetInstance();
   ios::WebHistoryServiceFactory::GetInstance();
   ios::ZeroSuggestCacheServiceFactory::GetInstance();
+  policy::EnterpriseManagementMetricsServiceFactory::GetInstance();
   policy::UserPolicySigninServiceFactory::GetInstance();
   safe_browsing::ChromeEnterpriseRealTimeUrlLookupServiceFactory::GetInstance();
   segmentation_platform::SegmentationPlatformServiceFactory::GetInstance();
@@ -271,9 +291,9 @@ void EnsureProfileKeyedServiceFactoriesBuilt() {
 
   AboutThisSiteServiceFactory::GetInstance();
   AcceptLanguagesServiceFactory::GetInstance();
-  ActuationServiceFactory::GetInstance();
   AppStoreBundleServiceFactory::GetInstance();
   AuthenticationServiceFactory::GetInstance();
+  BackendPromoServiceFactory::GetInstance();
   BackgroundDownloadServiceFactory::GetInstance();
   BookmarkModelMetricsServiceFactory::GetInstance();
   BreadcrumbManagerKeyedServiceFactory::GetInstance();
@@ -301,13 +321,15 @@ void EnsureProfileKeyedServiceFactoriesBuilt() {
   DownloadFileServiceFactory::GetInstance();
   DownloadRecordServiceFactory::GetInstance();
   ExternalFileRemoverFactory::GetInstance();
-  BwgServiceFactory::GetInstance();
+  GeminiCapabilitiesManagerFactory::GetInstance();
+  GeminiServiceFactory::GetInstance();
   GoogleGroupsManagerFactory::GetInstance();
   GoogleLogoServiceFactory::GetInstance();
   HashRealTimeServiceFactory::GetInstance();
   HomeBackgroundCustomizationServiceFactory::GetInstance();
   HomeBackgroundImageServiceFactory::GetInstance();
   NtpBackgroundServiceFactory::GetInstance();
+  LevelUpServiceFactory::GetInstance();
   HttpsUpgradeServiceFactory::GetInstance();
   IdentityManagerFactory::GetInstance();
   ImageFetcherServiceFactory::GetInstance();
@@ -317,6 +339,7 @@ void EnsureProfileKeyedServiceFactoriesBuilt() {
   IOSAutofillAiModelCacheFactory::GetInstance();
   IOSAutofillAiModelExecutorFactory::GetInstance();
   IOSAutofillEntityDataManagerFactory::GetInstance();
+  IOSAutofillFieldClassificationModelHandlerFactory::GetInstance();
   IOSChromeAccountPasswordStoreFactory::GetInstance();
   IOSChromeAffiliationServiceFactory::GetInstance();
   IOSChromeAimEligibilityServiceFactory::GetInstance();
@@ -334,20 +357,25 @@ void EnsureProfileKeyedServiceFactoriesBuilt() {
   IOSChromeProfilePasswordStoreFactory::GetInstance();
   IOSChromeSafetyCheckManagerFactory::GetInstance();
   IOSChromeTabRestoreServiceFactory::GetInstance();
+  IOSContextualTasksServiceFactory::GetInstance();
+  IOSPasswordFieldClassificationModelHandlerFactory::GetInstance();
   IOSPasskeyModelFactory::GetInstance();
   IOSPasswordManagerSettingsServiceFactory::GetInstance();
   IOSPasswordRequirementsServiceFactory::GetInstance();
+  IOSProfileMetricsServiceFactory::GetInstance();
   IOSProfileSessionDurationsServiceFactory::GetInstance();
   IOSSharingMessageBridgeFactory::GetInstance();
   IOSSharingServiceFactory::GetInstance();
   IOSTrustedVaultServiceFactory::GetInstance();
   IOSUserEventServiceFactory::GetInstance();
+  IOSWalletPassAccessManagerFactory::GetInstance();
   JavaScriptConsoleFeatureFactory::GetInstance();
   LanguageDetectionModelLoaderServiceIOSFactory::GetInstance();
   LanguageModelManagerFactory::GetInstance();
   ListFamilyMembersServiceFactory::GetInstance();
   MailtoHandlerServiceFactory::GetInstance();
   ManagedBookmarkServiceFactory::GetInstance();
+  MiniMapServiceFactory::GetInstance();
   NTPBackgroundImageCacheServiceFactory::GetInstance();
   OhttpKeyServiceFactory::GetInstance();
   OnDeviceTailModelServiceFactory::GetInstance();
@@ -356,17 +384,16 @@ void EnsureProfileKeyedServiceFactoriesBuilt() {
   PageImageServiceFactory::GetInstance();
   PageContentCacheServiceFactory::GetInstance();
   PhotosServiceFactory::GetInstance();
-  PlusAddressServiceFactory::GetInstance();
-  PlusAddressSettingServiceFactory::GetInstance();
   PolicyBlocklistServiceFactory::GetInstance();
   PowerBookmarkServiceFactory::GetInstance();
   PriceInsightsModelFactory::GetInstance();
+  PrivateAiServiceFactory::GetInstance();
   PromosManagerFactory::GetInstance();
   ProvisionalPushNotificationServiceFactory::GetInstance();
   PushNotificationProfileServiceFactory::GetInstance();
-  ReadingListDownloadServiceFactory::GetInstance();
   ReadingListModelFactory::GetInstance();
   RealTimeUrlLookupServiceFactory::GetInstance();
+  ReauthenticationServiceFactory::GetInstance();
   RemoteSuggestionsServiceFactory::GetInstance();
   SafeBrowsingClientFactory::GetInstance();
   SafeBrowsingHelperFactory::GetInstance();
@@ -381,6 +408,7 @@ void EnsureProfileKeyedServiceFactoriesBuilt() {
   SigninProfileInfoUpdaterFactory::GetInstance();
   SupervisedUserMetricsServiceFactory::GetInstance();
   SupervisedUserServiceFactory::GetInstance();
+  SubscriptionEligibilityServiceFactory::GetInstance();
   SyncInvalidationsServiceFactory::GetInstance();
   SyncServiceFactory::GetInstance();
   TabGroupServiceFactory::GetInstance();
@@ -402,15 +430,14 @@ void EnsureProfileKeyedServiceFactoriesBuilt() {
   VisitedURLRankingServiceFactory::GetInstance();
   // Keep the above list alphabetized! Don't just add new entries at the end.
 
-#if BUILDFLAG(BUILD_WITH_TFLITE_LIB)
-  IOSPasswordFieldClassificationModelHandlerFactory::GetInstance();
-  IOSAutofillFieldClassificationModelHandlerFactory::GetInstance();
-#endif
-
 #if BUILDFLAG(IOS_CREDENTIAL_PROVIDER_ENABLED)
   CredentialProviderServiceFactory::GetInstance();
 #endif
 
   // Call other "Ensure...FactoriesBuilt" functions as necessary.
   EnsureSessionProtoDBFactoriesBuilt();
+
+  if (web::features::IsCobaltEnabled()) {
+    ios::provider::EnsureCobaltProfileKeyedServiceFactoriesBuilt();
+  }
 }

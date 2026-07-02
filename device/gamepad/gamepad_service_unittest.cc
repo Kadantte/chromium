@@ -338,8 +338,7 @@ TEST_F(GamepadServiceTest, ConnectWhileInactiveTest) {
   }
 }
 
-// https://crbug.com/1405460: Flaky on Android.
-TEST_F(GamepadServiceTest, DISABLED_ConnectAndDisconnectWhileInactiveTest) {
+TEST_F(GamepadServiceTest, ConnectAndDisconnectWhileInactiveTest) {
   // Create two active consumers.
   auto* consumer1 = CreateConsumer();
   auto* consumer2 = CreateConsumer();
@@ -374,6 +373,7 @@ TEST_F(GamepadServiceTest, DISABLED_ConnectAndDisconnectWhileInactiveTest) {
     SetPadsConnected(/*connected_count=*/0);
     loop.Run();
   }
+  WaitForData();
 
   // Mark the second consumer inactive.
   EXPECT_TRUE(service()->ConsumerBecameInactive(consumer2));
@@ -405,6 +405,10 @@ TEST_F(GamepadServiceTest, DISABLED_ConnectAndDisconnectWhileInactiveTest) {
   // because the connected gamepads were disconnected while the consumer was
   // still inactive.
   EXPECT_TRUE(service()->ConsumerBecameActive(consumer2));
+  WaitForData();
+
+  // Cleanup: disconnect gamepads before exiting.
+  SetPadsConnected(0);
   WaitForData();
 }
 
@@ -1002,7 +1006,14 @@ TEST_F(GamepadServiceSimulationTest, Vibration) {
   EXPECT_EQ(disconnected_future.Get<0>(), 0u);
 }
 
-TEST_F(GamepadServiceSimulationTest, TokenNotFound) {
+// TODO(crbug.com/499019944): Re-enable this test.
+#if BUILDFLAG(IS_LINUX)
+// Flaky on linux TSAN.
+#define MAYBE_TokenNotFound DISABLED_TokenNotFound
+#else
+#define MAYBE_TokenNotFound TokenNotFound
+#endif
+TEST_F(GamepadServiceSimulationTest, MAYBE_TokenNotFound) {
   // Mark `consumer` active.
   auto* consumer = CreateConsumer();
   EXPECT_TRUE(service()->ConsumerBecameActive(consumer));

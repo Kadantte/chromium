@@ -12,8 +12,6 @@
 namespace blink {
 
 class BoxFragmentBuilder;
-class MainGap;
-class CrossGap;
 class GapGeometry;
 struct LogicalOffset;
 struct FlexLine;
@@ -121,24 +119,16 @@ struct FlexLine;
 // TODO(javiercon): Consider refactoring this code to be able to be reused for
 // grid-lanes, by abstracting away the flex-specific logic.
 class CORE_EXPORT FlexGapAccumulator {
+  STACK_ALLOCATED();
+
  public:
   explicit FlexGapAccumulator(LayoutUnit gap_between_items,
-                              LayoutUnit gap_between_lines,
+                              LayoutUnit effective_gap_between_lines,
                               wtf_size_t num_lines,
                               wtf_size_t num_flex_items,
                               bool is_column,
                               LayoutUnit border_scrollbar_padding_block_start,
-                              LayoutUnit border_scrollbar_padding_inline_start)
-      : gap_between_items_(gap_between_items),
-        gap_between_lines_(gap_between_lines),
-        is_column_(is_column),
-        border_scrollbar_padding_block_start_(
-            border_scrollbar_padding_block_start),
-        border_scrollbar_padding_inline_start_(
-            border_scrollbar_padding_inline_start) {
-    cross_gaps_.ReserveInitialCapacity(num_flex_items);
-    main_gaps_.ReserveInitialCapacity(num_lines - 1);
-  }
+                              LayoutUnit border_scrollbar_padding_inline_start);
 
   const GapGeometry* BuildGapGeometry(
       const BoxFragmentBuilder& container_builder);
@@ -206,7 +196,8 @@ class CORE_EXPORT FlexGapAccumulator {
                                bool is_last_line,
                                LayoutUnit line_cross_start,
                                LayoutUnit line_cross_end,
-                               LayoutUnit container_main_end);
+                               LayoutUnit container_main_end,
+                               bool in_fragmentation = false);
 
   void PopulateMainGapForFirstItem(LayoutUnit cross_end);
 
@@ -225,7 +216,13 @@ class CORE_EXPORT FlexGapAccumulator {
     content_main_end_ = content_main_end;
   }
 
-  const Vector<MainGap>& MainGaps() const { return main_gaps_; }
+  void SetFirstFlexLineProcessedIndex(wtf_size_t index) {
+    first_flex_line_processed_index_ = index;
+  }
+
+  void SetEffectiveGapBetweenLines(LayoutUnit effective_gap) {
+    effective_gap_between_lines_ = effective_gap;
+  }
 
   // In the flex algorithm, there are some cases where we need to suppress a row
   // gap (i.e. if a row gap is the last content in a fragment). In such cases,
@@ -246,11 +243,15 @@ class CORE_EXPORT FlexGapAccumulator {
                                       LayoutUnit line_cross_start);
 
   LayoutUnit gap_between_items_;
-  LayoutUnit gap_between_lines_;
+
+  // The effective gap between lines includes the base `gap` property plus any
+  // additional space from cross-axis content distribution (e.g., space-between,
+  // stretch).
+  LayoutUnit effective_gap_between_lines_;
+
   bool is_column_ = false;
 
-  Vector<MainGap> main_gaps_;
-  Vector<CrossGap> cross_gaps_;
+  GapGeometry* gap_geometry_ = nullptr;
 
   LayoutUnit border_scrollbar_padding_block_start_;
   LayoutUnit border_scrollbar_padding_inline_start_;
@@ -258,9 +259,10 @@ class CORE_EXPORT FlexGapAccumulator {
   LayoutUnit content_cross_start_ = LayoutUnit::Max();
   LayoutUnit content_cross_end_;
   LayoutUnit content_main_start_ = LayoutUnit::Max();
+
   LayoutUnit content_main_end_;
 
-  // Tracks the index of the first flex line procesesed within the current
+  // Tracks the index of the first flex line processed within the current
   // fragment.
   wtf_size_t first_flex_line_processed_index_ = kNotFound;
 };

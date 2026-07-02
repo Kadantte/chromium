@@ -9,12 +9,12 @@ import android.content.Context;
 import androidx.annotation.ColorInt;
 import androidx.annotation.ColorRes;
 
-import org.chromium.base.UserDataHost;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
+import org.chromium.chrome.browser.omnibox.FuseboxSessionState;
 import org.chromium.chrome.browser.omnibox.LocationBarDataProvider;
 import org.chromium.chrome.browser.omnibox.NewTabPageDelegate;
 import org.chromium.chrome.browser.omnibox.UrlBarData;
@@ -26,10 +26,10 @@ import org.chromium.components.security_state.ConnectionSecurityLevel;
 import org.chromium.url.GURL;
 
 @NullMarked
-class SearchBoxDataProvider implements LocationBarDataProvider {
+public class SearchBoxDataProvider implements LocationBarDataProvider {
     private final NonNullObservableSupplier<@ControlsPosition Integer> mToolbarPosition =
             ObservableSuppliers.createNonNull(ControlsPosition.TOP);
-    private final UserDataHost mUserDataHost = new UserDataHost();
+    private final FuseboxSessionState mFuseboxSessionState = new FuseboxSessionState();
 
     private /* PageClassification */ int mPageClassification;
     private @ColorInt int mPrimaryColor;
@@ -44,13 +44,13 @@ class SearchBoxDataProvider implements LocationBarDataProvider {
      *
      * @param context current context
      */
-    /* package */ void initialize(Context context, boolean isIncognito) {
+    public void initialize(Context context, boolean isIncognito) {
         mPrimaryColor = ChromeColors.getPrimaryBackgroundColor(context, isIncognito);
         mIsIncognito = isIncognito;
     }
 
     public void destroy() {
-        mUserDataHost.destroy();
+        mFuseboxSessionState.destroy();
     }
 
     @Override
@@ -94,8 +94,8 @@ class SearchBoxDataProvider implements LocationBarDataProvider {
     }
 
     @Override
-    public UserDataHost getUserDataHost() {
-        return mUserDataHost;
+    public FuseboxSessionState getFuseboxSessionState() {
+        return mFuseboxSessionState;
     }
 
     @Override
@@ -163,7 +163,7 @@ class SearchBoxDataProvider implements LocationBarDataProvider {
         return 0;
     }
 
-    void setPageClassification(int pageClassification) {
+    public void setPageClassification(int pageClassification) {
         mPageClassification = pageClassification;
     }
 

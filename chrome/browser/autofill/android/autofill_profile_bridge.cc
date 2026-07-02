@@ -46,7 +46,7 @@ using ::i18n::addressinput::RECIPIENT;
 
 static std::string JNI_AutofillProfileBridge_GetDefaultCountryCode(
     JNIEnv* env) {
-  return autofill::AutofillCountry::CountryCodeForLocale(
+  return AutofillCountry::CountryCodeForLocale(
       g_browser_process->GetApplicationLocale());
 }
 
@@ -71,7 +71,7 @@ JNI_AutofillProfileBridge_GetSupportedCountries(JNIEnv* env) {
 
 static std::vector<int> JNI_AutofillProfileBridge_GetRequiredFields(
     JNIEnv* env,
-    std::string& country_code) {
+    const std::string& country_code) {
   std::vector<int> required;
 
   // Iterating over fields in AddressField to ensure that only fields from
@@ -88,22 +88,24 @@ static std::vector<int> JNI_AutofillProfileBridge_GetRequiredFields(
 }
 
 static AutofillAddressEditorUiInfoAndroid
-JNI_AutofillProfileBridge_GetAddressEditorUiInfo(JNIEnv* env,
-                                                 std::string& country_code,
-                                                 std::string& language_code,
-                                                 int32_t j_validation_type) {
+JNI_AutofillProfileBridge_GetAddressEditorUiInfo(
+    JNIEnv* env,
+    const std::string& country_code,
+    const std::string& language_code,
+    int32_t j_validation_type) {
   std::string best_language_tag;
   Localization localization;
   localization.SetGetter(l10n_util::GetStringUTF8);
 
-  if (language_code.empty()) {
-    language_code = g_browser_process->GetApplicationLocale();
+  std::string language_code_new = language_code;
+  if (language_code_new.empty()) {
+    language_code_new = g_browser_process->GetApplicationLocale();
   }
 
   AutofillCountry country(country_code);
   std::vector<AutofillAddressUIComponent> ui_components =
       ConvertAddressUiComponents(
-          BuildComponents(country_code, localization, language_code,
+          BuildComponents(country_code, localization, language_code_new,
                           &best_language_tag),
           country);
   ExtendAddressComponents(ui_components, country, localization,
@@ -124,8 +126,7 @@ JNI_AutofillProfileBridge_GetAddressEditorUiInfo(JNIEnv* env,
     }
     components.emplace_back(
         ui_component.field, ui_component.name, is_required,
-        ui_component.length_hint ==
-            autofill::AutofillAddressUIComponent::HINT_LONG);
+        ui_component.length_hint == AutofillAddressUIComponent::HINT_LONG);
   }
 
   return AutofillAddressEditorUiInfoAndroid(best_language_tag, components);

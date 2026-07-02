@@ -47,6 +47,7 @@
 #include "chrome/browser/search/search.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/themes/theme_properties.h"
+#include "chrome/browser/ui/bookmarks/bookmark_context_menu_controller.h"
 #include "chrome/browser/ui/bookmarks/bookmark_drag_drop.h"
 #include "chrome/browser/ui/bookmarks/bookmark_tab_helper.h"
 #include "chrome/browser/ui/bookmarks/bookmark_ui_operations_helper.h"
@@ -57,6 +58,7 @@
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
+#include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -72,8 +74,6 @@
 #include "chrome/browser/ui/views/event_utils.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/themed_background.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_ui.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_util.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_ink_drop_util.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/common/chrome_switches.h"
@@ -88,6 +88,7 @@
 #include "components/bookmarks/browser/bookmark_utils.h"
 #include "components/bookmarks/common/bookmark_pref_names.h"
 #include "components/bookmarks/managed/managed_bookmark_service.h"
+#include "components/feature_engagement/public/feature_constants.h"
 #include "components/metrics/metrics_service.h"
 #include "components/prefs/pref_service.h"
 #include "components/profile_metrics/browser_profile_type.h"
@@ -261,7 +262,7 @@ class BookmarkFolderButton : public BookmarkMenuButtonBase {
     if (event.IsOnlyLeftMouseButton()) {
       // TODO(bruthig): The ACTION_PENDING triggering logic should be in
       // MenuButton::OnPressed() however there is a bug with the pressed state
-      // logic in MenuButton. See http://crbug.com/567252.
+      // logic in MenuButton. See http://crbug.com/41227327.
       views::InkDrop::Get(this)->AnimateToState(
           views::InkDropState::ACTION_PENDING, &event);
     }
@@ -372,7 +373,6 @@ class BookmarkBarView::ButtonSeparatorView : public views::Separator {
   ButtonSeparatorView() {
     const int leading_padding = 8;
     const int trailing_padding = 8;
-    separator_thickness_ = kBookmarkBarSeparatorThickness;
     const gfx::Insets border_insets =
         gfx::Insets::TLBR(0, leading_padding, 0, trailing_padding);
     const ui::ColorId color_id = kColorBookmarkBarSeparatorChromeRefresh;
@@ -388,18 +388,25 @@ class BookmarkBarView::ButtonSeparatorView : public views::Separator {
   ButtonSeparatorView& operator=(const ButtonSeparatorView&) = delete;
   ~ButtonSeparatorView() override = default;
 
-  void UpdateBorderAndPreferredSize(gfx::Insets border_insets) {
-    SetPreferredSize(gfx::Size(
-        border_insets.left() + separator_thickness_ + border_insets.right(),
-        gfx::kFaviconSize));
+  void UpdateBorderAndPreferredSize(const gfx::Insets& border_insets) {
+    const int border_thickness = kBookmarkBarSeparatorThickness / 2;
+
+    // For RoundedRectBorder, Border::GetInsets() is equal to border thickness
+    // + paint insets.
+    if (GetBorder() && GetBorder()->GetInsets() ==
+                           border_insets + gfx::Insets(border_thickness)) {
+      return;
+    }
+
+    SetPreferredSize(gfx::Size(border_insets.left() +
+                                   kBookmarkBarSeparatorThickness +
+                                   border_insets.right(),
+                               gfx::kFaviconSize));
 
     SetBorder(views::CreateRoundedRectBorder(
-        separator_thickness_ / 2, separator_thickness_ / 2, border_insets,
+        border_thickness, border_thickness, border_insets,
         kColorBookmarkBarSeparatorChromeRefresh));
   }
-
- private:
-  int separator_thickness_;
 };
 
 BEGIN_METADATA(BookmarkBarView, ButtonSeparatorView)
@@ -797,8 +804,8 @@ void BookmarkBarView::Layout(PassKey) {
     // of `saved_tab_group_bar_` below. Later the overflow button will be laid
     // out with both width and height the same as `button_height` (i.e. the
     // height of `saved_tab_group_bar_`).
-    if (saved_tab_group_bar_->overflow_button()) {
-      saved_tab_group_bar_->overflow_button()->SetPreferredSize(
+    if (saved_tab_group_bar_->everything_menu_button()) {
+      saved_tab_group_bar_->everything_menu_button()->SetPreferredSize(
           gfx::Size(button_height, button_height));
     }
     // Calculate the save tab group width without any restriction.
@@ -1007,7 +1014,7 @@ bool BookmarkBarView::GetDropFormats(
     return false;
   }
   *formats = ui::OSExchangeData::URL;
-  format_types->insert(bookmarks::BookmarkNodeData::GetBookmarkFormatType());
+  format_types->insert(ui::ClipboardFormatType::BookmarkEntriesType());
   return true;
 }
 
@@ -1372,6 +1379,7 @@ void BookmarkBarView::WriteDragDataForView(View* sender,
                                            const gfx::Point& press_pt,
                                            ui::OSExchangeData* data) {
   base::RecordAction(base::UserMetricsAction("BookmarkBar_DragButton"));
+  chrome::UpdateBookmarkBarVisibilityPrefOnUserAction(browser_->profile());
 
   const auto* node = GetNodeForSender(sender);
   ui::ImageModel icon;
@@ -1432,6 +1440,7 @@ void BookmarkBarView::AppsPageShortcutPressed(const ui::Event& event) {
                                 ui::PAGE_TRANSITION_AUTO_BOOKMARK, false);
   page_navigator_->OpenURL(params, /*navigation_handle_callback=*/{});
   RecordBookmarkAppsPageOpen(BookmarkLaunchLocation::kAttachedBar);
+  chrome::UpdateBookmarkBarVisibilityPrefOnUserAction(browser_->profile());
 }
 
 void BookmarkBarView::OnButtonPressed(const bookmarks::BookmarkNode* node,
@@ -1449,10 +1458,12 @@ void BookmarkBarView::OnButtonPressed(const bookmarks::BookmarkNode* node,
   RecordBookmarkLaunch(
       BookmarkLaunchLocation::kAttachedBar,
       profile_metrics::GetBrowserProfileType(browser_->profile()));
+  chrome::UpdateBookmarkBarVisibilityPrefOnUserAction(browser_->profile());
 }
 
 void BookmarkBarView::OnMenuButtonPressed(const BookmarkParentFolder& folder,
                                           const ui::Event& event) {
+  chrome::UpdateBookmarkBarVisibilityPrefOnUserAction(browser_->profile());
   // Clicking the middle mouse button or clicking with Control/Command key down
   // opens all bookmarks in the folder in new tabs.
   if ((event.flags() & ui::EF_MIDDLE_MOUSE_BUTTON) ||
@@ -1525,19 +1536,54 @@ void BookmarkBarView::ShowContextMenuForViewImpl(
       context_menu_source = apps_page_shortcut_;
     }
   }
+
+  if (context_menu_source) {
+    context_menu_highlight_ = context_menu_source->AddAnchorHighlight();
+  }
+
+  std::vector<int64_t> node_ids;
+  node_ids.reserve(nodes.size());
+  for (const auto* node : nodes) {
+    node_ids.push_back(node->id());
+  }
+  auto parent_folder = BookmarkContextMenuController::GetParentForNewNodes(
+      ToRawPtrVector(nodes));
+  BookmarkUIOperationsHelperMergedSurfaces(bookmark_service_,
+                                           parent_folder.get())
+      .CanPasteFromClipboard(base::BindOnce(
+          &BookmarkBarView::RunContextMenuAt, weak_ptr_factory_.GetWeakPtr(),
+          std::move(node_ids), point, source_type));
+}
+
+void BookmarkBarView::RunContextMenuAt(std::vector<int64_t> node_ids,
+                                       const gfx::Point& point,
+                                       ui::mojom::MenuSourceType source_type,
+                                       bool can_paste) {
   // |close_on_remove| only matters for nested menus. We're not nested at this
   // point, so this value has no effect.
   const bool close_on_remove = true;
 
+  auto* bookmark_model =
+      BookmarkModelFactory::GetForBrowserContext(browser_->profile());
+  std::vector<const BookmarkNode*> nodes;
+  for (int64_t node_id : node_ids) {
+    const BookmarkNode* node =
+        bookmarks::GetBookmarkNodeByID(bookmark_model, node_id);
+    if (node) {
+      nodes.push_back(node);
+    }
+  }
+  if (nodes.empty()) {
+    return;
+  }
+
+  context_menu_observation_.Reset();
   context_menu_ = std::make_unique<BookmarkContextMenu>(
       GetWidget(), browser_, browser_->profile(),
       BookmarkLaunchLocation::kAttachedBar, ToRawPtrVector(nodes),
-      close_on_remove);
+      close_on_remove, can_paste);
   context_menu_observation_.Observe(context_menu_.get());
   context_menu_->RunMenuAt(point, source_type);
-  if (context_menu_source) {
-    context_menu_highlight_ = context_menu_source->AddAnchorHighlight();
-  }
 }
 
 void BookmarkBarView::OnContextMenuClosed() {
@@ -1745,7 +1791,7 @@ std::unique_ptr<views::MenuButton> BookmarkBarView::CreateMenuButtonForFolder(
 }
 
 void BookmarkBarView::RemoveBookmarkButton(size_t index) {
-  CHECK_LE(index, bookmark_buttons_.size());
+  CHECK_LT(index, bookmark_buttons_.size());
   views::LabelButton* button = bookmark_buttons_[index].first;
   bookmark_buttons_.erase(bookmark_buttons_.cbegin() + index);
   button->SetVisible(false);
@@ -1827,13 +1873,13 @@ void BookmarkBarView::ConfigureButton(const BookmarkNode* node,
       if (ui::TouchUiController::Get()->touch_ui() && cp) {
         // This favicon currently does not match the default favicon icon used
         // elsewhere in the codebase.
-        // See https://crbug/814447
+        // See https://crbug.com/41371804
         const gfx::ImageSkia icon =
-            gfx::CreateVectorIcon(kDefaultTouchFaviconIcon, text_color);
+            gfx::CreateVectorIcon(kDefaultTouchFaviconCustomIcon, text_color);
         // The color used in `mask` is not relevant as long it is opaque; Only
         // the alpha channel matters.
-        const gfx::ImageSkia mask =
-            gfx::CreateVectorIcon(kDefaultTouchFaviconMaskIcon, SK_ColorWHITE);
+        const gfx::ImageSkia mask = gfx::CreateVectorIcon(
+            kDefaultTouchFaviconMaskCustomIcon, SK_ColorWHITE);
         favicon = ui::ImageModel::FromImageSkia(
             gfx::ImageSkiaOperations::CreateMaskedImage(icon, mask));
       } else {
@@ -2177,8 +2223,11 @@ void BookmarkBarView::UpdateAppearanceForTheme() {
 
   const SkColor overflow_color =
       color_provider->GetColor(kColorBookmarkButtonIcon);
+  const int overflow_size = 16;
   ui::ImageModel overflow_button_icon = ui::ImageModel::FromVectorIcon(
-      kBookmarkbarOverflowRefreshIcon, overflow_color);
+      features::IsRoundedIconsEnabled() ? kKeyboardDoubleArrowRightIcon
+                                        : kBookmarkbarOverflowRefreshOldIcon,
+      overflow_color, overflow_size);
 
   overflow_button_->SetImageModel(views::Button::STATE_NORMAL,
                                   overflow_button_icon);
@@ -2339,6 +2388,7 @@ void BookmarkBarView::PerformDrop(
   DCHECK_NE(index, static_cast<size_t>(-1));
 
   base::RecordAction(base::UserMetricsAction("BookmarkBar_DragEnd"));
+  chrome::UpdateBookmarkBarVisibilityPrefOnUserAction(browser_->profile());
   output_drag_op =
       BookmarkUIOperationsHelperMergedSurfaces(bookmark_service_,
                                                &parent_folder)

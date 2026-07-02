@@ -36,6 +36,7 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/guest_view/mime_handler_view/mime_handler_view_guest.h"
+#include "extensions/browser/mime_handler/stream_container.h"
 #include "pdf/pdf_features.h"
 
 namespace save_to_drive {
@@ -62,6 +63,8 @@ WebContents* GetTabWebContents(RenderFrameHost* render_frame_host) {
 }
 
 SaveToDriveFlow::CreateCallback* g_create_callback_for_testing = nullptr;
+
+bool g_skip_valid_tab_for_testing = false;
 
 }  // namespace
 
@@ -108,6 +111,12 @@ void SaveToDriveFlow::SetCreateCallbackForTesting(CreateCallback* callback) {
   g_create_callback_for_testing = callback;
 }
 
+// static
+void SaveToDriveFlow::SetSkipValidateTabForTesting(bool skip_validate_tab) {
+  CHECK_IS_TEST();
+  g_skip_valid_tab_for_testing = skip_validate_tab;
+}
+
 void SaveToDriveFlow::Run() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   SaveToDriveProgress progress;
@@ -117,7 +126,9 @@ void SaveToDriveFlow::Run() {
 
   WebContents* contents = GetTabWebContents(&render_frame_host());
   CHECK(contents);
-  account_chooser_->GetAccount(contents,
+  std::u16string title = EnsurePdfExtension(contents->GetTitle());
+  upload_title_ = base::UTF16ToUTF8(title);
+  account_chooser_->GetAccount(contents, title,
                                base::BindOnce(&SaveToDriveFlow::OnAccountChosen,
                                               weak_ptr_factory_.GetWeakPtr()));
 }
@@ -163,8 +174,6 @@ void SaveToDriveFlow::OnOpenContent(AccountInfo account_info, bool success) {
     OnUploadProgress(std::move(progress));
     return;
   }
-  auto* web_contents = WebContents::FromRenderFrameHost(&render_frame_host());
-  std::string title = base::UTF16ToUTF8(web_contents->GetTitle());
 
   auto upload_progress_callback = base::BindRepeating(
       &SaveToDriveFlow::OnUploadProgress, weak_ptr_factory_.GetWeakPtr());
@@ -173,11 +182,11 @@ void SaveToDriveFlow::OnOpenContent(AccountInfo account_info, bool success) {
 
   if (base::ByteCount(content_reader_->GetSize()) < kMultipartUploadThreshold) {
     drive_uploader_ = std::make_unique<MultipartDriveUploader>(
-        std::move(title), std::move(account_info),
+        std::move(upload_title_), std::move(account_info),
         std::move(upload_progress_callback), profile, content_reader_.get());
   } else {
     drive_uploader_ = std::make_unique<ResumableDriveUploader>(
-        std::move(title), std::move(account_info),
+        std::move(upload_title_), std::move(account_info),
         std::move(upload_progress_callback), profile, content_reader_.get());
   }
   drive_uploader_->Start();
@@ -228,6 +237,15 @@ void SaveToDriveFlow::Stop() {
   }
   DeleteForCurrentDocument(&render_frame_host());
   // Don't do anything else here. The flow will be destroyed after this line.
+}
+
+bool SaveToDriveFlow::HasValidTabId(RenderFrameHost* render_frame_host) {
+  // `SetSkipValidateTabForTesting(true)` is called in test to skip this
+  // validation when there are no active browsers.
+  if (g_skip_valid_tab_for_testing) {
+    return true;
+  }
+  return GetTabWebContents(render_frame_host) != nullptr;
 }
 
 SaveToDriveFlow::TestApi::TestApi(SaveToDriveFlow* flow)

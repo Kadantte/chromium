@@ -22,6 +22,10 @@ class View;
 class Widget;
 }  // namespace views
 
+namespace viz {
+class FrameTimingDetails;
+}
+
 class SubtleNotificationView;
 
 // ExclusiveAccessBubbleViews is shows a bubble informing users of fullscreen,
@@ -61,6 +65,14 @@ class ExclusiveAccessBubbleViews : public ExclusiveAccessBubble,
 
   gfx::SlideAnimation* animation_for_test() { return animation_.get(); }
 
+  static void set_skip_presentation_delay_for_testing(bool skip) {
+    skip_presentation_delay_for_testing_ = skip;
+  }
+
+  static void set_simulate_gpu_hang_for_testing(bool simulate) {
+    simulate_gpu_hang_for_testing_ = simulate;
+  }
+
  private:
   // Updates |popup|'s bounds given |animation_| and |animated_attribute_|.
   void UpdateBounds();
@@ -75,13 +87,16 @@ class ExclusiveAccessBubbleViews : public ExclusiveAccessBubble,
   void AnimationEnded(const gfx::Animation* animation) override;
 
   // ExclusiveAccessBubble:
-  void Hide() override;
   void Show() override;
+  void Hide() override;
+  void ShowAndStartTimers() override;
 
   // views::WidgetObserver:
   void OnWidgetDestroyed(views::Widget* widget) override;
 
   void RunHideCallbackIfNeeded(ExclusiveAccessBubbleHideReason reason);
+
+  void OnFirstPresentation(const viz::FrameTimingDetails& details);
 
   const raw_ptr<ExclusiveAccessBubbleViewsContext> bubble_view_context_;
 
@@ -99,6 +114,22 @@ class ExclusiveAccessBubbleViews : public ExclusiveAccessBubble,
 
   // Whether the bubble was updated for a download while showing.
   bool notify_overridden_ = false;
+
+  // If set, don't bother waiting for the compositor to present a frame with the
+  // bubble visible.
+  static bool skip_presentation_delay_for_testing_;
+
+  // If set, simulates a GPU hang by never running the presentation callback.
+  static bool simulate_gpu_hang_for_testing_;
+
+  // If set, will be called during the 'show' animation.
+  base::OnceCallback<void(const viz::FrameTimingDetails&)> presentation_cb_;
+
+  void OnPresentationTimeout();
+
+  base::OneShotTimer presentation_watchdog_timer_;
+
+  base::WeakPtrFactory<ExclusiveAccessBubbleViews> weak_ptr_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_EXCLUSIVE_ACCESS_BUBBLE_VIEWS_H_

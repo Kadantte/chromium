@@ -38,13 +38,13 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.quality.Strictness;
 import org.robolectric.annotation.Config;
-import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.chrome.browser.app.tabmodel.ArchivedTabModelOrchestrator;
 import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
@@ -57,12 +57,11 @@ import org.chromium.chrome.browser.tab.TabArchiver;
 import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab_ui.OnTabSelectingListener;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
+import org.chromium.chrome.browser.tab_ui.TabListMode;
 import org.chromium.chrome.browser.tabmodel.TabCreator;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilter;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tasks.tab_management.MessageCardView.ServiceDismissActionProvider;
 import org.chromium.chrome.browser.tasks.tab_management.TabGridItemTouchHelperCallback.OnDropOnArchivalMessageCardEventListener;
-import org.chromium.chrome.browser.tasks.tab_management.TabListCoordinator.TabListMode;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherMessageManager.MessageType;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
@@ -96,7 +95,6 @@ public class ArchivedTabsMessageServiceUnitTest {
     @Mock private TabModel mArchivedTabModel;
     @Mock private TabModel mTabModel;
     @Mock private Tab mTab;
-    @Mock private TabGroupModelFilter mTabGroupModelFilter;
     @Mock private ServiceDismissActionProvider<@MessageType Integer> mServiceDismissActionProvider;
     @Mock private ArchivedTabsDialogCoordinator mArchivedTabsDialogCoordinator;
     @Mock private BrowserControlsStateProvider mBrowserControlsStateProvider;
@@ -119,8 +117,8 @@ public class ArchivedTabsMessageServiceUnitTest {
     @Captor
     private ArgumentCaptor<LayoutStateProvider.LayoutStateObserver> mLayoutStateObserverCaptor;
 
-    private final SettableMonotonicObservableSupplier<TabGroupModelFilter>
-            mCurrentTabGroupModelFilterSupplier = ObservableSuppliers.createMonotonic();
+    private final SettableMonotonicObservableSupplier<TabModel> mCurrentTabModelSupplier =
+            ObservableSuppliers.createMonotonic();
     private final SettableNonNullObservableSupplier<Integer> mTabCountSupplier =
             ObservableSuppliers.createNonNull(INITIAL_TAB_COUNT);
     private final SettableNullableObservableSupplier<TabListCoordinator>
@@ -143,8 +141,7 @@ public class ArchivedTabsMessageServiceUnitTest {
         mTabListCoordinatorSupplier.set(mTabListCoordinator);
 
         when(mTabModel.getTabById(anyInt())).thenReturn(mTab);
-        when(mTabGroupModelFilter.getTabModel()).thenReturn(mTabModel);
-        mCurrentTabGroupModelFilterSupplier.set(mTabGroupModelFilter);
+        mCurrentTabModelSupplier.set(mTabModel);
         when(mArchivedTabModelOrchestrator.getTabArchiver()).thenReturn(mTabArchiver);
     }
 
@@ -170,7 +167,7 @@ public class ArchivedTabsMessageServiceUnitTest {
                         mTabGroupSyncService,
                         mPaneManagerSupplier,
                         mTabGroupUiActionHandlerSupplier,
-                        mCurrentTabGroupModelFilterSupplier,
+                        mCurrentTabModelSupplier,
                         mLayoutStateProviderSupplier);
         mArchivedTabsMessageService.setArchivedTabsDialogCoordiantorForTesting(
                 mArchivedTabsDialogCoordinator);
@@ -296,7 +293,7 @@ public class ArchivedTabsMessageServiceUnitTest {
         verify(mArchivedTabsDialogCoordinator, times(0)).destroy();
         assertNotNull(mArchivedTabsMessageService.getArchivedTabsDialogCoordinatorForTesting());
 
-        mLayoutStateObserverCaptor.getValue().onStartedHiding(LayoutType.TAB_SWITCHER);
+        mLayoutStateObserverCaptor.getValue().onStartedHiding(LayoutType.HUB);
         verify(mArchivedTabsDialogCoordinator).destroy();
         assertNull(mArchivedTabsMessageService.getArchivedTabsDialogCoordinatorForTesting());
     }
@@ -318,7 +315,7 @@ public class ArchivedTabsMessageServiceUnitTest {
                 .when(mTabListCoordinator)
                 .specialItemExists(MessageType.ARCHIVED_TABS_MESSAGE);
         mArchivedTabsMessageService.onAppendedMessage();
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
 
         // The bit should be reset.
         assertFalse(TabArchiveSettings.getIphShownThisSession());

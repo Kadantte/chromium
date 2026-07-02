@@ -23,7 +23,6 @@ namespace {
 using autofill::PaymentsDataChangedWaiter;
 using autofill::PaymentsDataManager;
 using autofill::ServerCvc;
-using syncer::kSyncAutofillWalletCredentialData;
 using wallet_helper::CreateDefaultSyncWalletCard;
 using wallet_helper::CreateDefaultSyncWalletCredential;
 using wallet_helper::CreateSyncPaymentsCustomerData;
@@ -83,9 +82,7 @@ class SingleClientWalletCredentialSyncTest
       public testing::WithParamInterface<SyncTest::SetupSyncMode> {
  public:
   SingleClientWalletCredentialSyncTest() : SyncTest(SINGLE_CLIENT) {
-    std::vector<base::test::FeatureRef> enabled_features = {
-        kSyncAutofillWalletCredentialData,
-        autofill::features::kAutofillEnableCvcStorageAndFilling};
+    std::vector<base::test::FeatureRef> enabled_features;
     if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
       enabled_features.push_back(syncer::kReplaceSyncPromosWithSignInPromos);
     }
@@ -185,9 +182,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientWalletCredentialSyncTest,
   SetDefaultWalletCredentialOnFakeServer();
   GetFakeServer()->SetWalletData({CreateDefaultSyncWalletCard()});
 
-  ASSERT_TRUE(SetupClients());
-  ASSERT_TRUE(GetClient(0)->SignInPrimaryAccount());
-  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
+  ASSERT_TRUE(SignIn());
   WaitForCvcOnCard(GetPaymentsDataManager(0));
 
   ASSERT_EQ(syncer::SyncService::TransportState::ACTIVE,
@@ -225,9 +220,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientWalletCredentialSyncTest,
   SetDefaultWalletCredentialOnFakeServer();
   GetFakeServer()->SetWalletData({CreateDefaultSyncWalletCard()});
 
-  ASSERT_TRUE(SetupClients());
-  ASSERT_TRUE(GetClient(0)->SignInPrimaryAccount());
-  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
+  ASSERT_TRUE(SignIn());
   WaitForCvcOnCard(GetPaymentsDataManager(0));
 
   ASSERT_EQ(syncer::SyncService::TransportState::ACTIVE,
@@ -294,8 +287,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientWalletCredentialSyncTest,
           entity_specifics_2, /*creation_time=*/1000,
           /*last_modified_time=*/0));
 
-  ASSERT_TRUE(GetClient(0)->SignInPrimaryAccount());
-  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
+  ASSERT_TRUE(SignIn());
   WaitForCvcOnCard(GetPaymentsDataManager(0));
 
   ASSERT_EQ(syncer::SyncService::TransportState::ACTIVE,
@@ -338,9 +330,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientWalletCredentialSyncTest,
        CreateSyncPaymentsCustomerData(
            /*customer_id=*/"different")});
 
-  ASSERT_TRUE(SetupClients());
-  ASSERT_TRUE(GetClient(0)->SignInPrimaryAccount());
-  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
+  ASSERT_TRUE(SignIn());
   WaitForCvcOnCard(GetPaymentsDataManager(0));
 
   ASSERT_EQ(syncer::SyncService::TransportState::ACTIVE,
@@ -406,9 +396,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientWalletCredentialSyncTest,
   SetDefaultWalletCredentialOnFakeServer();
   GetFakeServer()->SetWalletData({CreateDefaultSyncWalletCard()});
 
-  ASSERT_TRUE(SetupClients());
-  ASSERT_TRUE(GetClient(0)->SignInPrimaryAccount());
-  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
+  ASSERT_TRUE(SignIn());
   WaitForCvcOnCard(GetPaymentsDataManager(0));
 
   ASSERT_EQ(syncer::SyncService::TransportState::ACTIVE,

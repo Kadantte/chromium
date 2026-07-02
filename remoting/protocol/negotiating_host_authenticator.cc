@@ -16,14 +16,12 @@
 #include "base/notreached.h"
 #include "base/strings/string_split.h"
 #include "remoting/base/rsa_key_pair.h"
-#include "remoting/protocol/channel_authenticator.h"
 #include "remoting/protocol/credentials_type.h"
 #include "remoting/protocol/host_authentication_config.h"
 #include "remoting/protocol/pairing_host_authenticator.h"
 #include "remoting/protocol/pairing_registry.h"
 #include "remoting/protocol/session_authz_authenticator.h"
 #include "remoting/protocol/spake2_authenticator.h"
-#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 
 namespace remoting::protocol {
 
@@ -106,7 +104,7 @@ void NegotiatingHostAuthenticator::ProcessMessage(
     CreateAuthenticator(
         MESSAGE_READY,
         base::BindOnce(&NegotiatingHostAuthenticator::UpdateState,
-                       base::Unretained(this), std::move(resume_callback)));
+                       weak_factory_.GetWeakPtr(), std::move(resume_callback)));
     return;
   }
 
@@ -118,7 +116,7 @@ void NegotiatingHostAuthenticator::ProcessMessage(
     CreateAuthenticator(
         WAITING_MESSAGE,
         base::BindOnce(&NegotiatingAuthenticatorBase::ProcessMessageInternal,
-                       base::Unretained(this), message,
+                       weak_factory_.GetWeakPtr(), message,
                        std::move(resume_callback)));
     return;
   }

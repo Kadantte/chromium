@@ -111,6 +111,7 @@ class TestDocumentTargetAppElement extends CrLitElement {
   }
 
   accessor listItems: Array<{name: string}> = [];
+  accessor scrollOffset: number = 0;
 }
 
 customElements.define(
@@ -149,7 +150,7 @@ class TestListPaddingAppElement extends CrLitElement {
 customElements.define(TestListPaddingAppElement.is, TestListPaddingAppElement);
 
 suite('CrLazyListTest', () => {
-  let lazyList: CrLazyListElement;
+  let lazyList: CrLazyListElement<{name: string}>;
   let testApp: TestAppElement;
 
   async function setupTest(

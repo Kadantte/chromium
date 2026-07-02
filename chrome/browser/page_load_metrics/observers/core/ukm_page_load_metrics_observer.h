@@ -56,6 +56,7 @@ class UkmPageLoadMetricsObserver
   ~UkmPageLoadMetricsObserver() override;
 
   // page_load_metrics::PageLoadMetricsObserver implementation:
+  const char* GetObserverName() const override;
   ObservePolicy OnStart(content::NavigationHandle* navigation_handle,
                         const GURL& currently_committed_url,
                         bool started_in_foreground) override;
@@ -100,9 +101,6 @@ class UkmPageLoadMetricsObserver
       content::RenderFrameHost* subframe_rfh,
       const page_load_metrics::mojom::PageLoadTiming& timing) override;
 
-  void SetUpSharedMemoryForDroppedFrames(
-      const base::ReadOnlySharedMemoryRegion& dropped_frames_memory) override;
-
   void OnCpuTimingUpdate(
       content::RenderFrameHost* subframe_rfh,
       const page_load_metrics::mojom::CpuTiming& timing) override;
@@ -110,8 +108,7 @@ class UkmPageLoadMetricsObserver
   void OnFirstContentfulPaintInPage(
       const page_load_metrics::mojom::PageLoadTiming& timing) override;
 
-  void OnSoftNavigationUpdated(
-      const page_load_metrics::mojom::SoftNavigationMetrics&) override;
+  void OnSoftNavigation() override;
 
   // Whether the current page load is an Offline Preview. Must be called from
   // OnCommit. Virtual for testing.
@@ -130,11 +127,11 @@ class UkmPageLoadMetricsObserver
       const page_load_metrics::ContentfulPaintTimingInfo&
           all_frames_largest_contentful_paint);
 
-  // Finalizes soft navigation recording - this emits both the last
-  // SoftNavigationEvent, PageLoad.SoftNavigationCount, and the UMA
-  // histogram. This is to be emitted regardless of whether the page started in
-  // the background or is / was backgrounded.
-  void RecordLastSoftNavigation();
+  // Finalizes soft navigation recording - this emits
+  // PageLoad.SoftNavigationCount and the UMA histogram.
+  // This is to be emitted regardless of whether the page started in the
+  // background or is / was backgrounded.
+  void RecordSoftNavigationCount();
 
   // Records metrics based on the page load information exposed by the observer
   // delegate, as well as updating the URL. |app_background_time| should be set
@@ -168,11 +165,6 @@ class UkmPageLoadMetricsObserver
   const page_load_metrics::ContentfulPaintTimingInfo&
   GetSoftNavigationLargestContentfulPaint() const;
 
-  void RecordSoftNavigationMetrics(
-      ukm::SourceId ukm_source_id,
-      const page_load_metrics::mojom::SoftNavigationMetrics&
-          soft_navigation_metrics);
-
   void RecordLargestContentfulPaintBeforeSoftNavigation();
 
   void RecordResponsivenessMetricsBeforeSoftNavigationForMainFrame();
@@ -188,7 +180,6 @@ class UkmPageLoadMetricsObserver
       ukm::builders::PageLoad& builder,
       const page_load_metrics::PageEndReason page_end_reason);
 
-  void RecordDroppedFramesMetrics();
   void RecordResponsivenessMetrics();
 
   void RecordPageLoadTimestampMetrics(ukm::builders::PageLoad& builder);
@@ -212,6 +203,10 @@ class UkmPageLoadMetricsObserver
   // engine) for starting URL and committed URL.
   void RecordGeneratedNavigationUKM(ukm::SourceId source_id,
                                     const GURL& committed_url);
+
+  // Records the metrics for Navigation.TypedAndDefault.
+  void RecordTypedAndDefaultUKM(ukm::SourceId source_id,
+                                const GURL& committed_url);
 
   // Records some metrics at the end of a page, even for failed provisional
   // loads.
@@ -362,8 +357,6 @@ class UkmPageLoadMetricsObserver
   // The connection info for the committed URL.
   std::optional<net::HttpConnectionInfo> connection_info_;
 
-  base::ReadOnlySharedMemoryMapping ukm_dropped_frames_data_;
-
   // Only true if the page became hidden after the first time it was shown in
   // the foreground, no matter how it started.
   bool was_hidden_after_first_show_in_foreground = false;
@@ -383,6 +376,9 @@ class UkmPageLoadMetricsObserver
   page_load_metrics::NavigationHandleUserData::InitiatorLocation
       navigation_trigger_type_ = page_load_metrics::NavigationHandleUserData::
           InitiatorLocation::kOther;
+
+  // Counts the soft navigations since the beginning of the page load.
+  int64_t soft_navigation_count_ = 0;
 
   base::WeakPtrFactory<UkmPageLoadMetricsObserver> weak_factory_{this};
 };

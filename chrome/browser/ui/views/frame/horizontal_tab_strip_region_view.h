@@ -7,11 +7,11 @@
 
 #include "base/memory/raw_ptr.h"
 #include "build/buildflag.h"
-#include "chrome/browser/ui/tabs/tab_renderer_data.h"
+#include "chrome/browser/ui/tabs/tab_data.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
-#include "chrome/browser/ui/views/tabs/tab_search_container.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/common/buildflags.h"
+#include "components/tabs/public/tab_interface.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/views/accessible_pane_view.h"
@@ -29,9 +29,7 @@ class TabSearchButton;
 class TabStripComboButton;
 class TabStrip;
 class TabStripScrollContainer;
-class TabSearchPositionMetricsLogger;
 class TabStripControlButton;
-class TabStripFlatEdgeButton;
 
 // Container for the tabstrip and the other views sharing space with it -
 // with the exception of the caption buttons.
@@ -39,17 +37,6 @@ class HorizontalTabStripRegionView final : public TabStripRegionView {
   METADATA_HEADER(HorizontalTabStripRegionView, TabStripRegionView)
 
  public:
-  // These values are persisted to logs. Entries should not be renumbered and
-  // numeric values should never be reused.
-  //
-  // LINT.IfChange(TabSearchPositionEnum)
-  enum class TabSearchPositionEnum {
-    kLeading = 0,
-    kTrailing = 1,
-    kMaxValue = kTrailing,
-  };
-  // LINT.ThenChange(//tools/metrics/histograms/metadata/tab/enums.xml:TabSearchPosition)
-
   explicit HorizontalTabStripRegionView(BrowserView* browser_view);
   HorizontalTabStripRegionView(const HorizontalTabStripRegionView&) = delete;
   HorizontalTabStripRegionView& operator=(const HorizontalTabStripRegionView&) =
@@ -77,33 +64,18 @@ class HorizontalTabStripRegionView final : public TabStripRegionView {
   // position the TabSearchButton to layer over the TabStrip.
   void Layout(PassKey) override;
 
-  // These system drag & drop methods forward the events to TabDragController to
-  // support its fallback tab dragging mode in the case where the platform
-  // can't support the usual run loop based mode.
-  // We need to handle this here instead of in TabStrip, because TabStrip's
-  // bounds don't contain the empty space to the right of the last tab.
-  bool CanDrop(const OSExchangeData& data) override;
-  bool GetDropFormats(int* formats,
-                      std::set<ui::ClipboardFormatType>* format_types) override;
-  void OnDragEntered(const ui::DropTargetEvent& event) override;
-  int OnDragUpdated(const ui::DropTargetEvent& event) override;
-  void OnDragExited() override;
-  // We don't override GetDropCallback() because we don't actually want to
-  // transfer any data.
-
   // views::AccessiblePaneView:
   void ChildPreferredSizeChanged(views::View* child) override;
   views::View* GetDefaultFocusableChild() override;
 
-  const Profile* profile() { return profile_; }
+  Profile* profile();
 
   TabStrip* tab_strip() { return tab_strip_; }
 
-  TabStripFlatEdgeButton* GetTabSearchButton();
+  views::Button* GetTabSearchButton();
+  TabStripComboButton* GetComboButton() { return combo_button_; }
 
-#if BUILDFLAG(ENABLE_GLIC)
   views::LabelButton* GetGlicButton();
-#endif  // BUILDFLAG(ENABLE_GLIC)
 
   // TabStripRegionView:
   void InitializeTabStrip() override;
@@ -116,7 +88,7 @@ class HorizontalTabStripRegionView final : public TabStripRegionView {
   bool IsTabStripCloseable() const override;
   void UpdateLoadingAnimations(const base::TimeDelta& elapsed_time) override;
   std::optional<int> GetFocusedTabIndex() const override;
-  const TabRendererData& GetTabRendererData(int tab_index) override;
+  const tabs::TabData& GetTabData(const tabs::TabHandle& tab) override;
   views::View* GetTabAnchorViewAt(int tab_index) override;
   views::View* GetTabGroupAnchorView(
       const tab_groups::TabGroupId& group) override;
@@ -129,20 +101,25 @@ class HorizontalTabStripRegionView final : public TabStripRegionView {
   BrowserRootView::DropTarget* GetDropTarget(
       gfx::Point loc_in_local_coords) override;
   views::View* GetViewForDrop() override;
+  bool CanDrop(const OSExchangeData& data) override;
+  bool GetDropFormats(int* formats,
+                      std::set<ui::ClipboardFormatType>* format_types) override;
+  void OnDragEntered(const ui::DropTargetEvent& event) override;
+  int OnDragUpdated(const ui::DropTargetEvent& event) override;
+  void OnDragExited() override;
   void SetTabStripObserver(TabStripObserver* observer) override;
   views::View* GetTabStripView() override;
+  std::unique_ptr<ExpandOnHoverLock> GetExpandOnHoverLock(
+      ExpandOnHoverLockType lock_type) override;
 
-  void LogTabSearchPositionForTesting();
+  bool HasLeadingButtons() const;
 
  private:
-  // Updates the border padding for `new_tab_button_` and
-  // `tab_search_container_`, if present.  This should be called whenever any
-  // input of the computation of the border's sizing changes.
+  // Updates the border padding for `new_tab_button_`.  This should be called
+  // whenever any input of the computation of the border's sizing changes.
   void UpdateButtonBorders();
 
-  // Updates the left and right margins for the tab strip. This should be
-  // called whenever `tab_search_container_` changes size, if
-  // `render_tab_search_before_tab_strip_` is true.
+  // Updates the left and right margins for the tab strip.
   void UpdateTabStripMargin();
 
   // Gets called on `Layout` and adjusts the x-axis position of the `view` based
@@ -151,7 +128,7 @@ class HorizontalTabStripRegionView final : public TabStripRegionView {
 
   bool tab_strip_set_ = false;
 
-  raw_ptr<const Profile> profile_ = nullptr;
+  raw_ptr<BrowserView> browser_view_ = nullptr;
   raw_ptr<TabStripActionContainer> tab_strip_action_container_ = nullptr;
   raw_ptr<views::View> tab_strip_container_ = nullptr;
   raw_ptr<views::View> reserved_grab_handle_space_ = nullptr;
@@ -159,16 +136,7 @@ class HorizontalTabStripRegionView final : public TabStripRegionView {
   raw_ptr<TabStripScrollContainer> tab_strip_scroll_container_ = nullptr;
   raw_ptr<TabStripComboButton> combo_button_ = nullptr;
   raw_ptr<views::Button> new_tab_button_ = nullptr;
-  raw_ptr<TabSearchContainer> tab_search_container_ = nullptr;
   raw_ptr<TabStripControlButton> unfocus_button_ = nullptr;
-
-  // On some platforms for Chrome Refresh, the TabSearchButton should be
-  // laid out before the TabStrip. Storing this configuration prevents
-  // rechecking the child order on every layout.
-  const bool render_tab_search_before_tab_strip_;
-
-  std::unique_ptr<TabSearchPositionMetricsLogger>
-      tab_search_position_metrics_logger_;
 
   std::unique_ptr<views::ActionViewController> action_view_controller_;
 

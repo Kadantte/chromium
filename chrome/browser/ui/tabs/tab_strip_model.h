@@ -29,8 +29,6 @@
 #include "chrome/browser/ui/tabs/tab_strip_model_selection_state.h"
 #include "chrome/browser/ui/tabs/tab_strip_scrubbing_metrics.h"
 #include "chrome/browser/ui/tabs/tab_strip_user_gesture_details.h"
-#include "chrome/common/buildflags.h"
-#include "chrome/common/chrome_features.h"
 #include "components/sessions/core/session_id.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
@@ -63,6 +61,7 @@ class SplitTabData;
 class SplitTabVisualData;
 enum class SplitTabLayout;
 enum class SplitTabCreatedSource;
+enum class SplitTabOrientationChangeSource;
 }  // namespace split_tabs
 
 namespace tabs {
@@ -101,7 +100,7 @@ struct DetachedTabCollection {
                std::unique_ptr<tabs::SplitTabCollection>>
       collection_;
   // Store the index of tab that was active in the detached group.
-  std::optional<int> active_index_ = std::nullopt;
+  std::optional<int> active_index_;
   bool pinned_ = false;
 };
 
@@ -506,12 +505,9 @@ class TabStripModel {
   // Returns true if the tab at |index| is in the foreground.
   bool IsTabInForeground(int index) const;
 
-  // Returns true if the tab at |index| is allowed to be closed.
-  bool IsTabClosable(int index) const;
-
-  // Returns true if the tab corresponding to |contents| is allowed to be
+  // Returns true if the tab corresponding to |tab| is allowed to be
   // closed.
-  bool IsTabClosable(const content::WebContents* contents) const;
+  bool IsTabClosable(const tabs::TabInterface* tab) const;
 
   split_tabs::SplitTabData* GetSplitData(split_tabs::SplitTabId split_id) const;
 
@@ -522,18 +518,11 @@ class TabStripModel {
 
   bool ContainsSplit(split_tabs::SplitTabId split_id) const;
 
-  // Returns true if the active tab is split.
-  bool IsActiveTabSplit() const;
-
   std::optional<split_tabs::SplitTabId> GetSplitForTab(int index) const;
 
   // Returns the group that contains the tab at |index|, or nullopt if the tab
   // index is invalid or not grouped.
   std::optional<tab_groups::TabGroupId> GetTabGroupForTab(int index) const;
-
-  // Returns the TabGroupId of the active tab if it belongs to a group, or
-  // nullopt if ungrouped.
-  std::optional<tab_groups::TabGroupId> GetActiveTabGroupId() const;
 
   // If a tab inserted at |index| would be within a tab group, return that
   // group's ID. Otherwise, return nullopt. If |index| points to the first tab
@@ -565,7 +554,7 @@ class TabStripModel {
 
   // Sets the selection to match that of |source|.
   void SetSelectionFromModel(ui::ListSelectionModel source);
-  void SetSelectionFromModel(const tabs::TabStripModelSelectionState& source);
+  void SetSelectionFromModel(tabs::TabStripModelSelectionState source);
 
   const tabs::TabStripModelSelectionState& selection_model() const {
     return selection_model_;
@@ -627,12 +616,16 @@ class TabStripModel {
                                    int destination_index);
 
   // Updates the layout for the tabs with `split_id` and notifies observers.
-  void UpdateSplitLayout(split_tabs::SplitTabId split_id,
-                         split_tabs::SplitTabLayout tab_layout);
+  void UpdateSplitLayout(
+      split_tabs::SplitTabId split_id,
+      split_tabs::SplitTabLayout tab_layout,
+      std::optional<split_tabs::SplitTabOrientationChangeSource> source =
+          std::nullopt);
 
   // Updates the ratio for the tabs with `split_id` and notifies observers.
   void UpdateSplitRatio(split_tabs::SplitTabId split_id,
-                        double start_content_ratio);
+                        double start_content_ratio,
+                        bool is_intermediate = false);
 
   // Updates the split tab at index `split_index` with the tab at
   // `update_index`. The split that includes `split_index` must include the
@@ -663,14 +656,16 @@ class TabStripModel {
   // Create a new tab group and add the set of tabs pointed to be |indices| to
   // it. Pins all of the tabs if any of them were pinned, and reorders the tabs
   // so they are contiguous and do not split an existing group in half. Returns
-  // the new group. |indices| must be sorted in ascending order.
+  // the new group. This may unsplit split tabs if they are only partially
+  // contained in |indices|. |indices| must be sorted in ascending order.
   tab_groups::TabGroupId AddToNewGroup(const std::vector<int> indices);
 
   // Add the set of tabs pointed to by |indices| to the given tab group |group|.
   // The tabs take on the pinnedness of the tabs already in the group. Tabs
   // before the group will move to the start, while tabs after the group will
   // move to the end. If |add_to_end| is true, all tabs will instead move to
-  // the end. |indices| must be sorted in ascending order.
+  // the end. This may unsplit split tabs if they are only partially contained
+  // in |indices|. |indices| must be sorted in ascending order.
   void AddToExistingGroup(const std::vector<int> indices,
                           const tab_groups::TabGroupId group,
                           const bool add_to_end = false);
@@ -682,8 +677,9 @@ class TabStripModel {
                             const tab_groups::TabGroupId& group);
 
   // Removes the set of tabs pointed to by |indices| from the the groups they
-  // are in, if any. The tabs are moved out of the group if necessary. |indices|
-  // must be sorted in ascending order.
+  // are in, if any. The tabs are moved out of the group if necessary. This
+  // may unsplit split tabs if they are only partially contained in |indices|.
+  // |indices| must be sorted in ascending order.
   void RemoveFromGroup(const std::vector<int>& indices);
 
   // Unsplits all the tabs that are part of the split with `split_id`. The tabs
@@ -725,8 +721,6 @@ class TabStripModel {
   // Gets the root of the tab strip model. Used to traverse the tab topology.
   const tabs::TabCollection* Root() const;
 
-  const tabs::TabCollection* GetRootForTesting() const;
-
   // Finds the group id for a tab collection. Note that this API can be error
   // prone. Make sure to read and understand the potential problems with
   // relying on group id.
@@ -767,19 +761,14 @@ class TabStripModel {
     CommandRemoveFromGroup,
     CommandMoveToExistingWindow,
     CommandMoveTabsToNewWindow,
-    CommandOrganizeTabs,
     CommandCopyURL,
     CommandGoBack,
     CommandCloseAllTabs,
-#if BUILDFLAG(ENABLE_GLIC)
-    CommandGlicShareLimit,
-    CommandGlicStartShare,
-    CommandGlicStopShare,
+    CommandToggleVertical,
     CommandGlicShare,
     CommandGlicCreateNewChat,
     CommandGlicSwitchToRecentConversation,
     CommandGlicUnshare,
-#endif
     CommandLast
   };
   // LINT.ThenChange(//tools/metrics/histograms/metadata/tab/histograms.xml:TabContextMenuCommand)
@@ -831,6 +820,12 @@ class TabStripModel {
   // Adds the tab at |context_index| to the browser window at |browser_index|.
   // If |context_index| is selected the command applies to all selected tabs.
   void ExecuteAddToExistingWindowCommand(int context_index, int browser_index);
+
+  // Adds the tab at |context_index| to a new split with the current active tab.
+  // If |context_index| is active, the currently selected tabs are added to a
+  // new split.
+  void ExecuteAddToNewSplitCommand(int context_index,
+                                   split_tabs::SplitTabLayout layout);
 
   // Returns true if 'CommandToggleSiteMuted' will mute. |index| is the
   // index supplied to |ExecuteContextMenuCommand|.
@@ -972,7 +967,8 @@ class TabStripModel {
       split_tabs::SplitTabId split_id,
       const split_tabs::SplitTabVisualData& old_visual_data,
       const split_tabs::SplitTabVisualData& new_visual_data,
-      const SplitTabChange::SplitVisualChangeReason reason);
+      const SplitTabChange::SplitVisualChangeReason reason,
+      bool is_intermediate = false);
 
   // Notify observers that contents of a split has been reordered.
   void NotifySplitTabContentsUpdated(
@@ -1067,7 +1063,7 @@ class TabStripModel {
   //   1) This allows us to send the minimal number of necessary notifications.
   //   This is important because some notifications cause the main thread to
   //   synchronously communicate with the GPU process and cause jank.
-  //   https://crbug.com/826287.
+  //   https://crbug.com/41379209.
   //   2) This allows us to avoid some problems caused by re-entrancy [e.g.
   //   using destroyed WebContents instances]. Ideally, this second check
   //   wouldn't be necessary because we would enforce that there is no
@@ -1371,9 +1367,6 @@ class TabStripModel {
   // Takes the |selection| change and decides whether to forget the openers.
   void OnActiveTabChanged(const TabStripSelectionChange& selection);
 
-  // Checks if policy allows a tab to be closed.
-  bool PolicyAllowsTabClosing(content::WebContents* contents) const;
-
   // Determine where to shift selection after a tab or collection is closed.
   std::optional<int> DetermineNewSelectedIndex(
       std::variant<tabs::TabInterface*, tabs::TabCollection*> tab_or_collection)
@@ -1401,7 +1394,22 @@ class TabStripModel {
       const std::optional<tab_groups::TabGroupId> group,
       bool pin);
 
+  // For each split that has tabs in `indices`, remove any of them that contain
+  // tabs not in `indices`.
+  void MaybeRemoveSplitsForUpdate(const std::vector<int>& indices);
+
+  // Checks if both tabs of a split view are closing simultaneously and, if so,
+  // creates a historical split entry in the tab restore service.
+  void CreateHistoricalSplitIfClosing(
+      const std::vector<tabs::TabInterface*>& tabs,
+      uint32_t close_types);
+
   void NotifyForegroundTabsWillEnterBackground();
+
+  // Prior to a split being removed, if the split is currently active, notify
+  // the inactive tab(s) in the split will become hidden as a result of the
+  // split being removed.
+  void NotifyInactiveSplitTabWillBecomeHidden(split_tabs::SplitTabId split_id);
 
   // Assues |left| and |right| have the same root tab collection, and that
   // |left| comes before |right| in traversal order. Returns a vector of tabs

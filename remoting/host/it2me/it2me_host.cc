@@ -60,7 +60,6 @@
 #include "remoting/protocol/ice_config_fetcher_default.h"
 #include "remoting/protocol/it2me_host_authenticator_factory.h"
 #include "remoting/protocol/jingle_session_manager.h"
-#include "remoting/protocol/session_config.h"
 #include "remoting/protocol/session_manager.h"
 #include "remoting/protocol/transport.h"
 #include "remoting/protocol/transport_context.h"
@@ -217,8 +216,7 @@ void It2MeHost::SendReconnectSessionMessage() const {
       reconnect_params_->support_id);
   SignalingAddress signaling_address(reconnect_params_->client_ftl_address);
 
-  signal_strategy_->SendMessage(signaling_address,
-                                SignalingMessage{crd_message});
+  signal_strategy_->SendFtlMessage(signaling_address, std::move(crd_message));
 }
 
 void It2MeHost::Connect(
@@ -380,14 +378,6 @@ void It2MeHost::ConnectOnNetworkThread(
   std::unique_ptr<protocol::SessionManager> session_manager(
       new protocol::JingleSessionManager(signal_strategy_.get()));
 
-  std::unique_ptr<protocol::CandidateSessionConfig> protocol_config =
-      protocol::CandidateSessionConfig::CreateDefault();
-  // Disable audio by default.
-  // TODO(sergeyu): Add UI to enable it.
-  protocol_config->DisableAudioChannel();
-  protocol_config->set_webrtc_supported(true);
-  session_manager->set_protocol_config(std::move(protocol_config));
-
   if (use_corp_session_authz_) {
     corp_host_status_logger_ = CorpHostStatusLogger::CreateForRemoteSupport(
         host_context_->url_loader_factory(),
@@ -435,8 +425,7 @@ void It2MeHost::ConnectOnNetworkThread(
   host_ = std::make_unique<ChromotingHost>(
       desktop_environment_factory_.get(), std::move(session_manager),
       /* secondary_session_manager */ nullptr, transport_context,
-      host_context_->audio_task_runner(),
-      host_context_->video_encode_task_runner(), options,
+      host_context_->audio_task_runner(), options,
       base::BindRepeating(&It2MeHost::OnEffectiveSessionPoliciesReceived,
                           base::Unretained(this)),
       local_session_policies_provider_.get());

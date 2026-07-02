@@ -6,10 +6,6 @@ source_set("subscription_eligibility") {
   sources = [
     "subscription_eligibility_metrics_provider.cc",
     "subscription_eligibility_metrics_provider.h",
-    "subscription_eligibility_prefs.cc",
-    "subscription_eligibility_prefs.h",
-    "subscription_eligibility_service.cc",
-    "subscription_eligibility_service.h",
     "subscription_eligibility_service_factory.cc",
     "subscription_eligibility_service_factory.h",
   ]
@@ -17,7 +13,9 @@ source_set("subscription_eligibility") {
   public_deps = [
     "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/profiles:profile_manager",
     "//components/keyed_service/core",
+    "//components/subscription_eligibility",
   ]
 
   deps = [
@@ -27,4 +25,31 @@ source_set("subscription_eligibility") {
     "//components/prefs",
     "//third_party/metrics_proto:metrics_proto_gen",
   ]
+}
+
+if (!is_android) {
+  source_set("browser_tests") {
+    testonly = true
+
+    defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+
+    sources = [ "subscription_eligibility_service_browsertest.cc" ]
+
+    deps = [
+      ":subscription_eligibility",
+      "//base",
+      "//base/test:test_support",
+      "//chrome/browser:browser_process",
+      "//chrome/browser/profiles:profile",
+      "//chrome/browser/profiles:profile_manager",
+      "//chrome/test:test_support",
+      "//chrome/test:test_support_ui",
+      "//components/metrics",
+      "//components/prefs",
+      "//components/subscription_eligibility",
+      "//content/test:test_support",
+      "//testing/gtest",
+      "//third_party/metrics_proto:metrics_proto_gen",
+    ]
+  }
 }

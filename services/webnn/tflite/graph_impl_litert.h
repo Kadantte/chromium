@@ -16,7 +16,6 @@
 #include "mojo/public/cpp/base/big_buffer.h"
 #include "services/webnn/public/cpp/webnn_types.h"
 #include "services/webnn/public/mojom/webnn_error.mojom-forward.h"
-#include "services/webnn/public/mojom/webnn_graph.mojom-forward.h"
 #include "services/webnn/queueable_resource_state.h"
 #include "services/webnn/tflite/graph_builder_tflite.h"
 #include "services/webnn/webnn_context_impl.h"
@@ -37,26 +36,25 @@ class ContextImplLiteRt;
 class GraphImplLiteRt final : public WebNNGraphImpl {
  public:
   static void CreateAndBuild(
-      mojo::PendingAssociatedReceiver<mojom::WebNNGraph> receiver,
       mojom::GraphInfoPtr graph_info,
       ComputeResourceInfo compute_resource_info,
       base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>
           constant_operands,
-      base::flat_map<OperandId, WebNNTensorImpl*> constant_tensor_operands,
-      ContextImplLiteRt* context,
+      base::flat_map<OperandId, scoped_refptr<WebNNTensorImpl>>
+          constant_tensor_operands,
+      ContextImplLiteRt& context,
       base::File weights_file,
       WebNNContextImpl::CreateGraphImplCallback callback);
 
   class ComputeResources;
-  GraphImplLiteRt(mojo::PendingAssociatedReceiver<mojom::WebNNGraph> receiver,
-                  ComputeResourceInfo compute_resource_info,
+  GraphImplLiteRt(ComputeResourceInfo compute_resource_info,
                   std::vector<std::pair<std::string, tflite::TensorDescriptor>>
                       input_name_to_descriptor,
                   std::vector<std::pair<std::string, tflite::TensorDescriptor>>
                       output_name_to_descriptor,
                   scoped_refptr<QueueableResourceState<ComputeResources>>
                       compute_resources_state,
-                  base::WeakPtr<WebNNContextImpl> context,
+                  WebNNContextImpl& context,
                   std::vector<mojom::Device> devices);
 
   GraphImplLiteRt(const GraphImplLiteRt&) = delete;
@@ -69,6 +67,7 @@ class GraphImplLiteRt final : public WebNNGraphImpl {
   CreateAndBuildOnBackgroundThread(
       ContextProperties context_properties,
       mojom::Device context_device,
+      bool is_xnnpack_enabled,
       mojom::GraphInfoPtr graph_info,
       base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>
           constant_operands,
@@ -78,7 +77,6 @@ class GraphImplLiteRt final : public WebNNGraphImpl {
       base::File weights_file);
 
   static void DidCreateAndBuild(
-      mojo::PendingAssociatedReceiver<mojom::WebNNGraph> receiver,
       base::WeakPtr<WebNNContextImpl> context,
       ComputeResourceInfo compute_resource_info,
       WebNNContextImpl::CreateGraphImplCallback callback,

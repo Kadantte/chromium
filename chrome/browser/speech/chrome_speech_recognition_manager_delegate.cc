@@ -14,6 +14,8 @@
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/child_process_host.h"
+#include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/speech_recognition_manager.h"
@@ -22,8 +24,9 @@
 #include "media/mojo/mojom/speech_recognition_error.mojom.h"
 #include "media/mojo/mojom/speech_recognition_result.mojom.h"
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/extensions/extension_service.h"
+#include "extensions/browser/process_map.h"
 #include "extensions/browser/view_type_utils.h"
 #include "extensions/common/mojom/view_type.mojom.h"
 #endif
@@ -99,22 +102,20 @@ void ChromeSpeechRecognitionManagerDelegate::CheckRecognitionIsAllowed(
 
   // Make sure that initiators (extensions/web pages) properly set the
   // |render_process_id| field, which is needed later to retrieve the profile.
-  DCHECK_NE(context.render_process_id, 0);
+  DCHECK(context.global_id.child_id);
 
-  int render_process_id = context.render_process_id;
-  int render_frame_id = context.render_frame_id;
-  if (context.embedder_render_process_id) {
+  content::GlobalRenderFrameHostId global_id = context.global_id;
+  if (context.embedder_global_id.child_id) {
     // If this is a request originated from a guest, we need to re-route the
     // permission check through the embedder (app).
-    render_process_id = context.embedder_render_process_id;
-    render_frame_id = context.embedder_render_frame_id;
+    global_id = context.embedder_global_id;
   }
 
   // Check that the render frame type is appropriate, and whether or not we
   // need to request permission from the user.
   content::GetUIThreadTaskRunner({})->PostTask(
-      FROM_HERE, base::BindOnce(&CheckRenderFrameType, std::move(callback),
-                                render_process_id, render_frame_id));
+      FROM_HERE,
+      base::BindOnce(&CheckRenderFrameType, std::move(callback), global_id));
 }
 
 content::SpeechRecognitionEventListener*
@@ -163,19 +164,35 @@ void ChromeSpeechRecognitionManagerDelegate::BindSpeechRecognitionContext(
 // static.
 void ChromeSpeechRecognitionManagerDelegate::CheckRenderFrameType(
     base::OnceCallback<void(bool ask_user, bool is_allowed)> callback,
-    int render_process_id,
-    int render_frame_id) {
+    content::GlobalRenderFrameHostId global_id) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   content::RenderFrameHost* render_frame_host =
-      content::RenderFrameHost::FromID(render_process_id, render_frame_id);
+      content::RenderFrameHost::FromID(global_id);
 
   bool allowed = false;
   bool check_permission = false;
 
   if (!render_frame_host) {
-    // This happens for extensions. Manifest should be checked for permission.
-    allowed = true;
-    check_permission = false;
+    if (!global_id.child_id) {
+      // This happens for browser-initiated requests (e.g. Chrome OS Dictation).
+      allowed = true;
+    } else {
+      bool is_extension = false;
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+      content::RenderProcessHost* render_process_host =
+          content::RenderProcessHost::FromID(global_id.child_id);
+      if (render_process_host) {
+        is_extension = extensions::ProcessMap::Get(
+                           render_process_host->GetBrowserContext())
+                           ->Contains(global_id.child_id);
+      }
+#endif
+      // Allow if it's a valid extension; otherwise deny (frame destroyed/invalid).
+      allowed = is_extension;
+      if (allowed) {
+        check_permission = true;
+      }
+    }
     content::GetIOThreadTaskRunner({})->PostTask(
         FROM_HERE,
         base::BindOnce(std::move(callback), check_permission, allowed));
@@ -196,7 +213,7 @@ void ChromeSpeechRecognitionManagerDelegate::CheckRenderFrameType(
     return;
   }
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   extensions::mojom::ViewType view_type =
       extensions::GetViewType(render_frame_host);
 
@@ -205,6 +222,7 @@ void ChromeSpeechRecognitionManagerDelegate::CheckRenderFrameType(
       view_type == extensions::mojom::ViewType::kComponent ||
       view_type == extensions::mojom::ViewType::kExtensionPopup ||
       view_type == extensions::mojom::ViewType::kExtensionBackgroundPage ||
+      view_type == extensions::mojom::ViewType::kOffscreenDocument ||
       view_type == extensions::mojom::ViewType::kExtensionSidePanel ||
       view_type == extensions::mojom::ViewType::kDeveloperTools) {
     // If it is a tab, we can check for permission. For apps, this means

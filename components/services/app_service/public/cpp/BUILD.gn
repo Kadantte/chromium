@@ -17,13 +17,12 @@ component("app_types") {
     "app_types.h",
     "capability_access.cc",
     "capability_access.h",
-    "features.cc",
-    "features.h",
     "icon_effects.h",
     "icon_types.cc",
     "icon_types.h",
     "intent_filter.cc",
     "intent_filter.h",
+    "launch_result.h",
     "menu.cc",
     "menu.h",
     "package_id.cc",
@@ -43,13 +42,13 @@ component("app_types") {
   public_deps = [
     "//base",
     "//components/services/app_service/public/protos",
+    "//url",
   ]
 
   deps = [
     ":macros",
     "//third_party/abseil-cpp:absl",
     "//ui/gfx",
-    "//url",
   ]
 }
 

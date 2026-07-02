@@ -16,7 +16,6 @@
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/ui_base_switches.h"
-#include "ui/views/test/views_test_base.h"
 #include "ui/views/widget/widget.h"
 
 namespace autofill {
@@ -64,7 +63,8 @@ class AutofillAiLocalSaveNotificationViewBrowsertest
 
   void ShowUi(const std::string& name) override {
     auto bubble = std::make_unique<AutofillAiLocalSaveNotificationView>(
-        nullptr, browser()->tab_strip_model()->GetActiveWebContents(),
+        views::BubbleAnchor(),
+        browser()->tab_strip_model()->GetActiveWebContents(),
         &mock_controller());
     bubble->set_has_parent(false);
     bubble_ = bubble.get();

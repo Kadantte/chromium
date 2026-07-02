@@ -5,25 +5,22 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_TIMING_TEXT_PAINT_TIMING_DETECTOR_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_TIMING_TEXT_PAINT_TIMING_DETECTOR_H_
 
-#include <memory>
-#include <utility>
-
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
+#include "third_party/blink/renderer/core/paint/timing/paint_timing_callbacks.h"
 #include "third_party/blink/renderer/core/paint/timing/paint_timing_record.h"
-#include "third_party/blink/renderer/core/paint/timing/text_element_timing.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_deque.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/visitor.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 
 namespace blink {
 class LayoutBoxModelObject;
 class LocalFrameView;
-class PaintTimingCallbackManager;
 class PropertyTreeStateOrAlias;
-class TextElementTiming;
 struct DOMPaintTimingInfo;
 class SoftNavigationContext;
 
@@ -36,30 +33,43 @@ class CORE_EXPORT LargestTextPaintManager final {
   LargestTextPaintManager& operator=(const LargestTextPaintManager&) = delete;
 
   void MaybeUpdateLargestIgnoredText(const LayoutObject&,
-                                     const uint64_t&,
+                                     const uint64_t,
                                      const gfx::Rect& frame_visual_rect,
                                      const gfx::RectF& root_visual_rect);
 
+  // Returns the current largest ignored `TextRecord` if it exists and the
+  // underlying node has not been removed from the DOM, and nullptr otherwise.
   TextRecord* TakeLargestIgnoredText() {
-    return std::exchange(largest_ignored_text_, nullptr);
+    TextRecord* record = GetLargestIgnoredTextIfNotRemoved();
+    largest_ignored_text_ = {nullptr, nullptr};
+    return record;
   }
-  const TextRecord* LargestIgnoredText() const { return largest_ignored_text_; }
+
+  // Returns the current largest ignored `TextRecord` if it exists and the
+  // underlying node has not been removed from the DOM, and false otherwise.
+  TextRecord* GetLargestIgnoredTextIfNotRemoved() {
+    return largest_ignored_text_.value &&
+                   !largest_ignored_text_.value->WasNodeRemoved()
+               ? largest_ignored_text_.value
+               : nullptr;
+  }
 
   void Trace(Visitor*) const;
 
  private:
-  friend class LargestContentfulPaintCalculatorTest;
-  friend class TextPaintTimingDetectorTest;
-
-  unsigned count_candidates_ = 0;
-
   // Text paints are ignored when they (or an ancestor) have opacity 0. This can
   // be a problem later on if the opacity changes to nonzero but this change is
   // composited. We solve this for the special case of documentElement by
   // storing a record for the largest ignored text without nested opacity. We
   // consider this an LCP candidate when the documentElement's opacity changes
   // from zero to nonzero.
-  Member<TextRecord> largest_ignored_text_;
+  //
+  // TODO(crbug.com/457794552): This is currently best-effort since only one
+  // record is tracked and removing the corresponding node resets tracking.
+  // Consider improving this by tracking all ignored content or not emitting
+  // anything if the largest content was removed.
+  EphemeronPair<const LayoutObject, TextRecord> largest_ignored_text_{nullptr,
+                                                                      nullptr};
 
   Member<const LocalFrameView> frame_view_;
 };
@@ -88,14 +98,8 @@ class CORE_EXPORT TextPaintTimingDetector final
   void RecordAggregatedText(const LayoutBoxModelObject& aggregator,
                             const gfx::Rect& aggregated_visual_rect,
                             const PropertyTreeStateOrAlias&);
-  std::optional<base::OnceCallback<void(const base::TimeTicks&,
-                                        const DOMPaintTimingInfo&)>>
-  TakePaintTimingCallback();
-  void LayoutObjectWillBeDestroyed(const LayoutObject&);
+  OptionalPaintTimingDetectorCallback<TextRecord> TakePaintTimingCallback();
   void StopRecordingLargestTextPaint();
-  void ResetCallbackManager(PaintTimingCallbackManager* manager) {
-    callback_manager_ = manager;
-  }
 
   // Mark that the `LayoutObject` should be considered for paint timing, even if
   // it's already been painted, because it was modified as part of an
@@ -117,9 +121,12 @@ class CORE_EXPORT TextPaintTimingDetector final
   // The state of `LayoutObject`s being tracked in the `recorded_set_`.
   enum class TextPaintStatus { kPainted, kAllowRepaint };
 
-  void AssignPaintTimeToQueuedRecords(uint32_t frame_index,
-                                      const base::TimeTicks&,
-                                      const DOMPaintTimingInfo&);
+  void AssignPaintTimeToQueuedRecords(
+      uint32_t frame_index,
+      const base::TimeTicks&,
+      const DOMPaintTimingInfo&,
+      HeapVector<Member<TextRecord>>& settled_records);
+
   TextRecord* MaybeRecordTextRecord(
       const LayoutObject& object,
       const uint64_t& visual_size,
@@ -129,28 +136,20 @@ class CORE_EXPORT TextPaintTimingDetector final
       SoftNavigationContext* context,
       bool is_repaint);
 
-  inline void QueueToMeasurePaintTime(const LayoutObject& object,
-                                      TextRecord* record) {
+  inline void QueueToMeasurePaintTime(TextRecord* record) {
     record->SetFrameIndex(frame_index_);
-    texts_queued_for_paint_time_.insert(&object, record);
+    texts_queued_for_paint_time_.push_back(record);
     added_entry_in_latest_frame_ = true;
   }
 
   // LayoutObjects for which text has been aggregated.
   HeapHashMap<WeakMember<const LayoutObject>, TextPaintStatus> recorded_set_;
-  HeapHashSet<WeakMember<const LayoutObject>> rewalkable_set_;
 
-  // Text records queued for paint time. Indexed by LayoutObject to make removal
-  // easy.
-  HeapHashMap<Member<const LayoutObject>, Member<TextRecord>>
-      texts_queued_for_paint_time_;
+  // Text records queued for paint time.
+  HeapDeque<Member<TextRecord>> texts_queued_for_paint_time_;
 
-  Member<PaintTimingCallbackManager> callback_manager_;
   Member<LocalFrameView> frame_view_;
   Member<PaintTimingDetector> paint_timing_detector_;
-  // Set lazily because we may not have the correct Window when first
-  // initializing this class.
-  Member<TextElementTiming> text_element_timing_;
 
   LargestTextPaintManager ltp_manager_;
   bool recording_largest_text_paint_ = true;

@@ -30,7 +30,11 @@ D3D11PictureBuffer::D3D11PictureBuffer(
       array_slice_(array_slice),
       texture_wrapper_(std::move(texture_wrapper)),
       size_(size),
-      picture_index_(picture_index) {}
+      picture_index_(picture_index) {
+  // TODO(crbug.com/492116792): Drop size param and use
+  // texture_wrapper_->GetSize() instead.
+  CHECK_EQ(size, texture_wrapper_->GetSize());
+}
 
 D3D11PictureBuffer::~D3D11PictureBuffer() = default;
 
@@ -68,9 +72,8 @@ D3D11Status D3D11PictureBuffer::Init(
 }
 
 D3D11Status D3D11PictureBuffer::ProcessTexture(
-    const gfx::ColorSpace& input_color_space,
     scoped_refptr<gpu::ClientSharedImage>& shared_image_dest) {
-  return texture_wrapper_->ProcessTexture(input_color_space, shared_image_dest);
+  return texture_wrapper_->ProcessTexture(shared_image_dest);
 }
 
 ComD3D11Texture2D D3D11PictureBuffer::Texture() const {

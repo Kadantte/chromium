@@ -36,7 +36,8 @@ class TestTabModel : public TabModel {
  public:
   explicit TestTabModel(Profile* profile,
                         chrome::android::ActivityType activity_type =
-                            chrome::android::ActivityType::kTabbed);
+                            chrome::android::ActivityType::kTabbed,
+                        TabModelType tab_model_type = TabModelType::kStandard);
   ~TestTabModel() override;
 
   // TabModel:
@@ -65,9 +66,12 @@ class TestTabModel : public TabModel {
   void SetIsActiveModel(bool is_active);
 
   TabAndroid* GetTabAt(int index) const override;
+  std::vector<tabs::TabHandle> GetOrderedMultiSelectedTabs() const override;
   void SetActiveIndex(int index) override;
   void ForceCloseAllTabs() override;
   void CloseTabAt(int index) override;
+  std::unique_ptr<content::WebContents> DetachWebContents(
+      tabs::TabHandle tab) override;
   void AddObserver(TabModelObserver* observer) override;
   void RemoveObserver(TabModelObserver* observer) override;
 
@@ -80,13 +84,22 @@ class TestTabModel : public TabModel {
       const base::Time& end_time) const override;
   void CloseTabsNavigatedInTimeWindow(const base::Time& begin_time,
                                       const base::Time& end_time) override;
+  tabs::TabStripCollection* GetTabStripCollection(
+      base::PassKey<tabs_api::AndroidTabStripModelAdapter>) override;
 
   // TODO(crbug.com/415351293): Implement these.
   // TabListInterface implementation.
   void ActivateTab(tabs::TabHandle tab) override;
-  tabs::TabInterface* OpenTab(const GURL& url, int index) override;
+  tabs::TabInterface* OpenTab(const GURL& url,
+                              int index,
+                              bool foreground) override;
   void SetOpenerForTab(tabs::TabHandle target, tabs::TabHandle opener) override;
   tabs::TabInterface* GetOpenerForTab(tabs::TabHandle target) override;
+  tabs::TabInterface* InsertWebContentsAt(
+      int index,
+      std::unique_ptr<content::WebContents> web_contents,
+      bool should_pin,
+      std::optional<tab_groups::TabGroupId> group) override;
   content::WebContents* DiscardTab(tabs::TabHandle tab) override;
   tabs::TabInterface* DuplicateTab(tabs::TabHandle tab) override;
   tabs::TabInterface* GetTab(int index) override;
@@ -116,7 +129,7 @@ class TestTabModel : public TabModel {
   void MoveTabToWindow(tabs::TabHandle tab,
                        SessionID destination_window_id,
                        int destination_index) override;
-  void MoveTabGroupToWindow(tab_groups::TabGroupId group_id,
+  bool MoveTabGroupToWindow(tab_groups::TabGroupId group_id,
                             SessionID destination_window_id,
                             int destination_index) override;
   bool IsThisTabListEditable() override;
@@ -146,9 +159,11 @@ class OwningTestTabModel : public TabModel {
  public:
   // Creates a TabModel that starts empty. The model will automatically be added
   // to the TabModelList, and removed when it's destroyed.
-  explicit OwningTestTabModel(Profile* profile,
-                              chrome::android::ActivityType activity_type =
-                                  chrome::android::ActivityType::kTabbed);
+  explicit OwningTestTabModel(
+      Profile* profile,
+      chrome::android::ActivityType activity_type =
+          chrome::android::ActivityType::kTabbed,
+      TabModelType tab_model_type = TabModelType::kStandard);
 
   ~OwningTestTabModel() override;
 
@@ -165,9 +180,12 @@ class OwningTestTabModel : public TabModel {
   tabs::TabInterface* GetActiveTab() override;
   content::WebContents* GetWebContentsAt(int index) const override;
   TabAndroid* GetTabAt(int index) const override;
+  std::vector<tabs::TabHandle> GetOrderedMultiSelectedTabs() const override;
   void SetActiveIndex(int index) override;
   void ForceCloseAllTabs() override;
   void CloseTabAt(int index) override;
+  std::unique_ptr<content::WebContents> DetachWebContents(
+      tabs::TabHandle tab) override;
   tabs::TabInterface* CreateTab(
       TabAndroid* parent,
       std::unique_ptr<content::WebContents> web_contents,
@@ -190,6 +208,8 @@ class OwningTestTabModel : public TabModel {
       const base::Time& end_time) const override;
   void CloseTabsNavigatedInTimeWindow(const base::Time& begin_time,
                                       const base::Time& end_time) override;
+  tabs::TabStripCollection* GetTabStripCollection(
+      base::PassKey<tabs_api::AndroidTabStripModelAdapter>) override;
 
   // Test accessors:
 
@@ -214,9 +234,16 @@ class OwningTestTabModel : public TabModel {
   // TODO(crbug.com/415351293): Implement these.
   // TabListInterface implementation.
   void ActivateTab(tabs::TabHandle tab) override;
-  tabs::TabInterface* OpenTab(const GURL& url, int index) override;
+  tabs::TabInterface* OpenTab(const GURL& url,
+                              int index,
+                              bool foreground) override;
   void SetOpenerForTab(tabs::TabHandle target, tabs::TabHandle opener) override;
   tabs::TabInterface* GetOpenerForTab(tabs::TabHandle target) override;
+  tabs::TabInterface* InsertWebContentsAt(
+      int index,
+      std::unique_ptr<content::WebContents> web_contents,
+      bool should_pin,
+      std::optional<tab_groups::TabGroupId> group) override;
   content::WebContents* DiscardTab(tabs::TabHandle tab) override;
   tabs::TabInterface* DuplicateTab(tabs::TabHandle tab) override;
   tabs::TabInterface* GetTab(int index) override;
@@ -246,7 +273,7 @@ class OwningTestTabModel : public TabModel {
   void MoveTabToWindow(tabs::TabHandle tab,
                        SessionID destination_window_id,
                        int destination_index) override;
-  void MoveTabGroupToWindow(tab_groups::TabGroupId group_id,
+  bool MoveTabGroupToWindow(tab_groups::TabGroupId group_id,
                             SessionID destination_window_id,
                             int destination_index) override;
   bool IsThisTabListEditable() override;

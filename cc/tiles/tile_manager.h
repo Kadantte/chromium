@@ -129,7 +129,8 @@ class CC_EXPORT TileManager : CheckerImageTrackerClient,
 
   // This causes any completed raster work to finalize, so that tiles get up to
   // date draw information.
-  void PrepareToDraw();
+  // Returns true if IsReadyToDraw() is true.
+  bool PrepareToDraw();
 
   // Called when the required-for-activation/required-for-draw state of tiles
   // may have changed.
@@ -170,6 +171,10 @@ class CC_EXPORT TileManager : CheckerImageTrackerClient,
   void SetRasterBufferProviderForTesting(
       RasterBufferProvider* raster_buffer_provider) {
     raster_buffer_provider_ = raster_buffer_provider;
+  }
+
+  RasterBufferProvider* raster_buffer_provider_for_testing() {
+    return raster_buffer_provider_;
   }
 
   void SetPendingRasterQueriesForTesting(
@@ -240,6 +245,7 @@ class CC_EXPORT TileManager : CheckerImageTrackerClient,
 
  protected:
   friend class Tile;
+  friend class FakeTileManager;
   // Must be called by tile during destruction.
   void Release(Tile* tile);
   Tile::Id GetUniqueTileId() { return ++next_tile_id_; }
@@ -346,7 +352,7 @@ class CC_EXPORT TileManager : CheckerImageTrackerClient,
       std::vector<DrawImage>* sync_decoded_images,
       std::vector<PaintImage>* checkered_images,
       const gfx::Rect* invalidated_rect,
-      base::flat_map<PaintImage::Id, size_t>* image_to_frame_index = nullptr);
+      scoped_refptr<AnimatedImageFrameIndexMap> image_to_frame_index = nullptr);
   void AddCheckeredImagesToDecodeQueue(
       const PrioritizedTile& prioritized_tile,
       const TargetColorParams& target_color_params,
@@ -442,7 +448,6 @@ class CC_EXPORT TileManager : CheckerImageTrackerClient,
   scoped_refptr<base::TaskRunner> task_runner_for_testing_ = nullptr;
   raw_ptr<const base::TickClock> tick_clock_for_testing_ = nullptr;
 
-  base::MetricsSubSampler metrics_sub_sampler_;
   float metrics_sampling_rate_ = .01;
 
   // The callback scheduled to poll whether the GPU side work for pending tiles

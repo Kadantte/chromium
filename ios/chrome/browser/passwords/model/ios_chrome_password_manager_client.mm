@@ -21,6 +21,7 @@
 #import "components/enterprise/connectors/core/features.h"
 #import "components/enterprise/connectors/core/reporting_event_router.h"
 #import "components/keyed_service/core/service_access_type.h"
+#import "components/password_manager/core/browser/features/password_features.h"
 #import "components/password_manager/core/browser/password_form.h"
 #import "components/password_manager/core/browser/password_form_manager_for_ui.h"
 #import "components/password_manager/core/browser/password_manager.h"
@@ -37,6 +38,7 @@
 #import "components/webauthn/ios/features.h"
 #import "components/webauthn/ios/ios_webauthn_credentials_delegate_factory.h"
 #import "ios/chrome/browser/enterprise/connectors/reporting/ios_reporting_event_router_factory.h"
+#import "ios/chrome/browser/metrics/model/ios_profile_metrics_service_factory.h"
 #import "ios/chrome/browser/passwords/model/features.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_account_password_store_factory.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_reuse_manager_factory.h"
@@ -175,6 +177,11 @@ PrefService* IOSChromePasswordManagerClient::GetLocalStatePrefs() const {
   return GetApplicationContext()->GetLocalState();
 }
 
+metrics::ProfileMetricsService*
+IOSChromePasswordManagerClient::GetProfileMetricsService() {
+  return IOSProfileMetricsServiceFactory::GetForProfile(bridge_.profile);
+}
+
 const syncer::SyncService* IOSChromePasswordManagerClient::GetSyncService()
     const {
   return SyncServiceFactory::GetForProfileIfExists(bridge_.profile);
@@ -288,15 +295,30 @@ void IOSChromePasswordManagerClient::NotifyUserCredentialsWereLeaked(
 void IOSChromePasswordManagerClient::NotifyKeychainError() {}
 
 bool IOSChromePasswordManagerClient::IsSavingAndFillingEnabled(
-    const GURL& url) const {
+    const url::Origin& origin,
+    base::optional_ref<const GURL> url) const {
   return *saving_passwords_enabled_ && !IsOffTheRecord() &&
          !net::IsCertStatusError(GetMainFrameCertStatus()) &&
-         IsFillingEnabled(url);
+         IsFillingEnabled(origin, url);
 }
 
-bool IOSChromePasswordManagerClient::IsFillingEnabled(const GURL& url) const {
-  return url.DeprecatedGetOriginAsURL() !=
-         GURL(password_manager::kPasswordManagerAccountDashboardURL);
+bool IOSChromePasswordManagerClient::IsFillingEnabled(
+    const url::Origin& origin,
+    base::optional_ref<const GURL> url) const {
+  if (origin.opaque() &&
+      base::FeatureList::IsEnabled(
+          password_manager::features::kPasswordBlockOpaqueOrigins)) {
+    return false;
+  }
+
+  if (url && !base::FeatureList::IsEnabled(
+                 password_manager::features::kPasswordBlockOpaqueOrigins)) {
+    return url->DeprecatedGetOriginAsURL() !=
+           GURL(password_manager::kPasswordManagerAccountDashboardURL);
+  }
+
+  return origin != url::Origin::Create(GURL(
+                       password_manager::kPasswordManagerAccountDashboardURL));
 }
 
 bool IOSChromePasswordManagerClient::IsFieldFilledWithOtp(
@@ -402,7 +424,7 @@ IOSChromePasswordManagerClient::GetWebAuthnCredentialsDelegateForDriver(
 
   return webauthn::IOSWebAuthnCredentialsDelegateFactory::GetFactory(
              bridge_.webState)
-      ->GetDelegateForFrame(
+      ->GetDelegateForFrameId(
           static_cast<IOSPasswordManagerDriver*>(driver)->web_frame_id());
 }
 

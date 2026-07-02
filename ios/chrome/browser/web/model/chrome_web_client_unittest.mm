@@ -17,17 +17,19 @@
 #import "components/captive_portal/core/captive_portal_detector.h"
 #import "components/content_settings/core/browser/host_content_settings_map.h"
 #import "components/lookalikes/core/lookalike_url_util.h"
+#import "components/reading_list/core/reading_list_entry.h"
+#import "components/reading_list/core/reading_list_model.h"
 #import "components/safe_browsing/ios/browser/safe_browsing_url_allow_list.h"
 #import "components/security_interstitials/core/unsafe_resource.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/content_settings/model/host_content_settings_map_factory.h"
-#import "ios/chrome/browser/reading_list/model/offline_url_utils.h"
+#import "ios/chrome/browser/reading_list/model/reading_list_model_factory.h"
+#import "ios/chrome/browser/reading_list/model/reading_list_test_utils.h"
 #import "ios/chrome/browser/safe_browsing/model/safe_browsing_blocking_page.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/ssl/model/captive_portal_tab_helper.h"
 #import "ios/chrome/browser/web/model/error_page_util.h"
-#import "ios/chrome/browser/web/model/features.h"
 #import "ios/components/security_interstitials/https_only_mode/https_only_mode_container.h"
 #import "ios/components/security_interstitials/https_only_mode/https_only_mode_error.h"
 #import "ios/components/security_interstitials/ios_blocking_page_tab_helper.h"
@@ -274,7 +276,7 @@ TEST_F(ChromeWebClientTest, PrepareErrorPageWithSSLInfo) {
       base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
           &test_loader_factory));
 
-  CaptivePortalTabHelper::GetOrCreateForWebState(&web_state);
+  CaptivePortalTabHelper::CreateForWebState(&web_state);
   web_state.SetBrowserState(profile());
   web_client.PrepareErrorPage(&web_state, GURL(kTestUrl), error,
                               /*is_post=*/false,
@@ -337,6 +339,12 @@ TEST_F(ChromeWebClientTest, PrepareErrorPageForSafeBrowsingError) {
   NSString* error_string = l10n_util::GetNSString(IDS_SAFEBROWSING_HEADING);
   EXPECT_TRUE([page containsString:error_string]);
 }
+
+// Tests PrepareErrorPage with a Reading List entry, which would normally
+// trigger the offline page bypass, but with a Safe Browsing error (which is a
+// security error), so the Safe Browsing interstitial should NOT be bypassed and
+// must be displayed instead.
+
 
 // Tests PrepareErrorPage for a safe browsing enterprise block error, which
 // results in a committed enterprise interstitial.
@@ -597,81 +605,12 @@ TEST_F(ChromeWebClientTest, IsPointingToSameDocumentOnline) {
       web_client.IsPointingToSameDocument(different_url1, different_url2));
 }
 
-// Tests if one online URL and one offline reload URL are correctly processed.
-TEST_F(ChromeWebClientTest, IsPointingToSameDocumentOnlineOfflineReload) {
-  ChromeWebClient web_client;
-  GURL same_url1 = GURL("http://chromium.org/foo");
-  GURL same_url2 =
-      reading_list::OfflineReloadURLForURL(GURL("http://chromium.org/foo"));
 
-  EXPECT_TRUE(web_client.IsPointingToSameDocument(same_url1, same_url2));
-
-  GURL different_url1 = GURL("http://chromium.org/foo");
-  GURL different_url2 =
-      reading_list::OfflineReloadURLForURL(GURL("http://chromium.org/bar"));
-
-  EXPECT_FALSE(
-      web_client.IsPointingToSameDocument(different_url1, different_url2));
-}
-
-// Tests if one online URL and one offline Entry URL are correctly processed.
-TEST_F(ChromeWebClientTest, IsPointingToSameDocumentOnlineOfflineEntry) {
-  ChromeWebClient web_client;
-  GURL same_url1 = GURL("http://chromium.org/foo");
-  GURL same_url2 =
-      reading_list::OfflineURLForURL(GURL("http://chromium.org/foo"));
-
-  EXPECT_TRUE(web_client.IsPointingToSameDocument(same_url1, same_url2));
-
-  GURL different_url1 = GURL("http://chromium.org/foo");
-  GURL different_url2 =
-      reading_list::OfflineURLForURL(GURL("http://chromium.org/bar"));
-
-  EXPECT_FALSE(
-      web_client.IsPointingToSameDocument(different_url1, different_url2));
-}
-
-// Tests if two offline URLs are correctly processed.
-TEST_F(ChromeWebClientTest, IsPointingToSameDocumentOfflineEntry) {
-  ChromeWebClient web_client;
-  GURL same_url1 =
-      reading_list::OfflineURLForURL(GURL("http://chromium.org/foo"));
-  GURL same_url2 =
-      reading_list::OfflineURLForURL(GURL("http://chromium.org/foo"));
-
-  EXPECT_TRUE(web_client.IsPointingToSameDocument(same_url1, same_url2));
-
-  GURL different_url1 =
-      reading_list::OfflineURLForURL(GURL("http://chromium.org/foo"));
-  GURL different_url2 =
-      reading_list::OfflineURLForURL(GURL("http://chromium.org/bar"));
-
-  EXPECT_FALSE(
-      web_client.IsPointingToSameDocument(different_url1, different_url2));
-
-  GURL same_url3 =
-      reading_list::OfflineURLForURL(GURL("http://chromium.org/foo"));
-  GURL same_url4 =
-      reading_list::OfflineURLForURL(GURL("http://chromium.org/foo"));
-
-  EXPECT_TRUE(web_client.IsPointingToSameDocument(same_url3, same_url4));
-
-  GURL different_url3 =
-      reading_list::OfflineURLForURL(GURL("http://chromium.org/foo"));
-  GURL different_url4 =
-      reading_list::OfflineURLForURL(GURL("http://chromium.org/bar"));
-
-  EXPECT_FALSE(
-      web_client.IsPointingToSameDocument(different_url3, different_url4));
-}
 
 // Tests if URLs with one empty is working as expected.
 TEST_F(ChromeWebClientTest, IsPointingToSameDocumentEmpty) {
   ChromeWebClient web_client;
-  GURL offline_url =
-      reading_list::OfflineURLForURL(GURL("http://chromium.org/foo"));
   GURL online_url = GURL("http://chromium.org/foo");
 
-  EXPECT_FALSE(web_client.IsPointingToSameDocument(GURL(), offline_url));
   EXPECT_FALSE(web_client.IsPointingToSameDocument(GURL(), online_url));
 }

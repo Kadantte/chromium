@@ -300,6 +300,7 @@ class HistoryBackend : public base::RefCountedThreadSafe<HistoryBackend>,
   // Querying ------------------------------------------------------------------
 
   QueryURLResult QueryURL(const GURL& url);
+  std::optional<std::vector<URLID>> QueryUrlIds(const std::vector<GURL>& urls);
   QueryURLAndVisitsResult QueryURLAndVisits(
       const GURL& url,
       VisitQuery404sPolicy policy_for_404s);
@@ -559,26 +560,26 @@ class HistoryBackend : public base::RefCountedThreadSafe<HistoryBackend>,
   // this boundary won't be clustered nor cause re-clustering.
   base::Time FindMostRecentClusteredTime();
 
-  void ReplaceClusters(const std::vector<int64_t>& ids_to_delete,
+  void ReplaceClusters(const std::vector<ClusterId>& ids_to_delete,
                        const std::vector<Cluster>& clusters_to_add);
 
-  int64_t ReserveNextClusterIdWithVisit(const ClusterVisit& cluster_visit);
+  ClusterId ReserveNextClusterIdWithVisit(ClusterVisit cluster_visit);
 
-  void AddVisitsToCluster(int64_t cluster_id,
-                          const std::vector<ClusterVisit>& visits);
+  void AddVisitsToCluster(ClusterId cluster_id,
+                          std::vector<ClusterVisit> visits);
 
   // Adds `cluster_visit` to the local cluster with `originator_cache_guid` and
   // `originator_cluster_id`. If an existing cluster does not exist with those
   // synced details, a new one will be created.
   void AddVisitToSyncedCluster(const history::ClusterVisit& cluster_visit,
                                const std::string& originator_cache_guid,
-                               int64_t originator_cluster_id) override;
+                               ClusterId originator_cluster_id) override;
 
   void UpdateClusterTriggerability(const std::vector<Cluster>& clusters);
 
   void HideVisits(const std::vector<VisitID>& visit_ids);
 
-  void UpdateClusterVisit(const history::ClusterVisit& cluster_visit);
+  void UpdateClusterVisit(history::ClusterVisit cluster_visit);
 
   std::vector<Cluster> GetMostRecentClusters(
       base::Time inclusive_min_time,
@@ -590,13 +591,13 @@ class HistoryBackend : public base::RefCountedThreadSafe<HistoryBackend>,
   // Get a `Cluster`. Since `keyword_to_data_map` and `visits.duplicate_visits`
   // aren't always useful and require extra SQL executions, they're only
   // populated if `include_keywords_and_duplicates` is true.
-  Cluster GetCluster(int64_t cluster_id,
+  Cluster GetCluster(ClusterId cluster_id,
                      bool include_keywords_and_duplicates = true);
 
   // Returns the ID of the cluster containing `visit_id`. Returns 0 if
   // `visit_id` is not in a cluster.
   // HistoryBackendForSync:
-  int64_t GetClusterIdContainingVisit(VisitID visit_id) override;
+  ClusterId GetClusterIdContainingVisit(VisitID visit_id) override;
 
   // Finds the 1st visit in the redirect chain containing `visit`.
   // Unlike `GetRedirectsToSpecificVisit()`, this only considers actual

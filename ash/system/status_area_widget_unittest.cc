@@ -66,6 +66,7 @@
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_unittest_util.h"
+#include "ui/views/accessibility/view_accessibility.h"
 
 using session_manager::SessionState;
 using testing::NotNull;
@@ -263,7 +264,7 @@ class LockedFullscreenStatusAreaWidgetTest
 TEST_P(LockedFullscreenStatusAreaWidgetTest,
        TrayBubbleVisibilityWithPinnedWindow) {
   // Create a window for testing purposes.
-  const std::unique_ptr<aura::Window> window = CreateTestWindow();
+  const std::unique_ptr<aura::Window> window = CreateWindowWithAppType();
 
   // Show the unified system tray bubble before pinning the window.
   auto* const status_area_widget = GetPrimaryShelf()->GetStatusAreaWidget();
@@ -369,9 +370,6 @@ class UnifiedStatusAreaWidgetTest : public AshTestBase {
 
     network_handler_test_helper_.InitializePrefs(&profile_prefs_,
                                                  local_state());
-
-    // Networking stubs may have asynchronous initialization.
-    base::RunLoop().RunUntilIdle();
   }
 
   void TearDown() override {
@@ -703,7 +701,7 @@ TEST_F(StatusAreaWidgetCollapseStateTest, AllTraysFitInCollapsedState) {
 TEST_F(StatusAreaWidgetCollapseStateTest,
        HideDragHandleOnOverlapInExpandedState) {
   std::unique_ptr<aura::Window> test_window =
-      CreateTestWindow(gfx::Rect(0, 0, 400, 400));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {400, 400});
   ash::TabletModeControllerTestApi().EnterTabletMode();
   status_area_->UpdateCollapseState();
 
@@ -727,7 +725,7 @@ TEST_F(StatusAreaWidgetCollapseStateTest,
 TEST_F(StatusAreaWidgetCollapseStateTest,
        HideDragHandleWithNudgeOnOverlapInExpandedState) {
   std::unique_ptr<aura::Window> test_window =
-      CreateTestWindow(gfx::Rect(0, 0, 400, 400));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {400, 400});
   ash::TabletModeControllerTestApi().EnterTabletMode();
   status_area_->UpdateCollapseState();
 
@@ -838,6 +836,8 @@ TEST_F(StatusAreaWidgetTest, AddCustomTrayIcons) {
             kExpectedViewId));
     EXPECT_TRUE(icon);
     EXPECT_EQ(icon->image_view()->GetTooltipText(), configuration.tool_tip);
+    EXPECT_EQ(icon->GetViewAccessibility().GetCachedName(),
+              configuration.tool_tip);
 
     ui::ImageModel actual_model = icon->image_view()->GetImageModel();
     ASSERT_TRUE(actual_model.IsImage());
@@ -860,6 +860,8 @@ TEST_F(StatusAreaWidgetTest, AddCustomTrayIcons) {
             kExpectedViewId));
     EXPECT_TRUE(icon);
     EXPECT_EQ(icon->image_view()->GetTooltipText(), configuration.tool_tip);
+    EXPECT_EQ(icon->GetViewAccessibility().GetCachedName(),
+              configuration.tool_tip);
 
     ui::ImageModel actual_model = icon->image_view()->GetImageModel();
     ASSERT_TRUE(actual_model.IsEmpty());
@@ -880,6 +882,7 @@ TEST_F(StatusAreaWidgetTest, AddCustomTrayIcons) {
             kExpectedViewId));
     EXPECT_TRUE(icon);
     EXPECT_TRUE(icon->image_view()->GetTooltipText().empty());
+    EXPECT_TRUE(icon->GetViewAccessibility().GetCachedName().empty());
 
     ui::ImageModel actual_model = icon->image_view()->GetImageModel();
     ASSERT_TRUE(actual_model.IsImage());
@@ -919,6 +922,8 @@ TEST_F(StatusAreaWidgetTest, UpdateCustomTrayIcon) {
             kExpectedViewId));
     EXPECT_TRUE(icon);
     EXPECT_EQ(icon->image_view()->GetTooltipText(), configuration.tool_tip);
+    EXPECT_EQ(icon->GetViewAccessibility().GetCachedName(),
+              configuration.tool_tip);
 
     ui::ImageModel actual_model = icon->image_view()->GetImageModel();
     ASSERT_TRUE(actual_model.IsImage());

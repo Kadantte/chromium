@@ -10,6 +10,7 @@
 #include "base/base_switches.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
+#include "base/logging.h"
 #include "base/memory/raw_ref.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/field_trial_params.h"
@@ -74,31 +75,6 @@ void SetRuntimeFeatureDefaultsForPlatform(
 #if defined(USE_AURA)
   WebRuntimeFeatures::EnableCompositedSelectionUpdate(true);
 #endif
-
-#if BUILDFLAG(IS_APPLE)
-  const bool enable_canvas_2d_image_chromium =
-      command_line.HasSwitch(
-          blink::switches::kEnableGpuMemoryBufferCompositorResources) &&
-      !command_line.HasSwitch(switches::kDisable2dCanvasImageChromium) &&
-      !command_line.HasSwitch(switches::kDisableGpu) &&
-      base::FeatureList::IsEnabled(features::kCanvas2DImageChromium);
-#else
-  constexpr bool enable_canvas_2d_image_chromium = false;
-#endif
-  WebRuntimeFeatures::EnableCanvas2dImageChromium(
-      enable_canvas_2d_image_chromium);
-
-#if BUILDFLAG(IS_APPLE)
-  const bool enable_web_gl_image_chromium =
-      command_line.HasSwitch(
-          blink::switches::kEnableGpuMemoryBufferCompositorResources) &&
-      !command_line.HasSwitch(switches::kDisableWebGLImageChromium) &&
-      !command_line.HasSwitch(switches::kDisableGpu);
-#else
-  const bool enable_web_gl_image_chromium =
-      command_line.HasSwitch(switches::kEnableWebGLImageChromium);
-#endif
-  WebRuntimeFeatures::EnableWebGLImageChromium(enable_web_gl_image_chromium);
 
 #if BUILDFLAG(IS_ANDROID)
   if (command_line.HasSwitch(switches::kDisableMediaSessionAPI)) {
@@ -187,16 +163,12 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
   // in the next list.
   const RuntimeFeatureToChromiumFeatureMap<void (*)(bool)>
       blinkFeatureToBaseFeatureMapping[] = {
-          {wf::EnableAccessibilityAriaVirtualContent,
-           raw_ref(features::kEnableAccessibilityAriaVirtualContent)},
           {wf::EnableAccessibilityUseAXPositionForDocumentMarkers,
            raw_ref(features::kUseAXPositionForDocumentMarkers)},
 #if BUILDFLAG(IS_ANDROID)
           {wf::EnableAudioOutputDevices,
            raw_ref(features::kAAudioPerStreamDeviceSelection)},
 #endif
-          {wf::EnableAuthenticatorPasswordsOnlyImmediateRequests,
-           raw_ref(device::kAuthenticatorPasswordsOnlyImmediateRequests)},
           {wf::EnableBackgroundFetch, raw_ref(features::kBackgroundFetch)},
           {wf::EnableBoundaryEventDispatchTracksNodeRemoval,
            raw_ref(blink::features::kBoundaryEventDispatchTracksNodeRemoval)},
@@ -207,7 +179,7 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
           {wf::EnableDocumentPolicyNegotiation,
            raw_ref(features::kDocumentPolicyNegotiation)},
           {wf::EnableEmailVerificationProtocol,
-           raw_ref(features::kEmailVerificationProtocol), kDefault},
+           raw_ref(features::kEmailVerificationProtocol), kSetOnlyIfOverridden},
           {wf::EnableEyeDropperAPI, raw_ref(features::kEyeDropper),
            kSetOnlyIfOverridden},
           {wf::EnableFedCm, raw_ref(features::kFedCm), kSetOnlyIfOverridden},
@@ -219,14 +191,21 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
            raw_ref(features::kFedCmIdPRegistration), kDefault},
           {wf::EnableFedCmLightweightMode,
            raw_ref(features::kFedCmLightweightMode), kDefault},
+          // We want to enable interception when either of these two flags is
+          // enabled because interception can happen with either flag.
           {wf::EnableFedCmNavigationInterception,
            raw_ref(features::kFedCmNavigationInterception), kDefault},
+          {wf::EnableFedCmNavigationInterception,
+           raw_ref(features::kFedCmEmbedderInitiatedLogin), kDefault},
           {wf::EnableFedCmErrorAttribute,
            raw_ref(features::kFedCmErrorAttribute), kDefault},
           {wf::EnableFedCmNonStringToken,
            raw_ref(features::kFedCmNonStringToken), kDefault},
           {wf::EnableGamepadMultitouch,
            raw_ref(features::kEnableGamepadMultitouch)},
+          {wf::EnableGamepadRawInputChangeEvent,
+           raw_ref(features::kGamepadRawInputChangeEvent),
+           kSetOnlyIfOverridden},
           {wf::EnableSharedStorageAPI,
            raw_ref(features::kPrivacySandboxAdsAPIsOverride),
            kSetOnlyIfOverridden},
@@ -278,8 +257,10 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
            raw_ref(features::kTouchDragAndContextMenu)},
           {wf::EnableWebAuthenticationAmbient,
            raw_ref(device::kWebAuthnAmbientSignin)},
+          {wf::EnableWebAuthenticationCrossDeviceFallbackUrl,
+           raw_ref(device::kWebAuthnCrossDeviceFallbackUrl)},
           {wf::EnableWebAuthenticationImmediateGet,
-           raw_ref(device::kWebAuthnImmediateGet), kSetOnlyIfOverridden},
+           raw_ref(device::kWebAuthnImmediateGet), kDefault},
           {wf::EnableWebBluetooth, raw_ref(features::kWebBluetooth),
            kSetOnlyIfOverridden},
           {wf::EnableWebBluetoothGetDevices,
@@ -297,6 +278,8 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
           {wf::EnableWebOTPAssertionFeaturePolicy,
            raw_ref(features::kWebOTPAssertionFeaturePolicy),
            kSetOnlyIfOverridden},
+          {wf::EnableWebGPUCompatibilityMode,
+           raw_ref(features::kWebGPUCompatibilityMode)},
           {wf::EnableWebUSB, raw_ref(features::kWebUsb)},
           {wf::EnableWebXR, raw_ref(features::kWebXr)},
 #if BUILDFLAG(ENABLE_VR)
@@ -317,8 +300,6 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
            raw_ref(device::features::kWebXRIncubations)},
 #endif
           {wf::EnableXSLT, raw_ref(blink::features::kXSLT)},
-          {wf::EnablePermissions, raw_ref(features::kWebPermissionsApi),
-           kSetOnlyIfOverridden},
       };
   for (const auto& mapping : blinkFeatureToBaseFeatureMapping) {
     SetRuntimeFeatureFromChromiumFeature(
@@ -375,7 +356,10 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
            kSetOnlyIfOverridden},
           {"FledgeBiddingAndAuctionServerAPI",
            raw_ref(blink::features::kFledgeBiddingAndAuctionServer), kDefault},
-          {"FontSrcLocalMatching", raw_ref(features::kFontSrcLocalMatching)},
+#if BUILDFLAG(IS_WIN)
+          {"FontDataService",
+           raw_ref(features::kFontDataServiceAllWebContents)},
+#endif
           {"HstsTopLevelNavigationsOnly",
            raw_ref(net::features::kHstsTopLevelNavigationsOnly)},
           {"MachineLearningNeuralNetwork",
@@ -387,10 +371,9 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
           {"RelatedWebsitePartitionAPI",
            raw_ref(net::features::kRelatedWebsitePartitionAPI)},
           {"SerialPortConnected", raw_ref(features::kSerialPortConnected)},
-#if BUILDFLAG(IS_MAC)
-          {"SystemDefaultAccentColors",
-           raw_ref(features::kUseSystemDefaultAccentColors)},
-#endif
+          {"WebSerialWorldIsolatedCache",
+           raw_ref(features::kWebSerialWorldIsolatedCache)},
+          {"SplitViewLinkOpen", raw_ref(features::kSplitViewLinkOpen)},
           {"TopicsAPI", raw_ref(features::kPrivacySandboxAdsAPIsOverride),
            kSetOnlyIfOverridden},
           {"TopicsAPI", raw_ref(features::kPrivacySandboxAdsAPIsM1Override)},
@@ -412,14 +395,8 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
            raw_ref(webnn::mojom::features::
                        kExperimentalWebMachineLearningNeuralNetwork),
            kSetOnlyIfOverridden},
-#if BUILDFLAG(IS_ANDROID)
-          {"WebAppLaunchQueue", raw_ref(features::kAndroidWebAppLaunchHandler)},
-#endif
           {"LocalNetworkAccessPermissionPolicy",
-           raw_ref(network::features::kLocalNetworkAccessChecks)},
-          {"LocalNetworkAccessSplitPermissions",
-           raw_ref(
-               network::features::kLocalNetworkAccessChecksSplitPermissions)}};
+           raw_ref(network::features::kLocalNetworkAccessChecks)}};
   for (const auto& mapping : runtimeFeatureNameToChromiumFeatureMapping) {
     SetRuntimeFeatureFromChromiumFeature(
         *mapping.chromium_feature, mapping.option, [&mapping](bool enabled) {
@@ -638,26 +615,36 @@ void ResolveInvalidConfigurations() {
     WebRuntimeFeatures::EnableFledge(false);
   }
 
-  // PermissionElement cannot be enabled without the support of the
-  // browser process.
-  if (!base::FeatureList::IsEnabled(blink::features::kPermissionElement)) {
-    LOG_IF(WARNING,
-           WebRuntimeFeatures::IsPermissionElementEnabledByRuntimeFlag())
-        << "PermissionElement cannot be enabled in this configuration. Use --"
-        << switches::kEnableFeatures << "="
-        << blink::features::kPermissionElement.name << " instead.";
-    WebRuntimeFeatures::EnablePermissionElement(false);
-  }
-
   // UserMediaElement cannot be enabled without the support of the
   // browser process.
   if (!base::FeatureList::IsEnabled(blink::features::kUserMediaElement)) {
-    LOG_IF(WARNING,
-           WebRuntimeFeatures::IsUserMediaElementEnabledByRuntimeFlag())
+    LOG_IF(WARNING, WebRuntimeFeatures::IsUserMediaElementEnabled())
         << "UserMediaElement cannot be enabled in this configuration. Use --"
         << switches::kEnableFeatures << "="
         << blink::features::kUserMediaElement.name << " instead.";
     WebRuntimeFeatures::EnableUserMediaElement(false);
+  }
+
+  // InstallElement cannot be enabled without the support of the browser
+  // process.
+  if (!base::FeatureList::IsEnabled(blink::features::kInstallElement)) {
+    LOG_IF(WARNING, WebRuntimeFeatures::IsInstallElementEnabledByRuntimeFlag())
+        << "InstallElement cannot be enabled in this configuration. Use --"
+        << switches::kEnableFeatures << "="
+        << blink::features::kInstallElement.name << " instead.";
+    WebRuntimeFeatures::EnableInstallElement(false);
+  }
+
+  // WebAppInstallation cannot be enabled without the support of the browser
+  // process.
+  if (!base::FeatureList::IsEnabled(blink::features::kWebAppInstallation)) {
+    LOG_IF(WARNING,
+           WebRuntimeFeatures::IsWebAppInstallationEnabledByRuntimeFlag())
+        << "WebAppInstallation cannot be enabled in this configuration. Use "
+           "--"
+        << switches::kEnableFeatures << "="
+        << blink::features::kWebAppInstallation.name << " instead.";
+    WebRuntimeFeatures::EnableWebAppInstallation(false);
   }
 
   // CSP Hashes in V1 cannot be enabled without the support of the network

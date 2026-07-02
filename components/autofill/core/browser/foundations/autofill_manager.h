@@ -8,48 +8,55 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
 
 #include "base/callback_list.h"
+#include "base/containers/flat_map.h"
+#include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_forward.h"
 #include "base/functional/function_ref.h"
-#include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "base/observer_list_types.h"
 #include "base/scoped_observation.h"
 #include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
-#include "base/types/strong_alias.h"
+#include "base/types/optional_ref.h"
+#include "base/types/pass_key.h"
 #include "build/build_config.h"
-#include "components/autofill/core/browser/autofill_trigger_source.h"
 #include "components/autofill/core/browser/crowdsourcing/autofill_crowdsourcing_manager.h"
+#include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/filling/form_filler.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/foundations/autofill_driver.h"
-#include "components/autofill/core/common/dense_set.h"
+#include "components/autofill/core/browser/heuristic_source.h"
+#include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
+#include "components/autofill/core/common/aliases.h"
 #include "components/autofill/core/common/form_data.h"
-#include "components/autofill/core/common/is_required.h"
 #include "components/autofill/core/common/language_code.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom.h"
+#include "components/autofill/core/common/password_form_fill_data.h"
 #include "components/autofill/core/common/signatures.h"
 #include "components/autofill/core/common/unique_ids.h"
 #include "components/translate/core/browser/translate_driver.h"
+#include "ui/gfx/geometry/rect.h"
 
 namespace autofill {
 
 struct AutofillServerPrediction;
 class AutofillField;
-class AutofillProfile;
-class CreditCard;
 class CreditCardAccessManager;
 class FormData;
-class FormFieldData;
 class FormStructure;
 class LogManager;
 struct Suggestion;
@@ -75,19 +82,19 @@ class AutofillManager
   //
   // For the On{Before,After}Foo() events, the following invariant holds:
   // Every OnBeforeFoo() is followed by an OnAfterFoo(); on OnAfterFoo() may be
-  // called asynchronously (but on the UI thread). The only exceptions where
-  // OnBeforeFoo() may be called without a corresponding OnAfterFoo() call are:
-  // - if the number of cached forms exceeds `kAutofillManagerMaxFormCacheSize`;
-  // - if this AutofillManager has been destroyed or reset in the meantime.
+  // called asynchronously (but on the UI thread). The only exception where
+  // OnBeforeFoo() may be called without a corresponding OnAfterFoo() call is
+  // when this AutofillManager has been destroyed or reset during the
+  // asynchronous parsing.
   //
   // When observing an AutofillManager, make sure to remove the observation
   // before the AutofillManager is destroyed. Pending destruction is signaled
   // by a call to `OnAutofillManagerStateChanged` with current `LifecycleState`
   // `kPendingDeletion`.
-  // If you want to observe all AutofillManagers of a `WebContents`, consider
+  // If you want to observe all AutofillManagers of an AutofillClient, consider
   // using `autofill::ScopedAutofillManagersObservation`, which abstracts away
   // all the boilerplate for adding and removing observers of AutofillManagers
-  // of a `WebContents`.
+  // of an AutofillClient.
   //
   // TODO(crbug.com/40280003): Consider moving events that are specific to BAM
   // to a new BAM::Observer class.
@@ -95,11 +102,19 @@ class AutofillManager
    public:
     virtual void OnAutofillManagerStateChanged(AutofillManager& manager,
                                                LifecycleState previous,
-                                               LifecycleState current) {}
+                                               LifecycleState new_state) {}
 
     virtual void OnBeforeLanguageDetermined(AutofillManager& manager) {}
     virtual void OnAfterLanguageDetermined(AutofillManager& manager) {}
 
+    // Unlike other events, OnFormsSeen() determines both heuristic and server
+    // types. OnAfterFormsSeen() is fired after the heuristic type detection is
+    // complete (if it started at all). Whether the server types have been
+    // determined by then or not is unspecified.
+    //
+    // TODO(crbug.com/470949499): Consider calling OnAfterFormsSeen() after the
+    // heuristics *and* the server predictions have been determined. The main
+    // challenge is likely the server's possibly slow response time.
     virtual void OnBeforeFormsSeen(
         AutofillManager& manager,
         base::span<const FormGlobalId> updated_forms,
@@ -124,12 +139,9 @@ class AutofillManager
                                                FormGlobalId form,
                                                FieldGlobalId field) {}
 
-    // TODO(crbug.com/40227496): Get rid of `text_value`.
-    virtual void OnAfterTextFieldValueChanged(
-        AutofillManager& manager,
-        FormGlobalId form,
-        FieldGlobalId field,
-        const std::u16string& text_value) {}
+    virtual void OnAfterTextFieldValueChanged(AutofillManager& manager,
+                                              FormGlobalId form,
+                                              FieldGlobalId field) {}
 
     virtual void OnBeforeTextFieldDidScroll(AutofillManager& manager,
                                             FormGlobalId form,
@@ -201,14 +213,15 @@ class AutofillManager
     // Fired when the suggestions are *actually* shown or hidden.
     virtual void OnSuggestionsShown(AutofillManager& manager,
                                     base::span<const Suggestion> suggestions) {}
-    virtual void OnSuggestionsHidden(AutofillManager& manager) {}
+    virtual void OnSuggestionsHidden(AutofillManager& manager,
+                                     SuggestionHidingReason reason) {}
 
-    // Fired when a form is filled or previewed with a AutofillProfile or
-    // CreditCard.
-    // `filled_fields` represents the fields that were sent to the renderer to
-    // be filled: each `FormFieldData::value` contains the filled or previewed
-    // value; the corresponding `AutofillField` contains the field type
-    // information. The field values come from `filling_payload`.
+    // Fired when an autofill of `filling_payload` is previewed or filled.
+    // This is not fired for single-field operations (see
+    // OnFillOrPreviewField()). `filled_field_ids` represents the IDs of the
+    // fields that were sent to the renderer to be filled: each corresponding
+    // `AutofillField` contains the field type information. `trigger_field_id`
+    // is the ID of the field that initiated/triggered the autofill action.
     // TODO(crbug.com/40280003): Consider removing the event in favor of
     // OnAfterDidAutofillForm(), which is fired by the renderer.
     // TODO(crbug.com/40227071): Consider removing `action_persistence` as the
@@ -216,9 +229,21 @@ class AutofillManager
     virtual void OnFillOrPreviewForm(
         AutofillManager& manager,
         FormGlobalId form_id,
+        FieldGlobalId trigger_field_id,
         mojom::ActionPersistence action_persistence,
         const base::flat_set<FieldGlobalId>& filled_field_ids,
         const FillingPayload& filling_payload) {}
+
+    // Fired when a single field is previewed or filled.
+    // This is not fired for multi-field form fills (which trigger
+    // OnFillOrPreviewForm instead).
+    virtual void OnFillOrPreviewField(
+        AutofillManager& manager,
+        FormGlobalId form_id,
+        FieldGlobalId field_id,
+        mojom::ActionPersistence action_persistence,
+        const std::u16string& value,
+        std::optional<FieldType> field_type_used) {}
 
     // Fired when a form is submitted. A `FormData` is passed instead of a
     // `FormGlobalId` because the form structure cached inside `AutofillManager`
@@ -228,6 +253,22 @@ class AutofillManager
                                        const FormData& form) {}
     virtual void OnAfterFormSubmitted(AutofillManager& manager,
                                       const FormData& form) {}
+
+    // Fired when a form with a shared email verification token is submitted.
+    // A `FormData` is passed instead of a `FormGlobalId` because the form
+    // structure cached inside `AutofillManager` is not updated at this point
+    // yet and thus does not contain, e.g., the submitted values, that an
+    // observer may wish to analyze.
+    //
+    // This is *not* necessarily a subset of On{Before,After}FormSubmitted().
+    virtual void OnBeforeFormWithEmailVerificationTokenSubmitted(
+        AutofillManager& manager,
+        const FormData& form,
+        const FieldGlobalId& field) {}
+    virtual void OnAfterFormWithEmailVerificationTokenSubmitted(
+        AutofillManager& manager,
+        const FormData& form,
+        const FieldGlobalId& field) {}
   };
 
   AutofillManager(const AutofillManager&) = delete;
@@ -250,8 +291,8 @@ class AutofillManager
   // Events triggered by the renderer.
   // See autofill_driver.mojom for documentation.
   // Some functions are virtual for testing.
-  virtual void OnFormsSeen(const std::vector<FormData>& updated_forms,
-                           const std::vector<FormGlobalId>& removed_forms);
+  virtual void OnFormsSeen(std::vector<FormData> updated_forms,
+                           std::vector<FormGlobalId> removed_form_ids);
   virtual void OnFormSubmitted(const FormData& form,
                                mojom::SubmissionSource source);
   virtual void OnTextFieldValueChanged(const FormData& form,
@@ -286,7 +327,22 @@ class AutofillManager
       const std::u16string& old_value);
 
   // Invoked when the suggestions are actually hidden.
-  void OnSuggestionsHidden();
+  virtual void OnSuggestionsHidden(SuggestionHidingReason reason);
+
+  // Invoked when a form with an email verification token is submitted.
+  virtual void OnFormWithEmailVerificationTokenSubmitted(
+      const FormData& form,
+      const FieldGlobalId& field_id);
+
+  // Routes calls from external components to FormFiller::FillOrPreviewField.
+  // Virtual for testing.
+  virtual void FillOrPreviewField(mojom::ActionPersistence action_persistence,
+                                  mojom::FieldActionType action_type,
+                                  const FormGlobalId& form_id,
+                                  const FieldGlobalId& field_id,
+                                  const std::u16string& value,
+                                  FillingProduct filling_product,
+                                  std::optional<FieldType> field_type_used) = 0;
 
   // Other events.
 
@@ -371,7 +427,7 @@ class AutofillManager
   AutofillDriver& driver() { return *driver_; }
 
   // Reparses all known forms.
-  void ReparseKnownForms();
+  virtual void ReparseKnownForms();
 
   // After subscribing, FieldClassificationModelHandler::OnModelUpdated() will
   // trigger ReparseKnownForms(). There may be a handler for Autofill and/or
@@ -394,6 +450,9 @@ class AutofillManager
   // by the renderer event OnFoo().
   virtual void OnFormSubmittedImpl(const FormData& form,
                                    mojom::SubmissionSource source) = 0;
+  virtual void OnFormWithEmailVerificationTokenSubmittedImpl(
+      const FormData& form,
+      const FieldGlobalId& field_id) = 0;
   virtual void OnCaretMovedInFormFieldImpl(const FormData& form,
                                            const FieldGlobalId& field_id,
                                            const gfx::Rect& caret_bounds) = 0;
@@ -438,10 +497,8 @@ class AutofillManager
   // OnBeforeParsedForm().
   virtual void OnBeforeProcessParsedForms() = 0;
 
-  // Invoked when the given |form| has been processed to the given
-  // |form_structure|.
-  virtual void OnFormProcessed(const FormData& form_data,
-                               const FormStructure& form_structure) = 0;
+  // Invoked when `form` has been processed into a `FormStructure`.
+  virtual void OnFormProcessed(const FormStructure& form) = 0;
 
   // Returns true only if the previewed form should be cleared.
   virtual bool ShouldClearPreviewedForm() = 0;
@@ -457,18 +514,25 @@ class AutofillManager
 
   struct AsyncContext;
 
-  // Parses multiple forms in one go. The function proceeds in four stages:
+  // Parses multiple forms in one go. The function proceeds in five stages:
   //
   // 1. Turn (almost) every FormData into a FormStructure.
-  // 2. Runs ML models on all FormStructures, if the necessary features are
+  // 2. Potentially query server predictions if the
+  //    `kAutofillServerQueryPredictionsEarly` feature is enabled. When the
+  //    feature is disabled, this step does nothing as server predictions are
+  //    queried in a separate call to OnFormsParsed() normally as part of the
+  //    passed in callback.
+  // 3. Runs ML models on all FormStructures, if the necessary features are
   //    enabled.
-  // 3. Run DetermineHeuristicTypes() on all FormStructures.
-  // 4. Update the cache member variable `form_structures_` and call `callback`.
+  // 4. Run DetermineHeuristicTypes() on all FormStructures.
+  // 5. Update the cache member variable `form_structures_` and call `callback`.
   //
   // Step 1 runs synchronously on the main thread.
-  // Step 2 and 3 run sequentially, but asynchronously on (different) worker
+  // Step 2 runs asynchronous in parallel on a different worker task for the
+  // server request then on the main thread to process the response.
+  // Step 3 and 4 run sequentially, but asynchronously on (different) worker
   // tasks.
-  // Step 4 runs again on the main thread.
+  // Step 5 runs again on the main thread.
   //
   // There are two conditions under which a FormData is skipped in Step 1:
   // - if the overall number exceeds `kAutofillManagerMaxFormCacheSize`;
@@ -476,7 +540,7 @@ class AutofillManager
   //
   // TODO(crbug.com/40219607): Add unit tests.
   void ParseFormsAsync(
-      const std::vector<FormData>& forms,
+      std::vector<FormData> forms,
       base::OnceCallback<void(AutofillManager&, const std::vector<FormData>&)>
           callback);
 
@@ -535,7 +599,6 @@ class AutofillManager
   // in that case).
   void UpdateFormCache(base::span<const FormData> forms,
                        base::optional_ref<const AsyncContext> context,
-                       FormStructure::RetrieveFromCacheReason reason,
                        bool preserve_signatures);
 
   std::unique_ptr<autofill_metrics::FormInteractionsUkmLogger>

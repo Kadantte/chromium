@@ -50,32 +50,31 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.TimeUtils;
 import org.chromium.base.Token;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.RecentlyClosedEntriesManager;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
-import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.R;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.CtaPageStation;
+import org.chromium.chrome.test.transit.page.RecentTabsPageStation;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
-import org.chromium.chrome.test.util.RecentTabsPageTestUtils;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.chrome.test.util.browser.signin.SigninTestUtil;
-import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.messages.MessageDispatcher;
 import org.chromium.components.messages.MessageDispatcherProvider;
@@ -96,6 +95,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 
 /** Instrumentation tests for {@link RecentTabsPage}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
@@ -124,17 +124,16 @@ public class RecentTabsPageTest {
 
     @Spy private FakeRecentlyClosedTabManager mManager = new FakeRecentlyClosedTabManager();
     private ChromeTabbedActivity mActivity;
-    private Tab mTab;
     private TabModel mTabModel;
     private RecentTabsPage mPage;
+    private CtaPageStation mPageStation;
 
     @Before
     public void setUp() throws Exception {
         RecentlyClosedEntriesManager.setRecentlyClosedTabManagerForTests(mManager);
-        mActivityTestRule.startOnBlankPage();
-        mActivity = mActivityTestRule.getActivity();
-        mTabModel = mActivity.getTabModelSelector().getModel(false);
-        mTab = mActivityTestRule.getActivityTab();
+        mPageStation = mActivityTestRule.startOnBlankPage();
+        mActivity = mPageStation.getActivity();
+        mTabModel = mPageStation.getTabModel();
     }
 
     @After
@@ -222,7 +221,7 @@ public class RecentTabsPageTest {
         final String title = group.getTitle();
         waitForView(title);
 
-        ImageView iconView = (ImageView) mPage.getView().findViewById(R.id.row_icon);
+        ImageView iconView = mPage.getView().findViewById(R.id.row_icon);
         assertNotNull(iconView.getBackground());
         assertEquals(View.VISIBLE, iconView.getVisibility());
         assertThat(iconView.getBackground(), instanceOf(GradientDrawable.class));
@@ -272,7 +271,7 @@ public class RecentTabsPageTest {
         waitForViewToDisappear(groupString);
 
         // Check that the remaining show history row item does not have an icon visible.
-        ImageView iconView = (ImageView) mPage.getView().findViewById(R.id.row_icon);
+        ImageView iconView = mPage.getView().findViewById(R.id.row_icon);
         assertEquals(View.GONE, iconView.getVisibility());
     }
 
@@ -313,6 +312,8 @@ public class RecentTabsPageTest {
                                             R.string.recent_tabs_group_closure_with_title,
                                             group.getTitle());
                         });
+        final int accessibilityResId =
+                R.string.recent_tabs_group_closure_with_title_with_color_accessibility;
         final String groupAccessibilityString =
                 ThreadUtils.runOnUiThreadBlocking(
                         () -> {
@@ -322,10 +323,7 @@ public class RecentTabsPageTest {
                                             .getTabGroupColorPickerItemColorAccessibilityString(
                                                     group.getColor());
                             return res.getString(
-                                    R.string
-                                            .recent_tabs_group_closure_with_title_with_color_accessibility,
-                                    group.getTitle(),
-                                    res.getString(colorDesc));
+                                    accessibilityResId, group.getTitle(), res.getString(colorDesc));
                         });
         final View view = waitForView(groupString);
         assertEquals(groupAccessibilityString, view.getContentDescription());
@@ -353,7 +351,7 @@ public class RecentTabsPageTest {
     @Policies.Add(@Policies.Item(key = "BrowserSignin", string = "0"))
     public void testRecentlyClosedGroup_WithoutTitle() throws Exception {
         mPage = loadRecentTabsPage();
-        long time = 904881600000L;
+        long time = getValidTimestampForEntry();
         // Set a recently closed group and confirm a view is rendered for it.
         final RecentlyClosedGroup group = new RecentlyClosedGroup(2, time, null, COLOR_ID);
         Token tabGroupId = new Token(798L, 4389L);
@@ -385,6 +383,8 @@ public class RecentTabsPageTest {
                                             group.getTabs().size(),
                                             group.getTabs().size());
                         });
+        final int accessibilityResId =
+                R.plurals.recent_tabs_group_closure_without_title_with_color_accessibility;
         final String groupAccessibilityString =
                 ThreadUtils.runOnUiThreadBlocking(
                         () -> {
@@ -394,8 +394,7 @@ public class RecentTabsPageTest {
                                             .getTabGroupColorPickerItemColorAccessibilityString(
                                                     group.getColor());
                             return res.getQuantityString(
-                                    R.plurals
-                                            .recent_tabs_group_closure_without_title_with_color_accessibility,
+                                    accessibilityResId,
                                     group.getTabs().size(),
                                     group.getTabs().size(),
                                     res.getString(colorDesc));
@@ -444,7 +443,7 @@ public class RecentTabsPageTest {
     @Policies.Add(@Policies.Item(key = "BrowserSignin", string = "0"))
     public void testRecentlyClosedBulkEvent() throws Exception {
         mPage = loadRecentTabsPage();
-        long time = 904881600000L;
+        long time = getValidTimestampForEntry();
         // Set a recently closed bulk event and confirm a view is rendered for it.
         final RecentlyClosedBulkEvent event = new RecentlyClosedBulkEvent(3, time);
         Token tabGroupId = new Token(1L, 2L);
@@ -521,13 +520,12 @@ public class RecentTabsPageTest {
 
     @Test
     @LargeTest
-    @EnableFeatures(ChromeFeatureList.RECENTLY_CLOSED_TABS_AND_WINDOWS)
     @Feature({"RecentTabsPage", "RenderTest"})
     // Disable sign-in to suppress sign-in promo, as it's unrelated to this render test.
     @Policies.Add(@Policies.Item(key = "BrowserSignin", string = "0"))
     public void testRecentlyClosedWindows() throws Exception {
         mPage = loadRecentTabsPage();
-        long time = 904881600000L;
+        long time = getValidTimestampForEntry();
         String title1 = "Window 1";
         String activeTabTitle1 = "Google";
         String activeTabUrl1 = "https://www.google.com";
@@ -585,7 +583,6 @@ public class RecentTabsPageTest {
     @Test
     @LargeTest
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
-    @EnableFeatures(ChromeFeatureList.RECENTLY_CLOSED_TABS_AND_WINDOWS)
     public void testRecentlyClosedWindows_reachInstanceLimit_showInstanceCreationLimitMessage()
             throws Exception {
         // Simulate reaching the instance limit.
@@ -593,7 +590,7 @@ public class RecentTabsPageTest {
         MultiWindowUtils.setMaxInstancesForTesting(3);
 
         mPage = loadRecentTabsPage();
-        long time = 904881600000L;
+        long time = getValidTimestampForEntry();
         String title1 = "Window 1";
         String activeTabTitle1 = "Google";
         String activeTabUrl1 = "https://www.google.com";
@@ -631,7 +628,6 @@ public class RecentTabsPageTest {
 
     @Test
     @LargeTest
-    @EnableFeatures(ChromeFeatureList.RECENTLY_CLOSED_TABS_AND_WINDOWS)
     @Feature({"RecentTabsPage", "RenderTest"})
     // Disable sign-in to suppress sign-in promo, as it's unrelated to this render test.
     @Policies.Add(@Policies.Item(key = "BrowserSignin", string = "0"))
@@ -759,8 +755,7 @@ public class RecentTabsPageTest {
         mPage = loadRecentTabsPage();
         var tabStripHeightChangeCallback = mPage.getTabStripHeightChangeCallbackForTesting();
         int newTabStripHeight = 40;
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> tabStripHeightChangeCallback.onResult(newTabStripHeight));
+        ThreadUtils.runOnUiThreadBlocking(tabStripHeightChangeCallback.bind(newTabStripHeight));
         assertEquals(
                 "Top padding of page view should be updated when tab strip height changes.",
                 newTabStripHeight,
@@ -779,23 +774,20 @@ public class RecentTabsPageTest {
     }
 
     private RecentTabsPage loadRecentTabsPage() {
-        mActivityTestRule.loadUrl(UrlConstants.RECENT_TABS_URL);
-        RecentTabsPageTestUtils.waitForRecentTabsPageLoaded(mTab);
-        return (RecentTabsPage) mTab.getNativePage();
+        RecentTabsPageStation recentTabsPage =
+                mPageStation.loadPageProgrammatically(
+                        RecentTabsPageStation.RECENT_TABS_URL, RecentTabsPageStation.newBuilder());
+        mPageStation = recentTabsPage;
+        return recentTabsPage.nativePageElement.get();
     }
 
     /**
      * Leaves and destroys the {@link RecentTabsPage} by navigating the tab to {@code about:blank}.
      */
     private void leaveRecentTabsPage() {
-        mActivityTestRule.loadUrl(ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL);
-        CriteriaHelper.pollUiThread(
-                () -> {
-                    Criteria.checkThat(
-                            "RecentTabsPage is still there",
-                            mTab.getNativePage(),
-                            Matchers.not(Matchers.instanceOf(RecentTabsPage.class)));
-                });
+        mPageStation =
+                mPageStation.loadPageProgrammatically(
+                        ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL, WebPageStation.newBuilder());
     }
 
     /** Waits for the view with the specified text to appear. */
@@ -840,7 +832,7 @@ public class RecentTabsPageTest {
     }
 
     private static void openContextMenuAndInvokeItem(
-            final View view, @StringRes final int stringId) {
+            final View view, final @StringRes int stringId) {
         onView(is(view)).perform(longClick());
         onView(withText(stringId)).check(matches(isDisplayed())).perform(click());
     }
@@ -902,5 +894,9 @@ public class RecentTabsPageTest {
                 view.dispatchTouchEvent(downEvent);
             }
         };
+    }
+
+    private static long getValidTimestampForEntry() {
+        return TimeUtils.currentTimeMillis() - TimeUnit.DAYS.toMillis(/* duration= */ 2);
     }
 }

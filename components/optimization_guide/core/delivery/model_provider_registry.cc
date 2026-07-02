@@ -4,7 +4,10 @@
 
 #include "components/optimization_guide/core/delivery/model_provider_registry.h"
 
+#include <string_view>
+
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
 #include "base/task/single_thread_task_runner.h"
 #include "components/optimization_guide/core/delivery/model_util.h"
 
@@ -14,7 +17,7 @@ namespace {
 
 // Returns whether the model metadata proto is on the server allowlist.
 bool IsModelMetadataTypeOnServerAllowlist(const proto::Any& model_metadata) {
-  static const auto* const kAllowList = new base::flat_set<std::string>{
+  static const auto* const kAllowList = new base::flat_set<std::string_view>{
       "type.googleapis.com/"
       "google.internal.chrome.optimizationguide.v1."
       "OnDeviceTailSuggestModelMetadata",
@@ -117,11 +120,9 @@ void ModelProviderRegistry::RemoveObserverForOptimizationTargetModel(
 
 base::flat_set<proto::OptimizationTarget>
 ModelProviderRegistry::GetRegisteredOptimizationTargets() const {
-  base::flat_set<proto::OptimizationTarget> optimization_targets;
-  for (const auto& registration_info : model_registration_info_map_) {
-    optimization_targets.insert(registration_info.first);
-  }
-  return optimization_targets;
+  return base::MakeFlatSet<proto::OptimizationTarget>(
+      model_registration_info_map_, /*comp=*/{},
+      [](const auto& registration_info) { return registration_info.first; });
 }
 
 const ModelInfo* ModelProviderRegistry::GetModel(
@@ -193,8 +194,8 @@ void ModelProviderRegistry::RecordLifecycleState(
     proto::OptimizationTarget optimization_target,
     ModelDeliveryEvent event) {
   base::UmaHistogramEnumeration(
-      "OptimizationGuide.PredictionManager.ModelDeliveryEvents." +
-          GetStringNameForOptimizationTarget(optimization_target),
+      base::StrCat({"OptimizationGuide.PredictionManager.ModelDeliveryEvents.",
+                    GetStringNameForOptimizationTarget(optimization_target)}),
       event);
 }
 

@@ -27,6 +27,7 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.OneshotSupplierImpl;
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.params.ParameterAnnotations;
 import org.chromium.base.test.params.ParameterAnnotations.ClassParameter;
@@ -43,7 +44,9 @@ import org.chromium.chrome.browser.fullscreen.FullscreenManager;
 import org.chromium.chrome.browser.layouts.LayoutManager;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabObscuringHandler;
 import org.chromium.chrome.browser.theme.TopUiThemeColorProvider;
+import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.components.browser_ui.widget.CoordinatorLayoutForPointer;
@@ -96,6 +99,10 @@ public class BookmarkBarRenderTest {
     @Mock private TopControlsStacker mTopControlsStacker;
     @Mock private TopUiThemeColorProvider mTopUiThemeColorProvider;
 
+    // TODO(crbug.com/496407828): Add render tests for side panel logic
+    @Mock private OneshotSupplierImpl<SideUiStateProvider> mSideUiStateProviderSupplier;
+    @Mock private TabObscuringHandler mTabObscuringHandler;
+
     private BookmarkBar mView;
 
     public BookmarkBarRenderTest(boolean nightModeEnabled) {
@@ -136,7 +143,9 @@ public class BookmarkBarRenderTest {
                                     mBookmarkManagerOpener),
                             mTopControlsStacker,
                             ObservableSuppliers.alwaysNull(),
-                            mTopUiThemeColorProvider);
+                            mTopUiThemeColorProvider,
+                            mSideUiStateProviderSupplier,
+                            mTabObscuringHandler);
 
                     assertNotNull(mView);
                     ChromeRenderTestRule.sanitize(mView);

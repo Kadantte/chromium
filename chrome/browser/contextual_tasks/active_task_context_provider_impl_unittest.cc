@@ -10,7 +10,9 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
+#include "base/run_loop.h"
 #include "base/test/bind.h"
+#include "base/test/gmock_callback_support.h"
 #include "base/test/mock_callback.h"
 #include "base/uuid.h"
 #include "build/build_config.h"
@@ -55,6 +57,7 @@ class MockObserver : public ActiveTaskContextProvider::Observer {
               OnContextTabsChanged,
               (const std::set<tabs::TabHandle>&),
               (override));
+  MOCK_METHOD(void, OnActiveTaskContextProviderDestroyed, (), (override));
 };
 
 class ActiveTaskContextProviderImplTest : public testing::Test {
@@ -160,7 +163,7 @@ class ActiveTaskContextProviderImplTest : public testing::Test {
 
 TEST_F(ActiveTaskContextProviderImplTest, RefreshContextNoTaskId) {
   EXPECT_CALL(*contextual_tasks_panel_controller_,
-              GetSessionHandleForActiveTabOrSidePanel())
+              GetSessionHandleForActiveTabOrPanel())
       .WillOnce(Return(std::make_pair(std::nullopt, nullptr)));
   EXPECT_CALL(observer_, OnContextTabsChanged(std::set<tabs::TabHandle>()))
       .Times(1);
@@ -179,7 +182,7 @@ TEST_F(ActiveTaskContextProviderImplTest, RefreshContextWithTabs) {
   task.AddUrlResource(resource);
 
   EXPECT_CALL(*contextual_tasks_panel_controller_,
-              GetSessionHandleForActiveTabOrSidePanel())
+              GetSessionHandleForActiveTabOrPanel())
       .WillOnce(Return(std::make_pair(task_id, &dummy_handle_)));
 
   EXPECT_CALL(*contextual_tasks_service_, GetContextForTask(task_id, _, _, _))
@@ -195,10 +198,12 @@ TEST_F(ActiveTaskContextProviderImplTest, RefreshContextWithTabs) {
   EXPECT_CALL(*tab_list_, GetTab(0)).WillRepeatedly(Return(tab1));
 
   std::set<tabs::TabHandle> expected_tabs = {tab1->GetHandle()};
-  EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs)).Times(1);
+  base::RunLoop run_loop;
+  EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
 
   provider_->RefreshContext();
-  task_environment_.RunUntilIdle();
+  run_loop.Run();
 }
 
 TEST_F(ActiveTaskContextProviderImplTest, AutoSuggestedTab) {
@@ -208,7 +213,7 @@ TEST_F(ActiveTaskContextProviderImplTest, AutoSuggestedTab) {
   ContextualTask task(task_id);
 
   EXPECT_CALL(*contextual_tasks_panel_controller_,
-              GetSessionHandleForActiveTabOrSidePanel())
+              GetSessionHandleForActiveTabOrPanel())
       .WillOnce(Return(std::make_pair(task_id, &dummy_handle_)));
 
   EXPECT_CALL(*contextual_tasks_service_, GetContextForTask(task_id, _, _, _))
@@ -229,10 +234,12 @@ TEST_F(ActiveTaskContextProviderImplTest, AutoSuggestedTab) {
 
   // Expected tabs should include tab1.
   std::set<tabs::TabHandle> expected_tabs = {tab1->GetHandle()};
-  EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs)).Times(1);
+  base::RunLoop run_loop;
+  EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
 
   provider_->RefreshContext();
-  task_environment_.RunUntilIdle();
+  run_loop.Run();
 }
 
 TEST_F(ActiveTaskContextProviderImplTest, RefreshContextStaleCallback) {
@@ -243,7 +250,7 @@ TEST_F(ActiveTaskContextProviderImplTest, RefreshContextStaleCallback) {
       captured_callback;
 
   EXPECT_CALL(*contextual_tasks_panel_controller_,
-              GetSessionHandleForActiveTabOrSidePanel())
+              GetSessionHandleForActiveTabOrPanel())
       .WillRepeatedly(Return(std::make_pair(task_id, &dummy_handle_)));
 
   EXPECT_CALL(*contextual_tasks_service_, GetContextForTask(task_id, _, _, _))
@@ -269,21 +276,22 @@ TEST_F(ActiveTaskContextProviderImplTest, RefreshContextStaleCallback) {
   // Second call to RefreshContext should invalidate the first callback.
   // This second call will trigger OnContextTabsChanged immediately due to our
   // mock.
-  EXPECT_CALL(observer_, OnContextTabsChanged(_)).Times(1);
+  base::RunLoop run_loop;
+  EXPECT_CALL(observer_, OnContextTabsChanged(_))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
   provider_->RefreshContext();
+  run_loop.Run();
 
   // Run the first (stale) callback. It should NOT trigger OnContextTabsChanged.
   EXPECT_CALL(observer_, OnContextTabsChanged(_)).Times(0);
   std::move(captured_callback)
       .Run(std::make_unique<ContextualTaskContext>(task));
-
-  task_environment_.RunUntilIdle();
 }
 
 TEST_F(ActiveTaskContextProviderImplTest, ServiceObserversTriggerRefresh) {
   // Set expectations for RefreshContext which will be called by each observer.
   EXPECT_CALL(*contextual_tasks_panel_controller_,
-              GetSessionHandleForActiveTabOrSidePanel())
+              GetSessionHandleForActiveTabOrPanel())
       .WillRepeatedly(Return(std::make_pair(std::nullopt, nullptr)));
   EXPECT_CALL(observer_, OnContextTabsChanged(_)).Times(5);
 
@@ -303,13 +311,13 @@ TEST_F(ActiveTaskContextProviderImplTest, ActiveTabChanged) {
 
   // When active tab changes, RefreshContext is called.
   EXPECT_CALL(*contextual_tasks_panel_controller_,
-              GetSessionHandleForActiveTabOrSidePanel())
+              GetSessionHandleForActiveTabOrPanel())
       .WillOnce(Return(std::make_pair(std::nullopt, nullptr)));
   EXPECT_CALL(observer_, OnContextTabsChanged(_)).Times(1);
 
   // Simulate active tab change.
   for (auto& observer : tab_list_observers_) {
-    observer.OnActiveTabChanged(tab1);
+    observer.OnActiveTabChanged(*tab_list_, tab1);
   }
 }
 
@@ -318,17 +326,121 @@ TEST_F(ActiveTaskContextProviderImplTest, PrimaryPageChanged) {
 
   // When active tab changes, RefreshContext is called.
   EXPECT_CALL(*contextual_tasks_panel_controller_,
-              GetSessionHandleForActiveTabOrSidePanel())
+              GetSessionHandleForActiveTabOrPanel())
       .WillRepeatedly(Return(std::make_pair(std::nullopt, nullptr)));
   EXPECT_CALL(observer_, OnContextTabsChanged(_)).Times(1);
 
   for (auto& observer : tab_list_observers_) {
-    observer.OnActiveTabChanged(tab);
+    observer.OnActiveTabChanged(*tab_list_, tab);
   }
 
   // Simulate primary page change on the active tab.
   EXPECT_CALL(observer_, OnContextTabsChanged(_)).Times(1);
   provider_->PrimaryPageChanged(tab->GetContents()->GetPrimaryPage());
+}
+
+TEST_F(ActiveTaskContextProviderImplTest, LocalTabUnderlines) {
+  tabs::TabInterface* tab1 = CreateMockTab();
+  tabs::TabInterface* tab2 = CreateMockTab();
+
+  // Add a tab and expect `onContextTabsChanged` to be called once.
+  std::set<tabs::TabHandle> expected_tabs = {tab1->GetHandle()};
+  EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs)).Times(1);
+  provider_->AddLocalTabUnderline(tab1->GetHandle());
+
+  // Add another tab and expect `onContextTabsChanged` to be called again.
+  expected_tabs = {tab1->GetHandle(), tab2->GetHandle()};
+  EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs)).Times(1);
+  provider_->AddLocalTabUnderline(tab2->GetHandle());
+
+  // Remove one tab and expect `onContextTabsChanged` to be called again.
+  expected_tabs = {tab2->GetHandle()};
+  EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs)).Times(1);
+  provider_->RemoveLocalTabUnderline(tab1->GetHandle());
+
+  // Clear all local underlines and expect that `onContextTabsChanged` to be
+  // called again.
+  EXPECT_CALL(observer_, OnContextTabsChanged(std::set<tabs::TabHandle>()))
+      .Times(1);
+  provider_->ClearAllLocalTabUnderlines();
+}
+
+TEST_F(ActiveTaskContextProviderImplTest,
+       PrimaryPageChangedClearsLocalUnderlines) {
+  tabs::TabInterface* tab = CreateMockTab();
+
+  // Mock panel controller to return nullopt session to avoid context fetching
+  // for side panel that is not being used in the test.
+  EXPECT_CALL(*contextual_tasks_panel_controller_,
+              GetSessionHandleForActiveTabOrPanel())
+      .WillRepeatedly(Return(std::make_pair(std::nullopt, nullptr)));
+
+  // Add local tab underline and expect `onContextTabsChanged` to be called.
+  std::set<tabs::TabHandle> expected_tabs = {tab->GetHandle()};
+  EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs)).Times(1);
+  provider_->AddLocalTabUnderline(tab->GetHandle());
+
+  // Simulate active tab change, which should trigger `onContextTabsChanged`.
+  EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs)).Times(1);
+  for (auto& observer : tab_list_observers_) {
+    observer.OnActiveTabChanged(*tab_list_, tab);
+  }
+
+  // Simulate primary page change on the active tab (navigating away from AIM to
+  // normal URL). This should clear local underlines and notify observers.
+  EXPECT_CALL(observer_, OnContextTabsChanged(std::set<tabs::TabHandle>()))
+      .Times(1);
+  provider_->PrimaryPageChanged(tab->GetContents()->GetPrimaryPage());
+}
+
+TEST_F(ActiveTaskContextProviderImplTest,
+       ActiveTabSwitchingHidesAndRestoresLocalUnderlines) {
+  tabs::TabInterface* tab1 = CreateMockTab();
+  tabs::TabInterface* tab2 = CreateMockTab();
+
+  EXPECT_CALL(*contextual_tasks_panel_controller_,
+              GetSessionHandleForActiveTabOrPanel())
+      .WillRepeatedly(Return(std::make_pair(std::nullopt, nullptr)));
+
+  // `tab1` is the active tab initially.
+  EXPECT_CALL(*tab_list_, GetActiveTab()).WillRepeatedly(Return(tab1));
+
+  // Add local tab underline while `tab1` is active.
+  std::set<tabs::TabHandle> expected_tabs = {tab2->GetHandle()};
+  EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs)).Times(1);
+  provider_->AddLocalTabUnderline(tab2->GetHandle());
+
+  // Simulate active tab switch to `tab2`.
+  EXPECT_CALL(*tab_list_, GetActiveTab()).WillRepeatedly(Return(tab2));
+  EXPECT_CALL(observer_, OnContextTabsChanged(std::set<tabs::TabHandle>()))
+      .Times(1);
+  for (auto& observer : tab_list_observers_) {
+    observer.OnActiveTabChanged(*tab_list_, tab2);
+  }
+
+  // Simulate switching active tab back to `tab1`. Underline reappears.
+  EXPECT_CALL(*tab_list_, GetActiveTab()).WillRepeatedly(Return(tab1));
+  EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs)).Times(1);
+  for (auto& observer : tab_list_observers_) {
+    observer.OnActiveTabChanged(*tab_list_, tab1);
+  }
+}
+
+TEST_F(ActiveTaskContextProviderImplTest, ObserverNotifiedOnDestruction) {
+  NiceMock<MockBrowserWindowInterface> local_window;
+  ui::UnownedUserDataHost local_user_data_host;
+  ON_CALL(local_window, GetUnownedUserDataHost())
+      .WillByDefault(ReturnRef(local_user_data_host));
+
+  auto local_provider = std::make_unique<ActiveTaskContextProviderImpl>(
+      &local_window, contextual_tasks_service_);
+
+  NiceMock<MockObserver> local_observer;
+  local_provider->AddObserver(&local_observer);
+
+  EXPECT_CALL(local_observer, OnActiveTaskContextProviderDestroyed()).Times(1);
+
+  local_provider.reset();
 }
 
 }  // namespace contextual_tasks

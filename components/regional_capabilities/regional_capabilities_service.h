@@ -112,15 +112,38 @@ class RegionalCapabilitiesService : public KeyedService {
   // show a search engine choice screen.
   bool IsInSearchEngineChoiceScreenRegion();
 
-  // Returns whether the tested country ID is associated with a region in which
-  // we can show a search engine choice screen.
-  static bool IsInSearchEngineChoiceScreenRegion(
+  // Returns `true` if the tested country ID is associated with the currently
+  // active program's region and if that's a region in which we can show a
+  // search engine choice screen.
+  bool IsInCurrentSearchEngineChoiceScreenRegion(
       const country_codes::CountryId& tested_country_id);
 
-  // Returns true when the choice screen eligibility check against country
-  // association is not required, or if the current location is compatible with
-  // the regional scope.
-  bool IsChoiceScreenCompatibleWithCurrentLocation();
+  // Static overload for unit tests testing country derivation without a service
+  // instance.
+  static bool IsInAnySearchEngineChoiceScreenRegion(
+      const country_codes::CountryId& tested_country_id);
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  // Returns whether the country obtained from the client is associated with
+  // a region in which we can show a search engine choice screen.
+  //
+  // It doesn't take cached data into account. This has been introduced for
+  // clients associated with system profiles (where the service is not
+  // available). Most clients should use
+  // `IsInCurrentSearchEngineChoiceScreenRegion()` instead.
+  static bool IsInAnySearchEngineChoiceScreenRegion(Client& client);
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+
+  enum class LocationCompatibility {
+    kCompatible,
+    kIncompatible,
+    kLocationUnknown,
+  };
+
+  // Returns `kCompatible` when the choice screen eligibility check against
+  // country association is not required, or if the current location is
+  // compatible with the regional scope.
+  LocationCompatibility IsChoiceScreenCompatibleWithCurrentLocation();
 
   // Returns whether display state metrics can be recorded.
   // `display_state_country_id` is passed by the caller as this may be used to
@@ -242,6 +265,11 @@ class RegionalCapabilitiesService : public KeyedService {
 
   base::WeakPtrFactory<RegionalCapabilitiesService> weak_ptr_factory_{this};
 };
+
+// Returns the program that should be active for `country_id` if it was to be
+// derived from it.
+Program CountryIdToProgramForTesting(
+    const country_codes::CountryId& country_id);
 
 }  // namespace regional_capabilities
 

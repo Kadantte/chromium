@@ -40,23 +40,17 @@ namespace content {
 // TODO(dcheng): File a bug. This class incorrectly passes just a frame ID,
 // which is not sufficient to identify a frame (since frame IDs are scoped per
 // render process, and so may collide).
-WebContentsObserverProxy::WebContentsObserverProxy(
-    JNIEnv* env,
-    const base::android::JavaRef<jobject>& obj,
-    WebContents* web_contents)
-    : WebContentsObserver(web_contents), java_observer_(env, obj) {
-  DCHECK(obj);
-}
+WebContentsObserverProxy::WebContentsObserverProxy(WebContents* web_contents)
+    : WebContentsObserver(web_contents) {}
 
 WebContentsObserverProxy::~WebContentsObserverProxy() {}
 
 static int64_t JNI_WebContentsObserverProxy_Init(JNIEnv* env,
-                                                 const JavaRef<jobject>& obj,
                                                  WebContents* web_contents) {
   CHECK(web_contents);
 
   WebContentsObserverProxy* native_observer =
-      new WebContentsObserverProxy(env, obj, web_contents);
+      new WebContentsObserverProxy(web_contents);
   return reinterpret_cast<intptr_t>(native_observer);
 }
 
@@ -105,9 +99,6 @@ void WebContentsObserverProxy::PrimaryMainFrameRenderProcessGone(
 void WebContentsObserverProxy::DidStartLoading() {
   TRACE_EVENT("browser", "WebContentsObserverProxy::DidStartLoading");
   JNIEnv* env = AttachCurrentThread();
-  if (auto* entry = web_contents()->GetController().GetPendingEntry()) {
-    base_url_of_last_started_data_url_ = entry->GetBaseURLForDataURL();
-  }
   Java_WebContentsObserverProxy_didStartLoading(
       env, GetJavaObjectChecked(env),
       url::GURLAndroid::FromNativeGURL(env, web_contents()->GetVisibleURL()));
@@ -117,8 +108,6 @@ void WebContentsObserverProxy::DidStopLoading() {
   JNIEnv* env = AttachCurrentThread();
   GURL url = web_contents()->GetLastCommittedURL();
   bool assume_valid = SetToBaseURLForDataURLIfNeeded(&url);
-  // DidStopLoading is the last event we should get.
-  base_url_of_last_started_data_url_ = GURL();
   Java_WebContentsObserverProxy_didStopLoading(
       env, GetJavaObjectChecked(env),
       url::GURLAndroid::FromNativeGURL(env, url), assume_valid);
@@ -324,12 +313,6 @@ bool WebContentsObserverProxy::SetToBaseURLForDataURLIfNeeded(GURL* url) {
   if (entry && !entry->GetBaseURLForDataURL().is_empty()) {
     *url = entry->GetBaseURLForDataURL();
     return false;
-  } else if (!base_url_of_last_started_data_url_.is_empty()) {
-    // NavigationController can lose the pending entry and recreate it without
-    // a base URL if there has been a loadUrl("javascript:...") after
-    // loadDataWithBaseUrl.
-    *url = base_url_of_last_started_data_url_;
-    return false;
   }
   return true;
 }
@@ -382,7 +365,9 @@ void WebContentsObserverProxy::WasDiscarded() {
 
 ScopedJavaLocalRef<jobject> WebContentsObserverProxy::GetJavaObjectChecked(
     JNIEnv* env) const {
-  auto obj = java_observer_.get(env);
+  CHECK(web_contents());
+  auto obj =
+      Java_WebContentsObserverProxy_getFromWebContents(env, web_contents());
   DCHECK(!obj.is_null());
   return obj;
 }

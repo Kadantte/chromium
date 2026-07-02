@@ -1653,324 +1653,6 @@ IN_PROC_BROWSER_TEST_F(SharedStorageFencedFrameInteractionBrowserTest,
   EXPECT_EQ(expected_error, extra_result.ExtractError());
 }
 
-class SharedStorageFencedFrameDocumentGetFeatureDisabledBrowserTest
-    : public SharedStorageFencedFrameInteractionBrowserTest {
- public:
-  SharedStorageFencedFrameDocumentGetFeatureDisabledBrowserTest() {
-    fenced_frame_feature_.InitAndDisableFeature(
-        blink::features::kFencedFramesLocalUnpartitionedDataAccess);
-  }
-
- private:
-  base::test::ScopedFeatureList fenced_frame_feature_;
-};
-
-IN_PROC_BROWSER_TEST_F(
-    SharedStorageFencedFrameDocumentGetFeatureDisabledBrowserTest,
-    GetDisabledInFencedFrameWithFeatureOff) {
-  GURL main_frame_url = https_server()->GetURL("a.test", kSimplePagePath);
-  EXPECT_TRUE(NavigateToURL(shell(), main_frame_url));
-
-  EXPECT_TRUE(ExecJs(shell(), R"(
-    sharedStorage.set('test', 'apple');
-  )"));
-
-  FrameTreeNode* fenced_frame_root_node =
-      CreateFencedFrame(https_server()->GetURL("a.test", kFencedFramePath));
-
-  EvalJsResult get_result = EvalJs(fenced_frame_root_node, R"(
-    sharedStorage.get('test');
-  )");
-
-  EXPECT_THAT(get_result,
-              EvalJsResult::ErrorIs(testing::HasSubstr(
-                  "Cannot call get() in a fenced frame with feature "
-                  "FencedFramesLocalUnpartitionedDataAccess disabled.")));
-
-  // Check that a histogram was logged for the failed get() operation.
-  content::FetchHistogramsFromChildProcesses();
-  histogram_tester_.ExpectTotalCount(
-      blink::kSharedStorageGetInFencedFrameOutcome, 1);
-  histogram_tester_.ExpectBucketCount(
-      blink::kSharedStorageGetInFencedFrameOutcome,
-      blink::SharedStorageGetInFencedFrameOutcome::kFeatureDisabled, 1);
-}
-
-class SharedStorageFencedFrameDocumentGetBrowserTest
-    : public SharedStorageFencedFrameInteractionBrowserTest {
- public:
-  SharedStorageFencedFrameDocumentGetBrowserTest() {
-    fenced_frame_feature_.InitAndEnableFeature(
-        /*feature=*/
-        blink::features::kFencedFramesLocalUnpartitionedDataAccess);
-  }
-
-  void SetUpOnMainThread() override {
-    SharedStorageFencedFrameInteractionBrowserTest::SetUpOnMainThread();
-
-    // Bypass fenced storage read attestation check.
-    ON_CALL(browser_client(), IsFencedStorageReadAllowed)
-        .WillByDefault(testing::Return(true));
-  }
-
- private:
-  base::test::ScopedFeatureList fenced_frame_feature_;
-};
-
-IN_PROC_BROWSER_TEST_F(SharedStorageFencedFrameDocumentGetBrowserTest,
-                       GetAllowedInNetworkRestrictedFencedFrame) {
-  GURL main_frame_url = https_server()->GetURL("a.test", kSimplePagePath);
-  EXPECT_TRUE(NavigateToURL(shell(), main_frame_url));
-
-  EXPECT_TRUE(ExecJs(shell(), R"(
-    sharedStorage.set('test', 'apple');
-  )"));
-
-  FrameTreeNode* fenced_frame_root_node =
-      CreateFencedFrame(https_server()->GetURL("a.test", kFencedFramePath));
-
-  EvalJsResult get_result = EvalJs(fenced_frame_root_node, R"(
-    (async () => {
-      await window.fence.disableUntrustedNetwork();
-      return sharedStorage.get('test');
-    })();
-  )");
-
-  EXPECT_EQ(get_result, "apple");
-
-  // Check that a histogram was logged for the get() result.
-  content::FetchHistogramsFromChildProcesses();
-  histogram_tester_.ExpectTotalCount(
-      blink::kSharedStorageGetInFencedFrameOutcome, 1);
-  histogram_tester_.ExpectBucketCount(
-      blink::kSharedStorageGetInFencedFrameOutcome,
-      blink::SharedStorageGetInFencedFrameOutcome::kSuccess, 1);
-}
-
-IN_PROC_BROWSER_TEST_F(SharedStorageFencedFrameDocumentGetBrowserTest,
-                       GetRejectsInFencedFrameWithoutRestrictedNetwork) {
-  GURL main_frame_url = https_server()->GetURL("a.test", kSimplePagePath);
-  EXPECT_TRUE(NavigateToURL(shell(), main_frame_url));
-
-  EXPECT_TRUE(ExecJs(shell(), R"(
-    sharedStorage.set('test', 'apple');
-  )"));
-
-  FrameTreeNode* fenced_frame_root_node =
-      CreateFencedFrame(https_server()->GetURL("a.test", kFencedFramePath));
-
-  EvalJsResult get_result = EvalJs(fenced_frame_root_node, R"(
-    sharedStorage.get('test');
-  )");
-
-  EXPECT_THAT(
-      get_result,
-      EvalJsResult::ErrorIs(testing::HasSubstr(
-          "sharedStorage.get() is not allowed in a fenced frame until network "
-          "access for it and all descendent frames has been revoked with "
-          "window.fence.disableUntrustedNetwork()")));
-
-  // Check that a histogram was logged for the get() result.
-  content::FetchHistogramsFromChildProcesses();
-  histogram_tester_.ExpectTotalCount(
-      blink::kSharedStorageGetInFencedFrameOutcome, 1);
-  histogram_tester_.ExpectBucketCount(
-      blink::kSharedStorageGetInFencedFrameOutcome,
-      blink::SharedStorageGetInFencedFrameOutcome::kWithoutRevokeNetwork, 1);
-}
-
-IN_PROC_BROWSER_TEST_F(SharedStorageFencedFrameDocumentGetBrowserTest,
-                       GetInFencedFrameOnlyFetchesValuesFromCurrentOrigin) {
-  // sharedStorage.set() for a.test
-  GURL main_frame_url1 = https_server()->GetURL("a.test", kSimplePagePath);
-  EXPECT_TRUE(NavigateToURL(shell(), main_frame_url1));
-  EXPECT_TRUE(ExecJs(shell(), R"(
-    sharedStorage.set('test', 'apple');
-  )"));
-
-  // sharedStorage.set() for b.test
-  GURL main_frame_url2 = https_server()->GetURL("b.test", kSimplePagePath);
-  EXPECT_TRUE(NavigateToURL(shell(), main_frame_url2));
-  EXPECT_TRUE(ExecJs(shell(), R"(
-    sharedStorage.set('test', 'banana');
-  )"));
-
-  // An a.test fenced frame embedded in b.test should only read a.test's set
-  // values.
-  FrameTreeNode* fenced_frame_root_node =
-      CreateFencedFrame(https_server()->GetURL("a.test", kFencedFramePath));
-
-  EvalJsResult get_result = EvalJs(fenced_frame_root_node, R"(
-    (async () => {
-      await window.fence.disableUntrustedNetwork();
-      return sharedStorage.get('test');
-    })();
-  )");
-
-  EXPECT_EQ(get_result, "apple");
-}
-
-IN_PROC_BROWSER_TEST_F(SharedStorageFencedFrameDocumentGetBrowserTest,
-                       GetRejectsInMainFrame) {
-  GURL main_frame_url = https_server()->GetURL("a.test", kSimplePagePath);
-  EXPECT_TRUE(NavigateToURL(shell(), main_frame_url));
-
-  EXPECT_TRUE(ExecJs(shell(), R"(
-    sharedStorage.set('test', 'apple');
-  )"));
-
-  EvalJsResult get_result_main_frame = EvalJs(shell(), R"(
-    sharedStorage.get('test');
-  )");
-
-  EXPECT_THAT(get_result_main_frame,
-              EvalJsResult::ErrorIs(testing::HasSubstr(
-                  "Cannot call get() outside of a fenced frame.")));
-
-  // The "Blink.FencedFrame.SharedStorageGetInFencedFrameOutcome" histogram
-  // should not log since get() was not called from within a fenced frame.
-  content::FetchHistogramsFromChildProcesses();
-  histogram_tester_.ExpectTotalCount(
-      blink::kSharedStorageGetInFencedFrameOutcome, 0);
-}
-
-IN_PROC_BROWSER_TEST_F(SharedStorageFencedFrameDocumentGetBrowserTest,
-                       GetRejectsInIFrame) {
-  GURL main_frame_url = https_server()->GetURL("a.test", kSimplePagePath);
-  EXPECT_TRUE(NavigateToURL(shell(), main_frame_url));
-
-  EXPECT_TRUE(ExecJs(shell(), R"(
-    sharedStorage.set('test', 'apple');
-  )"));
-
-  FrameTreeNode* iframe_root =
-      CreateIFrame(PrimaryFrameTreeNodeRoot(), main_frame_url);
-
-  EvalJsResult get_result_iframe = EvalJs(iframe_root, R"(
-    sharedStorage.get('test');
-  )");
-
-  EXPECT_THAT(get_result_iframe,
-              EvalJsResult::ErrorIs(testing::HasSubstr(
-                  "Cannot call get() outside of a fenced frame.")));
-
-  // The "Blink.FencedFrame.SharedStorageGetInFencedFrameOutcome" histogram
-  // should not log since get() was not called from within a fenced frame.
-  content::FetchHistogramsFromChildProcesses();
-  histogram_tester_.ExpectTotalCount(
-      blink::kSharedStorageGetInFencedFrameOutcome, 0);
-}
-
-IN_PROC_BROWSER_TEST_F(
-    SharedStorageFencedFrameDocumentGetBrowserTest,
-    GetAllowedInNetworkRestrictedNestedFencedFrameIfParentStillHasNetwork) {
-  GURL main_frame_url = https_server()->GetURL("a.test", kSimplePagePath);
-  EXPECT_TRUE(NavigateToURL(shell(), main_frame_url));
-
-  EXPECT_TRUE(ExecJs(shell(), R"(
-    sharedStorage.set('test', 'apple');
-  )"));
-
-  GURL fenced_frame_url = https_server()->GetURL("a.test", kFencedFramePath);
-  // The parent fenced frame never calls window.fence.disableUntrustedNetwork().
-  FrameTreeNode* fenced_frame_root_node = CreateFencedFrame(fenced_frame_url);
-
-  FrameTreeNode* nested_fenced_frame_root_node =
-      CreateFencedFrame(fenced_frame_root_node, fenced_frame_url);
-
-  EvalJsResult get_result = EvalJs(nested_fenced_frame_root_node, R"(
-    (async () => {
-      await window.fence.disableUntrustedNetwork();
-      return sharedStorage.get('test');
-    })();
-  )");
-
-  EXPECT_EQ(get_result, "apple");
-}
-
-IN_PROC_BROWSER_TEST_F(SharedStorageFencedFrameDocumentGetBrowserTest,
-                       GetNotAllowedInSandboxedIframeInFencedFrameTree) {
-  GURL main_frame_url = https_server()->GetURL("a.test", kSimplePagePath);
-  EXPECT_TRUE(NavigateToURL(shell(), main_frame_url));
-
-  GURL fenced_frame_url = https_server()->GetURL("a.test", kFencedFramePath);
-  FrameTreeNode* fenced_frame_root_node = CreateFencedFrame(fenced_frame_url);
-
-  FrameTreeNode* nested_iframe_node =
-      CreateIFrame(fenced_frame_root_node, fenced_frame_url,
-                   /*sandbox_flags=*/"allow-scripts");
-
-  EXPECT_TRUE(ExecJs(fenced_frame_root_node, R"(
-      window.fence.disableUntrustedNetwork();
-  )"));
-
-  EvalJsResult get_result = EvalJs(nested_iframe_node, R"(
-      sharedStorage.get('test');
-  )");
-
-  EXPECT_THAT(get_result, EvalJsResult::ErrorIs(testing::HasSubstr(
-                              "is not allowed in an opaque origin context")));
-
-  // The "Blink.FencedFrame.SharedStorageGetInFencedFrameOutcome" histogram
-  // should not log since opaque origins are treated as being outside of a
-  // fenced frame tree.
-  content::FetchHistogramsFromChildProcesses();
-  histogram_tester_.ExpectTotalCount(
-      blink::kSharedStorageGetInFencedFrameOutcome, 0);
-}
-
-IN_PROC_BROWSER_TEST_F(
-    SharedStorageFencedFrameDocumentGetBrowserTest,
-    GetNotAllowedInNetworkRestrictedParentFencedFrameIfChildStillHasNetwork) {
-  GURL main_frame_url = https_server()->GetURL("a.test", kSimplePagePath);
-  EXPECT_TRUE(NavigateToURL(shell(), main_frame_url));
-
-  EXPECT_TRUE(ExecJs(shell(), R"(
-    sharedStorage.set('test', 'apple');
-  )"));
-
-  GURL fenced_frame_url = https_server()->GetURL("a.test", kFencedFramePath);
-  FrameTreeNode* fenced_frame_root_node = CreateFencedFrame(fenced_frame_url);
-
-  CreateFencedFrame(fenced_frame_root_node, fenced_frame_url);
-
-  // Note that we do *not* await the call to disableUntrustedNetwork, because we
-  // need to operate in the top frame while the nested frame still hasn't
-  // disabled network access.
-  EXPECT_TRUE(ExecJs(fenced_frame_root_node, R"(
-    (async () => {
-      window.fence.disableUntrustedNetwork();
-    })();
-  )"));
-
-  // Wait before calling sharedStorage.get() in case the fenced frame was given
-  // access to Shared Storage without disableUntrustedNetwork() actually
-  // resolving.
-  base::RunLoop disable_network_wait;
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
-      FROM_HERE, disable_network_wait.QuitClosure(), base::Milliseconds(500));
-  disable_network_wait.Run();
-
-  EvalJsResult get_result = EvalJs(fenced_frame_root_node, R"(
-    sharedStorage.get('test');
-  )");
-
-  EXPECT_THAT(
-      get_result,
-      EvalJsResult::ErrorIs(testing::HasSubstr(
-          "sharedStorage.get() is not allowed in a fenced frame until network "
-          "access for it and all descendent frames has been revoked with "
-          "window.fence.disableUntrustedNetwork()")));
-
-  // Check that a histogram was logged for the get() result.
-  content::FetchHistogramsFromChildProcesses();
-  histogram_tester_.ExpectTotalCount(
-      blink::kSharedStorageGetInFencedFrameOutcome, 1);
-  histogram_tester_.ExpectBucketCount(
-      blink::kSharedStorageGetInFencedFrameOutcome,
-      blink::SharedStorageGetInFencedFrameOutcome::kWithoutRevokeNetwork, 1);
-}
-
 class SharedStorageSelectURLNotAllowedInFencedFrameBrowserTest
     : public SharedStorageFencedFrameInteractionBrowserTest {
  public:
@@ -3603,6 +3285,115 @@ IN_PROC_BROWSER_TEST_F(SharedStorageContextBrowserTest,
   // truncated.
   EXPECT_EQ(kLongEmbedderContext,
             base::UTF16ToUTF8(console_observer.messages().back().message));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    SharedStorageSelectURLSavedQueryBrowserTest,
+    SelectURL_CrossOriginWorklet_SameDataOrigin_DifferentContextOrigin_DoesNotShareQuery) {
+  GURL main_url = https_server()->GetURL("a.test", kSimplePagePath);
+  EXPECT_TRUE(NavigateToURL(shell(), main_url));
+
+  GURL module_script_url = https_server()->GetURL(
+      "b.test", net::test_server::GetFilePathWithReplacements(
+                    "/shared_storage/simple_module_with_custom_header.js",
+                    SharedStorageCrossOriginWorkletResponseHeaderReplacement(
+                        "Access-Control-Allow-Origin: *",
+                        "Shared-Storage-Cross-Origin-Worklet-Allowed: ?1")));
+
+  WebContentsConsoleObserver console_observer(shell()->web_contents());
+
+  // 1. In main frame (a.test), create worklet with b.test script and data
+  // origin b.test. Run selectURL and save query.
+  EXPECT_TRUE(EvalJs(shell(), JsReplace(R"(
+        (async function() {
+          window.worklet1 = await sharedStorage.createWorklet(
+            $1,
+            {dataOrigin: 'script-origin'});
+          const urls = [
+            {url: 'fenced_frames/title0.html'},
+            {url: 'fenced_frames/title1.html'}
+          ];
+          window.select_url_result_1 = await window.worklet1.selectURL(
+            'test-url-selection-operation',
+            urls,
+            {
+              data: {'mockResult': 0},
+              resolveToConfig: true,
+              keepAlive: true,
+              savedQuery: 'test_query'
+            }
+          );
+          return true;
+        })()
+      )",
+                                        module_script_url.spec()))
+                  .ExtractBool());
+
+  size_t num_previous_messages = console_observer.messages().size();
+
+  // 2. Create iframe (c.test).
+  GURL iframe_url = https_server()->GetURL("c.test", kSimplePagePath);
+  FrameTreeNode* iframe_node =
+      CreateIFrame(PrimaryFrameTreeNodeRoot(), iframe_url);
+
+  // In iframe (c.test), create worklet with b.test script and data origin
+  // b.test.
+  EXPECT_TRUE(EvalJs(iframe_node,
+                     JsReplace("(async function() { window.worklet2 = await "
+                               "sharedStorage.createWorklet($1, {dataOrigin: "
+                               "'script-origin'}); return true; })();",
+                               module_script_url.spec()))
+                  .ExtractBool());
+
+  test_runtime_manager()
+      .GetAttachedWorkletHostForFrame(iframe_node->current_frame_host())
+      ->SetExpectedWorkletResponsesCount(1);
+
+  // Run selectURL with the same saved query name.
+  EXPECT_TRUE(EvalJs(iframe_node, R"(
+    (async function() {
+      const urls = [
+        {url: 'fenced_frames/title0.html'},
+        {url: 'fenced_frames/title1.html'}
+      ];
+      window.select_url_result_2 = await window.worklet2.selectURL(
+        'test-url-selection-operation',
+        urls,
+        {
+          data: {'mockResult': 0},
+          resolveToConfig: true,
+          keepAlive: true,
+          savedQuery: 'test_query'
+        }
+      );
+      return true;
+    })()
+  )")
+                  .ExtractBool());
+
+  test_runtime_manager()
+      .GetAttachedWorkletHostForFrame(iframe_node->current_frame_host())
+      ->WaitForWorkletResponses();
+
+  // Verify that the worklet was actually executed again in the iframe.
+  // It should log a new "Start executing" message.
+  int num_new_messages =
+      console_observer.messages().size() - num_previous_messages;
+  EXPECT_GT(num_new_messages, 0);
+
+  // The cache shouldn't be shared, so the worklet actually runs.
+  // If the cache was shared, there would be no new messages from
+  // `test-url-selection-operation`.
+  bool found_start_execution = false;
+  for (size_t i = num_previous_messages; i < console_observer.messages().size();
+       ++i) {
+    if (base::UTF16ToUTF8(console_observer.messages()[i].message) ==
+        "Start executing 'test-url-selection-operation'") {
+      found_start_execution = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found_start_execution);
 }
 
 }  // namespace content

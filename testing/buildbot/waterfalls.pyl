@@ -8,7 +8,7 @@
 # * comments are allowed, using '#' syntax; and
 # * trailing commas are allowed.
 
-# Whitespace change.
+# Whitespace change #5.
 
 [
   # The following builder groups have been migrated to set their targets in the
@@ -92,6 +92,14 @@
         'os_type': 'chromeos',
         'cros_board': 'betty',
       },
+      'chromeos-betty-chrome-cqtast': {
+        'test_suites': {
+          'skylab_tests': 'chromeos_vmlab_cqtast',
+        },
+        'os_type': 'chromeos',
+        'cros_board': 'betty',
+        'cros_dut_pool': 'vmlab',
+      },
       'chromeos-betty-chrome-dchecks': {
         'additional_compile_targets': [
           'chromiumos_preflight',
@@ -103,9 +111,17 @@
         'cros_board': 'betty',
         'cros_dut_pool': 'vmlab',
       },
-      'chromeos-betty-chrome-tests': {
+      'chromeos-betty-chrome-gtest': {
         'test_suites': {
-          'skylab_tests': 'chromeos_vmlab_tests',
+          'skylab_tests': 'chromeos_vmlab_gtest',
+        },
+        'os_type': 'chromeos',
+        'cros_board': 'betty',
+        'cros_dut_pool': 'vmlab',
+      },
+      'chromeos-betty-chrome-tast': {
+        'test_suites': {
+          'skylab_tests': 'chromeos_vmlab_tast',
         },
         'os_type': 'chromeos',
         'cros_board': 'betty',
@@ -518,7 +534,6 @@
         ],
         'test_suites': {
           'gtest_tests': 'clang_tot_gtests',
-          'isolated_scripts': 'chrome_sizes_suite',
         },
         'additional_compile_targets': [
           'all',
@@ -533,7 +548,6 @@
         ],
         'test_suites': {
           'gtest_tests': 'clang_tot_gtests',
-          'isolated_scripts': 'chrome_sizes_suite',
         },
         'additional_compile_targets': [
           'all',
@@ -547,7 +561,7 @@
         ],
         'test_suites': {
           'gtest_tests': 'clang_tot_gtests',
-          'isolated_scripts': 'win_specific_isolated_scripts_and_sizes',
+          'isolated_scripts': 'win_specific_isolated_scripts',
         },
         'additional_compile_targets': [
           'chrome_official_builder',
@@ -566,7 +580,7 @@
         ],
         'test_suites': {
           'gtest_tests': 'clang_tot_gtests',
-          'isolated_scripts': 'win_specific_isolated_scripts_and_sizes',
+          'isolated_scripts': 'win_specific_isolated_scripts',
         },
         'additional_compile_targets': [
           'chrome_official_builder',
@@ -708,7 +722,6 @@
       },
       'Linux ASAN Builder': {
         'additional_compile_targets': [
-          'extensions_browsertests',
           'net_unittests',
           'unit_tests',
         ],
@@ -768,7 +781,7 @@
         'additional_compile_targets': ['blink_tests'],
         'test_suites': {
           'gtest_tests': 'blink_unittests_suite',
-          'isolated_scripts': 'chromium_webkit_isolated_scripts',
+          'isolated_scripts': 'chromium_blink_isolated_scripts',
         },
       },
       'V8 Blink Linux Debug': {
@@ -778,7 +791,7 @@
         'additional_compile_targets': ['blink_tests'],
         'test_suites': {
           'gtest_tests': 'blink_unittests_suite',
-          'isolated_scripts': 'chromium_webkit_isolated_scripts',
+          'isolated_scripts': 'chromium_blink_isolated_scripts',
         },
       },
       'V8 Blink Linux Future': {
@@ -788,7 +801,7 @@
         'additional_compile_targets': ['blink_tests'],
         'test_suites': {
           'gtest_tests': 'blink_unittests_suite',
-          'isolated_scripts': 'chromium_webkit_isolated_scripts',
+          'isolated_scripts': 'chromium_blink_isolated_scripts',
         },
       },
       'V8 Blink Mac': {
@@ -801,7 +814,7 @@
         'additional_compile_targets': ['blink_tests'],
         'test_suites': {
           'gtest_tests': 'blink_unittests_suite',
-          'isolated_scripts': 'chromium_webkit_isolated_scripts',
+          'isolated_scripts': 'chromium_blink_isolated_scripts',
         },
       },
       'V8 Blink Win': {
@@ -810,7 +823,7 @@
         ],
         'additional_compile_targets': ['blink_tests'],
         'test_suites': {
-          'isolated_scripts': 'chromium_webkit_isolated_scripts',
+          'isolated_scripts': 'chromium_blink_isolated_scripts',
         },
       },
       'V8 Linux GN': {
@@ -832,7 +845,6 @@
           'device_unittests',
           'display_unittests',
           'events_unittests',
-          'extensions_browsertests',
           'extensions_unittests',
           'gcm_unit_tests',
           'gfx_unittests',
@@ -1005,6 +1017,7 @@
         'mixins': [
           'chrome-swarming-pool',
           'mac_default_x64',
+          'mac_x64_ai_wpt_shards',
         ],
         'test_suites': {
            'isolated_scripts': 'chrome_ai_wpt_tests_suite',
@@ -1353,7 +1366,6 @@
           'capture_unittests',
           'content_browsertests',
           'content_unittests',
-          'remoting_unittests',
         ],
       },
       'linux_chromium_compile': {

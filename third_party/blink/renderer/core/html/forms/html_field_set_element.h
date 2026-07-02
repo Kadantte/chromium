@@ -38,6 +38,10 @@ class CORE_EXPORT HTMLFieldSetElement final : public HTMLFormControlElement {
  public:
   explicit HTMLFieldSetElement(Document&);
 
+  ElementType GetElementType() const final {
+    return ElementType::kHTMLFieldSetElement;
+  }
+
   HTMLLegendElement* Legend() const;
   HTMLCollection* elements();
 
@@ -45,8 +49,8 @@ class CORE_EXPORT HTMLFieldSetElement final : public HTMLFormControlElement {
   void UpdateMenuItemCheckableExclusivity(HTMLMenuItemElement*);
 
  protected:
-  void DisabledAttributeChanged() override;
-  void AncestorDisabledStateWasChanged() override;
+  void DisabledAttributeChanged(DisabledChangedReason) override;
+  void AncestorDisabledStateWasChanged(DisabledChangedReason) override;
   void DidMoveToNewDocument(Document& old_document) override;
 
  private:
@@ -64,8 +68,11 @@ class CORE_EXPORT HTMLFieldSetElement final : public HTMLFormControlElement {
   bool IsSubmittableElement() override;
   bool AlwaysCreateUserAgentShadowRoot() const override { return false; }
   bool MatchesEnabledPseudoClass() const final;
+  bool MatchesDisabledPseudoClass() const final;
 
-  Element* InvalidateDescendantDisabledStateAndFindFocusedOne(Element& base);
+  Element* InvalidateDescendantDisabledStateAndFindFocusedOne(
+      Element& base,
+      DisabledChangedReason);
 };
 
 }  // namespace blink

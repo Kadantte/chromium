@@ -53,6 +53,9 @@ constexpr char kSchema[] = R"(
                     "other_profile": {
                       "type": "boolean"
                     },
+                    "gemini_in_chrome": {
+                      "type": "boolean"
+                    },
                     "urls": {
                       "items": {
                         "type": "string"
@@ -82,6 +85,9 @@ constexpr char kSchema[] = R"(
                     "other_profile": {
                       "type": "boolean"
                     },
+                    "gemini_in_chrome": {
+                      "type": "boolean"
+                    },
                     "urls": {
                       "items": {
                         "type": "string"
@@ -108,6 +114,9 @@ constexpr char kSchema[] = R"(
                 "type": "boolean"
               },
               "other_profile": {
+                "type": "boolean"
+              },
+              "gemini_in_chrome": {
                 "type": "boolean"
               },
               "urls": {
@@ -141,6 +150,9 @@ constexpr char kSchema[] = R"(
                   "other_profile": {
                     "type": "boolean"
                   },
+                  "gemini_in_chrome": {
+                    "type": "boolean"
+                  },
                   "urls": {
                     "items": {
                       "type": "string"
@@ -168,6 +180,9 @@ constexpr char kSchema[] = R"(
                     "type": "boolean"
                   },
                   "other_profile": {
+                    "type": "boolean"
+                  },
+                  "gemini_in_chrome": {
                     "type": "boolean"
                   },
                   "urls": {
@@ -202,6 +217,9 @@ constexpr char kSchema[] = R"(
                     "other_profile": {
                       "type": "boolean"
                     },
+                    "gemini_in_chrome": {
+                      "type": "boolean"
+                    },
                     "urls": {
                       "items": {
                         "type": "string"
@@ -229,6 +247,9 @@ constexpr char kSchema[] = R"(
                       "type": "boolean"
                     },
                     "other_profile": {
+                      "type": "boolean"
+                    },
+                    "gemini_in_chrome": {
                       "type": "boolean"
                     },
                     "urls": {
@@ -280,6 +301,9 @@ constexpr char kSchema[] = R"(
                 "type": "boolean"
               },
               "other_profile": {
+                "type": "boolean"
+              },
+              "gemini_in_chrome": {
                 "type": "boolean"
               },
               "urls": {
@@ -374,15 +398,6 @@ constexpr policy::PolicySource kCloudSources[] = {
     policy::PolicySource::POLICY_SOURCE_CLOUD,
     policy::PolicySource::POLICY_SOURCE_CLOUD_FROM_ASH};
 
-constexpr policy::PolicySource kNonCloudSources[] = {
-    policy::PolicySource::POLICY_SOURCE_ENTERPRISE_DEFAULT,
-    policy::PolicySource::POLICY_SOURCE_COMMAND_LINE,
-    policy::PolicySource::POLICY_SOURCE_ACTIVE_DIRECTORY,
-    policy::PolicySource::POLICY_SOURCE_PLATFORM,
-    policy::PolicySource::
-        POLICY_SOURCE_RESTRICTED_MANAGED_GUEST_SESSION_OVERRIDE,
-};
-
 constexpr char kInvalidPolicy[] = "[1,2,3]";
 
 constexpr std::pair<const char*, const char16_t*> kInvalidTestCases[] = {
@@ -451,6 +466,24 @@ constexpr std::pair<const char*, const char16_t*> kInvalidTestCases[] = {
         u"Error at PolicyForTesting[0]: \"SCREENSHOT\" is not a supported "
         u"restriction on this platform",
 #endif  // BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+    },
+    {
+        R"([
+            {
+              "sources": {
+                "gemini_in_chrome": true,
+                "urls": ["google.com"]
+              },
+              "restrictions": [
+                {
+                  "class": "CLIPBOARD",
+                  "level": "BLOCK"
+                }
+              ]
+            }
+          ])",
+        u"Error at PolicyForTesting[0].sources: Keys \"urls\" cannot be "
+        u"set in the same dictionary as the \"gemini_in_chrome\" keys",
     },
     {
         R"([
@@ -551,7 +584,7 @@ INSTANTIATE_TEST_SUITE_P(All,
 
 }  // namespace
 
-TEST_F(DataControlsPolicyHandlerTest, AllowsCloudSources) {
+TEST_F(DataControlsPolicyHandlerTest, WithValidPolicy) {
   for (auto scope : kCloudSources) {
     policy::PolicyMap map = CreatePolicyMap(kValidPolicy, scope);
     auto handler = std::make_unique<DataControlsPolicyHandler>(
@@ -570,22 +603,6 @@ TEST_F(DataControlsPolicyHandlerTest, AllowsCloudSources) {
     auto* value_set_in_map = map.GetValueUnsafe(kPolicyName);
     ASSERT_TRUE(value_set_in_map);
     ASSERT_EQ(*value_set_in_map, *value_set_in_pref);
-  }
-}
-
-TEST_F(DataControlsPolicyHandlerTest, BlocksNonCloudSources) {
-  for (auto scope : kNonCloudSources) {
-    policy::PolicyMap map = CreatePolicyMap(kValidPolicy, scope);
-    auto handler = std::make_unique<DataControlsPolicyHandler>(
-        kPolicyName, kTestPref, schema());
-
-    policy::PolicyErrorMap errors;
-    ASSERT_FALSE(handler->CheckPolicySettings(map, &errors));
-    ASSERT_FALSE(errors.empty());
-    ASSERT_TRUE(errors.HasError(kPolicyName));
-    std::u16string messages = errors.GetErrorMessages(kPolicyName);
-    ASSERT_EQ(messages,
-              u"Ignored because the policy is not set by a cloud source.");
   }
 }
 

@@ -11,6 +11,7 @@
 
 #include "base/byte_count.h"
 #include "base/containers/enum_set.h"
+#include "base/containers/flat_set.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
@@ -25,12 +26,14 @@
 #include "base/types/pass_key.h"
 #include "base/values.h"
 #include "base/version.h"
+#include "components/optimization_guide/core/model_execution/on_device_features.h"
 #include "components/optimization_guide/core/model_execution/performance_class.h"
 #include "components/optimization_guide/core/model_execution/usage_tracker.h"
 #include "components/optimization_guide/core/optimization_guide_enums.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/proto/on_device_base_model_metadata.pb.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom-forward.h"
+#include "components/optimization_guide/public/mojom/model_broker_debug.mojom-forward.h"
 #include "components/prefs/pref_change_registrar.h"
 
 class PrefService;
@@ -134,11 +137,12 @@ class OnDeviceModelComponentState {
 };
 
 enum class ModelInstallMode {
-  // Install the model on-demand (foreground download).
+  // Install the model with on-demand install (foreground download).
   kOnDemand = 0,
-  // Install the model on regular schedule (background download).
-  kBackground = 1,
-  kMaxValue = kBackground,
+  // Install the model by registering the component and wait for regular
+  // schedule.
+  kRegisterOnly = 1,
+  kMaxValue = kRegisterOnly,
 };
 
 // The attributes selected when registering an on-device model component.
@@ -147,7 +151,7 @@ struct OnDeviceModelRegistrationAttributes {
   using Hint = optimization_guide::proto::OnDeviceModelPerformanceHint;
 
   explicit OnDeviceModelRegistrationAttributes(
-      std::vector<Hint> supported_hints);
+      base::flat_set<Hint> supported_hints);
   OnDeviceModelRegistrationAttributes(
       const OnDeviceModelRegistrationAttributes&);
   OnDeviceModelRegistrationAttributes& operator=(
@@ -157,7 +161,7 @@ struct OnDeviceModelRegistrationAttributes {
       OnDeviceModelRegistrationAttributes&&);
   ~OnDeviceModelRegistrationAttributes();
   // The performance hints that are supported by this device.
-  std::vector<Hint> supported_hints;
+  base::flat_set<Hint> supported_hints;
 };
 
 using MaybeOnDeviceModelComponentState =
@@ -211,6 +215,20 @@ class OnDeviceModelComponentStateManager final : public UsageTracker::Observer {
   };
 
   struct RegistrationCriteria {
+    // `UninstallReason` is deliberately made to be the same as
+    // an enum class of the same name in
+    // components/optimization_guide/core/model_execution/manifest_broker/manifest.h.
+    // This is to allow logging model deletion reasons regardless of which model
+    // management scheme is used.
+    enum class UninstallReason {
+      kUnknown = 0,
+      kInsufficientDisk = 1,
+      kPolicyNotAllowed = 2,
+      kDeviceNotCapable = 3,
+      kParseError = 4,
+      kUserSettingNotAllowed = 5,
+      kMaxValue = kUserSettingNotAllowed,
+    };
     RegistrationCriteria();
     ~RegistrationCriteria();
     RegistrationCriteria(const RegistrationCriteria&);
@@ -259,7 +277,7 @@ class OnDeviceModelComponentStateManager final : public UsageTracker::Observer {
     }
 
     std::optional<ModelInstallMode> get_install_mode() const {
-      if (should_uninstall() || !is_disk_space_available() ||
+      if (should_uninstall().has_value() || !is_disk_space_available() ||
           !is_model_allowed()) {
         return std::nullopt;
       }
@@ -273,16 +291,32 @@ class OnDeviceModelComponentStateManager final : public UsageTracker::Observer {
             features::
                 IsFreeDiskSpaceSufficientForBackgroundOnDeviceModelInstall(
                     disk_space_free)) {
-          return ModelInstallMode::kBackground;
+          return ModelInstallMode::kRegisterOnly;
         }
       }
       return std::nullopt;
     }
 
-    bool should_uninstall() const {
-      return (is_already_installing &&
-              (is_running_out_of_disk_space() || out_of_retention ||
-               !enabled_by_enterprise_policy || !enabled_by_user_setting));
+    // Returns the reason of uninstall if the component should be uninstalled.
+    // nullopt is returned otherwise.
+    std::optional<UninstallReason> should_uninstall() const {
+      if (!is_already_installing) {
+        return std::nullopt;
+      }
+      if (!enabled_by_enterprise_policy) {
+        return UninstallReason::kPolicyNotAllowed;
+      }
+      if (!enabled_by_user_setting) {
+        return UninstallReason::kUserSettingNotAllowed;
+      }
+      if (is_running_out_of_disk_space()) {
+        return UninstallReason::kInsufficientDisk;
+      }
+      if (out_of_retention && !base::FeatureList::IsEnabled(
+                                  features::kOnDeviceModelBackgroundDownload)) {
+        return UninstallReason::kUnknown;
+      }
+      return std::nullopt;
     }
   };
 
@@ -293,8 +327,6 @@ class OnDeviceModelComponentStateManager final : public UsageTracker::Observer {
     kRegistering,
     // Registration completed, installation may or may not be happening yet.
     kRegistered,
-    // Registered and requested on demand update with background priority.
-    kBackgroundDownloading,
     // Registered and requested on demand update with foreground priority.
     kOnDemandDownloading,
     // Component is fully installed.
@@ -307,7 +339,8 @@ class OnDeviceModelComponentStateManager final : public UsageTracker::Observer {
       PrefService* local_state,
       base::SafeRef<PerformanceClassifier> performance_classifier,
       UsageTracker& usage_tracker,
-      std::unique_ptr<Delegate> delegate);
+      std::unique_ptr<Delegate> delegate,
+      OnDeviceModelType model_type);
   ~OnDeviceModelComponentStateManager() override;
 
   // Returns whether the component installation is valid.
@@ -334,6 +367,11 @@ class OnDeviceModelComponentStateManager final : public UsageTracker::Observer {
     return GetDebugState();
   }
 
+  // Get free disk space available for on device model for logging in global
+  // state.
+  void GetFreeDiskSpaceForLogging(
+      base::OnceCallback<void(std::optional<base::ByteCount>)> callback);
+
   // Functions called by the component installer:
 
   // Creates the on-device component state, only called after VerifyInstallation
@@ -359,9 +397,12 @@ class OnDeviceModelComponentStateManager final : public UsageTracker::Observer {
     return weak_ptr_factory_.GetWeakPtr();
   }
 
- private:
   DebugState GetDebugState();
 
+  std::vector<mojom::BrokerPropertyInfoPtr> GetBrokerProperties() const;
+  std::vector<mojom::BrokerAssetInfoPtr> GetBrokerAssets() const;
+
+ private:
   // Should be called whenever the device performance class changes.
   void OnPerformanceClassAvailable();
 
@@ -370,7 +411,8 @@ class OnDeviceModelComponentStateManager final : public UsageTracker::Observer {
   void OnGenAILocalFoundationalModelUserSettingChanged();
 
   // UsageTracker::Observer:
-  void OnDeviceEligibleFeatureUsed(mojom::OnDeviceFeature feature) override;
+  void OnDeviceEligibleUseCaseUsed(const std::string& use_case_name,
+                                   bool is_first_usage) override;
 
   // Installs the component installer if it needs installed.
   void BeginUpdateRegistration();
@@ -418,6 +460,9 @@ class OnDeviceModelComponentStateManager final : public UsageTracker::Observer {
       usage_tracker_observation_{this};
 
   SEQUENCE_CHECKER(sequence_checker_);
+
+  // The model type managed by this state manager.
+  const OnDeviceModelType model_type_;
 
   base::WeakPtrFactory<OnDeviceModelComponentStateManager> weak_ptr_factory_{
       this};

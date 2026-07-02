@@ -164,10 +164,11 @@ class CORE_EXPORT PhysicalBoxFragment final : public PhysicalFragment {
     return use_last_baseline_for_inline_baseline_;
   }
 
-  // Some scroll-containers will force baseline synthesis for the inline-block
-  // baseline algorithm.
+  // Some block-axis scroll-containers will force baseline synthesis for the
+  // inline-block baseline algorithm.
   bool ForceInlineBaselineSynthesis() const {
     return use_last_baseline_for_inline_baseline_ && IsScrollContainer() &&
+           Style().IsOverflowValueScrollableBlock() &&
            !Style().ShouldIgnoreOverflowPropertyForInlineBlockBaseline();
   }
 
@@ -239,6 +240,13 @@ class CORE_EXPORT PhysicalBoxFragment final : public PhysicalFragment {
 
   bool HasScrollableOverflow() const {
     return GetRareField(FieldId::kScrollableOverflow);
+  }
+
+  bool HasBorders() const { return !!GetRareField(FieldId::kBorders); }
+  bool HasScrollbar() const { return !!GetRareField(FieldId::kScrollbar); }
+  bool HasPadding() const { return !!GetRareField(FieldId::kPadding); }
+  bool HasInflowBounds() const {
+    return !!GetRareField(FieldId::kInflowBounds);
   }
 
   const PhysicalBoxStrut Borders() const {
@@ -355,6 +363,9 @@ class CORE_EXPORT PhysicalBoxFragment final : public PhysicalFragment {
       const PhysicalOffset& location,
       const BlockBreakToken* incoming_break_token,
       OverlayScrollbarClipBehavior = kIgnoreOverlayScrollbarSize) const;
+  // Returns the total offset of all overscroll area parents. This is used to
+  // shift content which is not within an overscroll area.
+  gfx::Vector2d PixelSnappedOverscrollContentOffset() const;
   gfx::Vector2d PixelSnappedScrolledContentOffset() const;
   PhysicalSize ScrollSize() const;
 
@@ -661,11 +672,6 @@ class CORE_EXPORT PhysicalBoxFragment final : public PhysicalFragment {
   }
   bool IncludeBorderLeft() const {
     return bit_field_.get<IncludeBorderLeftFlag>();
-  }
-  bool HasBorders() const { return !!GetRareField(FieldId::kBorders); }
-  bool HasPadding() const { return !!GetRareField(FieldId::kPadding); }
-  bool HasInflowBounds() const {
-    return !!GetRareField(FieldId::kInflowBounds);
   }
 
   static size_t AdditionalByteSize(bool has_fragment_items);

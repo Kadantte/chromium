@@ -97,8 +97,14 @@ class NET_EXPORT SessionStoreImpl : public SessionStore {
   // Helper function used to run every entry in `restore_callbacks_`
   void OnSessionBindingKeyRestored(
       const SessionKey& session_key,
-      unexportable_keys::ServiceErrorOr<unexportable_keys::UnexportableKeyId>
-          key_or_error);
+      unexportable_keys::ServiceErrorOr<
+          unexportable_keys::UnexportableSigningKeyId> key_or_error);
+
+  void StartGarbageCollection();
+  void OnGetAllKeysForGarbageCollection(
+      unexportable_keys::ServiceErrorOr<
+          std::vector<unexportable_keys::UnexportableKeyId>>
+          all_key_ids_or_error);
 
   // Key service used to wrap/unwrap unexportable session keys.
   const raw_ref<unexportable_keys::UnexportableKeyService> key_service_;

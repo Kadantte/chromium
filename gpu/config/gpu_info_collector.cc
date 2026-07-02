@@ -167,8 +167,6 @@ std::string GetDisplayTypeString(gl::DisplayType type) {
       return "SWIFT_SHADER";
     case gl::ANGLE_WARP:
       return "ANGLE_WARP";
-    case gl::ANGLE_D3D9:
-      return "ANGLE_D3D9";
     case gl::ANGLE_D3D11:
       return "ANGLE_D3D11";
     case gl::ANGLE_OPENGL:
@@ -291,6 +289,7 @@ void GetDawnTogglesForSkiaGraphite(
   force_enabled_toggles->push_back("skip_validation");
   force_enabled_toggles->push_back(
       "disable_lazy_clear_for_mapped_at_creation_buffer");
+  force_enabled_toggles->push_back("dump_shaders_on_failure");
 #if BUILDFLAG(IS_WIN)
   if (backend_type == wgpu::BackendType::D3D11) {
     force_enabled_toggles->push_back(

@@ -57,8 +57,9 @@ class DefaultParamEmbeddedPermissionPromptUiTest
  public:
   DefaultParamEmbeddedPermissionPromptUiTest() {
     feature_list_.InitWithFeaturesAndParameters(
-        {{blink::features::kPermissionElement, {}},
+        {{blink::features::kGeolocationElement, {}},
          {blink::features::kUserMediaElement, {}},
+         {blink::features::kUserMediaElementLegacy, {}},
          {blink::features::kBypassPepcSecurityForTesting, {}}},
         {});
   }
@@ -92,8 +93,9 @@ class WindowMiddleEmbeddedPermissionPromptUiTest
   WindowMiddleEmbeddedPermissionPromptUiTest() {
     feature_list_.InitWithFeaturesAndParameters(
         {
-            {blink::features::kPermissionElement, {}},
+            {blink::features::kGeolocationElement, {}},
             {blink::features::kUserMediaElement, {}},
+            {blink::features::kUserMediaElementLegacy, {}},
             {blink::features::kBypassPepcSecurityForTesting, {}},
             {permissions::features::kPermissionElementPromptPositioning,
              {{"PermissionElementPromptPositioningParam", "window_middle"}}},
@@ -130,8 +132,9 @@ class NearElementEmbeddedPermissionPromptUiTest
   NearElementEmbeddedPermissionPromptUiTest() {
     feature_list_.InitWithFeaturesAndParameters(
         {
-            {blink::features::kPermissionElement, {}},
+            {blink::features::kGeolocationElement, {}},
             {blink::features::kUserMediaElement, {}},
+            {blink::features::kUserMediaElementLegacy, {}},
             {blink::features::kBypassPepcSecurityForTesting, {}},
             {permissions::features::kPermissionElementPromptPositioning,
              {{"PermissionElementPromptPositioningParam", "near_element"}}},
@@ -168,8 +171,9 @@ class LegacyPromptEmbeddedPermissionPromptUiTest
   LegacyPromptEmbeddedPermissionPromptUiTest() {
     feature_list_.InitWithFeaturesAndParameters(
         {
-            {blink::features::kPermissionElement, {}},
+            {blink::features::kGeolocationElement, {}},
             {blink::features::kUserMediaElement, {}},
+            {blink::features::kUserMediaElementLegacy, {}},
             {blink::features::kBypassPepcSecurityForTesting, {}},
             {permissions::features::kPermissionElementPromptPositioning,
              {{"PermissionElementPromptPositioningParam", "legacy_prompt"}}},

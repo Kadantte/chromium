@@ -62,6 +62,7 @@
 #include "third_party/blink/renderer/core/inspector/inspected_frames.h"
 #include "third_party/blink/renderer/core/inspector/inspector_animation_agent.h"
 #include "third_party/blink/renderer/core/inspector/inspector_audits_agent.h"
+#include "third_party/blink/renderer/core/inspector/inspector_crash_report_context_agent.h"
 #include "third_party/blink/renderer/core/inspector/inspector_css_agent.h"
 #include "third_party/blink/renderer/core/inspector/inspector_dom_agent.h"
 #include "third_party/blink/renderer/core/inspector/inspector_dom_debugger_agent.h"
@@ -82,6 +83,7 @@
 #include "third_party/blink/renderer/core/inspector/inspector_resource_container.h"
 #include "third_party/blink/renderer/core/inspector/inspector_resource_content_loader.h"
 #include "third_party/blink/renderer/core/inspector/inspector_task_runner.h"
+#include "third_party/blink/renderer/core/inspector/inspector_web_mcp_agent.h"
 #include "third_party/blink/renderer/core/inspector/main_thread_debugger.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/page/focus_controller.h"
@@ -256,7 +258,11 @@ class ClientMessageLoopAdapter : public MainThreadDebugger::ClientMessageLoop {
     CHECK(!input_events_disabler_);
     input_events_disabler_ =
         std::make_unique<ScopedInputEventsDisabler>(*frame);
-    for (auto* const view : WebViewImpl::AllInstances())
+    // NotifyPopupOpeningObservers() can run author scripts which can
+    // synchronously create a new WebViewImpl (e.g. via window.open()),
+    // mutating AllInstances() and invalidating the iterator. Snapshot first.
+    const HashSet<WebViewImpl*> instances = WebViewImpl::AllInstances();
+    for (auto* const view : instances)
       view->GetChromeClient().NotifyPopupOpeningObservers();
 
     // 2. Disable active objects
@@ -335,6 +341,7 @@ void WebDevToolsAgentImpl::AttachSession(DevToolsSession* session,
       session->CreateAndAppend<InspectorNetworkAgent>(inspected_frames, nullptr,
                                                       session->V8Session());
 
+  session->CreateAndAppend<InspectorCrashReportContextAgent>(inspected_frames);
   auto* css_agent = session->CreateAndAppend<InspectorCSSAgent>(
       dom_agent, inspected_frames, network_agent,
       resource_content_loader_.Get(), resource_container_.Get());
@@ -355,10 +362,15 @@ void WebDevToolsAgentImpl::AttachSession(DevToolsSession* session,
                                                     session->V8Session());
 
   session->CreateAndAppend<InspectorMemoryAgent>(inspected_frames);
+  if (base::FeatureList::IsEnabled(features::kDevToolsWebMCPSupport)) {
+    session->CreateAndAppend<InspectorWebMCPAgent>(inspected_frames,
+                                                   session->V8Session());
+  }
 
   auto* page_agent = session->CreateAndAppend<InspectorPageAgent>(
       inspected_frames, this, resource_content_loader_.Get(),
-      session->V8Session(), session->script_to_evaluate_on_load());
+      session->V8Session(), session->script_to_evaluate_on_load(),
+      session->InjectedScriptManager());
 
   session->CreateAndAppend<InspectorLogAgent>(
       &inspected_frames->Root()->GetPage()->GetConsoleMessageStorage(),

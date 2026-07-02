@@ -22,7 +22,7 @@ interface RouteInfo {
 suite('PrivacyPageIndex', function() {
   let index: SettingsPrivacyPageIndexElement;
 
-  async function createPrivacyPageIndex(overrides?: {[key: string]: any}) {
+  async function createPrivacyPageIndex(overrides?: Record<string, unknown>) {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
 
     loadTimeData.overrideValues(Object.assign(
@@ -34,18 +34,18 @@ suite('PrivacyPageIndex', function() {
           enableHandTrackingContentSetting: false,
           enableKeyboardLockPrompt: false,
           enableLocalNetworkAccessSetting: false,
-          enableLocalNetworkAccessSplitPermissions: false,
           enablePaymentHandlerContentSetting: false,
           enablePersistentPermissions: false,
           enableSafeBrowsingSubresourceFilter: false,
           enableSecurityKeysSubpage: false,
           // <if expr="is_chromeos">
           enableSmartCardReadersContentSetting: false,
+          enableWebPrintingContentSetting: false,
           // </if>
           enableWebAppInstallation: false,
           enableWebBluetoothNewPermissionsBackend: false,
-          enableWebPrintingContentSetting: false,
           isGuest: false,
+          isAdPrivacyAvailable: true,
           isPrivacySandboxRestricted: false,
           isPrivacySandboxRestrictedNoticeEnabled: false,
         },
@@ -470,7 +470,8 @@ suite('PrivacyPageIndex', function() {
           routes.SITE_SETTINGS_BLUETOOTH_DEVICES,
           ['siteSettingsBluetoothDevices'], 'privacy');
     });
-
+    // TODO(https://crbug.com/530054694): Flaky on Linux.
+    // <if expr="not is_linux">
     test('RoutingBluetoothScanning', async function() {
       assertFalse(
           loadTimeData.getBoolean('enableExperimentalWebPlatformFeatures'));
@@ -481,6 +482,7 @@ suite('PrivacyPageIndex', function() {
           routes.SITE_SETTINGS_BLUETOOTH_SCANNING,
           ['siteSettingsBluetoothScanning'], 'privacy');
     });
+    // </if>
 
     test('RoutingCapturedSurfaceControl', async function() {
       assertFalse(loadTimeData.getBoolean('enableCapturedSurfaceControl'));
@@ -528,23 +530,9 @@ suite('PrivacyPageIndex', function() {
           'privacy');
     });
 
-    test('RoutingLocalNetworkAccess', async function() {
-      assertFalse(loadTimeData.getBoolean('enableLocalNetworkAccessSetting'));
-      assertFalse(
-          loadTimeData.getBoolean('enableLocalNetworkAccessSplitPermissions'));
-      await createPrivacyPageIndex({enableLocalNetworkAccessSetting: true});
-
-      return testViewsForRoute(
-          routes.SITE_SETTINGS_LOCAL_NETWORK_ACCESS,
-          ['siteSettingsLocalNetworkAccess'], 'privacy');
-    });
-
     test('RoutingLocalNetwork', async function() {
       assertFalse(loadTimeData.getBoolean('enableLocalNetworkAccessSetting'));
-      assertFalse(
-          loadTimeData.getBoolean('enableLocalNetworkAccessSplitPermissions'));
-      await createPrivacyPageIndex(
-          {enableLocalNetworkAccessSplitPermissions: true});
+      await createPrivacyPageIndex({enableLocalNetworkAccessSetting: true});
 
       return testViewsForRoute(
           routes.SITE_SETTINGS_LOCAL_NETWORK, ['siteSettingsLocalNetwork'],
@@ -553,10 +541,7 @@ suite('PrivacyPageIndex', function() {
 
     test('RoutingLoopbackNetwork', async function() {
       assertFalse(loadTimeData.getBoolean('enableLocalNetworkAccessSetting'));
-      assertFalse(
-          loadTimeData.getBoolean('enableLocalNetworkAccessSplitPermissions'));
-      await createPrivacyPageIndex(
-          {enableLocalNetworkAccessSplitPermissions: true});
+      await createPrivacyPageIndex({enableLocalNetworkAccessSetting: true});
 
       return testViewsForRoute(
           routes.SITE_SETTINGS_LOOPBACK_NETWORK,
@@ -585,6 +570,15 @@ suite('PrivacyPageIndex', function() {
           routes.SITE_SETTINGS_SMART_CARD_READERS,
           ['siteSettingsSmartCardReaders'], 'privacy');
     });
+
+    test('RoutingWebPrinting', async function() {
+      assertFalse(loadTimeData.getBoolean('enableWebPrintingContentSetting'));
+      await createPrivacyPageIndex({enableWebPrintingContentSetting: true});
+
+      return testViewsForRoute(
+          routes.SITE_SETTINGS_WEB_PRINTING, ['siteSettingsWebPrinting'],
+          'privacy');
+    });
     // </if>
 
     test('RoutingWebAppInstallation', async function() {
@@ -594,15 +588,6 @@ suite('PrivacyPageIndex', function() {
       return testViewsForRoute(
           routes.SITE_SETTINGS_WEB_APP_INSTALLATION,
           ['siteSettingsWebAppInstallation'], 'privacy');
-    });
-
-    test('RoutingWebPrinting', async function() {
-      assertFalse(loadTimeData.getBoolean('enableWebPrintingContentSetting'));
-      await createPrivacyPageIndex({enableWebPrintingContentSetting: true});
-
-      return testViewsForRoute(
-          routes.SITE_SETTINGS_WEB_PRINTING, ['siteSettingsWebPrinting'],
-          'privacy');
     });
   });
 });

@@ -115,8 +115,8 @@ class TabbedNavigationBarColorController
      * @param context Used to load resources.
      * @param tabModelSelector The {@link TabModelSelector} used to determine which tab model is
      *     selected.
-     * @param layoutManagerSupplier An {@link MonotonicObservableSupplier} for the {@link LayoutManager}
-     *     associated with the containing activity.
+     * @param layoutManagerSupplier An {@link MonotonicObservableSupplier} for the {@link
+     *     LayoutManager} associated with the containing activity.
      * @param fullscreenManager The {@link FullscreenManager} used to determine if fullscreen is
      *     enabled.
      * @param edgeToEdgeControllerSupplier Supplies an {@link EdgeToEdgeController} to detect when
@@ -162,6 +162,7 @@ class TabbedNavigationBarColorController
                 overviewColorSupplier,
                 edgeToEdgeSystemBarColorHelper,
                 new BottomAttachedUiObserver(
+                        context,
                         bottomControlsStacker,
                         browserControlsStateProvider,
                         contextualSearchManagerSupplier,
@@ -307,9 +308,9 @@ class TabbedNavigationBarColorController
                 new LayoutStateObserver() {
                     @Override
                     public void onStartedShowing(@LayoutType int layoutType) {
-                        if (layoutType == LayoutType.TAB_SWITCHER) {
-                            updateNavigationBarColor();
+                        if (layoutType == LayoutType.HUB) {
                             enableOverviewMode();
+                            updateNavigationBarColor();
                         } else if (layoutType == LayoutType.TOOLBAR_SWIPE
                                 && ChromeFeatureList.sNavBarColorAnimation.isEnabled()
                                 && isBottomChinEnabled()) {
@@ -324,9 +325,9 @@ class TabbedNavigationBarColorController
 
                     @Override
                     public void onStartedHiding(@LayoutType int layoutType) {
-                        if (layoutType != LayoutType.TAB_SWITCHER) return;
-                        updateNavigationBarColor();
+                        if (layoutType != LayoutType.HUB) return;
                         disableOverviewMode();
+                        updateNavigationBarColor();
                     }
 
                     @Override
@@ -450,8 +451,7 @@ class TabbedNavigationBarColorController
         updateNavigationBarColor();
     }
 
-    @ColorInt
-    private int getNavigationBarColor(boolean forceDarkNavigationBar) {
+    private @ColorInt int getNavigationBarColor(boolean forceDarkNavigationBar) {
         if (mOverviewMode && mOverviewColorSupplier.get() != null) {
             return mOverviewColorSupplier.get();
         } else if (useBottomAttachedUiColor()) {

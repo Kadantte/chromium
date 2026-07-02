@@ -10,23 +10,24 @@
 #include "chrome/browser/ui/views/desktop_capture/desktop_media_picker_views.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/view_class_properties.h"
 
-ShareAudioView::ShareAudioView(
-    const std::u16string& label_text,
-    bool audio_offered,
-    base::RepeatingCallback<void(void)> audio_check_callback)
+ShareAudioView::ShareAudioView(const std::u16string& label_text,
+                               bool audio_offered,
+                               base::RepeatingClosure audio_check_callback)
     : audio_check_callback_(audio_check_callback) {
   SetProperty(views::kMarginsKey, gfx::Insets::TLBR(8, 16, 16, 16));
 
   views::ImageView* audio_icon_view =
       AddChildView(std::make_unique<views::ImageView>());
   audio_icon_view->SetImage(ui::ImageModel::FromVectorIcon(
-      vector_icons::kVolumeUpIcon,
+      features::IsRoundedIconsEnabled() ? vector_icons::kVolumeUpFilledIcon
+                                        : vector_icons::kVolumeUpOldIcon,
       audio_offered ? ui::kColorIcon : ui::kColorIconDisabled,
       GetLayoutConstant(LayoutConstant::kPageInfoIconSize)));
 

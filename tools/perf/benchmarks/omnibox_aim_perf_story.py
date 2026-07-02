@@ -22,7 +22,8 @@ import py_utils
 AI_MODE_INPUT_ELEMENT_FUNCTION = '''
 (function() {
   return document.querySelector('omnibox-aim-app').shadowRoot
-        .querySelector('cr-composebox').shadowRoot
+        .querySelector('#composebox').shadowRoot
+        .querySelector('cr-composebox-input').shadowRoot
         .querySelector('#input');
 })()
 '''
@@ -145,14 +146,15 @@ class OmniboxPerf(perf_benchmark.PerfBenchmark):
   def SetExtraBrowserOptions(self, options):
     options.AppendExtraBrowserArgs('--enable-ui-devtools=0')
     options.AppendExtraBrowserArgs('--disable-field-trial-config')
-    options.RemoveExtraBrowserArg('--enable-field-trial-config')
+    self.RemoveExtraBrowserArgWithValues(options, '--enable-field-trial-config')
     options.AppendExtraBrowserArgs(
         '--enable-features=ui-debug-tools-enable-synthetic-events,'
         'WebUIOmniboxPopup,'
         'WebUIOmniboxAimPopup:AddContextButtonVariant/below_results,'
         'AiModeOmniboxEntryPoint')
     options.AppendExtraBrowserArgs(
-        '--disable-features=AimServerEligibilityEnabled')
+        '--disable-features=AimServerEligibilityEnabled,'
+        'AimFuseboxEligibilityCheckEnabled')
 
   @classmethod
   def Name(cls):

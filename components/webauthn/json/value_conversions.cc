@@ -19,7 +19,6 @@
 #include "device/fido/attestation_object.h"
 #include "device/fido/fido_user_verification_requirement.h"
 #include "device/fido/public/authenticator_selection_criteria.h"
-#include "device/fido/public/cable_discovery_data.h"
 #include "device/fido/public/features.h"
 #include "device/fido/public/fido_constants.h"
 #include "device/fido/public/fido_transport_protocol.h"
@@ -237,60 +236,6 @@ base::Value ToValue(const device::LargeBlobSupport large_blob) {
   }
 }
 
-base::Value ToValue(const device::CableDiscoveryData& cable_authentication) {
-  base::DictValue value;
-  switch (cable_authentication.version) {
-    case device::CableDiscoveryData::Version::INVALID:
-      NOTREACHED();
-    case device::CableDiscoveryData::Version::V1:
-      value.Set("version", 1);
-      value.Set("clientEid",
-                Base64UrlEncode(cable_authentication.v1->client_eid));
-      value.Set("authenticatorEid",
-                Base64UrlEncode(cable_authentication.v1->authenticator_eid));
-      value.Set("sessionPreKey",
-                Base64UrlEncode(cable_authentication.v1->session_pre_key));
-      break;
-    case device::CableDiscoveryData::Version::V2:
-      value.Set("version", 2);
-      value.Set("clientEid",
-                Base64UrlEncode(cable_authentication.v2->experiments));
-      value.Set("authenticatorEid", "");
-      value.Set("sessionPreKey",
-                Base64UrlEncode(cable_authentication.v2->server_link_data));
-      break;
-  }
-  return base::Value(std::move(value));
-}
-
-base::Value ToValue(
-    const blink::mojom::SupplementalPubKeysRequestPtr& supplemental_pub_keys) {
-  base::ListValue scopes;
-  if (supplemental_pub_keys->device_scope_requested) {
-    scopes.Append("device");
-  }
-  if (supplemental_pub_keys->provider_scope_requested) {
-    scopes.Append("provider");
-  }
-
-  base::DictValue value;
-  value.Set("scopes", std::move(scopes));
-  if (supplemental_pub_keys->attestation !=
-      device::AttestationConveyancePreference::kIndirect) {
-    value.Set("attestation", ToValue(supplemental_pub_keys->attestation));
-  }
-  if (supplemental_pub_keys->attestation_formats.size()) {
-    base::ListValue formats;
-    for (const std::string& format :
-         supplemental_pub_keys->attestation_formats) {
-      formats.Append(format);
-    }
-    value.Set("attestationFormats", std::move(formats));
-  }
-
-  return base::Value(std::move(value));
-}
-
 base::Value ToValue(const std::vector<std::string>& strings) {
   base::ListValue ret;
   ret.reserve(strings.size());
@@ -490,11 +435,6 @@ base::Value ToValue(
     extensions.Set("payment", std::move(payments_value));
   }
 
-  if (options->supplemental_pub_keys) {
-    extensions.Set("supplementalPubKeys",
-                   ToValue(options->supplemental_pub_keys));
-  }
-
   if (!extensions.empty()) {
     value.Set("extensions", std::move(extensions));
   }
@@ -506,12 +446,7 @@ base::Value ToValue(
     const blink::mojom::PublicKeyCredentialRequestOptionsPtr& options) {
   CHECK(!options->extensions.is_null());
   base::DictValue value;
-  if (options->challenge.has_value()) {
-    value.Set("challenge", Base64UrlEncode(*options->challenge));
-  } else {
-    CHECK(options->challenge_url.has_value());
-    value.Set("challengeUrl", options->challenge_url->spec());
-  }
+  value.Set("challenge", Base64UrlEncode(options->challenge));
   value.Set("rpId", options->relying_party_id);
 
   base::ListValue allow_credentials;
@@ -536,15 +471,6 @@ base::Value ToValue(
 
   if (options->extensions->appid) {
     extensions.Set("appid", *options->extensions->appid);
-  }
-
-  base::ListValue cable_authentication_data;
-  for (const device::CableDiscoveryData& cable :
-       options->extensions->cable_authentication_data) {
-    cable_authentication_data.Append(ToValue(cable));
-  }
-  if (!cable_authentication_data.empty()) {
-    extensions.Set("cableAuthentication", std::move(cable_authentication_data));
   }
 
   if (options->extensions->get_cred_blob) {
@@ -593,9 +519,9 @@ base::Value ToValue(
     extensions.Set("prf", std::move(prf_value));
   }
 
-  if (options->extensions->supplemental_pub_keys) {
-    extensions.Set("supplementalPubKeys",
-                   ToValue(options->extensions->supplemental_pub_keys));
+  if (options->extensions->cross_device_fallback_url) {
+    extensions.Set("crossDeviceFallbackUrl",
+                   options->extensions->cross_device_fallback_url->spec());
   }
 
   if (!extensions.empty()) {
@@ -641,30 +567,6 @@ std::optional<blink::mojom::PRFValuesPtr> ParsePRFResults(
       /*id=*/std::nullopt, ToByteVector(*first),
       second ? std::optional<std::vector<uint8_t>>(ToByteVector(*second))
              : std::nullopt);
-}
-
-std::optional<blink::mojom::SupplementalPubKeysResponsePtr>
-ParseSupplementalPubKeys(const base::DictValue* json) {
-  const base::ListValue* signatures = json->FindList("signatures");
-  if (!signatures || signatures->empty()) {
-    return std::nullopt;
-  }
-
-  auto ret = blink::mojom::SupplementalPubKeysResponse::New();
-  for (const base::Value& b64url_signature : *signatures) {
-    if (!b64url_signature.is_string()) {
-      return std::nullopt;
-    }
-    std::optional<std::vector<uint8_t>> signature =
-        Base64UrlDecode(b64url_signature.GetString(),
-                        base::Base64UrlDecodePolicy::DISALLOW_PADDING);
-    if (!signature) {
-      return std::nullopt;
-    }
-    ret->signatures.emplace_back(std::move(*signature));
-  }
-
-  return ret;
 }
 
 std::pair<blink::mojom::MakeCredentialAuthenticatorResponsePtr, std::string>
@@ -846,15 +748,6 @@ MakeCredentialResponseFromValue(const base::Value& value) {
       response->prf_results = std::move(*prf_results);
     }
   }
-  const base::DictValue* supplemental_pub_keys =
-      client_extension_results->FindDict("supplementalPubKeys");
-  if (supplemental_pub_keys) {
-    auto maybe_result = ParseSupplementalPubKeys(supplemental_pub_keys);
-    if (!maybe_result) {
-      return InvalidMakeCredentialField("supplementalPubKeys");
-    }
-    response->supplemental_pub_keys = std::move(*maybe_result);
-  }
 
   return {std::move(response), ""};
 }
@@ -982,14 +875,12 @@ GetAssertionResponseFromValue(const base::Value& value) {
       response->extensions->prf_results = std::move(*prf_results);
     }
   }
-  const base::DictValue* supplemental_pub_keys =
-      client_extension_results->FindDict("supplementalPubKeys");
-  if (supplemental_pub_keys) {
-    auto maybe_result = ParseSupplementalPubKeys(supplemental_pub_keys);
-    if (!maybe_result) {
-      return InvalidGetAssertionField("supplementalPubKeys");
-    }
-    response->extensions->supplemental_pub_keys = std::move(*maybe_result);
+
+  const std::optional<bool> cross_device_fallback_url =
+      client_extension_results->FindBool("crossDeviceFallbackUrl");
+  if (cross_device_fallback_url) {
+    response->extensions->cross_device_fallback_url =
+        *cross_device_fallback_url;
   }
 
   return {std::move(response), ""};

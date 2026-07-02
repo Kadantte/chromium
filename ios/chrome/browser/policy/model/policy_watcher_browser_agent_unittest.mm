@@ -13,8 +13,10 @@
 #import "components/policy/core/common/policy_pref_names.h"
 #import "components/pref_registry/pref_registry_syncable.h"
 #import "components/prefs/pref_service.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/base/signin_pref_names.h"
 #import "components/sync/base/pref_names.h"
+#import "components/sync/test/test_sync_service.h"
 #import "components/sync_preferences/pref_service_mock_factory.h"
 #import "components/sync_preferences/pref_service_syncable.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
@@ -38,6 +40,8 @@
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/platform_test.h"
@@ -59,6 +63,8 @@ class PolicyWatcherBrowserAgentTest : public PlatformTest {
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetFactoryWithDelegate(
             std::make_unique<FakeAuthenticationServiceDelegate>()));
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
     profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
 
     // Set the initial pref value.
@@ -116,8 +122,8 @@ class PolicyWatcherBrowserAgentTest : public PlatformTest {
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   TestProfileManagerIOS profile_manager_;
   raw_ptr<TestProfileIOS> profile_;
-  raw_ptr<PolicyWatcherBrowserAgent, DanglingUntriaged> agent_;
   std::unique_ptr<Browser> browser_;
+  raw_ptr<PolicyWatcherBrowserAgent> agent_;
   SceneState* scene_state_;
   SceneState* scene_state_mock_;
 
@@ -382,9 +388,6 @@ TEST_F(PolicyWatcherBrowserAgentTest, CommandSentWhenUIIsDismissed) {
   run_loop.Run();
 
   EXPECT_OCMOCK_VERIFY(mockHandler);
-
-  // TODO(crbug.com/364574533): Reset the expectation for the SignInUIDismissed
-  // call.
 }
 
 // Tests that the handler is called and the alert shown as expected.

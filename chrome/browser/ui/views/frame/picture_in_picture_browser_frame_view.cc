@@ -13,8 +13,10 @@
 #include "chrome/browser/picture_in_picture/picture_in_picture_occlusion_tracker.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
 #include "chrome/browser/ui/browser_content_setting_bubble_model_delegate.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/content_settings/content_setting_image_model_states.h"
 #include "chrome/browser/ui/layout_constants.h"
@@ -121,7 +123,9 @@ class BackToTabButton : public OverlayWindowImageButton {
  public:
   explicit BackToTabButton(PressedCallback callback)
       : OverlayWindowImageButton(std::move(callback)) {
-    auto* icon = &vector_icons::kBackToTabChromeRefreshIcon;
+    auto* icon = &(features::IsRoundedIconsEnabled()
+                       ? vector_icons::kBackToTabIcon
+                       : vector_icons::kBackToTabChromeRefreshOldIcon);
     SetImageModel(views::Button::STATE_NORMAL,
                   ui::ImageModel::FromVectorIcon(
                       *icon, kColorPipWindowForeground, kBackToTabImageSize));
@@ -622,7 +626,7 @@ PictureInPictureBrowserFrameView::PictureInPictureBrowserFrameView(
   // Creates the content setting models. Currently we only support camera and
   // microphone settings.
   constexpr ContentSettingImageModel::ImageType kContentSettingImageOrder[] = {
-      ContentSettingImageModel::ImageType::MEDIASTREAM};
+      ContentSettingImageModel::ImageType::kMediaStream};
   std::vector<std::unique_ptr<ContentSettingImageModel>> models;
   for (auto type : kContentSettingImageOrder) {
     models.push_back(ContentSettingImageModel::CreateForContentType(type));
@@ -947,14 +951,11 @@ void PictureInPictureBrowserFrameView::AddedToWidget() {
 // Windows. On Windows, resizable windows can not be translucent. See
 // crbug.com/425711450.
 #if !BUILDFLAG(IS_WIN)
-  if (base::FeatureList::IsEnabled(
-          media::kPictureInPictureShowWindowAnimation)) {
-    if (!fade_animator_) {
-      fade_animator_ = std::make_unique<PictureInPictureWidgetFadeAnimator>();
-    }
-    fade_animator_->AnimateShowWindow(
-        GetWidget(), PictureInPictureWidgetFadeAnimator::WidgetShowType::kNone);
+  if (!fade_animator_) {
+    fade_animator_ = std::make_unique<PictureInPictureWidgetFadeAnimator>();
   }
+  fade_animator_->AnimateShowWindow(
+      GetWidget(), PictureInPictureWidgetFadeAnimator::WidgetShowType::kNone);
 #endif
 
   // If the AutoPiP setting overlay is set, then post a task to show it.  Don't
@@ -1057,6 +1058,14 @@ void PictureInPictureBrowserFrameView::SetFrameBounds(const gfx::Rect& bounds) {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+// views::FrameView implementations:
+gfx::Rect
+PictureInPictureBrowserFrameView::GetNonDecoratedClientAreaBoundsInScreen()
+    const {
+  return GetBoundsInScreen();
+}
+
+///////////////////////////////////////////////////////////////////////////////
 // ChromeLocationBarModelDelegate implementations:
 
 content::WebContents* PictureInPictureBrowserFrameView::GetActiveWebContents()
@@ -1113,14 +1122,15 @@ bool PictureInPictureBrowserFrameView::ShowPageInfoDialog() {
 
   std::unique_ptr<PageInfoBubbleSpecification> specification =
       PageInfoBubbleSpecification::Builder(
-          location_icon_view_, GetWidget()->GetNativeWindow(), contents,
+          views::BubbleAnchor(location_icon_view_),
+          GetWidget()->GetNativeWindow(), contents,
           contents->GetLastCommittedURL())
           .HideExtendedSiteInfo()
           .Build();
 
   views::BubbleDialogDelegateView* const bubble =
       PageInfoBubbleView::CreatePageInfoBubble(std::move(specification));
-  bubble->SetHighlightedButton(location_icon_view_);
+  bubble->SetHighlightedElement(kLocationIconElementId);
   bubble->GetWidget()->Show();
 
   PictureInPictureOcclusionTracker* tracker =
@@ -1138,7 +1148,7 @@ LocationBarModel* PictureInPictureBrowserFrameView::GetLocationBarModel()
 }
 
 ui::ImageModel PictureInPictureBrowserFrameView::GetLocationIcon(
-    LocationIconView::Delegate::IconFetchedCallback on_icon_fetched) const {
+    LocationIconView::Delegate::IconFetchedCallback on_icon_fetched) {
   // If we're animating between colors, use the current color value.
   if (current_foreground_color_.has_value()) {
     return ui::ImageModel::FromVectorIcon(location_bar_model_->GetVectorIcon(),
@@ -1193,7 +1203,9 @@ PictureInPictureBrowserFrameView::GetContentSettingWebContents() {
 ContentSettingBubbleModelDelegate*
 PictureInPictureBrowserFrameView::GetContentSettingBubbleModelDelegate() {
   // Use the opener browser delegate to open any new tab.
-  Browser* browser = chrome::FindBrowserWithTab(GetWebContents());
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+          GetWebContents());
   return browser->GetFeatures().content_setting_bubble_model_delegate();
 }
 
@@ -1249,6 +1261,12 @@ void PictureInPictureBrowserFrameView::SetForcedTucking(bool tuck) {
     EnforceTucking();
   }
 }
+
+#if BUILDFLAG(IS_MAC)
+void PictureInPictureBrowserFrameView::OnAnyBrowserEnteredFullscreen() {
+  GetWidget()->MoveToActiveFullscreenSpace();
+}
+#endif  // BUILDFLAG(IS_MAC)
 
 void PictureInPictureBrowserFrameView::EnforceTucking() {
   // The `tucker_` will have been created if there's any tucking to be enforced.

@@ -59,6 +59,10 @@
 #include "ui/views/widget/root_view.h"
 #include "ui/views/widget/widget_utils.h"
 
+#if BUILDFLAG(IS_OZONE)
+#include "ui/ozone/public/ozone_platform.h"
+#endif
+
 #if defined(USE_AURA)
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/client/drag_drop_client.h"
@@ -72,9 +76,6 @@
 #include "ui/views/controls/menu/menu_pre_target_handler.h"
 #endif
 
-#if BUILDFLAG(IS_OZONE)
-#include "ui/ozone/public/ozone_platform.h"
-#endif
 
 #if BUILDFLAG(SUPPORTS_OZONE_X11)
 #include "ui/events/test/events_test_utils_x11.h"
@@ -424,14 +425,30 @@ class MenuControllerTest : public ViewsTestBase,
 
   MenuHostRootView* CreateMenuHostRootView(MenuHost* host);
 
-  void MenuHostOnDragWillStart(MenuHost* host);
+  void MenuHostOnDragDropWillStart(MenuHost* host);
 
-  void MenuHostOnDragComplete(MenuHost* host);
+  void MenuHostOnDragDropCompleted(MenuHost* host);
 
   void SelectByChar(char16_t character);
 
   void SetDropMenuItem(MenuItemView* target,
                        MenuDelegate::DropPosition position);
+
+  // Returns the current drop target from the MenuController.
+  MenuItemView* GetDropTarget() const {
+    return static_cast<MenuItemView*>(
+        menu_controller_->drop_target_tracker_.view());
+  }
+
+  // Returns the current drop item from a SubmenuView.
+  static MenuItemView* GetSubmenuDropItem(SubmenuView* submenu) {
+    return submenu->drop_item_;
+  }
+
+  // Wrapper to access private UpdateEmptyMenusAndMetrics.
+  static void UpdateEmptyMenusAndMetrics(MenuItemView* item) {
+    item->UpdateEmptyMenusAndMetrics();
+  }
 
   void SetComboboxType(MenuController::ComboboxType combobox_type);
 
@@ -865,12 +882,12 @@ MenuHostRootView* MenuControllerTest::CreateMenuHostRootView(MenuHost* host) {
   return static_cast<MenuHostRootView*>(host->CreateRootView());
 }
 
-void MenuControllerTest::MenuHostOnDragWillStart(MenuHost* host) {
-  host->OnDragWillStart();
+void MenuControllerTest::MenuHostOnDragDropWillStart(MenuHost* host) {
+  host->OnDragDropWillStart();
 }
 
-void MenuControllerTest::MenuHostOnDragComplete(MenuHost* host) {
-  host->OnDragComplete();
+void MenuControllerTest::MenuHostOnDragDropCompleted(MenuHost* host) {
+  host->OnDragDropCompleted();
 }
 
 void MenuControllerTest::SelectByChar(char16_t character) {
@@ -1750,8 +1767,8 @@ TEST_F(MenuControllerTest, AsynchronousPerformDrop) {
 TEST_F(MenuControllerTest, AsynchronousDragComplete) {
   TestDragCompleteThenDestroyOnMenuClosed();
 
-  menu_controller()->OnDragWillStart();
-  menu_controller()->OnDragComplete(true);
+  menu_controller()->OnDragDropWillStart();
+  menu_controller()->OnDragDropCompleted(true);
 
   EXPECT_EQ(1, menu_controller_delegate()->on_menu_closed_called());
   EXPECT_EQ(nullptr, menu_controller_delegate()->on_menu_closed_menu());
@@ -1764,8 +1781,8 @@ TEST_F(MenuControllerTest, AsynchronousDragComplete) {
 TEST_F(MenuControllerTest, AsynchronousDragCompleteWithoutClose) {
   TestDragCompleteThenDestroyOnMenuClosed();
 
-  menu_controller()->OnDragWillStart();
-  menu_controller()->OnDragComplete(false);
+  menu_controller()->OnDragDropWillStart();
+  menu_controller()->OnDragDropCompleted(false);
 
   // TODO(crbug.com/375959961): For X11, the menu is closed on drag completion
   // because the native widget's state is not properly updated.
@@ -1778,9 +1795,9 @@ TEST_F(MenuControllerTest, AsynchronousDragCompleteWithoutClose) {
 TEST_F(MenuControllerTest, AsynchronousCancelDuringDrag) {
   TestDragCompleteThenDestroyOnMenuClosed();
 
-  menu_controller()->OnDragWillStart();
+  menu_controller()->OnDragDropWillStart();
   menu_controller()->Cancel(MenuController::ExitType::kAll);
-  menu_controller()->OnDragComplete(true);
+  menu_controller()->OnDragDropCompleted(true);
 
   EXPECT_EQ(1, menu_controller_delegate()->on_menu_closed_called());
   EXPECT_EQ(nullptr, menu_controller_delegate()->on_menu_closed_menu());
@@ -1794,10 +1811,10 @@ TEST_F(MenuControllerTest, AsynchronousDragHostDeleted) {
   ShowSubmenu();
   SubmenuView* const submenu = menu_item()->GetSubmenu();
   MenuHost* const host = menu_host_for_submenu(submenu);
-  MenuHostOnDragWillStart(host);
+  MenuHostOnDragDropWillStart(host);
   submenu->Close();
   DestroyMenuItem();
-  MenuHostOnDragComplete(host);
+  MenuHostOnDragDropCompleted(host);
 }
 
 // Tests that getting the drop callback does not hide the menu.
@@ -2510,7 +2527,7 @@ TEST_F(MenuControllerTest, WidgetStateChangeCancelsMenu) {
 
 // TODO(pkasting): The test below fails most of the time on Wayland; not clear
 // it's important to support this case.
-#if BUILDFLAG(ENABLE_DESKTOP_AURA) && !BUILDFLAG(SUPPORTS_OZONE_WAYLAND)
+#if BUILDFLAG(ENABLE_DESKTOP_AURA)
 class DesktopMenuControllerTest : public MenuControllerTest {
  public:
   // MenuControllerTest:
@@ -2524,11 +2541,16 @@ class DesktopMenuControllerTest : public MenuControllerTest {
 // MenuPreTargetHandler. Having neither parent nor context pointers when
 // creating a Widget is only valid in desktop Aura.
 TEST_F(DesktopMenuControllerTest, RunWithoutWidgetDoesntCrash) {
+#if BUILDFLAG(IS_OZONE)
+  if (::ui::OzonePlatform::RunningOnWaylandForTest()) {
+    GTEST_SKIP() << "Fails on Wayland";
+  }
+#endif
   ExitMenuRun();
   menu_controller()->Run(nullptr, nullptr, menu_item(), gfx::Rect(),
                          MenuAnchorPosition::kTopLeft);
 }
-#endif  // BUILDFLAG(ENABLE_DESKTOP_AURA) && !BUILDFLAG(SUPPORTS_OZONE_WAYLAND)
+#endif  // BUILDFLAG(ENABLE_DESKTOP_AURA)
 
 // Tests that if a MenuController is destroying during drag/drop, and another
 // MenuController becomes active, that the exiting of drag does not cause a
@@ -3300,7 +3322,7 @@ TEST_F(MenuControllerTest, AccessibilityEmitsSelectChildrenChanged) {
   EXPECT_EQ(ax_counter.GetCount(ax::mojom::Event::kSelectedChildrenChanged), 1);
 
   DispatchKey(ui::VKEY_DOWN);
-  EXPECT_EQ(ax_counter.GetCount(ax::mojom::Event::kSelectedChildrenChanged), 2);
+  EXPECT_EQ(ax_counter.GetCount(ax::mojom::Event::kSelectedChildrenChanged), 3);
 }
 
 TEST_F(MenuControllerTest, AccessibilityEmitsMenuOpenedClosedEvents) {
@@ -3916,6 +3938,75 @@ TEST_F(MenuControllerTest, ActiveDescendantChangedEventOnHotButton) {
   SetHotTrackedButton(nullptr);
   EXPECT_GT(ax_counter.GetCount(ax::mojom::Event::kActiveDescendantChanged),
             count_before_clear);
+}
+
+// Test that hot-tracking in-menu buttons continues to send selection events in
+// addition to updating the active descendant. Windows screen readers use the
+// native event mapped from kSelection to announce button-like menu controls.
+TEST_F(MenuControllerTest, HotButtonSendsSelectionEvent) {
+  const test::AXEventCounter ax_counter(views::AXUpdateNotifier::Get());
+  AddButtonMenuItems(/*single_child=*/false);
+  SubmenuView* const submenu = menu_item()->GetSubmenu();
+
+  const View* const buttons_view = submenu->children()[4];
+  ASSERT_NE(nullptr, buttons_view);
+  GET_CHILD_BUTTON(button1, buttons_view, 0);
+  GET_CHILD_BUTTON(button2, buttons_view, 1);
+
+  SelectByChar('f');
+  EXPECT_EQ(4, pending_state_item()->GetCommand());
+
+  const int selection_count_before_hot_button =
+      ax_counter.GetCount(ax::mojom::Event::kSelection);
+  IncrementSelection();
+  EXPECT_EQ(button1, hot_button());
+  EXPECT_GT(ax_counter.GetCount(ax::mojom::Event::kSelection),
+            selection_count_before_hot_button);
+
+  const int selection_count_before_next_hot_button =
+      ax_counter.GetCount(ax::mojom::Event::kSelection);
+  IncrementSelection();
+  EXPECT_EQ(button2, hot_button());
+  EXPECT_GT(ax_counter.GetCount(ax::mojom::Event::kSelection),
+            selection_count_before_next_hot_button);
+
+  ui::AXNodeData submenu_data;
+  submenu->GetViewAccessibility().GetAccessibleNodeData(&submenu_data);
+  EXPECT_EQ(submenu_data.GetIntAttribute(
+                ax::mojom::IntAttribute::kActivedescendantId),
+            button2->GetViewAccessibility().GetUniqueId());
+}
+
+// Regression test for crbug.com/487373990. Verifies that drop target pointers
+// are cleared when the target MenuItemView is destroyed.
+TEST_F(MenuControllerTest, DropTargetClearedWhenEmptyMenuItemDestroyed) {
+  MenuItemView* const submenu_item = menu_item()->AppendSubMenu(10, u"Submenu");
+
+  // Populate the empty submenu with an EmptyMenuMenuItem placeholder.
+  UpdateEmptyMenusAndMetrics(submenu_item);
+  SubmenuView* const submenu = submenu_item->GetSubmenu();
+
+  // GetMenuItems() filters out EmptyMenuMenuItems, so find it directly.
+  MenuItemView* empty_item = nullptr;
+  for (View* child : submenu->children()) {
+    if (IsViewClass<EmptyMenuMenuItem>(child)) {
+      empty_item = AsViewClass<MenuItemView>(child);
+      break;
+    }
+  }
+  ASSERT_NE(empty_item, nullptr);
+
+  SetDropMenuItem(empty_item, MenuDelegate::DropPosition::kOn);
+  EXPECT_EQ(GetDropTarget(), empty_item);
+  EXPECT_EQ(GetSubmenuDropItem(submenu), empty_item);
+
+  // Adding a real item and re-running UpdateEmptyMenusAndMetrics destroys the
+  // EmptyMenuMenuItem. The drop target references must be cleared.
+  submenu_item->AppendMenuItem(11, u"Real Item");
+  UpdateEmptyMenusAndMetrics(submenu_item);
+
+  EXPECT_EQ(GetDropTarget(), nullptr);
+  EXPECT_EQ(GetSubmenuDropItem(submenu), nullptr);
 }
 
 }  // namespace views

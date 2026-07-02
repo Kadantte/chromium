@@ -13,6 +13,7 @@
 #include "chrome/browser/glic/host/glic.mojom-shared.h"
 #include "chrome/browser/glic/public/context/glic_sharing_manager.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/side_panel/side_panel_enums.h"
 #include "components/tabs/public/tab_interface.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "ui/gfx/geometry/rect.h"
@@ -30,6 +31,12 @@ struct FloatingEmbedderKey {
 using EmbedderKey = std::variant<tabs::TabInterface*, FloatingEmbedderKey>;
 std::string DescribeEmbedderKeyForTesting(const EmbedderKey& key);
 
+enum class EmbedderCloseReason {
+  kExplicitlyClosed,
+  kBackgrounded,
+  kPeek,
+};
+
 struct SidePanelShowOptions {
   explicit SidePanelShowOptions(tabs::TabInterface& bound_tab)
       : tab(bound_tab) {}
@@ -37,6 +44,8 @@ struct SidePanelShowOptions {
   bool suppress_opening_animation = false;
   bool pin_on_bind = true;
   GlicPinTrigger pin_trigger = GlicPinTrigger::kUnknown;
+  bool prefer_peek = false;
+  SidePanelOpenTrigger open_trigger = SidePanelOpenTrigger::kGlicOpened;
 };
 
 struct FloatingShowOptions {
@@ -49,6 +58,8 @@ using EmbedderOptions = std::variant<SidePanelShowOptions, FloatingShowOptions>;
 struct ShowOptions {
   explicit ShowOptions(EmbedderOptions panel_options);
   explicit ShowOptions(EmbedderOptions panel_options, bool focus);
+  explicit ShowOptions(EmbedderOptions panel_options,
+                       mojom::InvocationSource source);
   ShowOptions(const ShowOptions&);
   ShowOptions(ShowOptions&&);
   ShowOptions& operator=(const ShowOptions&);
@@ -65,12 +76,17 @@ struct ShowOptions {
   static ShowOptions ForSidePanel(tabs::TabInterface& bound_tab);
   static ShowOptions ForSidePanel(tabs::TabInterface& bound_tab,
                                   GlicPinTrigger pin_trigger);
+  static ShowOptions ForSidePanel(tabs::TabInterface& bound_tab,
+                                  GlicPinTrigger pin_trigger,
+                                  mojom::InvocationSource invocation_source);
 
   // Shared show options
   bool focus_on_show = false;
   bool reinitialize_if_already_active = false;
-  std::optional<std::string> prompt_suggestion = std::nullopt;
-  bool auto_send = false;
+  std::optional<std::string> prompt_suggestion;
+  mojom::InvocationSource invocation_source =
+      mojom::InvocationSource::kUnsupported;
+  mojom::FreOverride fre_override = mojom::FreOverride::kUnspecified;
 
   // Container for options that are different between side panel and floaty.
   EmbedderOptions embedder_options;

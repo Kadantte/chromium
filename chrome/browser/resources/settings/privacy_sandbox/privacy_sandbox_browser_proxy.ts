@@ -72,15 +72,12 @@ export interface PrivacySandboxBrowserProxy {
    */
   getChildTopicsCurrentlyAssigned(topic: CanonicalTopic):
       Promise<CanonicalTopic[]>;
-
-  /** Determines if the Ad Topics Content Parity should be shown. */
-  shouldShowPrivacySandboxAdTopicsContentParity(): Promise<boolean>;
 }
 
 export class PrivacySandboxBrowserProxyImpl implements
     PrivacySandboxBrowserProxy {
   getFledgeState() {
-    return sendWithPromise('getFledgeState');
+    return sendWithPromise<FledgeState>('getFledgeState');
   }
 
   setFledgeJoiningAllowed(site: string, allowed: boolean) {
@@ -88,7 +85,7 @@ export class PrivacySandboxBrowserProxyImpl implements
   }
 
   getTopicsState() {
-    return sendWithPromise('getTopicsState');
+    return sendWithPromise<TopicsState>('getTopicsState');
   }
 
   setTopicAllowed(topic: CanonicalTopic, allowed: boolean) {
@@ -101,17 +98,13 @@ export class PrivacySandboxBrowserProxyImpl implements
   }
 
   getFirstLevelTopics() {
-    return sendWithPromise('getFirstLevelTopics');
+    return sendWithPromise<FirstLevelTopicsState>('getFirstLevelTopics');
   }
 
   getChildTopicsCurrentlyAssigned(topic: CanonicalTopic) {
-    return sendWithPromise(
+    return sendWithPromise<CanonicalTopic[]>(
         'getChildTopicsCurrentlyAssigned', topic.topicId,
         topic.taxonomyVersion);
-  }
-
-  shouldShowPrivacySandboxAdTopicsContentParity() {
-    return sendWithPromise('shouldShowPrivacySandboxAdTopicsContentParity');
   }
 
   static getInstance(): PrivacySandboxBrowserProxy {

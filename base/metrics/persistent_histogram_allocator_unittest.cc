@@ -15,6 +15,7 @@
 #include "base/metrics/bucket_ranges.h"
 #include "base/metrics/histogram.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/metrics/metrics_hashes.h"
 #include "base/metrics/persistent_memory_allocator.h"
 #include "base/metrics/sample_vector.h"
 #include "base/metrics/sparse_histogram.h"
@@ -64,6 +65,42 @@ class PersistentHistogramAllocatorTest : public testing::Test {
   void DestroyPersistentHistogramAllocator() {
     allocator_ = nullptr;
     GlobalHistogramAllocator::ReleaseForTesting();
+  }
+
+  struct AllocatedHistogram {
+    PersistentMemoryAllocator::Reference ref;
+    raw_ptr<PersistentHistogramAllocator::PersistentHistogramData> data;
+  };
+
+  AllocatedHistogram AllocatePersistentHistogramData(
+      PersistentHistogramAllocator& allocator,
+      std::string_view name) {
+    using PersistentHistogramData =
+        PersistentHistogramAllocator::PersistentHistogramData;
+    size_t alloc_size =
+        offsetof(PersistentHistogramData, name) + name.size() + 1;
+    PersistentMemoryAllocator::Reference ref =
+        allocator.memory_allocator()->Allocate(
+            alloc_size, PersistentHistogramData::kPersistentTypeId);
+    if (!ref) {
+      return {PersistentMemoryAllocator::kReferenceNull, nullptr};
+    }
+
+    uint8_t* ptr = allocator.memory_allocator()->GetAsArray<uint8_t>(
+        ref, PersistentHistogramData::kPersistentTypeId, 1);
+    if (!ptr) {
+      return {PersistentMemoryAllocator::kReferenceNull, nullptr};
+    }
+
+    auto* histogram_data = reinterpret_cast<PersistentHistogramData*>(ptr);
+    // SAFETY: We allocate `alloc_size` bytes which is guaranteed to be large
+    // enough to hold the struct and the name. Copying the name into the buffer
+    // is safe because it is bounded by the allocated size.
+    UNSAFE_BUFFERS({
+      memcpy(histogram_data->name, name.data(), name.size());
+      histogram_data->name[name.size()] = '\0';
+    });
+    return {ref, histogram_data};
   }
 
   std::unique_ptr<StatisticsRecorder> statistics_recorder_;
@@ -305,7 +342,8 @@ TEST_F(PersistentHistogramAllocatorTest, StatisticsRecorderMerge) {
       break;
     }
 
-    recovery1.MergeHistogramDeltaToStatisticsRecorder(recovered.get());
+    recovery1.MergeHistogramDeltaToStatisticsRecorder(recovered.get(),
+                                                      /*name_override=*/"");
     HistogramBase* found =
         StatisticsRecorder::FindHistogram(recovered->histogram_name());
     EXPECT_NE(recovered.get(), found);
@@ -371,7 +409,8 @@ TEST_F(PersistentHistogramAllocatorTest, StatisticsRecorderMerge) {
     if (!recovered) {
       break;
     }
-    recovery2.MergeHistogramDeltaToStatisticsRecorder(recovered.get());
+    recovery2.MergeHistogramDeltaToStatisticsRecorder(recovered.get(),
+                                                      /*name_override=*/"");
   }
   EXPECT_EQ(global_sr_initial_histogram_count + kNumHistogramsCreated,
             StatisticsRecorder::GetHistogramCount());
@@ -484,7 +523,8 @@ TEST_F(PersistentHistogramAllocatorTest,
       break;
     }
 
-    recovery1.MergeHistogramDeltaToStatisticsRecorder(recovered.get());
+    recovery1.MergeHistogramDeltaToStatisticsRecorder(recovered.get(),
+                                                      /*name_override=*/"");
     HistogramBase* found =
         StatisticsRecorder::FindHistogram(recovered->histogram_name());
     EXPECT_FALSE(found);
@@ -518,7 +558,8 @@ TEST_F(PersistentHistogramAllocatorTest,
       break;
     }
 
-    recovery2.MergeHistogramFinalDeltaToStatisticsRecorder(recovered.get());
+    recovery2.MergeHistogramFinalDeltaToStatisticsRecorder(
+        recovered.get(), /*name_override=*/"");
     found = StatisticsRecorder::FindHistogram(recovered->histogram_name());
     EXPECT_FALSE(found);
   }
@@ -746,6 +787,79 @@ TEST_F(PersistentHistogramAllocatorTest, MovePersistentFile) {
     }
   }
   EXPECT_TRUE(found_histogram);
+}
+
+TEST_F(PersistentHistogramAllocatorTest, CorruptSparseHistogramMetadataId) {
+  constexpr size_t kLocalMemorySize = 64 << 10;
+
+  PersistentHistogramAllocator local_allocator(
+      std::make_unique<LocalPersistentMemoryAllocator>(kLocalMemorySize, 0,
+                                                       "LocalAllocator"));
+
+  constexpr std::string_view kName = "ManualCorruptSparse";
+  const uint64_t name_hash = HashMetricName(kName);
+
+  const AllocatedHistogram allocated =
+      AllocatePersistentHistogramData(local_allocator, kName);
+  ASSERT_TRUE(allocated.ref);
+  ASSERT_TRUE(allocated.data);
+  auto* histogram_data = allocated.data.get();
+
+  // Initialize `PersistentHistogramData` fields.
+  histogram_data->histogram_type = SPARSE_HISTOGRAM;
+  histogram_data->flags = HistogramBase::kIsPersistent;
+  histogram_data->samples_metadata.id = name_hash;
+
+  // We will set it to `name_hash` (invalid for sparse) to test the fix.
+  histogram_data->logged_metadata.id = name_hash;
+
+  // Try to load it.
+  std::unique_ptr<HistogramBase> mutated_histogram =
+      local_allocator.GetHistogram(allocated.ref);
+
+  // With the fix, it should detect the corruption and return nullptr.
+  EXPECT_FALSE(mutated_histogram);
+
+  // Now let's test with valid ID to make sure it works when not corrupt.
+  histogram_data->logged_metadata.id = name_hash + 1;  // valid
+
+  std::unique_ptr<HistogramBase> valid_histogram =
+      local_allocator.GetHistogram(allocated.ref);
+  EXPECT_TRUE(valid_histogram);
+}
+
+TEST_F(PersistentHistogramAllocatorTest,
+       CorruptCountsRefWithSingleSampleOptimizationDisabled) {
+  constexpr size_t kLocalMemorySize = 64 << 10;
+
+  PersistentHistogramAllocator local_allocator(
+      std::make_unique<LocalPersistentMemoryAllocator>(kLocalMemorySize, 0,
+                                                       "LocalAllocator"));
+
+  constexpr std::string_view kName = "CorruptCountsRef";
+  const uint64_t name_hash = HashMetricName(kName);
+
+  const AllocatedHistogram allocated =
+      AllocatePersistentHistogramData(local_allocator, kName);
+  ASSERT_TRUE(allocated.ref);
+  ASSERT_TRUE(allocated.data);
+  auto* histogram_data = allocated.data.get();
+
+  // Initialize `PersistentHistogramData` fields.
+  histogram_data->histogram_type = HISTOGRAM;
+  histogram_data->flags = HistogramBase::kIsPersistent |
+                          HistogramBase::kDisableSingleSampleOptimizationFlag;
+  histogram_data->samples_metadata.id = name_hash;
+  histogram_data->logged_metadata.id = name_hash;
+
+  // Set `counts_ref` to 0 to simulate a corrupted state.
+  histogram_data->counts_ref.store(0, std::memory_order_relaxed);
+
+  // Should detect the unallocated `counts_ref` (0) when single-sample
+  // optimization is disabled and return nullptr.
+  std::unique_ptr<HistogramBase> corrupted_histogram =
+      local_allocator.GetHistogram(allocated.ref);
+  EXPECT_FALSE(corrupted_histogram);
 }
 
 }  // namespace base

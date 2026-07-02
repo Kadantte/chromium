@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_UI_BROWSER_ACTIONS_H_
 
 #include <memory>
+#include <string>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
@@ -34,6 +35,13 @@ class BrowserActions {
   void InitializeBrowserActions();
 
  private:
+  // Helper functions to initialize actions grouped roughly by their type.
+  void InitializeSidePanelActions();
+  void InitializePageActionIconActions();
+  void InitializeChromeMenuActions();
+  void InitializeToolbarAndMiscActions();
+  void InitializeNavigationActions();
+
   // Creates all the listeners for the action items that update different states
   // and property of the action item.
   void AddListeners();

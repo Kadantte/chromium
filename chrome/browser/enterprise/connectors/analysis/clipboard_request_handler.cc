@@ -4,8 +4,12 @@
 
 #include "chrome/browser/enterprise/connectors/analysis/clipboard_request_handler.h"
 
+#include "base/logging.h"
 #include "chrome/browser/enterprise/connectors/analysis/content_analysis_info.h"
+#include "chrome/browser/enterprise/connectors/common.h"
+#include "chrome/browser/enterprise/connectors/reporting/reporting_event_router_factory.h"
 #include "chrome/browser/safe_browsing/cloud_content_scanning/deep_scanning_utils.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/deep_scanning_utils.h"
 #include "components/enterprise/connectors/core/common.h"
 #include "components/enterprise/connectors/core/reporting_constants.h"
 #include "components/enterprise/connectors/core/reporting_event_router.h"
@@ -75,7 +79,6 @@ ClipboardRequestHandler::ClipboardRequestHandler(
     CompletionCallback callback)
     : RequestHandlerBase(content_analysis_info,
                          upload_service,
-                         profile,
                          std::move(url),
                          access_point),
       type_(type),
@@ -84,20 +87,28 @@ ClipboardRequestHandler::ClipboardRequestHandler(
       clipboard_source_(std::move(clipboard_source)),
       source_content_area_email_(std::move(source_content_area_email)),
       content_transfer_method_(std::move(content_transfer_method)),
+      profile_(profile),
       callback_(std::move(callback)) {}
 
 void ClipboardRequestHandler::ReportWarningBypass(
     std::optional<std::u16string> user_justification) {
   ReportAnalysisConnectorWarningBypass(
-      profile_, *content_analysis_info_,
+      ReportingEventRouterFactory::GetForBrowserContext(profile_),
+      content_analysis_info_.get(),
       /*source*/
       ReportingEventRouter::GetClipboardSourceString(clipboard_source_),
       /*destination*/ url_.spec(),
       type_ == Type::kText ? "Text data" : "Image data",
       /*download_digest_sha256*/ "", type_ == Type::kText ? "text/plain" : "",
-      kWebContentUploadDataTransferEventTrigger, content_transfer_method_,
-      content_size_, content_analysis_info_->referrer_chain(), response_,
+      access_point_string(), content_transfer_method_, content_size_, response_,
       user_justification);
+}
+
+std::string ClipboardRequestHandler::access_point_string() const {
+  if (access_point() == DeepScanAccessPoint::COPY) {
+    return kClipboardCopyDataTransferEventTrigger;
+  }
+  return kWebContentUploadDataTransferEventTrigger;
 }
 
 void ClipboardRequestHandler::UploadForDeepScanning(
@@ -115,8 +126,13 @@ bool ClipboardRequestHandler::UploadDataImpl() {
       base::BindOnce(&ClipboardRequestHandler::OnContentAnalysisResponse,
                      weak_ptr_factory_.GetWeakPtr()));
 
-  content_analysis_info_->InitializeRequest(request.get());
-  request->set_analysis_connector(BULK_DATA_ENTRY);
+  content_analysis_info_->InitializeRequest(
+      request.get(), /*include_enterprise_only_fields=*/true);
+  if (access_point() == DeepScanAccessPoint::COPY) {
+    request->set_analysis_connector(DATA_COPIED);
+  } else {
+    request->set_analysis_connector(BULK_DATA_ENTRY);
+  }
   if (type_ == Type::kImage) {
     request->set_image_paste(true);
   }
@@ -149,11 +165,11 @@ void ClipboardRequestHandler::OnContentAnalysisResponse(
   request_tokens_to_ack_final_actions_[response_.request_token()] =
       GetAckFinalAction(response_);
 
-  safe_browsing::RecordDeepScanMetrics(
-      content_analysis_info_->settings()
-          .cloud_or_local_settings.is_cloud_analysis(),
-      access_point_, base::TimeTicks::Now() - upload_start_time_, content_size_,
-      result, response_);
+  RecordDeepScanMetrics(content_analysis_info_->settings()
+                            .cloud_or_local_settings.is_cloud_analysis(),
+                        access_point_,
+                        base::TimeTicks::Now() - upload_start_time_,
+                        content_size_, result, response_);
 
   auto request_handler_result = CalculateRequestHandlerResult(
       content_analysis_info_->settings(), result, response_);
@@ -165,17 +181,18 @@ void ClipboardRequestHandler::OnContentAnalysisResponse(
                      FinalContentAnalysisResult::WARNING;
 
   MaybeReportDeepScanningVerdict(
-      profile_, content_analysis_info_.get(),
+      ReportingEventRouterFactory::GetForBrowserContext(profile_),
+      content_analysis_info_.get(),
       /*source*/
       ReportingEventRouter::GetClipboardSourceString(clipboard_source_),
       /*destination*/ url_.spec(),
       type_ == Type::kText ? "Text data" : "Image data",
       /*download_digest_sha256*/ "", type_ == Type::kText ? "text/plain" : "",
-      kWebContentUploadDataTransferEventTrigger, content_transfer_method_,
-      source_content_area_email_, content_size_,
-      content_analysis_info_->referrer_chain(), result, response_,
+      access_point_string(), content_transfer_method_,
+      source_content_area_email_, content_size_, result, response_,
       CalculateEventResult(content_analysis_info_->settings(),
-                           request_handler_result.complies, should_warn));
+                           request_handler_result.complies, should_warn,
+                           result));
 
   std::move(callback_).Run(std::move(request_handler_result));
 }

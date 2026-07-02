@@ -6,6 +6,7 @@
 
 #include <string>
 
+#include "ash/constants/ash_pref_names.h"
 #include "ash/constants/notifier_catalogs.h"
 #include "ash/public/cpp/notification_utils.h"
 #include "ash/webui/settings/public/constants/routes.mojom.h"
@@ -16,10 +17,9 @@
 #include "chrome/browser/notifications/notification_display_service.h"
 #include "chrome/browser/notifications/notification_display_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/settings_window_manager_chromeos.h"
-#include "chrome/common/pref_names.h"
-#include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #include "components/prefs/pref_service.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/chromeos/devicetype_utils.h"
@@ -51,18 +51,25 @@ class TPMFirmwareUpdateNotificationDelegate
   void Close(bool by_user) override {
     if (by_user) {
       profile_->GetPrefs()->SetBoolean(
-          prefs::kTPMFirmwareUpdateCleanupDismissed, true);
+          ash::prefs::kTPMFirmwareUpdateCleanupDismissed, true);
     }
   }
   void Click(const std::optional<int>& button_index,
              const std::optional<std::u16string>& reply) override {
     // Show the about page which contains the line item allowing the user to
     // trigger TPM firmware update installation.
-    chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(
-        profile_, chromeos::settings::mojom::kAboutChromeOsSectionPath);
+    auto* user = ash::BrowserContextHelper::Get()->GetUserByBrowserContext(
+        profile_.get());
+    if (user) {
+      // TODO(crbug.com/447287122): Revisit here to see if we always have the
+      // user.
+      ash::SettingsAppManager::Get()->Open(
+          *user,
+          {.sub_page = chromeos::settings::mojom::kAboutChromeOsSectionPath});
+    }
 
-    profile_->GetPrefs()->SetBoolean(prefs::kTPMFirmwareUpdateCleanupDismissed,
-                                     true);
+    profile_->GetPrefs()->SetBoolean(
+        ash::prefs::kTPMFirmwareUpdateCleanupDismissed, true);
     NotificationDisplayServiceFactory::GetForProfile(profile_)->Close(
         NotificationHandler::Type::TRANSIENT, kTPMFirmwareUpdateNotificationId);
   }
@@ -100,7 +107,7 @@ void OnAvailableUpdateModes(Profile* profile,
 
 void ShowNotificationIfNeeded(Profile* profile) {
   bool cleanup_dismissed = profile->GetPrefs()->GetBoolean(
-      prefs::kTPMFirmwareUpdateCleanupDismissed);
+      ash::prefs::kTPMFirmwareUpdateCleanupDismissed);
   if (cleanup_dismissed) {
     return;
   }

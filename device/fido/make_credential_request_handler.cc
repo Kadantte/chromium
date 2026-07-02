@@ -365,7 +365,7 @@ MakeCredentialRequestHandler::MakeCredentialRequestHandler(
   transport_availability_info().resident_key_requirement =
       options_.resident_key;
   transport_availability_info().attestation_conveyance_preference =
-      request.attestation_preference;
+      request_.attestation_preference;
   transport_availability_info().user_verification_requirement =
       request_.user_verification;
   transport_availability_info().request_is_internal_only =
@@ -391,7 +391,7 @@ MakeCredentialRequestHandler::MakeCredentialRequestHandler(
   auto available_transports =
       base::STLSetIntersection<base::flat_set<FidoTransportProtocol>>(
           supported_transports, allowed_transports);
-  bool consider_enclave = request.authenticator_attachment !=
+  bool consider_enclave = request_.authenticator_attachment !=
                           AuthenticatorAttachment::kCrossPlatform;
   if (options_.is_passkey_upgrade_request) {
     consider_enclave = true;
@@ -1019,11 +1019,9 @@ void MakeCredentialRequestHandler::SpecializeRequestForAuthenticator(
   }
 
   if (request->hmac_secret) {
-    bool supports_prf_or_hmac_secret_mc = auth_options.supports_prf;
-    if (base::FeatureList::IsEnabled(device::kWebAuthnHmacSecretMcExtension)) {
-      supports_prf_or_hmac_secret_mc |= auth_options.supports_hmac_secret &&
-                                        auth_options.supports_hmac_secret_mc;
-    }
+    bool supports_prf_or_hmac_secret_mc =
+        auth_options.supports_prf || (auth_options.supports_hmac_secret &&
+                                      auth_options.supports_hmac_secret_mc);
     request->prf = supports_prf_or_hmac_secret_mc;
     request->hmac_secret =
         !auth_options.supports_prf && auth_options.supports_hmac_secret;

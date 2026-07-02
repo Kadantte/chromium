@@ -17,6 +17,7 @@
 #include "chrome/browser/sync/test/integration/updated_progress_marker_checker.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_i18n_api.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile_test_api.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
 #include "components/autofill/core/browser/webdata/addresses/contact_info_sync_util.h"
@@ -357,9 +358,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientContactInfoPassphraseSyncTest,
 IN_PROC_BROWSER_TEST_P(SingleClientContactInfoSyncTest, TransportMode) {
   AutofillProfile profile = BuildTestAccountProfile();
   AddSpecificsToServer(AsContactInfoSpecifics(profile), GetFakeServer());
-  ASSERT_TRUE(SetupClients());
-  ASSERT_TRUE(GetClient(0)->SignInPrimaryAccount());
-  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
+  ASSERT_TRUE(SignIn());
   HideAccountNameEmailProfile();
   EXPECT_TRUE(
       GetSyncService(0)->GetActiveDataTypes().Has(syncer::CONTACT_INFO));
@@ -379,9 +378,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientContactInfoSyncTest,
   // Add a profile to account storage.
   AutofillProfile profile = BuildTestAccountProfile();
   AddSpecificsToServer(AsContactInfoSpecifics(profile), GetFakeServer());
-  ASSERT_TRUE(SetupClients());
-  ASSERT_TRUE(GetClient(0)->SignInPrimaryAccount());
-  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
+  ASSERT_TRUE(SignIn());
   EXPECT_TRUE(
       GetSyncService(0)->GetActiveDataTypes().Has(syncer::CONTACT_INFO));
   HideAccountNameEmailProfile();
@@ -396,7 +393,9 @@ IN_PROC_BROWSER_TEST_P(SingleClientContactInfoSyncTest,
   signin::UpdatePersistentErrorOfRefreshTokenForAccount(
       identity_manager,
       identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin),
-      GoogleServiceAuthError(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS));
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+              CREDENTIALS_REJECTED_BY_SERVER));
   ASSERT_TRUE(
       identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin));
   EXPECT_TRUE(ContactInfoActiveChecker(GetSyncService(0),
@@ -426,9 +425,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientContactInfoSyncTest,
 // Account storage is not enabled when the user is in auth error.
 IN_PROC_BROWSER_TEST_P(SingleClientContactInfoSyncTest, AuthErrorState) {
   // Setup transport mode.
-  ASSERT_TRUE(SetupClients());
-  ASSERT_TRUE(GetClient(0)->SignInPrimaryAccount());
-  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
+  ASSERT_TRUE(SignIn());
   EXPECT_TRUE(
       GetSyncService(0)->GetActiveDataTypes().Has(syncer::CONTACT_INFO));
 
@@ -438,7 +435,9 @@ IN_PROC_BROWSER_TEST_P(SingleClientContactInfoSyncTest, AuthErrorState) {
   signin::UpdatePersistentErrorOfRefreshTokenForAccount(
       identity_manager,
       identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin),
-      GoogleServiceAuthError(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS));
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+              CREDENTIALS_REJECTED_BY_SERVER));
   ASSERT_TRUE(
       identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin));
   EXPECT_TRUE(ContactInfoActiveChecker(GetSyncService(0),
@@ -467,7 +466,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientContactInfoSyncTest, AuthErrorState) {
   // The toggle is not available when kReplaceSyncPromosWithSignInPromos is
   // enabled, and is instead available in the account settings page.
   const bool is_autofill_sync_toggle_available =
-      !base::FeatureList::IsEnabled(syncer::kReplaceSyncPromosWithSignInPromos);
+      !syncer::IsReplaceSyncPromosWithSignInPromosEnabled();
   EXPECT_EQ(GetPersonalDataManager()
                 ->address_data_manager()
                 .IsAutofillSyncToggleAvailable(),
@@ -480,14 +479,11 @@ IN_PROC_BROWSER_TEST_P(SingleClientContactInfoSyncTest, AuthErrorState) {
 IN_PROC_BROWSER_TEST_P(SingleClientContactInfoSyncTest,
                        IsAutofillSyncToggleAvailable) {
   // Setup transport mode.
-  ASSERT_TRUE(SetupClients());
-  ASSERT_TRUE(GetClient(0)->SignInPrimaryAccount());
-  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
+  ASSERT_TRUE(SignIn());
   EXPECT_TRUE(
       GetSyncService(0)->GetActiveDataTypes().Has(syncer::CONTACT_INFO));
 
-  if (base::FeatureList::IsEnabled(
-          syncer::kReplaceSyncPromosWithSignInPromos)) {
+  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
     // The toggle is not available when
     // kReplaceSyncPromosWithSignInPromos is enabled, and is instead
     // available in the account settings page.
@@ -606,8 +602,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientContactInfoSyncTest,
                                autofill::FieldType::NAME_FIRST))));
 
   // Setup transport mode.
-  ASSERT_TRUE(GetClient(0)->SignInPrimaryAccount());
-  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
+  ASSERT_TRUE(SignIn());
   ASSERT_TRUE(
       GetSyncService(0)->GetActiveDataTypes().Has(syncer::CONTACT_INFO));
   HideAccountNameEmailProfile();
@@ -652,8 +647,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientContactInfoSyncTest,
                                autofill::FieldType::NAME_FIRST))));
 
   // Setup transport mode.
-  ASSERT_TRUE(GetClient(0)->SignInPrimaryAccount());
-  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
+  ASSERT_TRUE(SignIn());
   ASSERT_TRUE(
       GetSyncService(0)->GetActiveDataTypes().Has(syncer::CONTACT_INFO));
   HideAccountNameEmailProfile();
@@ -705,8 +699,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientContactInfoSyncTest,
                                autofill::FieldType::NAME_FIRST))));
 
   // Setup transport mode.
-  ASSERT_TRUE(GetClient(0)->SignInPrimaryAccount());
-  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
+  ASSERT_TRUE(SignIn());
   ASSERT_TRUE(
       GetSyncService(0)->GetActiveDataTypes().Has(syncer::CONTACT_INFO));
   HideAccountNameEmailProfile();

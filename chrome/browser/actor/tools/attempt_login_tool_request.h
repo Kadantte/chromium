@@ -9,8 +9,8 @@
 #include <optional>
 #include <string>
 
-#include "chrome/browser/actor/shared_types.h"
 #include "chrome/browser/actor/tools/tool_request.h"
+#include "components/actor/core/shared_types.h"
 
 namespace actor {
 
@@ -33,6 +33,7 @@ class AttemptLoginToolRequest : public TabToolRequest {
                               ToolDelegate& tool_delegate) const override;
   void Apply(ToolRequestVisitorFunctor& f) const override;
   std::string_view Name() const override;
+  bool RequiresOpeningWebContents() const override;
 
   std::optional<PageTarget> GetPasswordButtonForTesting() const {
     return password_button_;

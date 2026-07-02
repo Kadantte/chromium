@@ -390,7 +390,8 @@ TEST_P(EmbeddedTestServerTest, ConnectionListenerAccept) {
 
   std::unique_ptr<StreamSocket> socket =
       ClientSocketFactory::GetDefaultFactory()->CreateTransportClientSocket(
-          address_list, nullptr, nullptr, NetLog::Get(), NetLogSource());
+          address_list, handles::kInvalidNetworkHandle, nullptr, nullptr,
+          NetLog::Get(), NetLogSource());
   TestCompletionCallback callback;
   ASSERT_THAT(callback.GetResult(socket->Connect(callback.callback())), IsOk());
 
@@ -967,7 +968,14 @@ typedef std::tuple<bool, bool, EmbeddedTestServerConfig> ThreadingTestParams;
 
 class EmbeddedTestServerThreadingTest
     : public testing::TestWithParam<ThreadingTestParams>,
-      public WithTaskEnvironment {};
+      public WithTaskEnvironment {
+ public:
+  EmbeddedTestServerThreadingTest()
+      : WithTaskEnvironment(base::test::TaskEnvironment::TimeSource::DEFAULT,
+                            // TODO(crbug.com/463794414): Enable the Net Task
+                            // Scheduler on this test.
+                            {features::kNetTaskScheduler}) {}
+};
 
 class EmbeddedTestServerThreadingTestDelegate
     : public base::PlatformThread::Delegate {

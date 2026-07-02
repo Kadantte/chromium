@@ -7,7 +7,7 @@
 
 #include "third_party/blink/public/mojom/web_install/web_install.mojom-blink.h"
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/core/html/html_permission_element.h"
+#include "third_party/blink/renderer/core/html/html_capability_element_base.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
 
 namespace blink {
@@ -25,11 +25,18 @@ class String;
 //   provided.
 // By default the element renders as an Install button, but may also show as
 // a Launch button.
-class CORE_EXPORT HTMLInstallElement : public HTMLPermissionElement {
+class CORE_EXPORT HTMLInstallElement : public HTMLCapabilityElementBase {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
   explicit HTMLInstallElement(Document&);
+
+  ElementType GetElementType() const final {
+    return ElementType::kHTMLInstallElement;
+  }
+
+  // HTMLElement:
+  bool IsHTMLInstallElement() const final { return true; }
 
   const String& InstallUrl() const;
   const String& ManifestId() const;
@@ -41,9 +48,9 @@ class CORE_EXPORT HTMLInstallElement : public HTMLPermissionElement {
   // HTMLElement:
   bool IsURLAttribute(const Attribute&) const override;
 
-  // HTMLPermissionElement:
+  // HTMLCapabilityElementBase:
   void UpdateAppearance() override;
-  void UpdateIcon(mojom::blink::PermissionName permission_name) override;
+  void UpdateIcon(mojom::blink::PermissionName permission) override;
   mojom::blink::EmbeddedPermissionRequestDescriptorPtr
   CreateEmbeddedPermissionRequestDescriptor() override;
   void DefaultEventHandler(Event&) override;
@@ -63,6 +70,32 @@ class CORE_EXPORT HTMLInstallElement : public HTMLPermissionElement {
   HeapMojoRemote<mojom::blink::WebInstallService> service_;
   // Controls whether the element should render as a launch button.
   bool show_as_launch_ = false;
+};
+// The custom type casting is required for the InstallElement OT because the
+// generated helpers code can lead to a compilation error or an
+// HTMLInstallElement appearing in a document that does not have the
+// InstallElement origin trial enabled (this would result in the creation of
+// an HTMLUnknownElement with the "install" tag name).
+// See
+// https://chromium.googlesource.com/chromium/src.git/+/main/docs/custom_type_helpers_for_origin_trial_elements.md
+// for more details.
+template <>
+struct DowncastTraits<HTMLInstallElement> {
+  static bool AllowFrom(const HTMLElement& element) {
+    return element.IsHTMLInstallElement();
+  }
+  static bool AllowFrom(const Node& node) {
+    if (const HTMLElement* html_element = DynamicTo<HTMLElement>(node)) {
+      return html_element->IsHTMLInstallElement();
+    }
+    return false;
+  }
+  static bool AllowFrom(const Element& element) {
+    if (const HTMLElement* html_element = DynamicTo<HTMLElement>(element)) {
+      return html_element->IsHTMLInstallElement();
+    }
+    return false;
+  }
 };
 
 }  // namespace blink

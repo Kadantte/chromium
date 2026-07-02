@@ -12,6 +12,7 @@
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
+#include "base/types/optional_ref.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
 #include "components/autofill/core/browser/foundations/autofill_manager.h"
@@ -51,7 +52,7 @@
 #include "chrome/browser/password_manager/android/generated_password_saved_message_delegate.h"
 #include "chrome/browser/password_manager/android/password_manager_error_message_delegate.h"
 #include "chrome/browser/password_manager/android/save_update_password_message_delegate.h"
-#include "chrome/browser/touch_to_fill/password_manager/touch_to_fill_controller.h"
+#include "chrome/browser/touch_to_fill/password_manager/touch_to_fill_password_manager_controller.h"
 #include "components/enterprise/connectors/core/features.h"
 #include "components/password_manager/core/browser/credential_cache.h"
 #include "components/password_manager/core/browser/first_cct_page_load_passwords_ukm_recorder.h"
@@ -136,8 +137,13 @@ class ChromePasswordManagerClient
   ~ChromePasswordManagerClient() override;
 
   // PasswordManagerClient implementation.
-  bool IsSavingAndFillingEnabled(const GURL& url) const override;
-  bool IsFillingEnabled(const GURL& url) const override;
+  using password_manager::PasswordManagerClient::IsFillingEnabled;
+  using password_manager::PasswordManagerClient::IsSavingAndFillingEnabled;
+  bool IsSavingAndFillingEnabled(
+      const url::Origin& origin,
+      base::optional_ref<const GURL> url) const override;
+  bool IsFillingEnabled(const url::Origin& origin,
+                        base::optional_ref<const GURL> url) const override;
   bool IsFieldFilledWithOtp(autofill::FormGlobalId form_id,
                             autofill::FieldGlobalId field_id) override;
   bool IsAutoSignInEnabled() const override;
@@ -207,9 +213,9 @@ class ChromePasswordManagerClient
           saved_form_manager,
       bool is_update_confirmation) override;
   void PasswordWasAutofilled(
-      base::span<const password_manager::PasswordForm> best_matches,
+      base::span<const password_manager::StoredCredential> best_matches,
       const url::Origin& origin,
-      base::span<const password_manager::PasswordForm> federated_matches,
+      base::span<const password_manager::StoredCredential> federated_matches,
       bool was_autofilled_on_pageload) override;
   void AutofillHttpAuth(
       const password_manager::PasswordForm& preferred_match,
@@ -218,6 +224,7 @@ class ChromePasswordManagerClient
       password_manager::LeakedPasswordDetails details) override;
   void NotifyKeychainError() override;
   PrefService* GetPrefs() const override;
+  metrics::ProfileMetricsService* GetProfileMetricsService() override;
   PrefService* GetLocalStatePrefs() const override;
   const syncer::SyncService* GetSyncService() const override;
   affiliations::AffiliationService* GetAffiliationService() override;
@@ -235,6 +242,7 @@ class ChromePasswordManagerClient
   void PromptUserToEnableAutosignin() override;
   bool IsOffTheRecord() const override;
   profile_metrics::BrowserProfileType GetProfileType() const override;
+  using password_manager::PasswordManagerClient::GetPasswordManager;
   const password_manager::PasswordManagerInterface* GetPasswordManager()
       const override;
   using password_manager::PasswordManagerClient::GetPasswordFeatureManager;
@@ -312,13 +320,14 @@ class ChromePasswordManagerClient
 
   bool IsIsolationForPasswordSitesEnabled() const override;
   bool IsNewTabPage() const override;
+  bool IsChromeSigninPage() const override;
   password_manager::WebAuthnCredentialsDelegate*
   GetWebAuthnCredentialsDelegateForDriver(
       password_manager::PasswordManagerDriver* driver) override;
 #if BUILDFLAG(IS_ANDROID)
   webauthn::WebAuthnCredManDelegate* GetWebAuthnCredManDelegateForDriver(
       password_manager::PasswordManagerDriver* driver) override;
-  void MarkSharedCredentialsAsNotified(const GURL& url) override;
+  void MarkSharedCredentialsAsNotified(const url::Origin& origin) override;
 #endif  // BUILDFLAG(IS_ANDROID)
   version_info::Channel GetChannel() const override;
   void RefreshPasswordManagerSettingsIfNeeded() const override;
@@ -379,8 +388,8 @@ class ChromePasswordManagerClient
         render_frame_host);
   }
 #if BUILDFLAG(IS_ANDROID)
-  void SetTouchToFillControllerForTesting(
-      std::unique_ptr<TouchToFillController> controller) {
+  void SetTouchToFillPasswordManagerControllerForTesting(
+      std::unique_ptr<TouchToFillPasswordManagerController> controller) {
     touch_to_fill_controller_ = std::move(controller);
   }
 
@@ -406,9 +415,7 @@ class ChromePasswordManagerClient
   password_manager::UndoPasswordChangeController*
   GetUndoPasswordChangeController() override;
 
-#if !BUILDFLAG(IS_ANDROID)
   bool IsActorTaskActive() override;
-#endif  // !BUILDFLAG(IS_ANDROID)
 
   bool apply_client_side_prediction_override_for_testing() const {
     return apply_client_side_prediction_override_;
@@ -416,6 +423,8 @@ class ChromePasswordManagerClient
   void ApplyClientSidePredictionOverride() {
     apply_client_side_prediction_override_ = true;
   }
+
+  void OnNonFedCmFederatedLogin();
 
  protected:
   // Callable for tests.
@@ -427,7 +436,8 @@ class ChromePasswordManagerClient
   Profile* GetProfile() const;
 
 #if BUILDFLAG(IS_ANDROID)
-  TouchToFillController* GetOrCreateTouchToFillController();
+  TouchToFillPasswordManagerController*
+  GetOrCreateTouchToFillPasswordManagerController();
 
   void ContinueShowKeyboardReplacingSurface(
       base::WeakPtr<password_manager::PasswordManagerDriver> weak_driver,
@@ -441,7 +451,9 @@ class ChromePasswordManagerClient
   void ResourceLoadComplete(
       content::RenderFrameHost* render_frame_host,
       const content::GlobalRequestID& request_id,
+      const GURL& original_url,
       const blink::mojom::ResourceLoadInfo& resource_load_info) override;
+  void OnFedCmFederatedLogin(bool success) override;
 
   // autofill::AutofillManager::Observer:
   void OnFieldTypesDetermined(autofill::AutofillManager& manager,
@@ -480,7 +492,7 @@ class ChromePasswordManagerClient
       autofill::password_generation::PasswordGenerationType type,
       password_manager::ContentPasswordManagerDriver* driver,
       const autofill::password_generation::PasswordGenerationUIData& ui_data);
-  void MaybeShowSavePasswordPrimingPromo(const GURL& current_url) override;
+  void MaybeShowSavePasswordPrimingPromo(const url::Origin& origin) override;
 #endif  // !BUILDFLAG(IS_ANDROID)
 
   gfx::RectF TransformToRootCoordinates(
@@ -513,6 +525,8 @@ class ChromePasswordManagerClient
                                              autofill::FormGlobalId form_id,
                                              FieldTypeSource source);
 
+  void OnNonPasswordLoginDetected();
+
   password_manager::PasswordManager password_manager_;
   password_manager::PasswordFeatureManagerImpl password_feature_manager_;
   password_manager::HttpAuthManagerImpl httpauth_manager_;
@@ -521,16 +535,17 @@ class ChromePasswordManagerClient
   // Holds and facilitates a credential store for each origin in this tab.
   password_manager::CredentialCache credential_cache_;
 
-  // Controller for the Touch To Fill sheet. Created on demand during the first
-  // call to GetOrCreateTouchToFillController().
-  std::unique_ptr<TouchToFillController> touch_to_fill_controller_;
+  // Controller for the Touch To Fill passwords sheet. Created on demand during
+  // the first call to GetOrCreateTouchToFillPasswordManagerController().
+  std::unique_ptr<TouchToFillPasswordManagerController>
+      touch_to_fill_controller_;
 
   // Controller for Android Credential Manager API. Created on demand.
   std::unique_ptr<password_manager::CredManController> cred_man_controller_;
 
   // Controller for CredMan and TouchToFill visibility. Both
-  // `TouchToFillController` and `CredManController` share the same instance to
-  // control their visibility state.
+  // `TouchToFillPasswordManagerController` and `CredManController` share the
+  // same instance to control their visibility state.
   std::unique_ptr<
       password_manager::KeyboardReplacingSurfaceVisibilityController>
       keyboard_replacing_surface_visibility_controller_;

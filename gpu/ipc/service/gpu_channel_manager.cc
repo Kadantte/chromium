@@ -36,7 +36,9 @@
 #include "gpu/command_buffer/service/scheduler.h"
 #include "gpu/command_buffer/service/sync_point_manager.h"
 #include "gpu/config/gpu_crash_keys.h"
+#include "gpu/config/gpu_feature_info.h"
 #include "gpu/config/gpu_finch_features.h"
+#include "gpu/config/gpu_info.h"
 #include "gpu/config/gpu_switches.h"
 #include "gpu/ipc/common/gpu_client_ids.h"
 #include "gpu/ipc/common/memory_stats.h"
@@ -164,6 +166,8 @@ void FormatAllocationSourcesForTracing(
       allocation_sources[GpuPeakMemoryAllocationSource::SHARED_IMAGE_STUB]);
   dict->SetInteger("SKIA",
                    allocation_sources[GpuPeakMemoryAllocationSource::SKIA]);
+  dict->SetInteger("WEBNN",
+                   allocation_sources[GpuPeakMemoryAllocationSource::WEBNN]);
 }
 
 void SetCrashKeyTimeDelta(base::debug::CrashKeyString* key,
@@ -204,7 +208,8 @@ void GpuChannelManager::GpuPeakMemoryMonitor::StartGpuMemoryTracking(
   sequence_trackers_.emplace(
       sequence_num,
       SequenceTracker(current_memory_, current_memory_per_source_));
-  TRACE_EVENT_BEGIN("gpu", "PeakMemoryTracking", perfetto::Track(sequence_num),
+  TRACE_EVENT_BEGIN("gpu", "PeakMemoryTracking",
+                    perfetto::NamedTrack("PeakMemoryTracking", sequence_num),
                     "start", current_memory_, "start_sources",
                     StartTrackingTracedValue());
 }
@@ -215,8 +220,9 @@ void GpuChannelManager::GpuPeakMemoryMonitor::StopGpuMemoryTracking(
   base::AutoLock auto_lock(peak_mem_lock_);
   auto sequence = sequence_trackers_.find(sequence_num);
   if (sequence != sequence_trackers_.end()) {
-    TRACE_EVENT_END("gpu", perfetto::Track(sequence_num), "peak",
-                    sequence->second.total_memory_, "end_sources",
+    TRACE_EVENT_END("gpu",
+                    perfetto::NamedTrack("PeakMemoryTracking", sequence_num),
+                    "peak", sequence->second.total_memory_, "end_sources",
                     StopTrackingTracedValue(sequence->second));
     sequence_trackers_.erase(sequence);
   }
@@ -280,6 +286,9 @@ GpuChannelManager::GpuPeakMemoryMonitor::StopTrackingTracedValue(
       case GpuPeakMemoryAllocationSource::SKIA:
         dict->SetInteger("SKIA", diff);
         break;
+      case GpuPeakMemoryAllocationSource::WEBNN:
+        dict->SetInteger("WEBNN", diff);
+        break;
     }
   }
 
@@ -309,11 +318,10 @@ void GpuChannelManager::GpuPeakMemoryMonitor::OnMemoryAllocatedChange(
     for (auto& seq : sequence_trackers_) {
       if (current_memory_ > seq.second.total_memory_) {
         seq.second.total_memory_ = current_memory_;
-        for (auto& sequence : sequence_trackers_) {
-          TRACE_EVENT_INSTANT("gpu", "PeakMemoryTracking",
-                              perfetto::Track(sequence.first), "peak",
-                              current_memory_);
-        }
+        TRACE_EVENT_INSTANT(
+            "gpu", "PeakMemoryTracking",
+            perfetto::NamedTrack("PeakMemoryTracking", seq.first), "peak",
+            current_memory_);
         for (auto& memory_per_source : current_memory_per_source_) {
           seq.second.peak_memory_per_source_[memory_per_source.first] =
               memory_per_source.second;
@@ -336,7 +344,6 @@ GpuChannelManager::GpuChannelManager(
     GpuProcessShmCount* use_shader_cache_shm_count,
     scoped_refptr<gl::GLSurface> default_offscreen_surface,
     viz::VulkanContextProvider* vulkan_context_provider,
-    viz::MetalContextProvider* metal_context_provider,
     DawnContextProvider* dawn_context_provider,
     webgpu::DawnCachingInterfaceFactory* dawn_caching_interface_factory,
     const SharedContextState::GrContextOptionsProvider*
@@ -363,7 +370,6 @@ GpuChannelManager::GpuChannelManager(
           this),
       dawn_caching_interface_factory_(dawn_caching_interface_factory),
       vulkan_context_provider_(vulkan_context_provider),
-      metal_context_provider_(metal_context_provider),
       dawn_context_provider_(dawn_context_provider),
       use_persistent_cache_for_ganesh_(
           base::FeatureList::IsEnabled(features::kGpuPersistentCache)),
@@ -481,7 +487,9 @@ GpuChannel* GpuChannelManager::EstablishChannel(
     uint64_t client_tracing_id,
     bool is_gpu_host,
     bool enable_extra_handles_validation,
-    const gfx::GpuExtraInfo& gpu_extra_info) {
+    const gfx::GpuExtraInfo& gpu_extra_info,
+    const gpu::GPUInfo& gpu_info,
+    const gpu::GpuFeatureInfo& gpu_feature_info) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
   // Remove existing GPU channel with same client id before creating
@@ -499,7 +507,8 @@ GpuChannel* GpuChannelManager::EstablishChannel(
   std::unique_ptr<GpuChannel> gpu_channel = GpuChannel::Create(
       this, channel_token, scheduler_, sync_point_manager_, share_group_,
       task_runner_, io_task_runner_, client_id, client_tracing_id, is_gpu_host,
-      enable_extra_handles_validation, gpu_extra_info);
+      enable_extra_handles_validation, gpu_extra_info, gpu_info,
+      gpu_feature_info);
 
   if (!gpu_channel)
     return nullptr;
@@ -951,16 +960,13 @@ scoped_refptr<SharedContextState> GpuChannelManager::GetSharedContextState(
       base::BindOnce(&GpuChannelManager::OnContextLost, base::Unretained(this),
                      context_lost_count_ + 1),
       gpu_preferences_.gr_context_type, vulkan_context_provider_,
-      metal_context_provider_, dawn_context_provider_, peak_memory_monitor_,
-      /*direct_rendering_display_compositor_enabled=*/
+      dawn_context_provider_, peak_memory_monitor_,
       features::IsDrDcEnabled(gpu_feature_info_),
       /*created_on_compositor_gpu_thread=*/false, gr_context_options_provider_);
 
   // Initialize GL context, so Vulkan and GL interop can work properly.
-  auto feature_info = base::MakeRefCounted<gles2::FeatureInfo>(
-      gpu_driver_bug_workarounds(), gpu_feature_info());
-  if (!shared_context_state->InitializeGL(gpu_preferences_,
-                                          feature_info.get())) {
+  if (!shared_context_state->InitializeGL(
+          gpu_preferences_, gpu_driver_bug_workarounds(), gpu_feature_info())) {
     LOG(ERROR) << "ContextResult::kFatalFailure: Failed to Initialize GL for "
                   " SharedContextState";
     *result = ContextResult::kFatalFailure;
@@ -969,7 +975,8 @@ scoped_refptr<SharedContextState> GpuChannelManager::GetSharedContextState(
 
   // Log crash reports when GL errors are generated.
   if (gl::GetGLImplementation() == gl::kGLImplementationEGLANGLE &&
-      enable_angle_validation && feature_info->feature_flags().khr_debug) {
+      enable_angle_validation &&
+      shared_context_state->feature_info()->feature_flags().khr_debug) {
     // Limit the total number of gl error crash reports to 1 per GPU
     // process.
     static int remaining_gl_error_reports = 1;
@@ -1066,7 +1073,7 @@ void GpuChannelManager::ScheduleGrContextCleanup() {
 }
 
 scoped_refptr<GpuPersistentCache> GpuChannelManager::persistent_cache() {
-  return use_persistent_cache_for_ganesh_
+  return use_persistent_cache_for_ganesh_ && persistent_caches_
              ? persistent_caches_->GetCache(kGrShaderGpuDiskCacheHandle)
              : nullptr;
 }

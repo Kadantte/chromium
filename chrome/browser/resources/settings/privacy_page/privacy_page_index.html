@@ -68,7 +68,7 @@
     </template>
   </template>
 
-  <template is="dom-if" if="[[!isPrivacySandboxRestricted_]]" restamp>
+  <template is="dom-if" if="[[isPrivacySandboxTopicsAndFledgeAvailable_]]" restamp>
     <template is="dom-if" if="[[renderView_(
         routes_.PRIVACY_SANDBOX_FLEDGE, currentRoute, inSearchMode)]]"
         update-when-false>
@@ -361,6 +361,15 @@
   </template>
 
   <template is="dom-if" if="[[renderView_(
+      routes_.SITE_SETTINGS_INLINE_CUE_MENU, currentRoute, inSearchMode)]]"
+      update-when-false>
+    <settings-inline-cue-menu-page slot="view" id="siteSettingsInlineCueMenu"
+        route-path$="[[routes_.SITE_SETTINGS_INLINE_CUE_MENU.path]]"
+        data-parent-view-id="privacy">
+    </settings-inline-cue-menu-page>
+  </template>
+
+  <template is="dom-if" if="[[renderView_(
       routes_.SITE_SETTINGS_MIXEDSCRIPT, currentRoute, inSearchMode)]]"
       update-when-false>
     <settings-insecure-content-page slot="view"
@@ -400,17 +409,6 @@
   </template>
 
   <template is="dom-if" if="[[enableLocalNetworkAccessSetting_]]">
-    <template is="dom-if" if="[[renderView_(
-        routes_.SITE_SETTINGS_LOCAL_NETWORK_ACCESS, currentRoute,
-        inSearchMode)]]" update-when-false>
-      <settings-local-network-access-page slot="view"
-          id="siteSettingsLocalNetworkAccess" data-parent-view-id="privacy"
-          route-path$="[[routes_.SITE_SETTINGS_LOCAL_NETWORK_ACCESS.path]]">
-      </settings-local-network-access-page>
-    </template>
-  </template>
-
-  <template is="dom-if" if="[[enableLocalNetworkAccessSplitPermissions_]]">
     <template is="dom-if" if="[[renderView_(
         routes_.SITE_SETTINGS_LOCAL_NETWORK, currentRoute,
         inSearchMode)]]" update-when-false>
@@ -542,6 +540,17 @@
       </settings-smart-card-readers-page>
     </template>
   </template>
+
+  <template is="dom-if" if="[[enableWebPrintingContentSetting_]]">
+    <template is="dom-if" if="[[renderView_(
+        routes_.SITE_SETTINGS_WEB_PRINTING, currentRoute, inSearchMode)]]"
+        update-when-false>
+      <settings-web-printing-page slot="view"
+          id="siteSettingsWebPrinting" data-parent-view-id="privacy"
+          route-path$="[[routes_.SITE_SETTINGS_WEB_PRINTING.path]]">
+      </settings-web-printing-page>
+    </template>
+  </template>
 </if>
 
   <template is="dom-if" if="[[renderView_(
@@ -605,17 +614,6 @@
           id="siteSettingsWebAppInstallation" data-parent-view-id="privacy"
           route-path$="[[routes_.SITE_SETTINGS_WEB_APP_INSTALLATION.path]]">
       </settings-web-applications-page>
-    </template>
-  </template>
-
-  <template is="dom-if" if="[[enableWebPrintingContentSetting_]]">
-    <template is="dom-if" if="[[renderView_(
-        routes_.SITE_SETTINGS_WEB_PRINTING, currentRoute, inSearchMode)]]"
-        update-when-false>
-      <settings-web-printing-page slot="view"
-          id="siteSettingsWebPrinting" data-parent-view-id="privacy"
-          route-path$="[[routes_.SITE_SETTINGS_WEB_PRINTING.path]]">
-      </settings-web-printing-page>
     </template>
   </template>
 

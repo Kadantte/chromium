@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "base/compiler_specific.h"
+#include "base/containers/fixed_flat_set.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
@@ -24,6 +25,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/strings/string_view_util.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/unguessable_token.h"
@@ -47,7 +49,7 @@ namespace {
 constexpr int32_t kDefaultFps = 30;
 constexpr char kVirtualPrefix[] = "VIRTUAL_";
 
-const absl::flat_hash_set<int32_t> module_id_set = {
+constexpr auto module_id_set = base::MakeFixedFlatSet<int32_t>({
     static_cast<int32_t>(
         CameraHalDelegate::PopularCamPeriphModuleID::kLifeCamHD3000_Microsoft),
     static_cast<int32_t>(
@@ -81,7 +83,7 @@ const absl::flat_hash_set<int32_t> module_id_set = {
         CameraHalDelegate::PopularCamPeriphModuleID::k808Camera9_Generalplus),
     static_cast<int32_t>(
         CameraHalDelegate::PopularCamPeriphModuleID::kNexiGoN60FHD_2MUVC),
-};
+});
 
 constexpr base::TimeDelta kEventWaitTimeoutSecs = base::Seconds(1);
 
@@ -590,15 +592,22 @@ void CameraHalDelegate::GetDevicesInfo(
         continue;
       }
 
-      auto get_vendor_string = [&](const std::string& key) -> const char* {
+      auto get_vendor_string = [&](const std::string& key) -> std::string_view {
         const VendorTagInfo* info =
             vendor_tag_ops_delegate_->GetInfoByName(key);
         if (info == nullptr) {
-          return nullptr;
+          return {};
         }
         auto val = GetMetadataEntryAsSpan<char>(
             camera_info->static_camera_characteristics, info->tag);
-        return val.empty() ? nullptr : val.data();
+        if (val.empty()) {
+          return {};
+        }
+        std::string_view view = base::as_string_view(val);
+        if (view.back() == '\0') {
+          view.remove_suffix(1);
+        }
+        return view;
       };
 
       VideoCaptureDeviceDescriptor desc;
@@ -620,12 +629,13 @@ void CameraHalDelegate::GetDevicesInfo(
 
           // The webcam_private api expects that |device_id| to be set as the
           // corresponding device path for external cameras used in GVC system.
-          auto* path = get_vendor_string("com.google.usb.devicePath");
-          desc.device_id =
-              path != nullptr ? path : base::NumberToString(camera_id);
+          auto path = get_vendor_string("com.google.usb.devicePath");
+          desc.device_id = !path.empty() ? std::string(path)
+                                         : base::NumberToString(camera_id);
 
-          auto* name = get_vendor_string("com.google.usb.modelName");
-          desc.set_display_name(name != nullptr ? name : "External Camera");
+          auto name = get_vendor_string("com.google.usb.modelName");
+          desc.set_display_name(!name.empty() ? std::string(name)
+                                              : "External Camera");
 
           break;
           // Mojo validates the input parameters for us so we don't need to
@@ -638,9 +648,9 @@ void CameraHalDelegate::GetDevicesInfo(
           LOG(ERROR) << "Invalid facing type: " << camera_info->facing;
           break;
       }
-      auto* vid = get_vendor_string("com.google.usb.vendorId");
-      auto* pid = get_vendor_string("com.google.usb.productId");
-      if (vid != nullptr && pid != nullptr) {
+      auto vid = get_vendor_string("com.google.usb.vendorId");
+      auto pid = get_vendor_string("com.google.usb.productId");
+      if (!vid.empty() && !pid.empty()) {
         desc.model_id = base::StrCat({vid, ":", pid});
       }
       desc.set_control_support(GetControlSupport(camera_info));

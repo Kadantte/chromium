@@ -8,28 +8,31 @@
 #include <string>
 #include <type_traits>
 
+#include "base/byte_size.h"
 #include "base/memory/memory_pressure_level.h"
 #include "base/run_loop.h"
+#include "base/test/scoped_amount_of_physical_memory_override.h"
 #include "base/test/test_future.h"
+#include "build/build_config.h"
 #include "chrome/browser/actor/actor_keyed_service_factory.h"
 #include "chrome/browser/browser_features.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/contextual_cueing/contextual_cueing_service.h"
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/host/glic_features.mojom.h"
+#include "chrome/browser/glic/host/glic_web_contents_warming_pool.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/glic/service/glic_instance_coordinator_impl.h"
+#include "chrome/browser/glic/suggestions/contextual_cueing_service.h"
 #include "chrome/browser/glic/test_support/glic_test_environment.h"
 #include "chrome/browser/glic/test_support/glic_test_util.h"
-#include "chrome/browser/glic/widget/glic_window_controller.h"
+#include "chrome/browser/glic/test_support/mock_glic_keyed_service.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_test_util.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -39,9 +42,14 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/memory_coordinator_browsertest_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/ozone_buildflags.h"
+
+#if BUILDFLAG(IS_OZONE)
+#include "ui/ozone/public/ozone_platform.h"
+#endif
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_switches.h"
@@ -60,46 +68,6 @@
 
 namespace glic {
 namespace {
-
-class MockGlicKeyedService : public GlicKeyedService {
- public:
-  MockGlicKeyedService(
-      content::BrowserContext* browser_context,
-      signin::IdentityManager* identity_manager,
-      ProfileManager* profile_manager,
-      GlicProfileManager* glic_profile_manager,
-      contextual_cueing::ContextualCueingService* contextual_cueing_service,
-      actor::ActorKeyedService* actor_keyed_service)
-      : GlicKeyedService(Profile::FromBrowserContext(browser_context),
-                         identity_manager,
-                         profile_manager,
-                         glic_profile_manager,
-                         contextual_cueing_service,
-                         actor_keyed_service) {}
-  MOCK_METHOD(void, CloseFloatingPanel, (), (override));
-  MOCK_METHOD(void,
-              OpenFreDialogInNewTab,
-              (BrowserWindowInterface*, mojom::InvocationSource),
-              (override));
-  MOCK_METHOD(void,
-              ToggleUI,
-              (BrowserWindowInterface*,
-               bool,
-               mojom::InvocationSource,
-               std::optional<std::string>,
-               bool),
-              (override));
-
-  bool IsWindowDetached() const override { return detached_; }
-  void SetWindowDetached() { detached_ = true; }
-
-  bool IsWindowShowing() const override { return showing_; }
-  void SetWindowShowing() { showing_ = true; }
-
- private:
-  bool detached_ = false;
-  bool showing_ = false;
-};
 
 class GlicProfileManagerBrowserTest : public InProcessBrowserTest {
  public:
@@ -240,42 +208,6 @@ class GlicProfileManagerBrowserTest : public InProcessBrowserTest {
 };
 
 IN_PROC_BROWSER_TEST_F(GlicProfileManagerBrowserTest,
-                       SetActiveGlic_SameProfile) {
-  auto* service0 = GetMockGlicKeyedService(browser()->profile());
-  GlicProfileManager::GetInstance()->SetActiveGlic(service0);
-  // Opening glic twice for the same profile shouldn't cause it to close.
-  EXPECT_CALL(*service0, CloseFloatingPanel()).Times(0);
-  GlicProfileManager::GetInstance()->SetActiveGlic(service0);
-}
-
-// TODO(crbug.com/448406730): Re-enable after testing the logic of close panel
-// being now handled by EmbedderDelegate.
-IN_PROC_BROWSER_TEST_F(GlicProfileManagerBrowserTest,
-                       DISABLED_SetActiveGlic_DifferentProfiles) {
-  auto* service0 = GetMockGlicKeyedService(browser()->profile());
-
-  auto* profile1 =
-#if BUILDFLAG(IS_CHROMEOS)
-      CreateNewUserSessionAndProfile(kAccountId1, /*allow_glic=*/true);
-#else
-      CreateNewProfile(/*signin_and_allow_glic=*/true);
-#endif  // BUILDFLAG(IS_CHROMEOS)
-  auto* service1 = GetMockGlicKeyedService(profile1);
-
-  auto* profile_manager = GlicProfileManager::GetInstance();
-  profile_manager->SetActiveGlic(service0);
-
-  // Tell the mock glic to pretend that the window is open (otherwise, we won't
-  // attempt to close it).
-  service0->SetWindowShowing();
-
-  // Opening glic from a second profile should make the profile manager close
-  // the first one.
-  EXPECT_CALL(*service0, CloseFloatingPanel());
-  profile_manager->SetActiveGlic(service1);
-}
-
-IN_PROC_BROWSER_TEST_F(GlicProfileManagerBrowserTest,
                        ProfileForLaunch_WithDetachedGlic) {
   if (base::FeatureList::IsEnabled(features::kGlicMultiInstance)) {
     // TODO(b/453696965): Broken in multi-instance.
@@ -297,13 +229,12 @@ IN_PROC_BROWSER_TEST_F(GlicProfileManagerBrowserTest,
   auto* profile_manager = GlicProfileManager::GetInstance();
   // Profile 0 is the last used Glic and Profile 1 is the last used window.
   // Profile 1 should be selected for launch.
-  profile_manager->SetActiveGlic(service0);
   CreateBrowser(profile1);
   EXPECT_EQ(profile1, profile_manager->GetProfileForLaunch());
 
   // Simulate showing detached for Profile 0.
   // Profile 0 should now be selected for launch.
-  service0->SetWindowDetached();
+  service0->SetWindowDetached(true);
   EXPECT_EQ(profile0, profile_manager->GetProfileForLaunch());
 }
 
@@ -351,32 +282,43 @@ IN_PROC_BROWSER_TEST_F(GlicProfileManagerBrowserTest,
   ui_test_utils::WaitForBrowserSetLastActive(browser2);
   EXPECT_EQ(profile1, profile_manager->GetProfileForLaunch());
 
-#if !BUILDFLAG(SUPPORTS_OZONE_WAYLAND)
-  // profile0 is the most recently used profile
+  bool is_wayland = false;
+#if BUILDFLAG(IS_OZONE)
+  is_wayland = ::ui::OzonePlatform::RunningOnWaylandForTest();
+#endif
+  if (!is_wayland) {
+    // profile0 is the most recently used profile
 #if BUILDFLAG(IS_CHROMEOS)
-  session_manager::SessionManager::Get()->SwitchActiveSession(kAccountId0);
+    session_manager::SessionManager::Get()->SwitchActiveSession(kAccountId0);
 #endif  //  BUILDFLAG(IS_CHROMEOS)
-  browser()->window()->Activate();
-  ui_test_utils::WaitForBrowserSetLastActive(browser());
-  EXPECT_EQ(profile0, profile_manager->GetProfileForLaunch());
-#endif  // !BUILDFLAG(SUPPORTS_OZONE_WAYLAND)
+    browser()->GetWindow()->Activate();
+    ui_test_utils::WaitForBrowserSetLastActive(browser());
+    EXPECT_EQ(profile0, profile_manager->GetProfileForLaunch());
+  }
 }
 
 class GlicProfileManagerPreloadingTest
     : public InProcessBrowserTest,
       public testing::WithParamInterface<bool> {
  public:
-  explicit GlicProfileManagerPreloadingTest(const std::string& delay_ms) {
+  explicit GlicProfileManagerPreloadingTest(
+      const std::string& delay_ms,
+      const std::string& min_required_ram_mb = "0") {
     if (IsPrewarmingEnabled()) {
       scoped_feature_list_.InitWithFeaturesAndParameters(
           /*enabled_features=*/{{features::kGlicWarming,
                                  {{features::kGlicWarmingDelayMs.name,
                                    delay_ms},
-                                  {features::kGlicWarmingJitterMs.name, "0"}}}},
+                                  {features::kGlicWarmingJitterMs.name, "0"},
+                                  {features::kGlicWarmingMinRequiredRamMb.name,
+                                   min_required_ram_mb}}},
+                                {features::
+                                     kGlicAnchorEntryPointForOnboardedUsers,
+                                 {}}},
           /*disabled_features=*/{});
     } else {
       scoped_feature_list_.InitWithFeatures(
-          /*enabled_features=*/{},
+          /*enabled_features=*/{features::kGlicAnchorEntryPointForOnboardedUsers},
           /*disabled_features=*/{features::kGlicWarming});
     }
 
@@ -386,7 +328,8 @@ class GlicProfileManagerPreloadingTest
         net::NetworkChangeNotifier::ConnectionType::CONNECTION_WIFI);
   }
 
-  GlicProfileManagerPreloadingTest() : GlicProfileManagerPreloadingTest("0") {}
+  GlicProfileManagerPreloadingTest()
+      : GlicProfileManagerPreloadingTest("0", "0") {}
 
   void SetUpOnMainThread() override {
     InProcessBrowserTest::SetUpOnMainThread();
@@ -421,13 +364,10 @@ class GlicProfileManagerPreloadingTest
   bool IsWarmed() {
     auto* service =
         GlicKeyedServiceFactory::GetGlicKeyedService(browser()->profile());
-    if (base::FeatureList::IsEnabled(features::kGlicMultiInstance)) {
-      auto& coordinator = static_cast<GlicInstanceCoordinatorImpl&>(
-          service->window_controller());
-      return coordinator.HasWarmedInstanceForTesting();
-    } else {
-      return service->GetSingleInstanceWindowController().IsWarmed();
-    }
+    return static_cast<GlicInstanceCoordinatorImpl&>(
+               service->instance_coordinator())
+        .GetWebContentsWarmingPoolForTesting()
+        .HasWarmedContainerForTesting();
   }
 
  private:
@@ -453,7 +393,7 @@ IN_PROC_BROWSER_TEST_P(GlicProfileManagerPreloadingTest,
   GlicProfileManager::ForceProfileForLaunchForTesting(std::nullopt);
   SetGlicCapability(browser()->profile(), false);
   EXPECT_EQ(WaitForShouldPreload(),
-            GlicPrewarmingChecksResult::kProfileNotEligible);
+            GlicPrewarmingChecksResult::kProfileNotEligibleAccountCapabilities);
 }
 
 IN_PROC_BROWSER_TEST_P(GlicProfileManagerPreloadingTest,
@@ -473,12 +413,57 @@ IN_PROC_BROWSER_TEST_P(GlicProfileManagerPreloadingTest,
     GTEST_SKIP() << "This test only applies if prewarming is enabled.";
   }
   ResetPrewarming();
-  base::RunLoop run_loop;
-  base::MemoryPressureListener::SimulatePressureNotificationAsync(
-      base::MEMORY_PRESSURE_LEVEL_MODERATE, run_loop.QuitClosure());
-  run_loop.Run();
+
+  content::test::ScopedMemoryLimitOverride scoped_memory_limit_override(
+      GlicProfileManager::kMemoryConsumerName);
+  scoped_memory_limit_override.SetLimit(0);
+  scoped_memory_limit_override.NotifyReleaseMemory();
+
   EXPECT_EQ(WaitForShouldPreload(),
             GlicPrewarmingChecksResult::kUnderMemoryPressure);
+}
+
+class GlicProfileManagerLowMemoryPreloadingTest
+    : public GlicProfileManagerPreloadingTest {
+ public:
+  GlicProfileManagerLowMemoryPreloadingTest()
+      : GlicProfileManagerPreloadingTest(/*delay_ms=*/"0",
+                                         /*min_required_ram_mb=*/"4096") {}
+  ~GlicProfileManagerLowMemoryPreloadingTest() override = default;
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         GlicProfileManagerLowMemoryPreloadingTest,
+                         ::testing::Bool());
+
+IN_PROC_BROWSER_TEST_P(GlicProfileManagerLowMemoryPreloadingTest,
+                       ShouldPreloadForProfile_LowMemoryDevice) {
+  if (!IsPrewarmingEnabled()) {
+    GTEST_SKIP() << "This test only applies if prewarming is enabled.";
+  }
+  ResetPrewarming();
+
+  // Set the physical memory override to 2GB (2048MB), which is less than 4GB.
+  base::test::ScopedAmountOfPhysicalMemoryOverride memory_override(
+      base::GiBU(2));
+
+  EXPECT_EQ(WaitForShouldPreload(),
+            GlicPrewarmingChecksResult::kDeviceLowMemory);
+}
+
+IN_PROC_BROWSER_TEST_P(GlicProfileManagerLowMemoryPreloadingTest,
+                       ShouldPreloadForProfile_SufficientMemory) {
+  if (!IsPrewarmingEnabled()) {
+    GTEST_SKIP() << "This test only applies if prewarming is enabled.";
+  }
+  ResetPrewarming();
+
+  // Set the physical memory override to 8GB (8192MB), which is greater than
+  // 4GB.
+  base::test::ScopedAmountOfPhysicalMemoryOverride memory_override(
+      base::GiBU(8));
+
+  EXPECT_EQ(WaitForShouldPreload(), GlicPrewarmingChecksResult::kSuccess);
 }
 
 IN_PROC_BROWSER_TEST_P(GlicProfileManagerPreloadingTest,
@@ -566,28 +551,20 @@ INSTANTIATE_TEST_SUITE_P(All,
 }  // namespace
 
 class GlicProfileManagerDidSelectProfileTest
-    : public GlicProfileManagerBrowserTest,
-      public testing::WithParamInterface<bool> {
+    : public GlicProfileManagerBrowserTest {
  public:
   GlicProfileManagerDidSelectProfileTest() {
-    if (IsTrustFREOnboardingEnabled()) {
-      scoped_feature_list_.InitWithFeatures(
-          {features::kGlicTrustFirstOnboarding, features::kGlicMultiInstance,
-           mojom::features::kGlicMultiTab, features::kGlicMultitabUnderlines},
-          {});
-    } else {
-      scoped_feature_list_.InitAndDisableFeature(
-          features::kGlicTrustFirstOnboarding);
-    }
+    scoped_feature_list_.InitWithFeatures(
+        {features::kGlicMultiInstance, mojom::features::kGlicMultiTab,
+         features::kGlicMultitabUnderlines},
+        {});
   }
-
-  bool IsTrustFREOnboardingEnabled() const { return GetParam(); }
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-IN_PROC_BROWSER_TEST_P(GlicProfileManagerDidSelectProfileTest,
+IN_PROC_BROWSER_TEST_F(GlicProfileManagerDidSelectProfileTest,
                        DidSelectProfile_NoConsent) {
   // Create a profile that is eligible but has not consented.
   Profile* profile =
@@ -598,28 +575,38 @@ IN_PROC_BROWSER_TEST_P(GlicProfileManagerDidSelectProfileTest,
   SigninWithPrimaryAccount(profile);
 #endif  // BUILDFLAG(IS_CHROMEOS)
   SetGlicCapability(profile, true);
-  profile->GetPrefs()->SetInteger(
-      glic::prefs::kGlicCompletedFre,
-      static_cast<int>(glic::prefs::FreStatus::kNotStarted));
+  glic::GlicKeyedService::Get(profile)->enabling().SetCompletedFre(
+      glic::prefs::FreStatus::kNotStarted);
   ASSERT_TRUE(GlicEnabling::IsEnabledForProfile(profile));
   ASSERT_FALSE(GlicEnabling::HasConsentedForProfile(profile));
 
   auto* service = GetMockGlicKeyedService(profile);
 
-  if (IsTrustFREOnboardingEnabled()) {
-    EXPECT_CALL(*service, ToggleUI(testing::IsNull(), true,
-                                   mojom::InvocationSource::kProfilePicker,
-                                   testing::Eq(std::nullopt), testing::_));
-  } else {
-    EXPECT_CALL(*service,
-                OpenFreDialogInNewTab(testing::NotNull(),
-                                      mojom::InvocationSource::kProfilePicker));
-  }
+  EXPECT_CALL(*service,
+              ToggleUI(nullptr, true, mojom::InvocationSource::kProfilePicker));
 
   GlicProfileManager::GetInstance()->DidSelectProfile(profile);
 }
 
-INSTANTIATE_TEST_SUITE_P(All,
-                         GlicProfileManagerDidSelectProfileTest,
-                         testing::Bool());
+IN_PROC_BROWSER_TEST_F(GlicProfileManagerDidSelectProfileTest,
+                       DidSelectProfile_Consented) {
+  // Create a profile that is eligible and has consented.
+  Profile* profile =
+#if BUILDFLAG(IS_CHROMEOS)
+      CreateNewUserSessionAndProfile(kAccountId1, /*allow_glic=*/true);
+#else
+      CreateNewProfile(/*signin_and_allow_glic=*/true);
+#endif  // BUILDFLAG(IS_CHROMEOS)
+  glic::GlicKeyedService::Get(profile)->enabling().SetCompletedFre(
+      glic::prefs::FreStatus::kCompleted);
+  ASSERT_TRUE(GlicEnabling::IsEnabledAndConsentForProfile(profile));
+
+  auto* service = GetMockGlicKeyedService(profile);
+
+  EXPECT_CALL(*service, ToggleUI(testing::IsNull(), true,
+                                 mojom::InvocationSource::kProfilePicker));
+
+  GlicProfileManager::GetInstance()->DidSelectProfile(profile);
+}
+
 }  // namespace glic

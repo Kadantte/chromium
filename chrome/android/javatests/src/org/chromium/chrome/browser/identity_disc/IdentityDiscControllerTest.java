@@ -48,6 +48,7 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.quality.Strictness;
 
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
@@ -57,13 +58,15 @@ import org.chromium.base.test.params.ParameterAnnotations.UseRunnerDelegate;
 import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisableLeakChecks;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.night_mode.ChromeNightModeTestUtils;
 import org.chromium.chrome.browser.preferences.Pref;
@@ -79,7 +82,6 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.toolbar.optional_button.ButtonDataProvider;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
-import org.chromium.chrome.test.R;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
@@ -94,7 +96,6 @@ import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.base.AccountInfo;
-import org.chromium.components.signin.identitymanager.ConsentLevel;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.identitymanager.PrimaryAccountChangeEvent;
 import org.chromium.components.signin.test.util.TestAccounts;
@@ -102,6 +103,8 @@ import org.chromium.components.sync.UserActionableError;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.content_public.common.ContentUrlConstants;
 import org.chromium.ui.base.ActivityResultTracker;
+import org.chromium.ui.base.ActivityWindowAndroid;
+import org.chromium.ui.base.IntentRequestTracker;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.test.util.GmsCoreVersionRestriction;
@@ -109,13 +112,14 @@ import org.chromium.ui.test.util.NightModeTestUtils;
 import org.chromium.ui.test.util.ViewUtils;
 
 import java.io.IOException;
-import java.util.function.Supplier;
 
 /** Instrumentation test for Identity Disc. */
 @DoNotBatch(reason = "This test relies on native initialization")
 @RunWith(ParameterizedRunner.class)
 @UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@DisableFeatures(SigninFeatures.SIGNIN_LEVEL_UP_BUTTON)
+@DisableLeakChecks("crbug.com/527131198")
 public class IdentityDiscControllerTest {
 
     private final FreshCtaTransitTestRule mActivityTestRule =
@@ -141,18 +145,20 @@ public class IdentityDiscControllerTest {
     private RegularNewTabPageStation mPage;
     private Tab mTab;
     private SettableMonotonicObservableSupplier<Profile> mProfileSupplier;
+    private String mFallbackAccountName;
+    private WindowAndroid mWindowAndroid;
 
     @Mock private IdentityServicesProvider mIdentityServicesProviderMock;
     @Mock private SigninManager mSigninManagerMock;
     @Mock private IdentityManager mIdentityManagerMock;
     @Mock private ButtonDataProvider.ButtonDataObserver mButtonDataObserver;
     @Mock private Tracker mTracker;
-    @Mock private WindowAndroid mWindowAndroid;
     @Mock private ActivityResultTracker mActivityResultTracker;
     @Mock private DeviceLockActivityLauncher mDeviceLockActivityLauncher;
     @Mock private BottomSheetController mBottomSheetController;
-    @Mock private Supplier<ModalDialogManager> mModalDialogManagerSupplier;
+    @Mock private ModalDialogManager mModalDialogManager;
     @Mock private SnackbarManager mSnackbarManager;
+    @Mock private Runnable mOnSigninTapped;
 
     @BeforeClass
     public static void setUpBeforeActivityLaunched() {
@@ -177,12 +183,29 @@ public class IdentityDiscControllerTest {
         mPage = mActivityTestRule.startOnNtp();
         mTab = mPage.getTab();
         NewTabPageTestUtils.waitForNtpLoaded(mTab);
+        Activity activity = mActivityTestRule.getActivity();
+        assertNotNull(activity);
+        mFallbackAccountName = activity.getString(R.string.default_google_account_username);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mWindowAndroid =
+                            new ActivityWindowAndroid(
+                                    activity,
+                                    /* listenToActivityState= */ true,
+                                    IntentRequestTracker.createFromActivity(activity),
+                                    /* insetObserver= */ null,
+                                    /* occlusionTrackingAllowed= */ true);
+                });
     }
 
     @After
     public void tearDown() {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
+                    if (mWindowAndroid != null) {
+                        mWindowAndroid.destroy();
+                        mWindowAndroid = null;
+                    }
                     PrefService prefService =
                             UserPrefs.get(ProfileManager.getLastUsedRegularProfile());
                     prefService.clearPref(Pref.SIGNIN_ALLOWED);
@@ -191,10 +214,27 @@ public class IdentityDiscControllerTest {
 
     @Test
     @MediumTest
+    // Specifies the test to run only with the GMS Core version greater than or equal to 24w15 which
+    // is the min version that supports split stores UPM backend, to avoid
+    // UserActionableError.NEEDS_UPM_BACKEND_UPGRADE.
+    @Restriction(GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_24W15)
     public void testIdentityDiscWithNavigation() {
         // User is signed in.
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
-        ViewUtils.waitForVisibleView(allOf(withId(R.id.optional_toolbar_button), isDisplayed()));
+        String expectedContentDescription =
+                mActivityTestRule
+                        .getActivity()
+                        .getString(
+                                R.string
+                                        .accessibility_toolbar_btn_identity_disc_with_name_and_email,
+                                TestAccounts.ACCOUNT1.getFullName(),
+                                TestAccounts.ACCOUNT1.getEmail());
+
+        ViewUtils.waitForVisibleView(
+                allOf(
+                        withId(R.id.optional_toolbar_button),
+                        isDisplayed(),
+                        withContentDescription(expectedContentDescription)));
 
         // Identity Disc should be hidden on navigation away from NTP.
         leaveNtp();
@@ -203,10 +243,7 @@ public class IdentityDiscControllerTest {
                         matches(
                                 anyOf(
                                         withEffectiveVisibility(ViewMatchers.Visibility.GONE),
-                                        not(
-                                                withContentDescription(
-                                                        R.string
-                                                                .accessibility_toolbar_btn_identity_disc)))));
+                                        not(withContentDescription(expectedContentDescription)))));
     }
 
     @Test
@@ -330,6 +367,38 @@ public class IdentityDiscControllerTest {
     // is the min version that supports split stores UPM backend, to avoid
     // UserActionableError.NEEDS_UPM_BACKEND_UPGRADE.
     @Restriction(GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_24W15)
+    public void testIdentityDiscSignedIn_noName() {
+        // Identity Disc should be shown on sign-in state change with a NTP refresh.
+        mSigninTestRule.addAccountThenSignin(TestAccounts.TEST_ACCOUNT_NO_NAME);
+        String expectedContentDescription =
+                mActivityTestRule
+                        .getActivity()
+                        .getString(
+                                R.string
+                                        .accessibility_toolbar_btn_identity_disc_with_name_and_email,
+                                mFallbackAccountName,
+                                TestAccounts.TEST_ACCOUNT_NO_NAME.getEmail());
+        ViewUtils.waitForVisibleView(
+                allOf(
+                        withId(R.id.optional_toolbar_button),
+                        isDisplayed(),
+                        withContentDescription(expectedContentDescription)));
+
+        mSigninTestRule.signOut();
+        ViewUtils.waitForVisibleView(
+                allOf(
+                        withId(R.id.optional_toolbar_button),
+                        isDisplayed(),
+                        withContentDescription(
+                                R.string.accessibility_toolbar_btn_signed_out_identity_disc)));
+    }
+
+    @Test
+    @MediumTest
+    // Specifies the test to run only with the GMS Core version greater than or equal to 24w15 which
+    // is the min version that supports split stores UPM backend, to avoid
+    // UserActionableError.NEEDS_UPM_BACKEND_UPGRADE.
+    @Restriction(GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_24W15)
     public void testIdentityDiscSignedIn_nonDisplayableEmail() {
         // Identity Disc should be shown on sign-in state change with a NTP refresh.
         AccountInfo accountInfo = addAndSigninAccountWithNonDisplayableEmail();
@@ -356,7 +425,38 @@ public class IdentityDiscControllerTest {
 
     @Test
     @MediumTest
-    @EnableFeatures(ChromeFeatureList.UNO_PHASE_2_FOLLOW_UP)
+    // Specifies the test to run only with the GMS Core version greater than or equal to 24w15 which
+    // is the min version that supports split stores UPM backend, to avoid
+    // UserActionableError.NEEDS_UPM_BACKEND_UPGRADE.
+    @Restriction(GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_24W15)
+    public void testIdentityDiscSignedIn_nonDisplayableEmail_noName() {
+        // Identity Disc should be shown on sign-in state change with a NTP refresh.
+        mSigninTestRule.addAccount(TestAccounts.CHILD_ACCOUNT_NON_DISPLAYABLE_EMAIL_AND_NO_NAME);
+        mSigninTestRule.waitForSignin(TestAccounts.CHILD_ACCOUNT_NON_DISPLAYABLE_EMAIL_AND_NO_NAME);
+
+        String expectedContentDescription =
+                mActivityTestRule
+                        .getActivity()
+                        .getString(
+                                R.string.accessibility_toolbar_btn_identity_disc_with_name,
+                                mFallbackAccountName);
+        ViewUtils.waitForVisibleView(
+                allOf(
+                        withId(R.id.optional_toolbar_button),
+                        isDisplayed(),
+                        withContentDescription(expectedContentDescription)));
+
+        mSigninTestRule.forceSignOut();
+        ViewUtils.waitForVisibleView(
+                allOf(
+                        withId(R.id.optional_toolbar_button),
+                        isDisplayed(),
+                        withContentDescription(
+                                R.string.accessibility_toolbar_btn_signed_out_identity_disc)));
+    }
+
+    @Test
+    @MediumTest
     public void testIdentityDiscWithErrorBadgeSignedIn() {
         // Fake an identity error.
         ThreadUtils.runOnUiThreadBlocking(
@@ -393,7 +493,6 @@ public class IdentityDiscControllerTest {
 
     @Test
     @MediumTest
-    @EnableFeatures(ChromeFeatureList.UNO_PHASE_2_FOLLOW_UP)
     public void testIdentityDiscWithErrorBadgeSignedIn_nonDisplayableEmail() {
         // Fake an identity error.
         ThreadUtils.runOnUiThreadBlocking(
@@ -429,6 +528,7 @@ public class IdentityDiscControllerTest {
     @Test
     @MediumTest
     @SuppressWarnings("CheckReturnValue")
+    @DisabledTest(message = "crbug.com/489053128")
     public void testIdentityDiscWithSwitchToIncognito() {
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
         ViewUtils.waitForVisibleView(withId(R.id.optional_toolbar_button));
@@ -462,7 +562,6 @@ public class IdentityDiscControllerTest {
 
     @Test
     @SmallTest
-    @EnableFeatures(ChromeFeatureList.UNO_PHASE_2_FOLLOW_UP)
     @UiThreadTest
     public void testPreExistingErrorAtCreation() {
         // Fake an identity error.
@@ -506,6 +605,18 @@ public class IdentityDiscControllerTest {
         // If the button is tapped before the profile is set, the click shouldn't be recorded.
         identityDiscController.onClick();
         verifyNoMoreInteractions(mTracker);
+    }
+
+    @Test
+    @MediumTest
+    @UiThreadTest
+    @EnableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
+    public void testOnClick_profileInitialized_callsOnSigninTapped() {
+        IdentityDiscController identityDiscController = buildController();
+        mProfileSupplier.set(ProfileManager.getLastUsedRegularProfile());
+
+        identityDiscController.onClick();
+        verify(mOnSigninTapped).run();
     }
 
     @Test
@@ -554,13 +665,12 @@ public class IdentityDiscControllerTest {
     @MediumTest
     @Feature("RenderTest")
     @UseMethodParameter(NightModeTestUtils.NightModeParams.class)
-    @EnableFeatures(ChromeFeatureList.UNO_PHASE_2_FOLLOW_UP)
     // Specifies the test to run only with the GMS Core version greater than or equal to 24w15 which
     // is the min version that supports split stores UPM backend, to avoid
     // UserActionableError.NEEDS_UPM_BACKEND_UPGRADE.
     @Restriction(GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_24W15)
-    public void testIdentityDisc_signedIn_unoPhase2FollowUpEnabled_noIdentityError(
-            boolean nightModeEnabled) throws IOException {
+    public void testIdentityDisc_signedIn_noIdentityError(boolean nightModeEnabled)
+            throws IOException {
         // Sign-in and wait for the user profile image to appear.
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
         String expectedContentDescription =
@@ -588,9 +698,8 @@ public class IdentityDiscControllerTest {
     @MediumTest
     @Feature("RenderTest")
     @UseMethodParameter(NightModeTestUtils.NightModeParams.class)
-    @EnableFeatures(ChromeFeatureList.UNO_PHASE_2_FOLLOW_UP)
-    public void testIdentityDisc_signedIn_unoPhase2FollowUpEnabled_identityErrorExist(
-            boolean nightModeEnabled) throws IOException {
+    public void testIdentityDisc_signedIn_identityErrorExist(boolean nightModeEnabled)
+            throws IOException {
         // Fake an identity error.
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -689,18 +798,22 @@ public class IdentityDiscControllerTest {
     }
 
     private IdentityDiscController buildController() {
-        return new IdentityDiscController(
-                mActivityTestRule.getActivity(),
-                mWindowAndroid,
-                mActivityResultTracker,
-                mDeviceLockActivityLauncher,
-                mProfileSupplier,
-                mBottomSheetController,
-                mModalDialogManagerSupplier,
-                mSnackbarManager);
+        IdentityDiscController controller =
+                new IdentityDiscController(
+                        mActivityTestRule.getActivity(),
+                        mWindowAndroid,
+                        mActivityResultTracker,
+                        mDeviceLockActivityLauncher,
+                        mProfileSupplier,
+                        mBottomSheetController,
+                        mModalDialogManager,
+                        mSnackbarManager,
+                        mOnSigninTapped);
+        ResettersForTesting.register(() -> ThreadUtils.runOnUiThreadBlocking(controller::destroy));
+        return controller;
     }
 
     private PrimaryAccountChangeEvent newSigninEvent(int eventType) {
-        return new PrimaryAccountChangeEvent(eventType, ConsentLevel.SIGNIN);
+        return new PrimaryAccountChangeEvent(eventType);
     }
 }

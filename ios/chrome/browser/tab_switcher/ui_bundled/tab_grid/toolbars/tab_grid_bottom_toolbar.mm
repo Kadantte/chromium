@@ -9,8 +9,8 @@
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
 #import "base/strings/sys_string_conversions.h"
-#import "ios/chrome/browser/incognito_reauth/ui_bundled/features.h"
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/layout_state.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
@@ -54,6 +54,9 @@ CGFloat CompactButtonHorizontalPadding() {
 }
 
 }  // namespace
+
+@interface TabGridBottomToolbar () <LayoutStateObserver>
+@end
 
 @implementation TabGridBottomToolbar {
   UIToolbar* _containerToolbar;
@@ -100,9 +103,10 @@ CGFloat CompactButtonHorizontalPadding() {
     }
   }
 
-  NSArray<UITrait>* traits = TraitCollectionSetForTraits(
-      @[ UITraitVerticalSizeClass.class, UITraitHorizontalSizeClass.class ]);
-  [self registerForTraitChanges:traits withAction:@selector(updateLayout)];
+  [self
+      registerForTraitChanges:
+          @[ UITraitVerticalSizeClass.class, UITraitHorizontalSizeClass.class ]
+                   withAction:@selector(updateLayout)];
   [super didMoveToSuperview];
 }
 
@@ -113,6 +117,11 @@ CGFloat CompactButtonHorizontalPadding() {
 - (CGSize)intrinsicContentSize {
   if (!_largeNewTabButton.hidden) {
     return CGSizeZero;
+  }
+  if (IsChromeNextIaEnabled()) {
+    if (self.mode != TabGridMode::kSelection) {
+      return CGSizeZero;
+    }
   }
   return _containerToolbar.intrinsicContentSize;
 }
@@ -178,16 +187,6 @@ CGFloat CompactButtonHorizontalPadding() {
   }
 }
 
-- (void)hide {
-  _smallNewTabButton.alpha = 0.0;
-  _largeNewTabButton.alpha = 0.0;
-}
-
-- (void)show {
-  _smallNewTabButton.alpha = 1.0;
-  _largeNewTabButton.alpha = 1.0;
-}
-
 - (void)setScrollViewScrolledToEdge:(BOOL)scrolledToEdge {
   if (scrolledToEdge == _scrolledToEdge) {
     return;
@@ -241,6 +240,13 @@ CGFloat CompactButtonHorizontalPadding() {
   _editButton.enabled = enabled;
 }
 
+#pragma mark - LayoutStateObserver
+
+- (void)layoutState:(LayoutState*)layoutState
+    didChangeAppBarPosition:(AppBarPosition)appBarPosition {
+  [self updateLayout];
+}
+
 #pragma mark - Private
 
 // Returns a new button to be used.
@@ -262,7 +268,7 @@ CGFloat CompactButtonHorizontalPadding() {
     buttonConfiguration.image = image;
     button = [UIButton buttonWithConfiguration:buttonConfiguration
                                  primaryAction:nil];
-    button.tintColor = TabGridGlassButtonTintColor();
+    button.tintColor = UIColor.clearColor;
   } else {
     button = [UIButton systemButtonWithPrimaryAction:nil];
     button.tintColor = UIColor.whiteColor;
@@ -514,20 +520,27 @@ CGFloat CompactButtonHorizontalPadding() {
 
   BOOL useCompactLayout = [self shouldUseCompactLayout];
   BOOL hideToolbar;
-  if (base::FeatureList::IsEnabled(kTabRecallNewTabGroupButton)) {
-    hideToolbar = self.mode == TabGridMode::kSearch;
-  } else {
-    hideToolbar = self.mode == TabGridMode::kSearch ||
-                  (!useCompactLayout && (self.page == TabGridPageTabGroups));
+  hideToolbar = self.mode == TabGridMode::kSearch;
+
+  BOOL appBarAvailable =
+      self.layoutState.appBarPosition != AppBarPosition::kNone;
+  if (IsChromeNextIaEnabled() && appBarAvailable) {
+    // If the App Bar is available (iPhone), the bottom toolbar buttons should
+    // be hidden in the Tab Grid's non-selection states.
+    hideToolbar =
+        self.mode == TabGridMode::kSearch || self.mode == TabGridMode::kNormal;
   }
+
+  _viewTopConstraint.active = NO;
+
   if (hideToolbar) {
     self.hidden = YES;
     [self updateBackgroundVisibility];
+    [self invalidateIntrinsicContentSize];
     return;
   }
 
   self.hidden = NO;
-  _viewTopConstraint.active = NO;
 
   if (self.mode == TabGridMode::kSelection) {
     _closeTabsButton.hidden = NO;
@@ -538,20 +551,14 @@ CGFloat CompactButtonHorizontalPadding() {
     _viewTopConstraint.active = YES;
     _containerToolbar.hidden = NO;
     [self updateBackgroundVisibility];
+    [self invalidateIntrinsicContentSize];
     return;
   }
 
   if (useCompactLayout) {
-    if (IsChromeNextIaEnabled()) {
-      // If ChromeNext is enabled, there is no toolbar in normal mode compact.
-      return;
-    }
     if (self.page == TabGridPageTabGroups) {
       _doneButton.hidden = NO;
-
-      if (base::FeatureList::IsEnabled(kTabRecallNewTabGroupButton)) {
-        _smallNewTabButton.hidden = NO;
-      }
+      _smallNewTabButton.hidden = NO;
     } else if (self.isInTabGroupView) {
       _smallNewTabButton.hidden = NO;
     } else {
@@ -570,6 +577,7 @@ CGFloat CompactButtonHorizontalPadding() {
     _viewTopConstraint.active = YES;
     _containerToolbar.hidden = NO;
     [self updateBackgroundVisibility];
+    [self invalidateIntrinsicContentSize];
     return;
   }
 
@@ -579,6 +587,7 @@ CGFloat CompactButtonHorizontalPadding() {
   _viewTopConstraint.active = YES;
   _containerToolbar.hidden = YES;
   [self updateBackgroundVisibility];
+  [self invalidateIntrinsicContentSize];
 }
 
 // Returns YES if the `_largeNewTabButton` is showing on the toolbar.
@@ -739,6 +748,20 @@ CGFloat CompactButtonHorizontalPadding() {
   }
   _hideScrolledToEdgeBackground = hideScrolledToEdgeBackground;
   [self updateBackgroundVisibility];
+}
+
+- (void)setLayoutState:(LayoutState*)layoutState {
+  if (_layoutState == layoutState) {
+    return;
+  }
+  if (_layoutState) {
+    [_layoutState removeObserver:self];
+  }
+  _layoutState = layoutState;
+  if (_layoutState) {
+    [_layoutState addObserver:self];
+  }
+  [self updateLayout];
 }
 
 @end

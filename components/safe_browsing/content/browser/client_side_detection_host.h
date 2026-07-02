@@ -27,23 +27,23 @@
 #include "components/safe_browsing/content/browser/base_ui_manager.h"
 #include "components/safe_browsing/content/browser/credit_card_form_event.h"
 #include "components/safe_browsing/content/common/safe_browsing.mojom.h"
-#include "components/safe_browsing/content/common/visual_utils.h"
 #include "components/safe_browsing/core/browser/db/database_manager.h"
 #include "components/safe_browsing/core/browser/intelligent_scan_delegate.h"
 #include "components/safe_browsing/core/browser/safe_browsing_token_fetcher.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
+#include "components/safe_browsing/core/common/visual_utils.h"
 #include "content/public/browser/global_routing_id.h"
-#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "mojo/public/cpp/base/proto_wrapper.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "net/http/http_status_code.h"
-#include "services/service_manager/public/cpp/binder_registry.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "components/safe_browsing/core/browser/referring_app_info.h"  // nogncheck
 #endif
+
+class SkBitmap;
 
 namespace base {
 class TickClock;
@@ -53,8 +53,29 @@ namespace safe_browsing {
 class ClientPhishingRequest;
 class ClientSideDetectionService;
 class VerdictCacheManager;
+class ClipboardExtractedData;
 
 using HostInnerTextCallback = base::OnceCallback<void(std::string)>;
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+enum class ClientSideDetectionEvent {
+  kTriggerStartsPreClassification = 0,
+  kPreClassificationCheckComplete = 1,
+  kImageClassificationBegin = 2,
+  kImageClassificationComplete = 3,
+  kVerdictProtoParseComplete = 4,
+  kLocalModelResultComplete = 5,
+  kImageEmbeddingBegin = 6,
+  kImageEmbeddingComplete = 7,
+  kIntelligentScanBegin = 8,
+  kIntelligentScanComplete = 9,
+  kMiscellaneousFieldsAdded = 10,
+  kNetworkRequestSent = 11,
+  kNetworkResponseReceived = 12,
+  kWarningShown = 13,
+  kMaxValue = kWarningShown,
+};
 
 // This class is used to receive the IPC from the renderer which
 // notifies the browser that a URL was classified as phishing.  This
@@ -77,9 +98,21 @@ class ClientSideDetectionHost
     kMaxValue = kSkippedTriggerModelsPingSentAsForceRequest,
   };
 
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class CSDObserverCalled {
+    kOnFirstContentfulPaint = 0,
+    kDidFirstVisuallyNonEmptyPaint = 1,
+    kMaxValue = kDidFirstVisuallyNonEmptyPaint,
+  };
+
   // A callback via which the client of this component indicates whether the
   // primary account is signed in.
   using PrimaryAccountSignedIn = base::RepeatingCallback<bool()>;
+
+  // Callback for when preclassification is started.
+  using PreclassificationStarted =
+      base::RepeatingCallback<void(ClientSideDetectionType)>;
 
   // Delegate which allows to provide embedder specific implementations.
   class Delegate {
@@ -120,6 +153,9 @@ class ClientSideDetectionHost
 #endif
   };
 
+  static const int kMaxHighResScreenshotWidth;
+  static const int kMaxHighResScreenshotHeight;
+
   // The caller keeps ownership of the tab object and is responsible for
   // ensuring that it stays valid until WebContentsDestroyed is called.
   // The caller also keeps ownership of pref_service. The
@@ -149,10 +185,11 @@ class ClientSideDetectionHost
       content::NavigationHandle* navigation_handle) override;
   void PrimaryPageChanged(content::Page& page) override;
   void KeyboardLockRequested() override;
-  void PointerLockRequested() override;
   void VibrationRequested() override;
   void OnTextCopiedToClipboard(content::RenderFrameHost* render_frame_host,
                                const std::u16string& copied_text) override;
+  void DidFirstVisuallyNonEmptyPaint() override;
+  void OnFirstContentfulPaintInPrimaryMainFrame() override;
 
   // permissions::PermissionRequestManager::Observer methods:
   void OnPromptAdded() override;
@@ -170,12 +207,30 @@ class ClientSideDetectionHost
   void OnAfterFocusOnFormField(autofill::AutofillManager& manager,
                                autofill::FormGlobalId form_id,
                                autofill::FieldGlobalId field_id) override;
+  void OnFieldTypesDetermined(autofill::AutofillManager& manager,
+                              autofill::FormGlobalId form,
+                              FieldTypeSource source,
+                              bool small_forms_were_parsed) override;
 
   // history::HistoryServiceObserver method:
   void HistoryServiceBeingDeleted(
       history::HistoryService* history_service) override;
 
   void RegisterAutofillManager();
+
+  // User requests to report a site as unsafe. The screenshot values come from
+  // the report dialog view.
+  void ReportUnsafeSite(SkBitmap screenshot, base::OnceClosure callback);
+
+  // Called when an unfamiliar login page is detected (e.g. via password field
+  // focus).
+  void OnUnfamiliarLoginPageDetected();
+
+  // Sets a callback to be notified when preclassification is started.
+  void set_preclassification_started_callback_for_testing(
+      const PreclassificationStarted& callback) {
+    preclassification_started_cb_for_testing_ = callback;
+  }
 
  protected:
   explicit ClientSideDetectionHost(
@@ -199,6 +254,9 @@ class ClientSideDetectionHost
   friend class ClientSideDetectionHostCreditCardFormTest;
   friend class ClientSideDetectionHostClipboardDataTest;
   friend class ClientSideDetectionHostGeminiAntiscamProtectionTest;
+  friend class ClientSideDetectionHostPriorityTest;
+  friend class ClientSideDetectionHostPrerenderBrowserTest;
+  friend class ClientSideDetectionHostPrerenderBrowserTest_Screenshot;
   class ShouldClassifyUrlRequest;
   friend class ShouldClassifyUrlRequest;
   FRIEND_TEST_ALL_PREFIXES(ClientSideDetectionHostPrerenderBrowserTest,
@@ -278,6 +336,8 @@ class ClientSideDetectionHost
   FRIEND_TEST_ALL_PREFIXES(ClientSideDetectionHostCreditCardFormTest,
                            DoesNotStartPreclassificationOnRepeatSiteVisit);
   FRIEND_TEST_ALL_PREFIXES(ClientSideDetectionHostCreditCardFormTest,
+                           IgnoresVisitsInPastTenMinutes);
+  FRIEND_TEST_ALL_PREFIXES(ClientSideDetectionHostCreditCardFormTest,
                            DoesNotStartPreclassificationOnServerHeuristic);
   FRIEND_TEST_ALL_PREFIXES(
       ClientSideDetectionHostCreditCardFormReferringAppTest,
@@ -292,6 +352,22 @@ class ClientSideDetectionHost
                            NavigateTo404PageLogsErrorDocument);
   FRIEND_TEST_ALL_PREFIXES(ClientSideDetectionHostGeminiAntiscamProtectionTest,
                            GeminiAntiscamProtectionServiceCalledWithInnerText);
+  FRIEND_TEST_ALL_PREFIXES(
+      ClientSideDetectionHostCreditCardFormTriggerDisabledTest,
+      InteractionTriggerDisabledDoesNotTrigger);
+  FRIEND_TEST_ALL_PREFIXES(
+      ClientSideDetectionHostCreditCardFormDetectionOnlyTest,
+      CreditCardFormTriggersDetectionCheckWithoutInteraction);
+  FRIEND_TEST_ALL_PREFIXES(
+      ClientSideDetectionHostCreditCardFormDetectionTriggerDisabledTest,
+      DetectionTriggerDisabledDoesNotTrigger);
+  FRIEND_TEST_ALL_PREFIXES(
+      ClientSideDetectionHostCreditCardFormDetectionAndInteractionTest,
+      DetectionAndInteractionTriggersOnlyTriggerOnce);
+  FRIEND_TEST_ALL_PREFIXES(ClientSideDetectionHostNewObserversForceRequestTest,
+                           TestTriggerModelsConvertedToForceRequestAtLoad);
+  FRIEND_TEST_ALL_PREFIXES(ClientSideDetectionHostNewObserversForceRequestTest,
+                           TestTriggerModelsConvertedToForceRequestAtRequest);
 
   // Extracts suspicious tokens from a copied clipboard payload into a
   // structured object.
@@ -307,21 +383,28 @@ class ClientSideDetectionHost
 
   // Called when pre-classification checks are done for the phishing
   // classifiers. |request_type| is passed in to specify the process that
-  // requests the classification.
+  // requests the classification. |is_invalid_ip| is a temporary field to pass
+  // along the result of the local resource check.
+  // TODO: Remove the parameter is_invalid_ip once the feature flag,
+  // kClientSideDetectionLocalResourceCheckFix, is removed.
   void OnPhishingPreClassificationDone(
       ClientSideDetectionType request_type,
       bool should_classify,
       bool is_sample_ping,
-      std::optional<bool> did_match_high_confidence_allowlist);
+      std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip);
 
   // `verdict` is a wrapped ClientPhishingRequest protocol message, `result`
   // is the outcome of the renderer classification. `request_type` is passed in
   // to specify the process that requests the classification, which is passed
   // along from OnPhishingPreClassificationDone().
+  // TODO: Remove the parameter is_invalid_ip once the feature flag,
+  // kClientSideDetectionLocalResourceCheckFix, is removed.
   void PhishingDetectionDone(
       ClientSideDetectionType request_type,
       bool is_sample_ping,
       std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip,
       base::TimeTicks start_time,
       mojom::PhishingDetectorResult result,
       std::optional<mojo_base::ProtoWrapper> verdict);
@@ -342,37 +425,52 @@ class ClientSideDetectionHost
       ClientPhishingRequest* verdict);
 
   // `verdict` is the ClientPhishingRequest passed into PhishingDetectionDone().
+  // TODO: Remove the parameter is_invalid_ip once the feature flag,
+  // kClientSideDetectionLocalResourceCheckFix, is removed.
   void MaybeSendClientPhishingRequest(
       std::unique_ptr<ClientPhishingRequest> verdict,
       std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip,
       mojom::PhishingDetectorResult result);
 
   // |verdict| is an encoded ClientPhishingRequest protocol message, |result| is
   // the outcome of the renderer image embedding. The verdict is passed into
   // this function after the renderer classification is finished.
+  // TODO: Remove the parameter is_invalid_ip once the feature flag,
+  // kClientSideDetectionLocalResourceCheckFix, is removed.
   void PhishingImageEmbeddingDone(
       std::unique_ptr<ClientPhishingRequest> verdict,
       std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip,
       mojom::PhishingImageEmbeddingResult result,
       std::optional<mojo_base::ProtoWrapper> image_feature_embedding,
       std::optional<mojo_base::ProtoWrapper> visual_features);
 
   // Add miscellaneous metadata to ClientPhishingRequest prior to sending the
   // ping.
+  // TODO: Remove the parameter is_invalid_ip once the feature flag,
+  // kClientSideDetectionLocalResourceCheckFix, is removed.
   void AddMiscellaneousMetadataToClientPhishingRequest(
-      ClientPhishingRequest* verdict);
+      ClientPhishingRequest* verdict,
+      bool is_invalid_ip);
 
   // |verdict| is an encoded ClientPhishingRequest protocol message, which will
   // contain the intelligent scan result if the execution is successful.
+  // TODO: Remove the parameter is_invalid_ip once the feature flag,
+  // kClientSideDetectionLocalResourceCheckFix, is removed.
   void MaybeStartIntelligentScanForScamDetection(
       std::unique_ptr<ClientPhishingRequest> verdict,
-      std::optional<bool> did_match_high_confidence_allowlist);
+      std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip);
 
   // |verdict| is an encoded ClientPhishingRequest protocol message. This is the
   // last step before sending the ping to the server.
+  // TODO: Remove the parameter is_invalid_ip once the feature flag,
+  // kClientSideDetectionLocalResourceCheckFix, is removed.
   void MaybeGetAccessToken(
       std::unique_ptr<ClientPhishingRequest> verdict,
       std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip,
       bool is_intelligent_scan_invoked);
 
   // Callback that is called when the server ping back is
@@ -389,6 +487,10 @@ class ClientSideDetectionHost
       bool is_phishing,
       std::optional<net::HttpStatusCode> response_code,
       std::optional<IntelligentScanVerdict> intelligent_scan_verdict);
+
+  // Logs the ClientSideDetectionEvent event.
+  void LogClientSideDetectionEvent(ClientSideDetectionEvent event,
+                                   ClientSideDetectionType request_type);
 
   // Whether request is forced for |current_url_|. This function also checks
   // whether enhanced protection is enabled.
@@ -436,17 +538,9 @@ class ClientSideDetectionHost
   void set_history_service_for_testing(
       history::HistoryService* history_service);
 
-  // Callbacks for when preclassification is started/done.
-  using PreclassificationStarted =
-      base::RepeatingCallback<void(ClientSideDetectionType)>;
+  // Callback for when preclassification is done.
   using PreclassificationDone =
       base::RepeatingCallback<void(ClientSideDetectionType)>;
-
-  // Sets a callback to be notified when preclassification is started.
-  void set_preclassification_started_callback_for_testing(
-      const PreclassificationStarted& callback) {
-    preclassification_started_cb_for_testing_ = callback;
-  }
 
   // Sets a callback to be notified when preclassification is done.
   void set_preclassification_done_callback_for_testing(
@@ -459,13 +553,19 @@ class ClientSideDetectionHost
   bool CanGetAccessToken();
 
   // Send the client report to CSD server.
+  // TODO: Remove the parameter is_invalid_ip once the feature flag,
+  // kClientSideDetectionLocalResourceCheckFix, is removed.
   void SendRequest(std::unique_ptr<ClientPhishingRequest> verdict,
                    const std::string& access_token,
-                   std::optional<bool> did_match_high_confidence_allowlist);
+                   std::optional<bool> did_match_high_confidence_allowlist,
+                   bool is_invalid_ip);
 
   // Called when token_fetcher_ has fetched the token.
+  // TODO: Remove the parameter is_invalid_ip once the feature flag,
+  // kClientSideDetectionLocalResourceCheckFix, is removed.
   void OnGotAccessToken(std::unique_ptr<ClientPhishingRequest> verdict,
                         std::optional<bool> did_match_high_confidence_allowlist,
+                        bool is_invalid_ip,
                         const std::string& access_token);
 
   // Returns true if phishing detection should not proceed beyond
@@ -481,16 +581,22 @@ class ClientSideDetectionHost
   // Callback function when GetInnerText is completed in the delegate. This
   // inner text is fetched as part of intelligent scan through the
   // CSD service class.
+  // TODO: Remove the parameter is_invalid_ip once the feature flag,
+  // kClientSideDetectionLocalResourceCheckFix, is removed.
   void OnInnerTextComplete(
       std::unique_ptr<ClientPhishingRequest> verdict,
       std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip,
       std::string inner_text);
 
   // Callback function when StartIntelligentScan from the intelligent scan
   // delegate is completed.
+  // TODO: Remove the parameter is_invalid_ip once the feature flag,
+  // kClientSideDetectionLocalResourceCheckFix, is removed.
   void OnIntelligentScanDone(
       std::unique_ptr<ClientPhishingRequest> verdict,
       std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip,
       IntelligentScanDelegate::IntelligentScanResult response);
 
   // Returns bool if for a |client_side_detection_Type|, the last URL is the
@@ -501,6 +607,13 @@ class ClientSideDetectionHost
       ClientSideDetectionType client_side_detection_type,
       std::optional<std::string> credit_card_form_event);
 
+  // Returns true if the new request type has a higher or same priority tier
+  // than the last request type.
+  bool NewRequestTypeTierHigher(ClientSideDetectionType new_request_type);
+
+  // Returns the tier value for the given request type.
+  int GetTierValue(ClientSideDetectionType request_type);
+
   // OnCreditCardFormVisitCount is a callback that is called when site
   // visit count on a credit card form event is complete, at which point
   // it determines whether a credit card from event should trigger a CSD
@@ -508,7 +621,33 @@ class ClientSideDetectionHost
   void OnCreditCardFormVisitCount(
       std::optional<base::TimeTicks> start_time,
       credit_card_form::FieldDetectionHeuristic field_heuristic,
-      history::VisibleVisitCountToHostResult history_result);
+      std::string event_name,
+      bool should_trigger,
+      history::DailyVisitsResult history_result);
+
+  // MaybeTriggerCreditCardFormPing is a helper that determines whether
+  // a credit card form event should trigger a CSD ping. It takes
+  // an optional field_id to specify whether it is an interaction
+  // or a detection trigger.
+  void MaybeTriggerCreditCardFormPing(
+      autofill::AutofillManager& manager,
+      autofill::FormGlobalId form_id,
+      std::optional<autofill::FieldGlobalId> field_id,
+      std::string event_name,
+      bool should_trigger);
+
+  // Fills in the screenshot data for the given `request`. Only fill if the
+  // report type is USER_REPORT.
+  void MaybeFillScreenshotData(ClientPhishingRequest* request);
+
+  // Helper method to run the callback.
+  void MaybeRunUserReportCallback();
+
+  // The callback for the report a scam dialog.
+  base::OnceClosure user_report_callback_;
+
+  // Timer to call the user report callback.
+  base::OneShotTimer user_report_timeout_timer_;
 
   // This pointer may be nullptr if client-side phishing detection is
   // disabled.
@@ -533,6 +672,18 @@ class ClientSideDetectionHost
   // fullscreen.
   GURL last_fullscreen_url_;
 
+  // `did_first_visually_non_empty_paint_` becomes true after the first paint
+  // that is not the background color. `on_first_contentful_paint_` becomes
+  // true after the browser renders the first content from the DOM (e.g.,
+  // text or an image).
+  //
+  // Client-side detection for TRIGGER_MODELS will only start after both events
+  // have occurred. This ensures that classification doesn't begin before the
+  // page has meaningfully rendered. These flags are reset on each new main
+  // frame navigation.
+  bool did_first_visually_non_empty_paint_ = false;
+  bool on_first_contentful_paint_ = false;
+
   // Records the start time of when image embedding started.
   base::TimeTicks image_embedding_start_time_;
   raw_ptr<const base::TickClock> tick_clock_;
@@ -554,7 +705,7 @@ class ClientSideDetectionHost
   // Cached result of calling HistoryService.GetVisibleVisitCountToHost
   // for some URL.
   std::optional<GURL> last_history_url_;
-  std::optional<history::VisibleVisitCountToHostResult> last_history_result_;
+  std::optional<history::DailyVisitsResult> last_history_result_;
 
   // The token fetcher used for getting access token.
   std::unique_ptr<SafeBrowsingTokenFetcher> token_fetcher_;
@@ -582,6 +733,11 @@ class ClientSideDetectionHost
   // FORCE_REQUEST. This is used to decide whether async check is allowed to
   // trigger FORCE_REQUEST.
   bool trigger_model_request_sent_as_force_request_ = false;
+
+  // A boolean that indicates whether all TRIGGER_MODELS request should be
+  // converted to FORCE_REQUEST. This is set true whenever the verdict cache
+  // manager is checked to see if we should send as a FORCE_REQUEST.
+  bool should_send_as_force_request_ = false;
 
   // Modified through tests only. Initial value is set to the const
   // kProbabilityForAcceptingHCAllowlistTrigger.
@@ -613,6 +769,19 @@ class ClientSideDetectionHost
 
   // The last text that was copied to the clipboard.
   std::u16string last_copied_text_;
+  std::unique_ptr<ClipboardExtractedData> clipboard_extracted_data_;
+
+  // The high resolution screenshot of the current tab. Should only be populated
+  // when a user reports a site as unsafe.
+  std::optional<SkBitmap> screenshot_;
+
+  // Track the states of the processes running and the currently running
+  // ClientSideDetectionType. This begins at the CLASSIFY bucket in
+  // PreClassificationCheck until just prior to the network request being sent.
+  bool is_csd_running_ = false;
+  bool is_classifying_ = false;
+  ClientSideDetectionType last_request_type_ =
+      ClientSideDetectionType::CLIENT_SIDE_DETECTION_TYPE_UNSPECIFIED;
 
   base::CancelableTaskTracker task_tracker_;
 

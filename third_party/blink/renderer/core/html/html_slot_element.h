@@ -48,6 +48,10 @@ class CORE_EXPORT HTMLSlotElement final : public HTMLElement {
  public:
   HTMLSlotElement(Document&);
 
+  ElementType GetElementType() const final {
+    return ElementType::kHTMLSlotElement;
+  }
+
   const HeapVector<Member<Node>>& AssignedNodes() const;
   const HeapVector<Member<Node>> AssignedNodesForBinding(
       const AssignedNodesOptions*);
@@ -97,6 +101,11 @@ class CORE_EXPORT HTMLSlotElement final : public HTMLElement {
   // recalc. Used by FlatTreeParentForChildDirty() which needs to avoid doing
   // slot assignments while marking the tree style-dirty.
   bool HasAssignedNodesNoRecalc() const { return !assigned_nodes_.empty(); }
+
+  // Returns true if FlattenedAssignedNodes() would be non-empty, without
+  // doing assignment recalc. Used for :has-slotted matching during style
+  // resolution.
+  bool HasFlattenedAssignedNodesNoRecalc() const;
 
   bool SupportsAssignment() const { return IsInShadowTree(); }
 

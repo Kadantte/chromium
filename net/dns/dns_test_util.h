@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "base/containers/span.h"
+#include "base/memory/free_deleter.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -31,8 +32,10 @@
 #include "net/dns/dns_response.h"
 #include "net/dns/dns_transaction.h"
 #include "net/dns/dns_util.h"
+#include "net/dns/filtering_details_url_generator.h"
 #include "net/dns/public/dns_over_https_server_config.h"
 #include "net/dns/public/dns_protocol.h"
+#include "net/dns/public/resolution_details.h"
 #include "net/dns/public/secure_dns_mode.h"
 #include "net/socket/socket_test_util.h"
 #include "url/scheme_host_port.h"
@@ -209,6 +212,20 @@ class URLRequestContext;
 
 DnsConfig CreateValidDnsConfig();
 
+class ScopedSetFilteringDetailsUrlGeneratorForTesting {
+ public:
+  ScopedSetFilteringDetailsUrlGeneratorForTesting();
+  ~ScopedSetFilteringDetailsUrlGeneratorForTesting();
+
+  ScopedSetFilteringDetailsUrlGeneratorForTesting(
+      const ScopedSetFilteringDetailsUrlGeneratorForTesting&) = delete;
+  ScopedSetFilteringDetailsUrlGeneratorForTesting& operator=(
+      const ScopedSetFilteringDetailsUrlGeneratorForTesting&) = delete;
+
+ private:
+  FilteringDetailsUrlGenerator generator_;
+};
+
 DnsResourceRecord BuildTestDnsRecord(std::string name,
                                      uint16_t type,
                                      base::span<const uint8_t> rdata,
@@ -254,6 +271,10 @@ DnsResourceRecord BuildTestHttpsServiceRecord(
     std::string_view service_name,
     const std::map<uint16_t, std::string>& params,
     base::TimeDelta ttl = base::Days(1));
+
+DnsResourceRecord BuildTestOptRecord(uint16_t udp_payload_size,
+                                     uint32_t extended_rcode_and_flags,
+                                     base::span<const uint8_t> rdata);
 
 DnsResponse BuildTestDnsResponse(
     std::string name,
@@ -322,9 +343,11 @@ struct MockDnsClientRule {
   };
 
   struct Result {
-    explicit Result(ResultType type,
-                    std::optional<DnsResponse> response = std::nullopt,
-                    std::optional<int> net_error = std::nullopt);
+    explicit Result(
+        ResultType type,
+        std::optional<DnsResponse> response = std::nullopt,
+        std::optional<int> net_error = std::nullopt,
+        std::optional<DohResolutionDetails> doh_details = std::nullopt);
     explicit Result(DnsResponse response);
     Result(Result&&);
     Result& operator=(Result&&);
@@ -333,6 +356,7 @@ struct MockDnsClientRule {
     ResultType type;
     std::optional<DnsResponse> response;
     std::optional<int> net_error;
+    std::optional<DohResolutionDetails> doh_details;
   };
 
   // If |delay| is true, matching transactions will be delayed until triggered
@@ -368,6 +392,7 @@ class MockDnsTransactionFactory : public DnsTransactionFactory {
       const NetLogWithSource&,
       AttemptMode attempt_mode,
       SecureDnsMode secure_dns_mode,
+      handles::NetworkHandle target_network,
       ResolveContext* resolve_context,
       bool fast_timeout) override;
 
@@ -384,6 +409,11 @@ class MockDnsTransactionFactory : public DnsTransactionFactory {
   bool doh_probes_running() { return !running_doh_probe_runners_.empty(); }
   void CompleteDohProbeRuners() { running_doh_probe_runners_.clear(); }
 
+  void SetNextDohProbeRunner(
+      std::unique_ptr<DnsProbeRunner> next_probe_runner) {
+    next_probe_runner_ = std::move(next_probe_runner);
+  }
+
   void set_force_doh_server_available(bool available) {
     force_doh_server_available_ = available;
   }
@@ -397,6 +427,7 @@ class MockDnsTransactionFactory : public DnsTransactionFactory {
   DelayedTransactionList delayed_transactions_;
 
   bool force_doh_server_available_ = true;
+  std::unique_ptr<DnsProbeRunner> next_probe_runner_;
   std::set<raw_ptr<MockDohProbeRunner, SetExperimental>>
       running_doh_probe_runners_;
 
@@ -548,6 +579,13 @@ class MockHostResolverProc : public HostResolverProc {
               HostResolverFlags host_resolver_flags,
               AddressList* addrlist,
               int* os_error) override;
+
+  int Resolve(const std::string& hostname,
+              AddressFamily address_family,
+              HostResolverFlags host_resolver_flags,
+              AddressList* addrlist,
+              int* os_error,
+              handles::NetworkHandle network) override;
 
   CaptureList GetCaptureList() const;
 

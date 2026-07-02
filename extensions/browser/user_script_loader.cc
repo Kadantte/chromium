@@ -403,12 +403,12 @@ base::ReadOnlySharedMemoryRegion UserScriptLoader::Serialize(
     for (const std::unique_ptr<UserScript::Content>& js_file :
          script->js_scripts()) {
       std::string_view contents = js_file->GetContent();
-      pickle.WriteData(contents.data(), contents.length());
+      pickle.WriteData(contents);
     }
     for (const std::unique_ptr<UserScript::Content>& css_file :
          script->css_scripts()) {
       std::string_view contents = css_file->GetContent();
-      pickle.WriteData(contents.data(), contents.length());
+      pickle.WriteData(contents);
     }
   }
 
@@ -532,6 +532,22 @@ UserScriptLoader::SendUpdateResult UserScriptLoader::SendUpdate(
     // If the renderer connection hasn't been set up yet, early return.  We'll
     // end up here again when it's ready.
     return SendUpdateResult::kNoActionTaken;
+  }
+
+  switch (host_id().type) {
+    case mojom::HostID::HostType::kExtensions:
+      break;
+    case mojom::HostID::HostType::kWebUi:
+    case mojom::HostID::HostType::kControlledFrameEmbedder:
+      // Embedder content scripts are only ever injected into the embedder's
+      // own guest views and never into ordinary web frames, so they only need
+      // to be sent to guest renderers.
+      if (!process->IsForGuestsOnly()) {
+        return SendUpdateResult::kNoActionTaken;
+      }
+      break;
+    default:
+      NOTREACHED();
   }
 
   base::ReadOnlySharedMemoryRegion region_for_process =

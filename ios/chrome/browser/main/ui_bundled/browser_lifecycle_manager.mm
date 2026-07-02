@@ -9,6 +9,7 @@
 #import "base/ios/ios_util.h"
 #import "base/memory/raw_ptr.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/trace_event/trace_event.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/browser/browser_view/ui_bundled/browser_coordinator.h"
 #import "ios/chrome/browser/browser_view/ui_bundled/browser_view_controller.h"
@@ -29,6 +30,7 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_browser_agent.h"
@@ -39,8 +41,9 @@
   raw_ptr<ProfileIOS> _profile;
 
   __weak SceneState* _sceneState;
-  __weak id<SceneCommands> _applicationEndpoint;
+  __weak id<SceneCommands> _sceneEndpoint;
   __weak id<SettingsCommands> _settingsEndpoint;
+  __weak id<GeminiCommands> _geminiEndpoint;
 
   std::unique_ptr<Browser> _mainBrowser;
   std::unique_ptr<Browser> _otrBrowser;
@@ -53,13 +56,18 @@
 
 - (instancetype)initWithProfile:(ProfileIOS*)profile
                      sceneState:(SceneState*)sceneState
-            applicationEndpoint:(id<SceneCommands>)applicationEndpoint
-               settingsEndpoint:(id<SettingsCommands>)settingsEndpoint {
+                  sceneEndpoint:(id<SceneCommands>)sceneEndpoint
+               settingsEndpoint:(id<SettingsCommands>)settingsEndpoint
+                 geminiEndpoint:(id<GeminiCommands>)geminiEndpoint {
+  TRACE_EVENT("ui", "-[BrowserLifecycleManager "
+                    "initWithProfile:sceneState:sceneEndpoint:settingsEndpoint:"
+                    "geminiEndpoint:]");
   if ((self = [super init])) {
     _profile = profile;
     _sceneState = sceneState;
-    _applicationEndpoint = applicationEndpoint;
+    _sceneEndpoint = sceneEndpoint;
     _settingsEndpoint = settingsEndpoint;
+    _geminiEndpoint = geminiEndpoint;
 
     // Create all browsers.
     _mainBrowser = Browser::Create(_profile, _sceneState);
@@ -79,6 +87,8 @@
 }
 
 - (void)createMainCoordinatorAndInterface {
+  TRACE_EVENT("ui",
+              "-[BrowserLifecycleManager createMainCoordinatorAndInterface]");
   DCHECK(!_mainInterface)
       << "-createMainCoordinatorAndInterface must not be called once";
 
@@ -91,12 +101,11 @@
   DCHECK(_mainBrowserCoordinator.viewController);
   _mainInterface =
       [[WrangledBrowser alloc] initWithCoordinator:_mainBrowserCoordinator];
-  _mainInterface.inactiveBrowser = _mainBrowser->GetInactiveBrowser();
-
   _incognitoInterface = [self createOTRInterface];
 }
 
 - (void)loadSession {
+  TRACE_EVENT("ui", "-[BrowserLifecycleManager loadSession]");
   DCHECK(_mainBrowser);
   DCHECK(_mainInterface)
       << "-loadSession must be called after -createMainCoordinatorAndInterface";
@@ -104,9 +113,19 @@
   Browser* inactiveBrowser = _mainBrowser->GetInactiveBrowser();
 
   // Restore the session after creating the coordinator.
-  [self loadSessionForBrowser:_mainBrowser.get()];
-  [self loadSessionForBrowser:inactiveBrowser];
-  [self loadSessionForBrowser:_otrBrowser.get()];
+  {
+    TRACE_EVENT("ui", "-[BrowserLifecycleManager loadSessionForBrowser:] main");
+    [self loadSessionForBrowser:_mainBrowser.get()];
+  }
+  {
+    TRACE_EVENT("ui",
+                "-[BrowserLifecycleManager loadSessionForBrowser:] inactive");
+    [self loadSessionForBrowser:inactiveBrowser];
+  }
+  {
+    TRACE_EVENT("ui", "-[BrowserLifecycleManager loadSessionForBrowser:] otr");
+    [self loadSessionForBrowser:_otrBrowser.get()];
+  }
 
   if (!IsInactiveTabsExplicitlyDisabledByUser(
           _mainBrowser->GetProfile()->GetPrefs())) {
@@ -273,10 +292,12 @@
   [dispatcher startDispatchingToTarget:reauthAgent
                            forProtocol:@protocol(IncognitoReauthCommands)];
 
-  [dispatcher startDispatchingToTarget:_applicationEndpoint
+  [dispatcher startDispatchingToTarget:_sceneEndpoint
                            forProtocol:@protocol(SceneCommands)];
   [dispatcher startDispatchingToTarget:_settingsEndpoint
                            forProtocol:@protocol(SettingsCommands)];
+  [dispatcher startDispatchingToTarget:_geminiEndpoint
+                           forProtocol:@protocol(GeminiCommands)];
 }
 
 // Sets up an existing browser.
@@ -301,6 +322,7 @@
 
 // Create the OTR interface object.
 - (WrangledBrowser*)createOTRInterface {
+  TRACE_EVENT("ui", "-[BrowserLifecycleManager createOTRInterface]");
   DCHECK(!_incognitoInterface);
 
   // The backing coordinator should not have been created yet.

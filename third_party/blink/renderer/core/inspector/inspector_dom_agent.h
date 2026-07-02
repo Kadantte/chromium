@@ -41,6 +41,7 @@
 #include "third_party/blink/renderer/platform/bindings/source_location.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
+#include "third_party/blink/renderer/platform/loader/fetch/ad_tagging_utils.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
@@ -277,6 +278,7 @@ class CORE_EXPORT InspectorDOMAgent final
   protocol::Response forceShowPopover(
       int node_id,
       bool enable,
+      std::optional<int> invoker_node_id,
       std::unique_ptr<protocol::Array<int>>* out_nodeIds) override;
   void WillHidePopover(HTMLElement* element, bool* force_open);
 
@@ -301,7 +303,7 @@ class CORE_EXPORT InspectorDOMAgent final
   void DidModifyAdoptedStyleSheets(Node*);
   void AdoptedStyleSheetsInvalidated(Node*);
   void CharacterDataModified(CharacterData*);
-  void DidInvalidateStyleAttr(Node*);
+  void DidInvalidateStyleAttr(Element*);
   void DidPushShadowRoot(Element* host, ShadowRoot*);
   void WillPopShadowRoot(Element* host, ShadowRoot*);
   void DidPerformSlotDistribution(HTMLSlotElement*);
@@ -312,6 +314,8 @@ class CORE_EXPORT InspectorDOMAgent final
   void PseudoElementDestroyed(PseudoElement*);
   void NodeCreated(Node* node);
   void UpdateScrollableFlag(Node* node, std::optional<bool>);
+  void UpdateAdRelatedState(Node& node,
+                            std::optional<AdProvenance> ad_provenance);
   void UpdateAffectedByStartingStylesFlag(Node* node, std::optional<bool>);
 
   Node* NodeForId(int node_id) const;
@@ -365,6 +369,7 @@ class CORE_EXPORT InspectorDOMAgent final
   void NotifyDidAddDocument(Document*);
   void NotifyWillRemoveDOMNode(Node*);
   void NotifyDidModifyDOMAttr(Element*);
+  void ForEachDOMListener(base::FunctionRef<void(const Member<DOMListener>&)>);
 
   // Node-related methods.
   using NodeToIdMap = GCedHeapHashMap<Member<Node>, int>;

@@ -29,7 +29,7 @@ targets.legacy_compound_suite(
 targets.legacy_compound_suite(
     name = "chromium_linux_blink_rel_isolated_scripts",
     basic_suites = [
-        "chromium_webkit_isolated_scripts",
+        "chromium_blink_isolated_scripts",
         "linux_specific_chromium_isolated_scripts",
         "vulkan_swiftshader_isolated_scripts",
         "chromium_web_tests_high_dpi_isolated_scripts",
@@ -94,7 +94,6 @@ targets.legacy_compound_suite(
         "gpu_webrtc_telemetry_test",
         "gpu_webgl2_conformance_d3d11_passthrough_telemetry_tests",
         "gpu_webgl_conformance_d3d11_passthrough_telemetry_tests",
-        "gpu_webgl_conformance_d3d9_passthrough_telemetry_tests",
         "gpu_webgl_conformance_vulkan_passthrough_telemetry_tests",
     ],
 )
@@ -149,11 +148,3 @@ targets.legacy_compound_suite(
 #         'telemetry_perf_unittests_isolated_scripts_android',
 #     ],
 # )
-
-targets.legacy_compound_suite(
-    name = "win_specific_isolated_scripts_and_sizes",
-    basic_suites = [
-        "chrome_sizes_suite",
-        "win_specific_isolated_scripts",
-    ],
-)

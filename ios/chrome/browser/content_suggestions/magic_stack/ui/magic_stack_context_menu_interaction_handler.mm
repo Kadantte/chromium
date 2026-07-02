@@ -12,7 +12,7 @@
 #import "ios/chrome/browser/content_suggestions/magic_stack/ui/magic_stack_module_container_delegate.h"
 #import "ios/chrome/browser/content_suggestions/public/content_suggestions_constants.h"
 #import "ios/chrome/browser/content_suggestions/shop_card/ui/shop_card_data.h"
-#import "ios/chrome/browser/content_suggestions/tab_resumption/ui/tab_resumption_item.h"
+#import "ios/chrome/browser/content_suggestions/tab_resumption/ui/tab_resumption_config.h"
 #import "ios/chrome/browser/content_suggestions/ui/content_suggestions_collection_utils.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_client_id.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_settings_util.h"
@@ -53,26 +53,8 @@ BOOL AllowsLongPressForModuleType(ContentSuggestionsModuleType type) {
 NSString* GetContextMenuTitleForType(ContentSuggestionsModuleType type,
                                      MagicStackModule* config) {
   switch (type) {
-    case ContentSuggestionsModuleType::kTabResumption: {
-      TabResumptionItem* tabResumptionItemConfig =
-          static_cast<TabResumptionItem*>(config);
-      if ((commerce::kShopCardVariation.Get().contains(
-               commerce::kShopCardArm3) ||
-           commerce::kShopCardVariation.Get() == commerce::kShopCardArm4) &&
-          tabResumptionItemConfig.shopCardData) {
-        if (tabResumptionItemConfig.shopCardData.shopCardItemType ==
-                ShopCardItemType::kPriceDropOnTab &&
-            tabResumptionItemConfig.shopCardData.priceDrop.has_value()) {
-          return l10n_util::GetNSString(
-              IDS_IOS_CONTENT_SUGGESTIONS_SHOPCARD_PRICE_DROP_CONTEXT_MENU_TITLE);
-        } else if (tabResumptionItemConfig.shopCardData.shopCardItemType ==
-                   ShopCardItemType::kPriceTrackableProductOnTab) {
-          return l10n_util::GetNSString(
-              IDS_IOS_CONTENT_SUGGESTIONS_SHOPCARD_TRACK_PRICE_CONTEXT_MENU_TITLE);
-        }
-      }
+    case ContentSuggestionsModuleType::kTabResumption:
       return l10n_util::GetNSString(IDS_IOS_TAB_RESUMPTION_CONTEXT_MENU_TITLE);
-    }
     case ContentSuggestionsModuleType::kSafetyCheck:
       return l10n_util::GetNSString(IDS_IOS_SAFETY_CHECK_CONTEXT_MENU_TITLE);
     case ContentSuggestionsModuleType::kPriceTrackingPromo:
@@ -104,18 +86,9 @@ NSString* GetContextMenuHideDescriptionForType(
     ContentSuggestionsModuleType type,
     MagicStackModule* config) {
   switch (type) {
-    case ContentSuggestionsModuleType::kTabResumption: {
-      TabResumptionItem* tabResumptionItemConfig =
-          static_cast<TabResumptionItem*>(config);
-      if (tabResumptionItemConfig.shopCardData &&
-          tabResumptionItemConfig.shopCardData.shopCardItemType ==
-              ShopCardItemType::kPriceTrackableProductOnTab) {
-        return l10n_util::GetNSString(
-            IDS_IOS_CONTENT_SUGGESTIONS_SHOPCARD_TRACK_PRICE_HIDE_ALT);
-      }
+    case ContentSuggestionsModuleType::kTabResumption:
       return l10n_util::GetNSString(
           IDS_IOS_TAB_RESUMPTION_CONTEXT_MENU_DESCRIPTION);
-    }
     case ContentSuggestionsModuleType::kSafetyCheck:
       return l10n_util::GetNSString(
           IDS_IOS_SAFETY_CHECK_CONTEXT_MENU_DESCRIPTION);

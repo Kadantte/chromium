@@ -40,7 +40,6 @@
 #include "remoting/protocol/jingle_session_manager.h"
 #include "remoting/protocol/negotiating_client_authenticator.h"
 #include "remoting/protocol/network_settings.h"
-#include "remoting/protocol/session_config.h"
 #include "remoting/protocol/transport.h"
 #include "remoting/protocol/transport_context.h"
 #include "remoting/protocol/webrtc_connection_to_host.h"
@@ -152,14 +151,8 @@ void RemotingClient::StartConnection() {
       webrtc::SdpVideoFormat::AV1Profile0());
 
   CLIENT_LOG << "Creating session manager...";
-  auto protocol_config = protocol::CandidateSessionConfig::CreateDefault();
-  protocol_config->set_webrtc_supported(true);
-  if (!audio_stream_consumer_) {
-    protocol_config->DisableAudioChannel();
-  }
   session_manager_ =
       std::make_unique<protocol::JingleSessionManager>(signal_strategy_.get());
-  session_manager_->set_protocol_config(std::move(protocol_config));
 
   CLIENT_LOG << "Creating session...";
   auto host_signaling_id = NormalizeSignalingId(chrome_os_host_->ftl_id());
@@ -258,6 +251,17 @@ void RemotingClient::SetActiveDisplay(
   NOTIMPLEMENTED();
 }
 
+void RemotingClient::ControlMicrophone(
+    const protocol::MicrophoneControl& control) {
+  // This client implementation does not support microphone remoting.
+  NOTIMPLEMENTED();
+}
+
+void RemotingClient::DeliverTerminalControl(
+    const protocol::TerminalControl& terminal_control) {
+  NOTIMPLEMENTED();
+}
+
 void RemotingClient::InjectClipboardEvent(
     const protocol::ClipboardEvent& event) {
   NOTIMPLEMENTED();
@@ -306,7 +310,7 @@ void RemotingClient::OnRouteChanged(const std::string& channel_name,
              << " connection for " << channel_name << " channel";
 }
 
-void RemotingClient::OnSignalStrategyStateChange(SignalStrategy::State state) {
+void RemotingClient::OnSignalingStateChanged(SignalStrategy::State state) {
   switch (state) {
     case SignalStrategy::CONNECTING:
       CLIENT_LOG << "Signaling channel is being established.";
@@ -332,11 +336,6 @@ void RemotingClient::OnSignalStrategyStateChange(SignalStrategy::State state) {
       RunQuitClosure();
       break;
   }
-}
-
-bool RemotingClient::OnSignalStrategyIncomingStanza(
-    const jingle_xmpp::XmlElement* stanza) {
-  return false;
 }
 
 void RemotingClient::RunQuitClosure() {

@@ -16,7 +16,6 @@
 #import "base/timer/timer.h"
 #import "base/values.h"
 #import "components/prefs/pref_service.h"
-#import "components/send_tab_to_self/features.h"
 #import "components/sync_device_info/device_info_sync_service.h"
 #import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
@@ -94,6 +93,12 @@ enum class PushNotificationLifecycleEvent {
   kNotificationInteraction,
   kMaxValue = kNotificationInteraction
 };
+
+BASE_FEATURE_PARAM(int,
+                   kDeliveredNAUMaxPerSessionFeature,
+                   &kContentNotificationDeliveredNAU,
+                   kDeliveredNAUMaxPerSession,
+                   kDeliveredNAUMaxSendsPerSession);
 
 // Extract the notification information from `attr`, and store them into
 // `mapping`. Will also copy the notification permission from the profile's
@@ -268,6 +273,17 @@ std::string GetProfileNameFromUserInfo(NSDictionary* user_info) {
   }
 
   NSString* gaia_id_ns = user_info[kOriginatingGaiaIDKey];
+  // TODO(crbug.com/524713899): Rely on this Chime payload key for all Chime
+  // notifications, not just Content Push Notifications.
+  if (!gaia_id_ns.length && IsContentPushNotificationsEnabled()) {
+    NSDictionary* chime_payload = user_info[kSerializedChimePayloadKey];
+    if (chime_payload) {
+      id user_id_obj = chime_payload[kChimeNotificationGaiaIDKey];
+      if (user_id_obj) {
+        gaia_id_ns = [NSString stringWithFormat:@"%@", user_id_obj];
+      }
+    }
+  }
   GaiaId gaia_id = GaiaId(gaia_id_ns);
 
   if (gaia_id.empty()) {
@@ -695,8 +711,7 @@ void ProcessIncomingNotification(
     if (config.shouldRegisterContentNotification) {
       AuthenticationService* authService =
           AuthenticationServiceFactory::GetForProfile(profile);
-      id<SystemIdentity> identity =
-          authService->GetPrimaryIdentity(signin::ConsentLevel::kSignin);
+      id<SystemIdentity> identity = authService->GetPrimaryIdentity();
       config.primaryAccount = identity;
       // Send an initial NAU to share the OS auth status and channel status with
       // the server. Send an NAU on every foreground to report the OS Auth
@@ -722,10 +737,7 @@ void ProcessIncomingNotification(
                             !error);
   if (!error) {
     if (ProfileIOS* profile = weakProfile.get()) {
-      if (base::FeatureList::IsEnabled(
-              send_tab_to_self::kSendTabToSelfIOSPushNotifications)) {
         [self setUpAndEnableSendTabNotificationsWithProfile:profile];
-      }
     }
   }
 }
@@ -949,9 +961,7 @@ void ProcessIncomingNotification(
   if (IsContentNotificationEnabled(profile)) {
     ContentNotificationService* contentNotificationService =
         ContentNotificationServiceFactory::GetForProfile(profile);
-    int maxNauSentPerSession = base::GetFieldTrialParamByFeatureAsInt(
-        kContentNotificationDeliveredNAU, kDeliveredNAUMaxPerSession,
-        kDeliveredNAUMaxSendsPerSession);
+    int maxNauSentPerSession = kDeliveredNAUMaxPerSessionFeature.Get();
     // Check if there are notifications received in the background to send the
     // respective NAUs.
     NSUserDefaults* defaults = app_group::GetGroupUserDefaults();
@@ -1031,8 +1041,7 @@ void ProcessIncomingNotification(
 
   AuthenticationService* authService =
       AuthenticationServiceFactory::GetForProfile(profile);
-  GaiaId gaiaID =
-      authService->GetPrimaryIdentity(signin::ConsentLevel::kSignin).gaiaId;
+  GaiaId gaiaID = authService->GetPrimaryIdentity().gaiaId;
 
   // Early return if 1) the user has previously disabled Send Tab push
   // notifications, because in that case we don't want to automatically enable

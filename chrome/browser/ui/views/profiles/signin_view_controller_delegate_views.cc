@@ -13,13 +13,13 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/enterprise/profile_management/profile_management_features.h"
 #include "chrome/browser/enterprise/signin/managed_profile_required_navigation_throttle.h"
+#include "chrome/browser/lifetime/application_lifetime_desktop.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_avatar_icon_util.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/signin/signin_promo.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
@@ -100,10 +100,11 @@ void CloseModalSigninInBrowser(
 
   browser->GetFeatures().signin_view_controller()->CloseModalSignin();
   if (show_supervised_user_iph) {
-    browser->window()->MaybeShowSupervisedUserProfileSignInIPH();
+    BrowserWindow::FromBrowser(browser.get())
+        ->MaybeShowSupervisedUserProfileSignInIPH();
   }
   if (show_profile_switch_iph) {
-    browser->window()->MaybeShowProfileSwitchIPH();
+    BrowserWindow::FromBrowser(browser.get())->MaybeShowProfileSwitchIPH();
   }
 }
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -250,6 +251,8 @@ SigninViewControllerDelegateViews::CreateManagedUserNoticeConfirmationWebView(
     std::unique_ptr<signin::EnterpriseProfileCreationDialogParams>
         create_param) {
   bool is_oidc_account = create_param->is_oidc_account;
+  bool is_device_signals_disclaimer =
+      create_param->is_device_signals_disclaimer;
   auto width = kManagedUserNoticeConfirmationDialogWidth;
   auto height = kManagedUserNoticeConfirmationDialogHeight;
   std::unique_ptr<views::WebView> web_view = CreateDialogWebView(
@@ -262,12 +265,19 @@ SigninViewControllerDelegateViews::CreateManagedUserNoticeConfirmationWebView(
           ->GetController()
           ->GetAs<ManagedUserProfileNoticeUI>();
   DCHECK(web_dialog_ui);
-  web_dialog_ui->Initialize(
-      browser,
-      is_oidc_account
-          ? ManagedUserProfileNoticeUI::ScreenType::kEnterpriseOIDC
-          : ManagedUserProfileNoticeUI::ScreenType::kEnterpriseAccountCreation,
-      std::move(create_param));
+
+  ManagedUserProfileNoticeUI::ScreenType screen_type =
+      ManagedUserProfileNoticeUI::ScreenType::kEnterpriseAccountCreation;
+  CHECK(!is_device_signals_disclaimer || !is_oidc_account)
+      << "is_device_signals_disclaimer and is_oidc_account are exclusive and "
+         "should never be true at the same time.";
+  if (is_device_signals_disclaimer) {
+    screen_type =
+        ManagedUserProfileNoticeUI::ScreenType::kDeviceSignalsDisclaimer;
+  } else if (is_oidc_account) {
+    screen_type = ManagedUserProfileNoticeUI::ScreenType::kEnterpriseOIDC;
+  }
+  web_dialog_ui->Initialize(browser, screen_type, std::move(create_param));
 
   return web_view;
 }
@@ -348,7 +358,7 @@ content::WebContents* SigninViewControllerDelegateViews::AddNewContents(
 web_modal::WebContentsModalDialogHost*
 SigninViewControllerDelegateViews::GetWebContentsModalDialogHost(
     content::WebContents* web_contents) {
-  return browser_->window()->GetWebContentsModalDialogHost();
+  return BrowserWindow::FromBrowser(browser_)->GetWebContentsModalDialogHost();
 }
 
 void SigninViewControllerDelegateViews::OnViewAddedToWidget(

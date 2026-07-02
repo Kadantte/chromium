@@ -16,6 +16,7 @@ import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 import android.media.ThumbnailUtils;
 import android.net.Uri;
+import android.os.PersistableBundle;
 import android.os.SystemClock;
 import android.text.TextUtils;
 import android.view.DragAndDropPermissions;
@@ -155,6 +156,13 @@ public class DragAndDropDelegateImpl implements DragAndDropDelegate, DragStateTr
     private boolean startDragAndDropInternal(
             View containerView, DragShadowBuilder dragShadowBuilder, DropDataAndroid dropData) {
         ClipData clipdata = buildClipData(dropData);
+        // A null clipdata is ok where DOM elements are being moved
+        // (crbug.com/363930156) but not for images which can happen in webview
+        // where DropDataProvider is not registered and will result in a crash
+        // (crbug.com/491018397).
+        if (clipdata == null && dropData.hasImage()) {
+            return false;
+        }
         mIsDragStarted = true;
         mDragStartSystemElapsedTime = SystemClock.elapsedRealtime();
         mDragTargetType = getDragTargetType(dropData);
@@ -232,6 +240,30 @@ public class DragAndDropDelegateImpl implements DragAndDropDelegate, DragStateTr
      * @return ClipData based on the dropData type.
      */
     protected @Nullable ClipData buildClipData(DropDataAndroid dropData) {
+        return addCustomDataToClipData(buildClipDataInternal(dropData), dropData);
+    }
+
+    private @Nullable ClipData addCustomDataToClipData(
+            @Nullable ClipData clipData, DropDataAndroid dropData) {
+        if (clipData == null || clipData.getDescription() == null) {
+            return clipData;
+        }
+
+        PersistableBundle extras = clipData.getDescription().getExtras();
+        if (extras == null) {
+            extras = new PersistableBundle();
+        }
+        if (dropData.customData != null) {
+            extras.putString(DropDataAndroid.EXTRA_CUSTOM_DATA, dropData.customData);
+        }
+        if (dropData.effectAllowed != null) {
+            extras.putString(DropDataAndroid.EXTRA_EFFECT_ALLOWED, dropData.effectAllowed);
+        }
+        clipData.getDescription().setExtras(extras);
+        return clipData;
+    }
+
+    protected @Nullable ClipData buildClipDataInternal(DropDataAndroid dropData) {
         @DragTargetType int type = getDragTargetType(dropData);
         switch (type) {
             case DragTargetType.TEXT:

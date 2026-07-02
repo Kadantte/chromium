@@ -7,48 +7,37 @@
 #include <memory>
 #include <string>
 
-#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
-#include "base/test/task_environment.h"
-#include "base/timer/timer.h"
-#include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
 #include "chrome/browser/ui/layout_constants.h"
-#include "chrome/browser/ui/tabs/features.h"
-#include "chrome/browser/ui/tabs/tab_renderer_data.h"
+#include "chrome/browser/ui/tabs/tab_data.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
-#include "chrome/browser/ui/ui_features.h"
-#include "chrome/browser/ui/views/frame/browser_root_view.h"
 #include "chrome/browser/ui/views/tabs/fake_base_tab_strip_controller.h"
+#include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_controller.h"
+#include "chrome/browser/ui/views/tabs/shared/tab_strip_observer.h"
+#include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
 #include "chrome/browser/ui/views/tabs/tab.h"
 #include "chrome/browser/ui/views/tabs/tab/tab_icon.h"
+#include "chrome/browser/ui/views/tabs/tab/tab_title.h"
 #include "chrome/browser/ui/views/tabs/tab_group_header.h"
 #include "chrome/browser/ui/views/tabs/tab_group_highlight.h"
 #include "chrome/browser/ui/views/tabs/tab_group_underline.h"
 #include "chrome/browser/ui/views/tabs/tab_group_views.h"
-#include "chrome/browser/ui/views/tabs/tab_hover_card_controller.h"
 #include "chrome/browser/ui/views/tabs/tab_strip_controller.h"
-#include "chrome/browser/ui/views/tabs/tab_strip_observer.h"
-#include "chrome/browser/ui/views/tabs/tab_strip_types.h"
 #include "chrome/browser/ui/views/tabs/tab_style_views.h"
-#include "chrome/test/base/testing_profile.h"
 #include "chrome/test/views/chrome_views_test_base.h"
-#include "components/data_sharing/public/features.h"
-#include "components/saved_tab_groups/public/features.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/pointer/touch_ui_controller.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/gfx/animation/animation_test_api.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/views/accessibility/view_accessibility.h"
-#include "ui/views/controls/label.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/test/ax_event_counter.h"
 #include "ui/views/test/views_test_utils.h"
@@ -147,12 +136,12 @@ class TabStripTestBase : public ChromeViewsTestBase {
         tab_strip_parent.get()));
 
     widget_ =
-        CreateTestWidget(views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET);
+        CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
     tab_strip_parent_ = widget_->SetContentsView(std::move(tab_strip_parent));
 
     // Prevent hover cards from appearing when the mouse is over the tab. Tests
     // don't typically account for this possibly, so it can cause unrelated
-    // tests to fail due to tab data not being set. See crbug.com/1050012.
+    // tests to fail due to tab data not being set. See crbug.com/40672885.
     Tab::SetShowHoverCardOnMouseHoverForTesting(false);
   }
 
@@ -362,7 +351,7 @@ TEST_P(TabStripTest, TabCloseButtonVisibility) {
 
   // Shrink the tab sizes by adding more tabs.
   // An inactive tab added to the tabstrip, now each tab size is not
-  // big enough to accomodate 3 icons, so it should not show its
+  // big enough to accommodate 3 icons, so it should not show its
   // tab close button.
   controller_->AddTab(3, TabActive::kInactive);
   Tab* tab3 = tab_strip_->tab_at(3);
@@ -413,7 +402,7 @@ TEST_P(TabStripTest, TabCloseButtonVisibility) {
 }
 
 // The active tab should always be at least as wide as its minimum width.
-// http://crbug.com/587688
+// http://crbug.com/40457423
 TEST_P(TabStripTest, ActiveTabWidthWhenTabsAreTiny) {
   // The bug was caused when it's animating. Therefore we should make widget
   // visible so that animation can be triggered.
@@ -449,7 +438,7 @@ TEST_P(TabStripTest, ActiveTabWidthWhenTabsAreTiny) {
 }
 
 // Inactive tabs shouldn't shrink during mouse-based tab closure.
-// http://crbug.com/850190
+// http://crbug.com/40579617
 TEST_P(TabStripTest, InactiveTabWidthWhenTabsAreTiny) {
   SetMaxTabStripWidth(200);
 
@@ -482,7 +471,7 @@ TEST_P(TabStripTest, InactiveTabWidthWhenTabsAreTiny) {
 }
 
 // When dragged tabs are moving back to their position, changes to ideal bounds
-// should be respected. http://crbug.com/848016
+// should be respected. http://crbug.com/40578598
 TEST_P(TabStripTest, ResetBoundsForDraggedTabs) {
   SetMaxTabStripWidth(200);
 
@@ -532,9 +521,9 @@ TEST_P(TabStripTest, TabNeedsAttentionBlocked) {
   Tab* tab1 = tab_strip_->tab_at(1);
 
   // Block tab1.
-  TabRendererData data;
+  tabs::TabData data;
   data.blocked = true;
-  tab1->SetData(data);
+  tab1->SetDataForTesting(data);
 
   EXPECT_FALSE(IsShowingAttentionIndicator(tab1));
   controller_->SelectTab(0, dummy_event_);
@@ -551,9 +540,9 @@ TEST_P(TabStripTest, TabNeedsAttentionGeneric) {
   Tab* tab1 = tab_strip_->tab_at(1);
 
   // Set needs attention.
-  TabRendererData data;
+  tabs::TabData data;
   data.needs_attention = true;
-  tab1->SetData(data);
+  tab1->SetDataForTesting(data);
 
   EXPECT_TRUE(IsShowingAttentionIndicator(tab1));
   controller_->SelectTab(0, dummy_event_);
@@ -583,7 +572,7 @@ TEST_P(TabStripTest, EventsOnClosingTab) {
   EXPECT_TRUE(second_tab->closing());
 }
 
-// TODO (crbug.com/1520595): Disabled for now due to test failing when CR2023
+// TODO (crbug.com/41493572): Disabled for now due to test failing when CR2023
 // enabled.
 TEST_P(TabStripTest, DISABLED_ChangingLayoutTypeResizesTabs) {
   SetMaxTabStripWidth(1000);
@@ -609,7 +598,7 @@ TEST_P(TabStripTest, DISABLED_ChangingLayoutTypeResizesTabs) {
 // the first tab in a group was animating closed, attempting to close the next
 // tab could result in a crash. This was due to TabStripLayoutHelper mistakenly
 // mapping the next tab's model index to the closing tab's slot. See
-// https://crbug.com/1138748 for a related crash.
+// https://crbug.com/40725628 for a related crash.
 TEST_P(TabStripTest, CloseTabInGroupWhilePreviousTabAnimatingClosed) {
   controller_->AddTab(0, TabActive::kActive);
   controller_->AddTab(1, TabActive::kInactive);
@@ -718,7 +707,7 @@ struct SizeChangeObserver : public views::ViewObserver {
 }  // namespace
 
 // When dragged tabs' bounds are modified through TabDragContext, both tab strip
-// and its parent view must get re-laid out http://crbug.com/1151092.
+// and its parent view must get re-laid out http://crbug.com/40732823.
 TEST_P(TabStripTest, RelayoutAfterDraggedTabBoundsUpdate) {
   SetMaxTabStripWidth(400);
 

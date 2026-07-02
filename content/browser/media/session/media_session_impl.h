@@ -140,7 +140,8 @@ class MediaSessionImpl : public MediaSession,
   void TitleWasSet(NavigationEntry* entry) override;
   void DidUpdateFaviconURL(
       RenderFrameHost* rfh,
-      const std::vector<blink::mojom::FaviconURLPtr>& candidates) override;
+      const std::vector<blink::mojom::FaviconURLPtr>& candidates,
+      blink::mojom::FaviconUpdateReason reason) override;
   void MediaPictureInPictureChanged(bool is_picture_in_picture) override;
   void RenderFrameHostStateChanged(
       RenderFrameHost* host,
@@ -226,6 +227,11 @@ class MediaSessionImpl : public MediaSession,
   // Returns the current media session metadata for a one-off request.
   CONTENT_EXPORT const media_session::MediaMetadata& GetMediaSessionMetadata()
       override;
+
+  // Returns the current media session actions synchronously for a one-off
+  // request.
+  std::vector<media_session::mojom::MediaSessionAction>
+  GetMediaSessionActionsSync() const override;
 
   // Suspend the media session.
   // |type| represents the origin of the request.
@@ -337,6 +343,9 @@ class MediaSessionImpl : public MediaSession,
 
   void OnMediaMutedStatusChanged(bool mute);
 
+  // Returns the current mute status of the media session.
+  bool GetMuteStatus() const { return is_muted_; }
+
   void OnPictureInPictureAvailabilityChanged();
 
   // Called when any of the normal players have switched to a different audio
@@ -391,6 +400,9 @@ class MediaSessionImpl : public MediaSession,
   friend class MediaSessionImplDurationThrottleTest;
   friend class MediaInternalsAudioFocusTest;
   friend class WebAppSystemMediaControlsBrowserTest;
+
+  void SetSourceIconsFromFavicons(
+      const std::vector<blink::mojom::FaviconURLPtr>& candidates);
 
   CONTENT_EXPORT void RemoveAllPlayersForTest();
   CONTENT_EXPORT MediaSessionUmaHelper* uma_helper_for_test();
@@ -467,6 +479,10 @@ class MediaSessionImpl : public MediaSession,
   // Returns true if there is at least one player and all the players are
   // one-shot.
   bool HasOnlyOneShotPlayers() const;
+
+  // Returns true if there is at least one player and all the players are
+  // ambient.
+  bool HasOnlyAmbientPlayers() const;
 
   // MediaSessionService-related methods
 

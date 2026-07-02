@@ -42,6 +42,8 @@
 #include "components/page_info/core/features.h"
 #include "components/page_info/core/proto/about_this_site_metadata.pb.h"
 #include "components/page_info/page_info.h"
+#include "components/permissions/permission_decision_auto_blocker.h"
+#include "components/permissions/permissions_client.h"
 #include "components/privacy_sandbox/canonical_topic.h"
 #include "components/privacy_sandbox/privacy_sandbox_features.h"
 #include "components/safe_browsing/content/browser/password_protection/password_protection_test_util.h"
@@ -176,7 +178,7 @@ class PageInfoBubbleViewDialogBrowserTest : public DialogBrowserTest {
   // DialogBrowserTest:
   void ShowUi(const std::string& name_with_param_suffix) override {
     // Bubble dialogs' bounds may exceed the display's work area.
-    // https://crbug.com/893292.
+    // https://crbug.com/41419544.
     set_should_verify_dialog_bounds(false);
 
     const std::string& name =
@@ -204,6 +206,7 @@ class PageInfoBubbleViewDialogBrowserTest : public DialogBrowserTest {
     constexpr char kMixedContent[] = "MixedContent";
     constexpr char kAllowAllPermissions[] = "AllowAllPermissions";
     constexpr char kBlockAllPermissions[] = "BlockAllPermissions";
+    constexpr char kNotificationsEmbargoed[] = "NotificationsEmbargoed";
 
     const GURL internal_url("chrome://settings");
     const GURL internal_extension_url("chrome-extension://example");
@@ -218,7 +221,8 @@ class PageInfoBubbleViewDialogBrowserTest : public DialogBrowserTest {
     GURL url = http_url;
     if (name == kSecure || name == kEvSecure || name == kMixedContentForm ||
         name == kMixedContent || name == kAllowAllPermissions ||
-        name == kBlockAllPermissions || name == kMalwareAndBadCert) {
+        name == kBlockAllPermissions || name == kMalwareAndBadCert ||
+        name == kNotificationsEmbargoed) {
       url = https_url;
     }
     if (name == kInternal) {
@@ -303,6 +307,22 @@ class PageInfoBubbleViewDialogBrowserTest : public DialogBrowserTest {
       identity.identity_status = PageInfo::SITE_IDENTITY_STATUS_CERT;
       identity.connection_status =
           PageInfo::SITE_CONNECTION_STATUS_INSECURE_PASSIVE_SUBRESOURCE;
+    }
+
+    if (name == kNotificationsEmbargoed) {
+      permissions::PermissionDecisionAutoBlocker* autoblocker =
+          permissions::PermissionsClient::Get()
+              ->GetPermissionDecisionAutoBlocker(browser()->profile());
+      // Place under embargo for multiple dismissals.
+      autoblocker->RecordDismissAndEmbargo(
+          url, ContentSettingsType::NOTIFICATIONS,
+          /*dismissed_prompt_was_quiet=*/false);
+      autoblocker->RecordDismissAndEmbargo(
+          url, ContentSettingsType::NOTIFICATIONS,
+          /*dismissed_prompt_was_quiet=*/false);
+      autoblocker->RecordDismissAndEmbargo(
+          url, ContentSettingsType::NOTIFICATIONS,
+          /*dismissed_prompt_was_quiet=*/false);
     }
 
     if (name == kAllowAllPermissions || name == kBlockAllPermissions) {
@@ -496,8 +516,8 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewDialogBrowserTest,
 // set. All permissions will show regardless of its factory default value.
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewDialogBrowserTest,
                        InvokeUi_AllowAllPermissions) {
-  // Last updated in crrev.com/c/7233078.
-  set_baseline("7233078");
+  // Last updated in crrev.com/c/7693993.
+  set_baseline("7693993");
   ShowAndVerifyUi();
 }
 
@@ -505,8 +525,14 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewDialogBrowserTest,
 // set. All permissions will show regardless of its factory default value.
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewDialogBrowserTest,
                        InvokeUi_BlockAllPermissions) {
-  // Last updated in crrev.com/c/7233078.
-  set_baseline("7233078");
+  // Last updated in crrev.com/c/7693993.
+  set_baseline("7693993");
+  ShowAndVerifyUi();
+}
+
+// Shows the Page Info bubble with Notifications permission under embargo.
+IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewDialogBrowserTest,
+                       InvokeUi_NotificationsEmbargoed) {
   ShowAndVerifyUi();
 }
 
@@ -572,7 +598,7 @@ class PageInfoBubbleViewAboutThisSiteDialogBrowserTest
   // DialogBrowserTest:
   void ShowUi(const std::string& name_with_param_suffix) override {
     // Bubble dialogs' bounds may exceed the display's work area.
-    // https://crbug.com/893292.
+    // https://crbug.com/41419544.
     set_should_verify_dialog_bounds(false);
 
     ASSERT_TRUE(
@@ -606,25 +632,20 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewAboutThisSiteDialogBrowserTest,
   ShowAndVerifyUi();
 }
 
-class PageInfoBubbleViewPrivacySandboxDialogBrowserTest
-    : public DialogBrowserTest {
+class PageInfoBubbleViewPrivacySandboxTestBase : public DialogBrowserTest {
  public:
   void SetUpOnMainThread() override {
     https_server_.SetSSLConfig(net::EmbeddedTestServer::CERT_TEST_NAMES);
     https_server_.ServeFilesFromSourceDirectory(GetChromeTestDataDir());
     ASSERT_TRUE(https_server_.Start());
-
     host_resolver()->AddRule("*", "127.0.0.1");
   }
 
-  // DialogBrowserTest:
-  void ShowUi(const std::string& name_with_param_suffix) override {
+ protected:
+  void SetupAndOpenBubble() {
     // Bubble dialogs' bounds may exceed the display's work area.
-    // https://crbug.com/893292.
+    // https://crbug.com/41419544.
     set_should_verify_dialog_bounds(false);
-
-    const std::string& name =
-        name_with_param_suffix.substr(0, name_with_param_suffix.find("/"));
 
     ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetUrl("a.test")));
 
@@ -644,6 +665,29 @@ class PageInfoBubbleViewPrivacySandboxDialogBrowserTest
     OpenPageInfoBubble(browser());
     // Set static site name to prevent flakes caused by changing port.
     SetStaticSiteName(u"Example site");
+  }
+
+  GURL GetUrl(const std::string& host) {
+    return https_server_.GetURL(host, "/title1.html");
+  }
+
+ private:
+  net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
+};
+
+class PageInfoBubbleViewPrivacySandboxDialogBrowserTest
+    : public PageInfoBubbleViewPrivacySandboxTestBase {
+ public:
+  PageInfoBubbleViewPrivacySandboxDialogBrowserTest() {
+    feature_list_.InitAndDisableFeature(
+        privacy_sandbox::kPrivacySandboxAdPrivacyUxDeprecation);
+  }
+
+  // DialogBrowserTest:
+  void ShowUi(const std::string& name_with_param_suffix) override {
+    const std::string& name =
+        name_with_param_suffix.substr(0, name_with_param_suffix.find("/"));
+    SetupAndOpenBubble();
 
     if (name == "PrivacySandboxMain") {
       // No further action needed, default case.
@@ -655,13 +699,8 @@ class PageInfoBubbleViewPrivacySandboxDialogBrowserTest
     }
   }
 
-  GURL GetUrl(const std::string& host) {
-    return https_server_.GetURL(host, "/title1.html");
-  }
-
  private:
   base::test::ScopedFeatureList feature_list_;
-  net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
 };
 
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewPrivacySandboxDialogBrowserTest,
@@ -671,6 +710,34 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewPrivacySandboxDialogBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewPrivacySandboxDialogBrowserTest,
                        InvokeUi_PrivacySandboxSubpage) {
+  ShowAndVerifyUi();
+}
+
+class PageInfoBubbleViewPrivacySandboxDeprecationBrowserTest
+    : public PageInfoBubbleViewPrivacySandboxTestBase {
+ public:
+  PageInfoBubbleViewPrivacySandboxDeprecationBrowserTest() {
+    feature_list_.InitAndEnableFeature(
+        privacy_sandbox::kPrivacySandboxAdPrivacyUxDeprecation);
+  }
+
+  // DialogBrowserTest:
+  void ShowUi(const std::string& name) override {
+    SetupAndOpenBubble();
+
+    auto* bubble_view = static_cast<PageInfoBubbleView*>(
+        PageInfoBubbleView::GetPageInfoBubbleForTesting());
+    views::View* ad_privacy_button = bubble_view->GetViewByID(
+        PageInfoViewFactory::VIEW_ID_PAGE_INFO_AD_PERSONALIZATION_BUTTON);
+    EXPECT_FALSE(ad_privacy_button);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewPrivacySandboxDeprecationBrowserTest,
+                       InvokeUi_AdPrivacyButtonRemoved) {
   ShowAndVerifyUi();
 }
 
@@ -685,7 +752,7 @@ class PageInfoBubbleViewCookiesSubpageBrowserTest : public DialogBrowserTest {
   // DialogBrowserTest:
   void ShowUi(const std::string& name_with_param_suffix) override {
     // Bubble dialogs' bounds may exceed the display's work area.
-    // https://crbug.com/893292.
+    // https://crbug.com/41419544.
     set_should_verify_dialog_bounds(false);
 
     PageInfoUI::CookiesInfo cookie_info;
@@ -801,7 +868,7 @@ class PageInfoBubbleViewIsolatedWebAppBrowserTest : public DialogBrowserTest {
   // DialogBrowserTest:
   void ShowUi(const std::string& name) override {
     // Bubble dialogs' bounds may exceed the display's work area.
-    // https://crbug.com/893292.
+    // https://crbug.com/41419544.
     set_should_verify_dialog_bounds(false);
 
     Browser* iwa_browser =
@@ -835,7 +902,7 @@ class PageInfoBubbleViewIsolatedWebAppBrowserTest : public DialogBrowserTest {
 
 // Test renamed, as currently Skia Gold doesn't support resetting test
 // expectation for tests run on windows.
-// crbug.com/1403038
+// crbug.com/40251389
 // Flaky on Win10 Tests x64 (crbug.com/40261456)
 #if BUILDFLAG(IS_WIN)
 #define MAYBE_InvokeUi_AppNameIsDisplayedInsteadOfOriginForIsolatedWebApps_REV2 \
@@ -902,7 +969,7 @@ class PageInfoBubbleViewWebAppBrowserTest
   // DialogBrowserTest:
   void ShowUi(const std::string& name_with_param_suffix) override {
     // Bubble dialogs' bounds may exceed the display's work area.
-    // https://crbug.com/893292.
+    // https://crbug.com/41419544.
     set_should_verify_dialog_bounds(false);
 
     const std::string& name =
@@ -1003,7 +1070,7 @@ class PageInfoBubbleViewMerchantTrustDialogBrowserTest
   // DialogBrowserTest:
   void ShowUi(const std::string& name) override {
     // Bubble dialogs' bounds may exceed the display's work area.
-    // https://crbug.com/893292.
+    // https://crbug.com/41419544.
     set_should_verify_dialog_bounds(false);
 
     if (name == "MerchantTrustMainPage" || name == "MerchantTrustSubpage") {
@@ -1026,8 +1093,7 @@ class PageInfoBubbleViewMerchantTrustDialogBrowserTest
     if (name == "MerchantTrustSubpage") {
       PageInfoBubbleView* bubble_view = static_cast<PageInfoBubbleView*>(
           PageInfoBubbleView::GetPageInfoBubbleForTesting());
-      bubble_view->OpenMerchantTrustPage(
-          page_info::MerchantBubbleOpenReferrer::kPageInfo);
+      bubble_view->OpenMerchantTrustPage();
     }
   }
 

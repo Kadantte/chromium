@@ -293,8 +293,7 @@ void SetSearchBarText(UISearchBar* searchBar, NSString* text) {
 
   [self.mutator loadFirstPage];
 
-  [self registerForTraitChanges:TraitCollectionSetForTraits(
-                                    @[ UITraitUserInterfaceStyle.class ])
+  [self registerForTraitChanges:@[ UITraitUserInterfaceStyle.class ]
                      withAction:@selector(userInterfaceStyleDidChange)];
 }
 
@@ -1124,6 +1123,10 @@ void SetSearchBarText(UISearchBar* searchBar, NSString* text) {
 
 - (void)setAllowsMultipleSelection:(BOOL)allowsMultipleSelection {
   self.tableView.editing = allowsMultipleSelection;
+}
+
+- (void)setAccountButtonHidden:(BOOL)hidden {
+  _accountButton.hidden = hidden;
 }
 
 #pragma mark - UI element creation helpers

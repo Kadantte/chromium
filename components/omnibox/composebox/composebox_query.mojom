@@ -11,8 +11,9 @@ struct AimUrlParam {
   string param_value;
 };
 
-// Upload status of a file.
-enum FileUploadStatus {
+// LINT.IfChange(ContextUploadStatus)
+// Upload status of a context.
+enum ContextUploadStatus {
   // Not uploaded.
   kNotUploaded = 0,
   // File being processed.
@@ -32,9 +33,11 @@ enum FileUploadStatus {
   // File is being replaced.
   kUploadReplaced = 8,
 };
+// LINT.ThenChange(//components/contextual_search/contextual_search_types.h:ContextUploadStatus)
 
+// LINT.IfChange(ContextUploadErrorType)
 // For upload error notifications and metrics.
-enum FileUploadErrorType {
+enum ContextUploadErrorType {
   // Unknown.
   kUnknown = 0,
   // Browser error before/during request, not covered by validation.
@@ -49,7 +52,22 @@ enum FileUploadErrorType {
   kAborted = 5,
   // Image processing error.
   kImageProcessingError = 6,
+  // Browser processing error: File is too large.
+  kBrowserProcessingFileTooLargeError = 7,
+  // Browser processing error: File is empty.
+  kBrowserProcessingFileEmptyError = 8,
+  // Browser processing error: Maximum number of files exceeded.
+  kBrowserProcessingMaxFilesExceededError = 9,
+  // Browser processing error: Unsupported file type.
+  kBrowserProcessingUnsupportedFileTypeError = 10,
+  // Browser processing error: File upload not allowed.
+  kBrowserProcessingFileUploadNotAllowedError = 11,
+  // Browser processing error: Maximum number of images exceeded.
+  kBrowserProcessingMaxImagesExceededError = 12,
+  // Browser processing error: Maximum number of PDFs exceeded.
+  kBrowserProcessingMaxPdfsExceededError = 13,
 };
+// LINT.ThenChange(//components/contextual_search/contextual_search_types.h:ContextUploadErrorType)
 
 // The AIM model mode.
 // LINT.IfChange(ModelMode)
@@ -65,7 +83,7 @@ enum ModelMode {
   // Uses Gemini Pro Model without generative UI.
   kGeminiProNoGenUi = 4,
 };
-// LINT.ThenChange(//tools/metrics/histograms/metadata/contextual_search/enums.xml:ContextualSearchAimModel)
+// LINT.ThenChange(//third_party/omnibox_proto/model_mode.proto:ModelMode)
 
 // The AIM tool mode.
 // LINT.IfChange(ToolMode)
@@ -93,9 +111,10 @@ enum ToolMode {
   // Enables AIM Gen Prompt mode.
   kAimGenPrompt = 10,
 };
-// LINT.ThenChange(//tools/metrics/histograms/metadata/contextual_search/enums.xml:ContextualSearchAimTool)
+// LINT.ThenChange(//third_party/omnibox_proto/tool_mode.proto:ToolMode)
 
 // The AIM input type.
+// LINT.IfChange(InputType)
 enum InputType {
   // Input is unspecified.
   kUnspecified = 0,
@@ -105,15 +124,21 @@ enum InputType {
   kLensFile = 2,
   // Input is a browser tab.
   kBrowserTab = 3,
+  // Input is from Google Drive.
+  kDrive = 4,
 };
+// LINT.ThenChange(//third_party/omnibox_proto/input_type.proto:InputType)
 
 // Configuration for an input type.
+// LINT.IfChange(InputTypeConfig)
 struct InputTypeConfig {
   InputType input_type;
   string menu_label;
 };
+// LINT.ThenChange(//third_party/omnibox_proto/input_type_config.proto:InputTypeConfig)
 
 // Configuration for a tool.
+// LINT.IfChange(ToolConfig)
 struct ToolConfig {
   ToolMode tool;
   bool disable_active_model_selection;
@@ -121,20 +146,27 @@ struct ToolConfig {
   string chip_label;
   string hint_text;
   array<AimUrlParam> aim_url_params;
+  string menu_tooltip;
 };
+// LINT.ThenChange(//third_party/omnibox_proto/tool_config.proto:ToolConfig)
 
 // Configuration for a model.
+// LINT.IfChange(ModelConfig)
 struct ModelConfig {
   ModelMode model;
   string menu_label;
   string hint_text;
   array<AimUrlParam> aim_url_params;
+  string menu_tooltip;
 };
+// LINT.ThenChange(//third_party/omnibox_proto/model_config.proto:ModelConfig)
 
 // Configuration for a section.
+// LINT.IfChange(SectionConfig)
 struct SectionConfig {
   string header;
 };
+// LINT.ThenChange(//third_party/omnibox_proto/section_config.proto:SectionConfig)
 
 // Represents the current state of inputs, models, and tools within AIM.
 // This struct is only ever sent from the browser to WebUI.
@@ -169,8 +201,10 @@ struct InputState {
   // Hint text to display in the input.
   string hint_text;
   // The max number of inputs of a given type.
-  map<InputType, int32> max_instances;
+  map<InputType, int32> max_inputs_by_type;
   // The max total number of inputs.
   int32 max_total_inputs;
+  // Whether a Canvas query has been submitted in this thread.
+  bool is_canvas_query_submitted;
 };
 // LINT.ThenChange(//components/omnibox/common/input_state.h:InputState)

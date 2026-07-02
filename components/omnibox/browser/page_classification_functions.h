@@ -16,9 +16,17 @@ bool IsNTPPage(::metrics::OmniboxEventProto::PageClassification classification);
 bool IsSearchResultsPage(
     ::metrics::OmniboxEventProto::PageClassification classification);
 
+// Return true, if supplied page classification applies to Android Widget.
+bool IsAndroidWidget(
+    ::metrics::OmniboxEventProto::PageClassification classification);
+
 // Return true, if supplied page classification is neither a new tab page or
 // search results page.
 bool IsOtherWebPage(
+    ::metrics::OmniboxEventProto::PageClassification classification);
+
+// Return true, if supplied page classification is an omnibox on the NTP.
+bool IsNtpOmnibox(
     ::metrics::OmniboxEventProto::PageClassification classification);
 
 // Return true, if supplied page classification is a Lens contextual searchbox.
@@ -62,9 +70,16 @@ bool IsOmniboxComposebox(
 bool IsComposebox(
     ::metrics::OmniboxEventProto::PageClassification classification);
 
+// Return true, if page classification is the NTP composebox.
+bool IsNTPComposebox(
+    ::metrics::OmniboxEventProto::PageClassification classification);
+
 // Return true, if page classification is the NTP realbox.
 bool IsNTPRealbox(
     ::metrics::OmniboxEventProto::PageClassification classification);
+
+// Return true, if supplied page classification is an omnibox.
+bool IsOmnibox(::metrics::OmniboxEventProto::PageClassification classification);
 
 }  // namespace omnibox
 

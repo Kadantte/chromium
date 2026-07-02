@@ -9,11 +9,13 @@
 #import "base/types/expected.h"
 #import "base/values.h"
 #import "components/webauthn/ios/passkey_request_params.h"
+#import "url/origin.h"
 
 namespace webauthn {
 
 // Events received from the Passkey JavaScript shim.
 enum class PasskeyScriptEvent {
+  kCancelRequest,
   kHandleGetRequest,
   kHandleCreateRequest,
   kLogGetRequest,
@@ -91,6 +93,7 @@ base::DictValue ToAuthenticationExtensionsClientOutputsJSON(
 // Parses the event string into a strongly typed enum.
 std::optional<PasskeyScriptEvent> ParsePasskeyScriptEvent(
     const base::DictValue& dict,
+    const url::Origin& caller_origin,
     IsGpmPasskeyFunc is_gpm_passkey_func);
 
 }  // namespace webauthn

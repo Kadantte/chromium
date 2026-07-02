@@ -10,12 +10,11 @@
 
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "base/command_line.h"
-#include "base/compiler_specific.h"
+#include "base/containers/flat_map.h"
 #include "base/containers/map_util.h"
 #include "base/feature_list.h"
 #include "base/features.h"
@@ -43,8 +42,8 @@ namespace {
 class TestScreenWin : public ScreenWin {
  public:
   TestScreenWin(const std::vector<internal::DisplayInfo>& display_infos,
-                const std::unordered_map<HMONITOR, MONITORINFOEX>& hmonitor_map,
-                const std::unordered_map<HWND, gfx::Rect>& hwnd_map)
+                const base::flat_map<HMONITOR, MONITORINFOEX>& hmonitor_map,
+                const base::flat_map<HWND, gfx::Rect>& hwnd_map)
       : ScreenWin(false), hmonitor_map_(hmonitor_map), hwnd_map_(hwnd_map) {
     UpdateFromDisplayInfos(display_infos);
   }
@@ -137,8 +136,8 @@ class TestScreenWin : public ScreenWin {
   }
 
   raw_ptr<Screen> old_screen_ = Screen::SetScreenInstance(this);
-  std::unordered_map<HMONITOR, MONITORINFOEX> hmonitor_map_;
-  std::unordered_map<HWND, gfx::Rect> hwnd_map_;
+  base::flat_map<HMONITOR, MONITORINFOEX> hmonitor_map_;
+  base::flat_map<HWND, gfx::Rect> hwnd_map_;
 };
 
 Screen* GetScreen() {
@@ -152,6 +151,7 @@ class TestScreenWinInitializer {
                           const gfx::Rect& pixel_work,
                           const wchar_t* device_name,
                           float device_scale_factor,
+                          float text_scale_multiplier = 1.0f,
                           DISPLAYCONFIG_VIDEO_OUTPUT_TECHNOLOGY tech =
                               DISPLAYCONFIG_OUTPUT_TECHNOLOGY_OTHER) = 0;
 
@@ -173,6 +173,7 @@ class TestScreenWinManager final : public TestScreenWinInitializer {
                   const gfx::Rect& pixel_work,
                   const wchar_t* device_name,
                   float device_scale_factor,
+                  float text_scale_multiplier = 1.0f,
                   DISPLAYCONFIG_VIDEO_OUTPUT_TECHNOLOGY tech =
                       DISPLAYCONFIG_OUTPUT_TECHNOLOGY_OTHER) override {
     MONITORINFOEX monitor_info =
@@ -184,19 +185,23 @@ class TestScreenWinManager final : public TestScreenWinInitializer {
     }
     display_infos_.push_back(internal::DisplayInfo(
         std::move(cached_hmonitor), monitor_info, device_scale_factor,
-        Display::kDefaultBitsPerPixel, 1.0f, Display::ROTATE_0, 60.0f,
-        gfx::Vector2dF(), tech, std::string()));
+        text_scale_multiplier, Display::kDefaultBitsPerPixel, 1.0f,
+        Display::ROTATE_0, 60.0f, gfx::Vector2dF(), tech, std::string()));
   }
 
   HWND CreateFakeHwnd(const gfx::Rect& bounds) override {
     EXPECT_EQ(screen_win_, nullptr);
-    hwnd_map_.emplace(UNSAFE_TODO(++hwndLast_), bounds);
+    intptr_t handle_val = reinterpret_cast<intptr_t>(hwndLast_);
+    hwndLast_ = reinterpret_cast<HWND>(++handle_val);
+    hwnd_map_.emplace(hwndLast_, bounds);
     return hwndLast_;
   }
 
   HMONITOR CreateFakeHMONITOR(const MONITORINFOEX& info) override {
     EXPECT_EQ(screen_win_, nullptr);
-    hmonitor_map_.emplace(UNSAFE_TODO(++hmonitorLast_), info);
+    intptr_t handle_val = reinterpret_cast<intptr_t>(hmonitorLast_);
+    hmonitorLast_ = reinterpret_cast<HMONITOR>(++handle_val);
+    hmonitor_map_.emplace(hmonitorLast_, info);
     return hmonitorLast_;
   }
 
@@ -215,8 +220,8 @@ class TestScreenWinManager final : public TestScreenWinInitializer {
   HMONITOR hmonitorLast_ = nullptr;
   std::unique_ptr<ScreenWin> screen_win_;
   std::vector<internal::DisplayInfo> display_infos_;
-  std::unordered_map<HMONITOR, MONITORINFOEX> hmonitor_map_;
-  std::unordered_map<HWND, gfx::Rect> hwnd_map_;
+  base::flat_map<HMONITOR, MONITORINFOEX> hmonitor_map_;
+  base::flat_map<HWND, gfx::Rect> hwnd_map_;
 };
 
 class ScreenWinTest : public ::testing::TestWithParam<bool> {
@@ -3972,9 +3977,10 @@ class ScreenWinTestTwoDisplaysOneInternal : public ScreenWinTest {
       const ScreenWinTestTwoDisplaysOneInternal&) = delete;
 
   void SetUpScreen(TestScreenWinInitializer* initializer) override {
-    initializer->AddMonitor(gfx::Rect(0, 0, 1920, 1200),
-                            gfx::Rect(0, 0, 1920, 1100), L"primary", 1.0,
-                            DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL);
+    initializer->AddMonitor(
+        gfx::Rect(0, 0, 1920, 1200), gfx::Rect(0, 0, 1920, 1100), L"primary",
+        /*device_scale_factor=*/1.0, /*text_scale_multiplier=*/1.0,
+        DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL);
     initializer->AddMonitor(gfx::Rect(1920, 0, 800, 600),
                             gfx::Rect(1920, 0, 800, 600), L"secondary", 1.0);
   }
@@ -4081,6 +4087,39 @@ TEST_P(ScreenWinTestNoDisplay, GetDisplays) {
 
 TEST_P(ScreenWinTestNoDisplay, GetNumDisplays) {
   EXPECT_EQ(0, GetScreen()->GetNumDisplays());
+}
+
+namespace {
+
+class ScreenWinTestWithTextScaleMultiplier : public ScreenWinTest {
+ public:
+  ScreenWinTestWithTextScaleMultiplier() = default;
+
+  void SetUpScreen(TestScreenWinInitializer* initializer) override {
+    initializer->AddMonitor(
+        gfx::Rect(0, 0, 1920, 1200), gfx::Rect(0, 0, 1920, 1100), L"primary",
+        /*device_scale_factor=*/1.25, /*text_scale_multiplier=*/2.0);
+    fake_hwnd_ = initializer->CreateFakeHwnd(gfx::Rect(0, 0, 1920, 1100));
+  }
+
+  HWND GetFakeHwnd() { return fake_hwnd_; }
+
+ private:
+  HWND fake_hwnd_ = nullptr;
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         ScreenWinTestWithTextScaleMultiplier,
+                         ::testing::Bool(),
+                         ScreenWinTest::ParamInfoToString);
+
+}  // namespace
+
+// Verifies text scale safely carries through without modifying the device scale
+TEST_P(ScreenWinTestWithTextScaleMultiplier, GetScaleFactors) {
+  EXPECT_EQ(1.25, GetScreenWin()->GetScaleFactorForHWND(GetFakeHwnd()));
+  EXPECT_EQ(1.25, GetScreen()->GetAllDisplays()[0].device_scale_factor());
+  EXPECT_EQ(2.0, GetScreen()->GetAllDisplays()[0].text_scale_multiplier());
 }
 
 }  // namespace win

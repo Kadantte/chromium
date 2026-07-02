@@ -50,7 +50,7 @@ public class NotificationContentDetectionManager {
 
     // Maps the origins of suspicious notifications and their ids, used for UMA logging.
     @VisibleForTesting
-    static final Map<String, HashSet<String>> sSuspiciousNotificationsMap = new HashMap();
+    static final Map<String, HashSet<String>> sSuspiciousNotificationsMap = new HashMap<>();
 
     // Maps "always allowed" origins to the notification id where the "Always allow" button was
     // tapped. Used for reporting notifications to Google upon user consent.
@@ -306,9 +306,9 @@ public class NotificationContentDetectionManager {
 
         SuspiciousNotificationWarningDetailsForOrigin(
                 String warningNotificationId,
-                Map<String, WarningNotificationWrapperAttributes> mOriginalNotificationBackups) {
-            this.mWarningNotificationId = warningNotificationId;
-            this.mOriginalNotificationBackups = mOriginalNotificationBackups;
+                Map<String, WarningNotificationWrapperAttributes> originalNotificationBackups) {
+            mWarningNotificationId = warningNotificationId;
+            mOriginalNotificationBackups = originalNotificationBackups;
         }
 
         void updateBackupsAndShowWarning(
@@ -440,7 +440,7 @@ public class NotificationContentDetectionManager {
             sWarningNotificationAttributesByOrigin.put(
                     notificationOrigin,
                     new SuspiciousNotificationWarningDetailsForOrigin(
-                            /* mWarningNotificationId */ notificationId,
+                            /* warningNotificationId= */ notificationId,
                             new HashMap<String, WarningNotificationWrapperAttributes>()));
         }
         sWarningNotificationAttributesByOrigin

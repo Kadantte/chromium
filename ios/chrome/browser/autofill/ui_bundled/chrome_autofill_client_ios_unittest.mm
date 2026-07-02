@@ -2,9 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef IOS_CHROME_BROWSER_UI_AUTOFILL_CHROME_AUTOFILL_CLIENT_IOS_UNITTEST_H_
-#define IOS_CHROME_BROWSER_UI_AUTOFILL_CHROME_AUTOFILL_CLIENT_IOS_UNITTEST_H_
-
 #import "ios/chrome/browser/autofill/ui_bundled/chrome_autofill_client_ios.h"
 
 #import <memory>
@@ -253,17 +250,4 @@ TEST_F(ChromeAutofillClientIOSTest,
       PasswordFormClassification{});
 }
 
-// Tests that the call to `ShowPlusAddressEmailOverrideNotification` shows a
-// snackbar.
-TEST_F(ChromeAutofillClientIOSTest, CallToAgentUndoSnackbar) {
-  OCMExpect([mock_snackbar_handler_ showSnackbarWithMessage:[OCMArg isNotNil]
-                                                 buttonText:[OCMArg isNotNil]
-                                              messageAction:[OCMArg isNotNil]
-                                           completionAction:nil]);
-  client().ShowPlusAddressEmailOverrideNotification("", base::DoNothing());
-  EXPECT_OCMOCK_VERIFY(mock_snackbar_handler_);
-}
-
 }  // namespace autofill
-
-#endif  // IOS_CHROME_BROWSER_UI_AUTOFILL_CHROME_AUTOFILL_CLIENT_IOS_UNITTEST_H_

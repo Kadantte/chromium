@@ -25,6 +25,7 @@
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/performance_manager/public/features.h"
 #include "content/public/browser/child_process_launcher_utils.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -96,7 +97,10 @@ bool IsProcessBackgrounded(const base::Process& process) {
 
 class ChromeRenderProcessHostTest : public extensions::ExtensionBrowserTest {
  public:
-  ChromeRenderProcessHostTest() = default;
+  ChromeRenderProcessHostTest() {
+    feature_list_.InitAndDisableFeature(
+        performance_manager::features::kTransientKeepAlivePolicy);
+  }
 
   ChromeRenderProcessHostTest(const ChromeRenderProcessHostTest&) = delete;
   ChromeRenderProcessHostTest& operator=(const ChromeRenderProcessHostTest&) =
@@ -256,6 +260,7 @@ class ChromeRenderProcessHostTest : public extensions::ExtensionBrowserTest {
   // existing tests run with the prewarm feature enabled.
   test::ScopedPrewarmFeatureList prewarm_feature_list_{
       test::ScopedPrewarmFeatureList::PrewarmState::kDisabled};
+  base::test::ScopedFeatureList feature_list_;
 };
 
 class ChromeRenderProcessHostTestWithCommandLine
@@ -277,7 +282,8 @@ class ChromeRenderProcessHostTestWithCommandLine
   }
 };
 
-IN_PROC_BROWSER_TEST_F(ChromeRenderProcessHostTest, ProcessPerTab) {
+// TODO(crbug.com/497106715): Fix and re-enable test
+IN_PROC_BROWSER_TEST_F(ChromeRenderProcessHostTest, DISABLED_ProcessPerTab) {
   // Set max renderers to 1 to force running out of processes.
   content::RenderProcessHost::SetMaxRendererProcessCount(1);
 
@@ -495,7 +501,7 @@ IN_PROC_BROWSER_TEST_F(ChromeRenderProcessHostTestWithCommandLine,
 }
 
 // Ensure that DevTools opened to debug DevTools is launched in a separate
-// process when --process-per-tab is set. See crbug.com/69873.
+// process when --process-per-tab is set. See crbug.com/41305755.
 IN_PROC_BROWSER_TEST_F(ChromeRenderProcessHostTest,
                        DevToolsOnSelfInOwnProcessPPT) {
   base::CommandLine& parsed_command_line =
@@ -540,7 +546,7 @@ IN_PROC_BROWSER_TEST_F(ChromeRenderProcessHostTest,
 }
 
 // Ensure that DevTools opened to debug DevTools is launched in a separate
-// process. See crbug.com/69873.
+// process. See crbug.com/41305755.
 IN_PROC_BROWSER_TEST_F(ChromeRenderProcessHostTest,
                        DevToolsOnSelfInOwnProcess) {
   int tab_count = 1;

@@ -12,6 +12,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_auto_reset.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -82,6 +83,7 @@
 #include "ui/base/win/shell.h"
 #include "ui/gfx/win/hwnd_util.h"
 #include "ui/views/widget/desktop_aura/desktop_native_cursor_manager_win.h"
+#include "ui/wm/core/window_properties.h"
 #endif
 
 DEFINE_EXPORTED_UI_CLASS_PROPERTY_TYPE(VIEWS_EXPORT,
@@ -126,6 +128,11 @@ class DesktopNativeWidgetTopLevelHandler : public aura::WindowObserver {
       init_params.remove_standard_frame = true;
     }
 #endif
+    // If the window should be transparent, then ensure the top level widget
+    // is also not opaque.
+    if (child_window->GetTransparent()) {
+      init_params.opacity = Widget::InitParams::WindowOpacity::kTranslucent;
+    }
     init_params.bounds = bounds;
     init_params.layer_type = ui::LAYER_NOT_DRAWN;
     init_params.activatable = full_screen
@@ -447,7 +454,9 @@ void DesktopNativeWidgetAura::HandleActivationChanged(bool active) {
   // activation change event. This is needed since the activation client may
   // check whether this widget can receive activation when deciding which window
   // should receive activation next.
-  base::AutoReset<std::optional<bool>> resetter(&should_activate_, active);
+  base::WeakAutoReset resetter(weak_ptr_factory_.GetWeakPtr(),
+                               &DesktopNativeWidgetAura::should_activate_,
+                               std::make_optional(active));
 
   if (active) {
     // TODO(nektar): We need to harmonize the firing of accessibility
@@ -569,6 +578,19 @@ void DesktopNativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
   widget_type_ = params.type;
   name_ = params.name;
 
+#if BUILDFLAG(IS_WIN)
+  // Inherit the exclusion from screen capture property from the parent or
+  // context aura::Window.
+  aura::Window* const inheritance_source =
+      params.parent ? params.parent : params.context;
+
+  if (inheritance_source &&
+      inheritance_source->GetProperty(wm::kExcludeFromScreenCaptureKey)) {
+    params.init_properties_container.SetProperty(
+        wm::kExcludeFromScreenCaptureKey, true);
+  }
+#endif
+
   if (ownership_ == Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET) {
     owned_native_widget_delegate =
         base::WrapUnique(native_widget_delegate_.get());
@@ -593,6 +615,11 @@ void DesktopNativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
   }
   host_->window()->SetProperty(kDesktopNativeWidgetAuraKey, this);
   desktop_window_tree_host_->Init(params);
+
+#if BUILDFLAG(IS_WIN)
+  desktop_window_tree_host_->SetExcludeFromScreenCapture(
+      content_window_->GetProperty(wm::kExcludeFromScreenCaptureKey));
+#endif
 
   host_->window()->AddChild(content_window_);
   host_->window()->AddObserver(new RootWindowDestructionObserver(this));
@@ -1136,7 +1163,7 @@ void DesktopNativeWidgetAura::FlashFrame(bool flash_frame) {
   }
 }
 
-void DesktopNativeWidgetAura::RunShellDrag(
+void DesktopNativeWidgetAura::RunDragDropLoop(
     std::unique_ptr<ui::OSExchangeData> data,
     const gfx::Point& location,
     int operation,
@@ -1145,16 +1172,16 @@ void DesktopNativeWidgetAura::RunShellDrag(
     return;
   }
 
-  views::RunShellDrag(content_window_, std::move(data), location, operation,
-                      source);
+  views::RunDragDropLoop(content_window_, std::move(data), location, operation,
+                         source);
 }
 
-void DesktopNativeWidgetAura::CancelShellDrag(View* view) {
+void DesktopNativeWidgetAura::CancelDragDropLoop(View* view) {
   if (!content_window_) {
     return;
   }
 
-  views::CancelShellDrag(content_window_);
+  views::CancelDragDropLoop(content_window_);
 }
 
 void DesktopNativeWidgetAura::SchedulePaintInRect(const gfx::Rect& rect) {
@@ -1300,6 +1327,20 @@ bool DesktopNativeWidgetAura::AreScreenshotsAllowed() {
              ? desktop_window_tree_host_->AreScreenshotsAllowed()
              : true;
 }
+
+#if BUILDFLAG(IS_WIN)
+void DesktopNativeWidgetAura::SetExcludeFromScreenCapture(bool exclude) {
+  if (content_window_->GetProperty(wm::kExcludeFromScreenCaptureKey) ==
+      exclude) {
+    return;
+  }
+
+  content_window_->SetProperty(wm::kExcludeFromScreenCaptureKey, exclude);
+  if (desktop_window_tree_host_) {
+    desktop_window_tree_host_->SetExcludeFromScreenCapture(exclude);
+  }
+}
+#endif
 
 bool DesktopNativeWidgetAura::IsDesktopNativeWidget() const {
   return true;

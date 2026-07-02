@@ -353,7 +353,7 @@ void PreloadHelper::PreconnectIfNeeded(
     return;
   }
   if (params.rel.IsPreconnect() && params.href.IsValid() &&
-      params.href.ProtocolIsInHTTPFamily()) {
+      params.href.ProtocolIsInHttpFamily()) {
     UseCounter::Count(document, WebFeature::kLinkRelPreconnect);
     if (caller == kLinkCalledFromHeader)
       UseCounter::Count(document, WebFeature::kLinkHeaderPreconnect);
@@ -383,6 +383,10 @@ void PreloadHelper::PreconnectIfNeeded(
       web_prescient_networking->Preconnect(
           params.href, params.cross_origin != kCrossOriginAttributeAnonymous);
     }
+    if (document && document->Fetcher()) {
+      document->Fetcher()->RecordPreconnect(params.href, params.cross_origin,
+                                            /*early_hints=*/false);
+    }
   }
 }
 
@@ -393,7 +397,7 @@ void PreloadHelper::PreconnectIfNeeded(
 // to disable these preloads.
 std::optional<ResourceType> PreloadHelper::GetResourceTypeFromAsAttribute(
     const String& as) {
-  DCHECK_EQ(as.DeprecatedLower(), as);
+  DCHECK(as.ContainsNoAsciiUpper());
   if (as == "image")
     return ResourceType::kImage;
   if (as == "script")
@@ -582,7 +586,7 @@ void PreloadHelper::PreloadIfNeeded(
   if (pending_preload) {
     if (RenderBlockingResourceManager* manager =
             document.GetRenderBlockingResourceManager()) {
-      if (EqualIgnoringASCIICase(params.as, "font")) {
+      if (EqualIgnoringAsciiCase(params.as, "font")) {
         manager->AddPendingFontPreload(*pending_preload);
       }
     }
@@ -795,7 +799,7 @@ void PreloadHelper::PrefetchIfNeeded(const LinkLoadParameters& params,
 
   ResourceRequest resource_request(params.href);
 
-  bool as_document = EqualIgnoringASCIICase(params.as, "document");
+  bool as_document = EqualIgnoringAsciiCase(params.as, "document");
 
   // If this corresponds to a preload that we promoted to a prefetch, and the
   // preload had `as="document"`, don't proceed because the original preload

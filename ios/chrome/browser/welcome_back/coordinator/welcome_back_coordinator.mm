@@ -95,6 +95,9 @@
   base::UmaHistogramCounts10000("IOS.WelcomeBack.FeaturesClickedCount",
                                 _featureClickedCount);
 
+  [_detailScreenCoordinator stop];
+  _detailScreenCoordinator = nil;
+
   // Dismiss the presented view controller.
   if (_navigationController.presentingViewController &&
       !_navigationController.isBeingDismissed) {
@@ -131,7 +134,9 @@
   _detailScreenCoordinator = [[BestFeaturesScreenDetailCoordinator alloc]
       initWithBaseNavigationViewController:_navigationController
                                    browser:self.browser
-                          bestFeaturesItem:item];
+                          bestFeaturesItem:item
+                                    source:DetailScreenPresentationSource::
+                                               kWelcomeBack];
   _detailScreenCoordinator.delegate = self;
   ++_featureClickedCount;
   base::UmaHistogramEnumeration("IOS.WelcomeBack.DetailScreen.Impression",
@@ -141,7 +146,9 @@
 
 #pragma mark - FirstRunScreenDelegate
 
-- (void)screenWillFinishPresenting {
+- (void)firstRunScreenCoordinatorWantsToBeStopped:
+    (ChromeCoordinator*)coordinator {
+  CHECK_EQ(coordinator, _detailScreenCoordinator, base::NotFatalUntil::M155);
   // First dismiss the best feature detail view.
   [_navigationController.presentingViewController
       dismissViewControllerAnimated:YES

@@ -32,7 +32,8 @@ IntentChipButton::IntentChipButton(Browser* browser,
       browser_(browser),
       delegate_(delegate) {
   DCHECK(browser);
-  SetIcon(kOpenInNewChromeRefreshIcon);
+  SetIcon(features::IsRoundedIconsEnabled() ? kOpenInNewIcon
+                                            : kOpenInNewChromeRefreshOldIcon);
   SetText(l10n_util::GetStringUTF16(IDS_INTENT_CHIP_OPEN_IN_APP));
   SetFocusBehavior(views::PlatformStyle::kDefaultFocusBehavior);
   SetTooltipText(l10n_util::GetStringUTF16(IDS_INTENT_CHIP_OPEN_IN_APP));
@@ -67,7 +68,7 @@ void IntentChipButton::Update() {
       AnimateCollapse(kAnimationDuration);
     }
   }
-  if (browser_->window() && was_visible && !is_visible) {
+  if (browser_->GetWindow() && was_visible && !is_visible) {
     IntentPickerBubbleView::CloseCurrentBubble();
   }
 }

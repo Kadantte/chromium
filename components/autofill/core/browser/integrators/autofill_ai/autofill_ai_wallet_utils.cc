@@ -5,16 +5,41 @@
 #include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_wallet_utils.h"
 
 #include <optional>
+#include <string>
 #include <utility>
 
+#include "base/check.h"
+#include "base/check_op.h"
+#include "base/feature_list.h"
+#include "base/memory/weak_ptr.h"
+#include "base/strings/escape.h"
+#include "base/strings/stringprintf.h"
 #include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
+#include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
-#include "components/strings/grit/components_strings.h"
-#include "ui/base/l10n/l10n_util.h"
+#include "components/autofill/core/common/autofill_features.h"
+#include "components/consent_auditor/consent_auditor.h"
+#include "components/signin/public/base/consent_level.h"
+#include "components/sync/protocol/user_consent_types.pb.h"
+#include "components/wallet/core/common/wallet_features.h"
+#include "google_apis/gaia/gaia_id.h"
 
 namespace autofill {
 
 namespace {
+
+// The URL to the overview of all passes stored in Google Wallet.
+// TODO(crbug.com/454899556): Remove once Wallet deep links are launched.
+constexpr char kWalletPassesPageURL[] =
+    "https://wallet.google.com/wallet/passes";
+
+// The URL to the management page of a specific private pass stored in Google
+// Wallet. The pass is identified by its pass ID, which needs to be URL encoded
+// into the placeholder in this URL.
+constexpr char kWalletPrivatePassPageURL[] =
+    "https://wallet.google.com/"
+    "wallet?p=walletpass&ppid=%s&utm_source=chrome&utm_medium=settings&utm_"
+    "campaign=enhanced_autofill";
 
 // Defines UI actions that can be taken after a Wallet upsert response.
 enum class UiAction {
@@ -34,8 +59,7 @@ void UpdateUi(base::WeakPtr<AutofillClient> client, UiAction action) {
       client->ShowAutofillAiLocalSaveNotification();
       break;
     case UiAction::kUpdateOrMigrateFailureNotification:
-      client->ShowAutofillAiFailureNotification(l10n_util::GetStringUTF16(
-          IDS_AUTOFILL_AI_WALLET_UPDATE_OR_MIGRATE_FAILURE_NOTIFICATION));
+      client->ShowAutofillAiSaveToWalletFailureNotification();
       break;
     case UiAction::kNoNotification:
       break;
@@ -53,8 +77,9 @@ void HandleWalletUpsertResponse(
   using enum AutofillClient::AutofillAiImportPromptType;
   using enum UiAction;
 
-  CHECK(IsMaskedStorageSupported(entity.type(), entity.record_type()));
-  CHECK(!entity.IsMaskedServerEntity());
+  CHECK_EQ(GetWalletPassType(entity.type(), entity.record_type()),
+           EntityInstance::WalletPassType::kPrivate);
+  CHECK(!entity.IsMaskedEntity());
 
   if (!entity_manager) {
     UpdateUi(client, kNoNotification);
@@ -83,7 +108,8 @@ void HandleWalletUpsertResponse(
   // The Wallet server API must always return a masked entity. This CHECK can be
   // enforced on the client even though it involves server data because the bit
   // whether an attribute is masked is purely determined client-side.
-  CHECK(!wallet_response->IsUnmaskedServerEntity());
+  CHECK(!wallet_response->IsUnmaskedEntity());
+  CHECK(wallet_response->IsServerInstance());
   switch (prompt_type) {
     case kMigrate:
       entity_manager->RemoveEntityInstance(entity.guid());
@@ -94,6 +120,51 @@ void HandleWalletUpsertResponse(
       break;
   }
   UpdateUi(client, kNoNotification);
+}
+
+std::string GetWalletManagementURL(const EntityInstance& entity) {
+  switch (GetWalletPassType(entity.type(), entity.record_type())) {
+    case EntityInstance::WalletPassType::kUnsupported:
+      NOTREACHED();
+    case EntityInstance::WalletPassType::kPublic:
+      // TODO(crbug.com/454899556): Implement a deep link for public passes.
+      // This is not supported by the backend yet.
+      return kWalletPassesPageURL;
+    case EntityInstance::WalletPassType::kPrivate:
+      // Only deep link for private passes if the corresponding feature is
+      // enabled.
+      if (!base::FeatureList::IsEnabled(
+              features::kAutofillAiWalletPrivatePassesDeepLink)) {
+        return kWalletPassesPageURL;
+      }
+      return base::StringPrintf(
+          kWalletPrivatePassPageURL,
+          base::EscapeQueryParamValue(entity.guid().value(),
+                                      /*use_plus=*/false));
+  }
+}
+
+consent_auditor::ConsentAuditor::SessionId RecordWalletPrivatePassConsent(
+    int accepted_consent_string_id,
+    int accept_button_string_id,
+    consent_auditor::ConsentAuditor& consent_auditor,
+    signin::IdentityManager& identity_manager) {
+  CHECK(base::FeatureList::IsEnabled(
+      wallet::features::kWalletApiPrivatePassesConsent));
+
+  // Since saves to Wallet are only offered to signed-in users, a `gaia_id` is
+  // available.
+  GaiaId gaia_id =
+      identity_manager.GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
+          .gaia;
+  CHECK(!gaia_id.empty());
+  consent_auditor::ConsentAuditor::SessionId session_id =
+      consent_auditor.GenerateSessionId();
+  sync_pb::UserConsentTypes::WalletPrivatePassConsent consent;
+  consent.mutable_description_grd_ids()->Add(accepted_consent_string_id);
+  consent.set_confirmation_grd_id(accept_button_string_id);
+  consent_auditor.RecordWalletPrivatePassConsent(gaia_id, session_id, consent);
+  return session_id;
 }
 
 }  // namespace autofill

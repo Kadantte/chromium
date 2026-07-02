@@ -14,7 +14,9 @@ export function getHtml(this: ProfileCardElement) {
       ?disabled="${this.disabled}"
       aria-label="${this.profileState.profileCardButtonLabel}">
     <div id="avatarContainer">
-      <img class="profile-avatar" alt="" .src="${this.profileState.avatarIcon}">
+      <img class="profile-avatar ${
+      this.profileState.hasAiRing ? 'with-ai-ring' : ''}"
+          alt="" .src="${this.profileState.avatarIcon}">
       <div id="iconContainer"
           ?hidden="${!this.profileState.avatarBadge.length}">
         <cr-icon icon="${this.profileState.avatarBadge}"></cr-icon>
@@ -34,12 +36,12 @@ export function getHtml(this: ProfileCardElement) {
     <cr-input class="profile-card-info prominent-text" id="nameInput"
         aria-label="$i18n{profileCardInputLabel}"
         .value="${this.profileState.localProfileName}"
-        @change="${this.onProfileNameChanged_}"
+        @change="${this.onProfileNameChange_}"
         @keydown="${this.onProfileNameKeydown_}"
         @blur="${this.onProfileNameInputBlur_}" pattern="${this.pattern_}"
         auto-validate spellcheck="false"
-        @pointerenter="${this.onNameInputPointerEnter_}"
-        @pointerleave="${this.onNameInputPointerLeave_}"
+        @pointerenter="${this.onNameInputPointerenter_}"
+        @pointerleave="${this.onNameInputPointerleave_}"
         ?disabled="${
       isGlicVersion() || this.profileState.hasEnterpriseLabel}" required>
     </cr-input>

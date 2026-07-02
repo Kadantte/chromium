@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <tuple>
 #include <utility>
 
 #include "base/run_loop.h"
@@ -164,6 +165,10 @@ void TestRenderFrameHost::ReportInspectorIssue(
                                 kFederatedAuthUserInfoRequestIssue) {
     ++federated_auth_user_info_counts_
         [issue->details->federated_auth_user_info_request_details->status];
+  } else if (issue->code ==
+             blink::mojom::InspectorIssueCode::kEmailVerificationRequestIssue) {
+    ++email_verification_request_counts_
+        [issue->details->email_verification_request_details->status];
   }
   RenderFrameHostImpl::ReportInspectorIssue(std::move(issue));
 }
@@ -258,9 +263,9 @@ void TestRenderFrameHost::SimulateRedirect(const GURL& new_url) {
 
 void TestRenderFrameHost::SimulateBeforeUnloadCompleted(bool proceed) {
   base::TimeTicks now = base::TimeTicks::Now();
-  ProcessBeforeUnloadCompleted(
-      proceed, /* treat_as_final_completion_callback= */ false, now, now,
-      /*for_legacy=*/false);
+  ProcessBeforeUnloadCompleted(proceed,
+                               /* treat_as_final_completion_callback= */ false,
+                               now, now, BeforeUnloadExecutionMode::kSync);
 }
 
 void TestRenderFrameHost::SimulateUnloadACK() {
@@ -268,7 +273,7 @@ void TestRenderFrameHost::SimulateUnloadACK() {
 }
 
 void TestRenderFrameHost::SimulateUserActivation() {
-  frame_tree_node()->UpdateUserActivationState(
+  std::ignore = frame_tree_node()->UpdateUserActivationState(
       blink::mojom::UserActivationUpdateType::kNotifyActivation,
       blink::mojom::UserActivationNotificationType::kTest);
 }
@@ -324,6 +329,23 @@ int TestRenderFrameHost::GetFederatedAuthUserInfoRequestIssueCount(
 
   auto it = federated_auth_user_info_counts_.find(*status_type);
   if (it == federated_auth_user_info_counts_.end()) {
+    return 0;
+  }
+  return it->second;
+}
+
+int TestRenderFrameHost::GetEmailVerificationRequestIssueCount(
+    std::optional<blink::mojom::EmailVerificationRequestResult> status_type) {
+  if (!status_type) {
+    int total = 0;
+    for (const auto& [result, count] : email_verification_request_counts_) {
+      total += count;
+    }
+    return total;
+  }
+
+  auto it = email_verification_request_counts_.find(*status_type);
+  if (it == email_verification_request_counts_.end()) {
     return 0;
   }
   return it->second;
@@ -470,7 +492,8 @@ void TestRenderFrameHost::SendRendererInitiatedNavigationRequest(
           base::TimeTicks() /* before_unload_dialog_closed */,
           false /* started_with_transient_activation */,
           false /* started_by_ad */, false /* is_container_initiated */,
-          net::StorageAccessApiStatus::kNone, false /* has_rel_opener */);
+          false /* has_rel_opener */,
+          std::nullopt /* script_tool_invocation_id */);
   auto common_params = blink::CreateCommonNavigationParams();
   common_params->url = url;
   common_params->initiator_origin = GetLastCommittedOrigin();
@@ -490,7 +513,7 @@ void TestRenderFrameHost::SendRendererInitiatedNavigationRequest(
   BeginNavigation(std::move(common_params), std::move(begin_params),
                   mojo::NullRemote(), std::move(navigation_client_remote),
                   mojo::NullRemote(), mojo::NullReceiver(),
-                  mojo::NullReceiver());
+                  mojo::NullReceiver(), mojo::NullReceiver());
 }
 
 void TestRenderFrameHost::SimulateDidChangeOpener(
@@ -622,7 +645,6 @@ void TestRenderFrameHost::ResetLocalFrame() {
 }
 
 void TestRenderFrameHost::SendCommitNavigation(
-    mojom::NavigationClient* navigation_client,
     NavigationRequest* navigation_request,
     blink::mojom::CommonNavigationParamsPtr common_params,
     blink::mojom::CommitNavigationParamsPtr commit_params,
@@ -644,13 +666,12 @@ void TestRenderFrameHost::SendCommitNavigation(
     blink::mojom::PolicyContainerPtr policy_container,
     const blink::DocumentToken& document_token,
     const base::UnguessableToken& devtools_navigation_token) {
-  CHECK(navigation_client);
+  CHECK(navigation_request->GetCommitNavigationClient());
   commit_callback_[navigation_request] =
       BuildCommitNavigationCallback(navigation_request);
 }
 
 void TestRenderFrameHost::SendCommitFailedNavigation(
-    mojom::NavigationClient* navigation_client,
     NavigationRequest* navigation_request,
     blink::mojom::CommonNavigationParamsPtr common_params,
     blink::mojom::CommitNavigationParamsPtr commit_params,
@@ -663,24 +684,9 @@ void TestRenderFrameHost::SendCommitFailedNavigation(
     const blink::DocumentToken& document_token,
     const base::UnguessableToken& devtools_navigation_token,
     blink::mojom::PolicyContainerPtr policy_container) {
-  CHECK(navigation_client);
+  CHECK(navigation_request->GetCommitNavigationClient());
   commit_failed_callback_[navigation_request] =
       BuildCommitFailedNavigationCallback(navigation_request);
-}
-
-void TestRenderFrameHost::SendBeforeUnload(
-    bool is_reload,
-    base::WeakPtr<RenderFrameHostImpl> impl,
-    bool for_legacy,
-    const bool is_renderer_initiated_navigation) {
-  if (on_sendbeforeunload_begin_) {
-    std::move(on_sendbeforeunload_begin_).Run();
-  }
-  RenderFrameHostImpl::SendBeforeUnload(is_reload, std::move(impl), for_legacy,
-                                        is_renderer_initiated_navigation);
-  if (on_sendbeforeunload_end_) {
-    std::move(on_sendbeforeunload_end_).Run();
-  }
 }
 
 mojom::DidCommitProvisionalLoadParamsPtr
@@ -724,11 +730,13 @@ TestRenderFrameHost::BuildDidCommitParams(bool did_create_new_entry,
     }
   }
 
-  // In most cases, the origin will match the URL's origin.  Tests that need to
-  // check corner cases (like about:blank) should specify the origin and
-  // initiator_base_url params manually.
-  url::Origin origin = url::Origin::Create(url);
-  params->origin = origin;
+  if (url.IsAboutBlank() || is_same_document) {
+    params->origin = GetLastCommittedOrigin();
+  } else {
+    // In most cases, the origin will match the URL's origin.
+    url::Origin origin = url::Origin::Create(url);
+    params->origin = origin;
+  }
 
   params->page_state = blink::PageState::CreateForTestingWithSequenceNumbers(
       url, params->item_sequence_number, params->document_sequence_number);

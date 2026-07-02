@@ -189,12 +189,6 @@
 -AccountConsistencyServiceTest.SignInSignOut
 -AccountConsistencyServiceTest.SignOutWithoutDomains
 
-# TODO(crbug.com/40945960): Test currently fails on iOS blink.
--JsTranslateWebFrameManagerTest.Inject
--JsTranslateWebFrameManagerTest.Reinject
--JsTranslateWebFrameManagerTest.Revert
--JsTranslateWebFrameManagerTest.Translate
-
 # TODO(crbug.com/40945961): Test currently fails on iOS blink.
 -TranslateControllerTest.OnTranslateSendRequestWithValidCommand
 -TranslateControllerTest.OnTranslateSendRequestWithBadURL
@@ -205,53 +199,6 @@
 -UkmUrlRecorderTest.IgnoreDownloadUrl
 -UkmUrlRecorderTest.IgnoreUrlInSubframe
 -UkmUrlRecorderTest.InitialUrl
-
-# TODO(crbug.com/347197919): ThrottleManagerEnabledTest has been failing since
-# https://crrev.com/c/5527553. Need to consider if we can support the
-# fingerprinting protection feature.
--All/ThrottleManagerEnabledTest.ActivateMainFrameAndFilterDryRun/0
--All/ThrottleManagerEnabledTest.ActivateMainFrameAndFilterDryRun/1
--All/ThrottleManagerEnabledTest.ActivateMainFrameAndFilterFencedFrameNavigation/0
--All/ThrottleManagerEnabledTest.ActivateMainFrameAndFilterFencedFrameNavigation/1
--All/ThrottleManagerEnabledTest.ActivateMainFrameAndFilterFencedFrameNavigationOnRedirect/0
--All/ThrottleManagerEnabledTest.ActivateMainFrameAndFilterFencedFrameNavigationOnRedirect/1
--All/ThrottleManagerEnabledTest.ActivateMainFrameAndFilterSubframeNavigation/0
--All/ThrottleManagerEnabledTest.ActivateMainFrameAndFilterSubframeNavigation/1
--All/ThrottleManagerEnabledTest.ActivateMainFrameAndFilterSubframeNavigationOnRedirect/0
--All/ThrottleManagerEnabledTest.ActivateMainFrameAndFilterSubframeNavigationOnRedirect/1
--All/ThrottleManagerEnabledTest.ActivateMainFrameAndFilterTwoSubframeNavigations/0
--All/ThrottleManagerEnabledTest.ActivateMainFrameAndFilterTwoSubframeNavigations/1
--All/ThrottleManagerEnabledTest.ActivateTwoMainFramesAndFilterTwoSubframeNavigations/0
--All/ThrottleManagerEnabledTest.ActivateTwoMainFramesAndFilterTwoSubframeNavigations/1
--All/ThrottleManagerEnabledTest.ActivationPropagation/0
--All/ThrottleManagerEnabledTest.ActivationPropagation/1
--All/ThrottleManagerEnabledTest.ActivationPropagation_FencedFrame/0
--All/ThrottleManagerEnabledTest.ActivationPropagation_FencedFrame/1
--All/ThrottleManagerEnabledTest.CreateHelperForWebContents/0
--All/ThrottleManagerEnabledTest.CreateHelperForWebContents/1
--All/ThrottleManagerEnabledTest.DoNotFilterForInactiveFrame/0
--All/ThrottleManagerEnabledTest.DoNotFilterForInactiveFrame/1
--All/ThrottleManagerEnabledTest.FailedNavigationToErrorPage_NoActivation/0
--All/ThrottleManagerEnabledTest.FailedNavigationToErrorPage_NoActivation/1
--All/ThrottleManagerEnabledTest.NoPageActivation/0
--All/ThrottleManagerEnabledTest.NoPageActivation/1
--All/ThrottleManagerEnabledTest.SafeBrowsingThrottleCreation/0
--All/ThrottleManagerEnabledTest.SafeBrowsingThrottleCreation/1
--All/ThrottleManagerEnabledTest.SameSiteFailedNavigation_MaintainActivation/0
--All/ThrottleManagerEnabledTest.SameSiteFailedNavigation_MaintainActivation/1
--All/ThrottleManagerEnabledTest.SameSiteNavigationStopsActivation/0
--All/ThrottleManagerEnabledTest.SameSiteNavigationStopsActivation/1
--All/ThrottleManagerEnabledTest.SameSiteNavigation_RulesetIsPreserved/0
--All/ThrottleManagerEnabledTest.SameSiteNavigation_RulesetIsPreserved/1
--All/ThrottleManagerEnabledTest.ThrottleManagerLifetime_Basic/0
--All/ThrottleManagerEnabledTest.ThrottleManagerLifetime_Basic/1
--All/ThrottleManagerEnabledTest.ThrottleManagerLifetime_FencedFrame/0
--All/ThrottleManagerEnabledTest.ThrottleManagerLifetime_FencedFrame/1
--All/ThrottleManagerEnabledTest.ThrottleManagerLifetime_SameDocument/0
--All/ThrottleManagerEnabledTest.ThrottleManagerLifetime_SameDocument/1
--All/ThrottleManagerEnabledTest.ThrottleManagerLifetime_Subframe/0
--All/ThrottleManagerEnabledTest.ThrottleManagerLifetime_Subframe/1
--FingerprintingProtectionPageActivationThrottleTest.FlagEnabledDefaultActivatedParams_IsActivated
 
 # TODO(crbug.com/349640009): Currently fail with use_blink due to spinning up on
 # an unexpected thread after https://crrev.com/c/5622258 added the tests.
@@ -283,7 +230,6 @@
 -AutofillAgentTestFrameInitializationOrderFrames.PageLoadedThenMainFrameThenIframe
 -SharedPasswordControllerTest.PasswordManagerIsNotifiedAboutServerPredictions_AcrossFrames
 -SharedPasswordControllerTest.PasswordManagerIsNotifiedAboutServerPredictions_SingleFrame
-
 
 # TODO(crbug.com/364348914): These tests have been failing since
 # https://crrev.com/c/5774002.
@@ -338,12 +284,6 @@
 -LocalStorageImplTest.WrapperOutlivesMojoConnection
 -LocalStorageImplTest.MetaDataClearedOnDeleteAll
 
-# TODO(crbug.com/395384787): This test has been failing since
-# https://crrev.com/c/6185554.
--MlEmbedderTest.EmbedderRunningStatus
--MlEmbedderTest.ReturnsEmbeddings
--MlEmbedderTest.ReturnsExecutionFailure
-
 # TODO(crbug.com/440947113): This test has been failing since
 # https://crrev.com/c/6862660.
 -AccountConsistencyServiceTest.ChromeAddSessionWithEmail
@@ -368,3 +308,112 @@
 -LocalStorageImplTest.OpeningWrappersPurgesInactiveWrappers/LevelDB
 -LocalStorageImplTest.OpeningWrappersPurgesInactiveWrappers/SQLite
 -LocalStorageImplTest.WrapperOutlivesMojoConnection/SQLite
+
+# TODO(crbug.com/491157764): The test has been failing since
+# https://crrev.com/c/7585353.
+-SecurePaymentConfirmationServiceTest.GetSecurePaymentConfirmationCapabilities_BrowserBoundKeyHardwareSupported
+
+# TODO(crbug.com/514423251): Autofill and form-related JavaScript tests crash
+# on iOS Blink.
+-AutofillAcrossIframesTest.FillFormAcrossFrames
+-AutofillAcrossIframesTest.RecognizeFormAcrossFrames
+-AutofillDriverIOSTest.FieldWasModifiedByJavascript
+-AutofillDriverIOSTest.FormRemoved
+-AutofillDriverIOSTest.FormsSeen
+-AutofillDriverIOSTest.FormsSeenAfterParsing
+-AutofillDriverIOSTest.FormsSeenPreFormParsing
+-AutofillDriverIOSTest.FormsSubmitted
+-AutofillDriverIOSTest.JustTriggerFormExtractionOfPasswordForms
+-AutofillDriverIOSTest.TriggerReparse
+-ChildProcessJavaScriptFeatureTest.ChildFrameMessaging
+-ChildProcessJavaScriptFeatureTest.GrandChildFrameMessaging
+-ChildProcessJavaScriptFeatureTest.MainAndChildFrameMessaging
+-FillJsTest.SanitizeValueForInputElement
+-FormActivityTest.TestCheckbox
+-FormActivityTest.TestCrossFrameObserving
+-FormActivityTest.TestFieldUserInput
+-FormActivityTest.TestFocus
+-FormActivityTest.TestFormReassignment
+-FormActivityTest.TestInput
+-FormActivityTest.TestRadioButton
+-FormActivityTest.TestRemoved
+-FormActivityTest.TestSelect
+-FormActivityTest.TestSubmit
+-FormActivityTest.TestTextArea
+-FormActivityTest.TestTypingTextField
+-FormHandlersJavaScriptFeatureTest.FieldReassignedByJavaScriptBeforeSubmit
+-FormHandlersJavaScriptFeatureTest.FormReassignedByJavaScriptAfterSubmit
+-FormHandlersJavaScriptFeatureTest.FormReassignedByJavaScriptBeforeSubmit
+-FormHandlersJavaScriptFeatureTest.FormSubmittedByJavaScript
+-FormHandlersJavaScriptFeatureTest.FrameDetachedOnFormSubmission
+-FormHandlersJavaScriptFeatureTest.FrameDetachedOnFormSubmissionWithScheduledSubmit
+-FormUtilJavascriptTest.GetCanonicalActionForForm
+-IOSFormHelperBaseTest.FindFormByUniqueId
+-IOSFormHelperBaseTest.FindFormByUniqueIdWithRendererIds
+-IOSFormHelperBaseTest.GetFormInputElementValues
+-IOSFormHelperBaseTest.GetFormInputElementValuesRendererIds
+-IOSFormHelperBaseTest.GetToggleTrackingPrefix
+-IOSFormHelperBaseTest.IsSameFormAsSuggestionForm
+-IOSFormHelperBaseTest.TrackedFormElements
+-IOSFormHelperBaseTest.TrackedFormElementsRendererIds
+-PasswordControllerJsTest.GetFillFormData
+-PasswordControllerJsTest.GetPasswordFormData
+-PasswordControllerJsTest.GetPasswordFormDataForPasswordElement
+-PasswordControllerJsTest.GetPasswordFormFields
+-SuggestionControllerJavaScriptFeatureTest.SelectNextAndPreviousElement
+-SuggestionControllerJavaScriptFeatureTest.SelectNextAndPreviousElementWithTabOrder
+-SuggestionControllerJavaScriptFeatureTest.SelectNextAndPreviousElementWithTabOrderAndCrossFrame
+
+# TODO(crbug.com/514423252): SafariDataImporter and SqliteVfs multiprocess tests
+# crash on iOS Blink.
+-SafariDataImporterTest.ImportBookmarks
+-SafariDataImporterTest.ImportCreditCard
+-SafariDataImporterTest.ImportHistory
+-SafariDataImporterTest.ImportPasswords
+-SqliteVfsMultiprocessTest.AbandonAndReconnect/Rollback
+-SqliteVfsMultiprocessTest.AbandonAndReconnect/Wal
+-SqliteVfsMultiprocessTest.AbandonReadOnlyShared/Rollback
+-SqliteVfsMultiprocessTest.AbandonReadOnlyShared/Wal
+-SqliteVfsMultiprocessTest.CanReadFromAProcessWhileTheOtherIsWritingMMap
+-SqliteVfsMultiprocessTest.CanReadFromAProcessWhileTheOtherIsWritingWal
+-SqliteVfsMultiprocessTest.CanWriteInMultipleProcessesMMap
+-SqliteVfsMultiprocessTest.CanWriteInMultipleProcessesWal
+-SqliteVfsMultiprocessTest.CrossProcessLockContention
+-SqliteVfsMultiprocessTest.DeletionDoesNotCorruptMMap
+-SqliteVfsMultiprocessTest.DeletionDoesNotCorruptWal
+-SqliteVfsMultiprocessTest.MigratesFromOldMMapJournalToWal
+-SqliteVfsMultiprocessTest.ReturnsDataIfStaleConnectionInAnotherProcess
+-SqliteVfsMultiprocessTest.ParallelStressTest/Rollback
+-SqliteVfsMultiprocessTest.ParallelStressTest/Wal
+-SqliteVfsMultiprocessTest.ReaderBlocksWriterInRollback/Rollback
+-SqliteVfsMultiprocessTest.ReaderDoesNotBlockWriterInWal/Wal
+-SqliteVfsMultiprocessTest.ReadOnlyFirstConnection/Wal
+-SqliteVfsMultiprocessTest.WalDynamicGrowth/Wal
+-SqliteVfsMultiprocessTest.WalReadMarkNecessity/Wal
+-SqliteVfsMultiprocessTest.WalSourceTest/Wal
+-SqliteVfsMultiprocessTest.WriterBlocksReaderInRollback/Rollback
+-VfsTransitionMultiprocessTest.TransitionAfterCrash/MultiConnection_Rollback
+-VfsTransitionMultiprocessTest.TransitionAfterCrash/MultiConnection_Wal
+-VfsTransitionMultiprocessTest.TransitionAfterCrash/SingleConnection_Rollback
+-VfsTransitionMultiprocessTest.TransitionAfterCrash/SingleConnection_Wal
+-VfsTransitionMultiprocessTest.VfsChangeTest
+
+# TODO(crbug.com/514423253): Miscellaneous components_unittests failures on iOS
+# Blink.
+-CountryInfoTest.SetCodeReadName
+-CountryInfoTest.SetNameReadName
+-CountryNamesForLocaleTest.EmptyCountryCodeForInvalidLocale
+-DarkModeImageClassifierTest.Classification
+-DeviceEventLogTest.TestTimeFormat
+-FieldLogUkmMetricTest/LogFocusedComplexFormAtFormRemoveTest.TestEmittedUKM/ablation_study
+-FieldLogUkmMetricTest/LogFocusedComplexFormAtFormRemoveTest.TestEmittedUKM/ablation_study_in_dry_run_mode
+-PasskeyTabHelperTest.HandleCreateRequestedEventDefersOnInvalidOrigin
+-PasskeyTabHelperTest.HandleGetRequestedEventDefersOnInvalidOrigin
+-PasskeyTabHelperTest.StartPasskeyCreationFromCrossOriginIframe
+-PolicyLoggerTest.DeleteOldLogsMultithreaded
+-UmaPageLoadMetricsObserverTest.TestTracingDomContentLoadedEventStart
+-UmaPageLoadMetricsObserverTest.TestTracingLoadEventStart
+
+# TODO(crbug.com/517208683): The test is flaky on the ios-blink and tvos bots.
+# The test was updated by https://crrev.com/c/7676358.
+-SessionStorageImplFakeDbTest.TransientErrorsAfterRecovery

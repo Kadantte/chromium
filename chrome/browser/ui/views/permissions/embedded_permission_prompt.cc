@@ -12,6 +12,7 @@
 #include "chrome/browser/media/webrtc/media_stream_device_permissions.h"
 #include "chrome/browser/permissions/system/system_permission_settings.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/permissions/embedded_permission_prompt_ask_view.h"
 #include "chrome/browser/ui/views/permissions/embedded_permission_prompt_base_view.h"
 #include "chrome/browser/ui/views/permissions/embedded_permission_prompt_content_scrim_view.h"
@@ -25,6 +26,7 @@
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/permissions/embedded_permission_prompt_flow_model.h"
 #include "components/permissions/permission_uma_util.h"
+#include "components/permissions/permissions_client.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/color/color_id.h"
 
@@ -36,11 +38,18 @@
 using Variant = permissions::EmbeddedPermissionPromptFlowModel::Variant;
 
 EmbeddedPermissionPrompt::EmbeddedPermissionPrompt(
-    Browser* browser,
     content::WebContents* web_contents,
     permissions::PermissionPrompt::Delegate* delegate)
-    : PermissionPromptDesktop(browser, web_contents, delegate),
-      delegate_(delegate) {
+    : PermissionPromptDesktop(web_contents, delegate), delegate_(delegate) {
+  if (browser()) {
+    if (auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser())) {
+      if (auto* focus_manager = browser_view->GetFocusManager()) {
+        previously_focused_view_tracker_.SetView(
+            focus_manager->GetFocusedView());
+      }
+    }
+  }
+
   prompt_model_ =
       std::make_unique<permissions::EmbeddedPermissionPromptFlowModel>(
           web_contents, delegate);
@@ -64,12 +73,12 @@ void EmbeddedPermissionPrompt::CloseCurrentViewAndMaybeShowNext(
   switch (prompt_variant()) {
     case Variant::kAsk:
       prompt_view = new EmbeddedPermissionPromptAskView(
-          browser(), weak_factory_.GetWeakPtr());
+          web_contents(), weak_factory_.GetWeakPtr());
       break;
     case Variant::kPreviouslyGranted:
       if (first_prompt) {
         prompt_view = new EmbeddedPermissionPromptPreviouslyGrantedView(
-            browser(), weak_factory_.GetWeakPtr());
+            web_contents(), weak_factory_.GetWeakPtr());
       } else {
         FinalizePrompt();
         return;
@@ -77,11 +86,11 @@ void EmbeddedPermissionPrompt::CloseCurrentViewAndMaybeShowNext(
       break;
     case Variant::kPreviouslyDenied:
       prompt_view = new EmbeddedPermissionPromptPreviouslyDeniedView(
-          browser(), weak_factory_.GetWeakPtr());
+          web_contents(), weak_factory_.GetWeakPtr());
       break;
     case Variant::kOsPrompt:
       prompt_view = new EmbeddedPermissionPromptShowSystemPromptView(
-          browser(), weak_factory_.GetWeakPtr());
+          web_contents(), weak_factory_.GetWeakPtr());
       prompt_model_->StartFirstDisplayTime();
       // This view has no buttons, so the OS level prompt should be triggered at
       // the same time as the |EmbeddedPermissionPromptShowSystemPromptView|.
@@ -89,17 +98,17 @@ void EmbeddedPermissionPrompt::CloseCurrentViewAndMaybeShowNext(
       break;
     case Variant::kOsSystemSettings:
       prompt_view = new EmbeddedPermissionPromptSystemSettingsView(
-          browser(), weak_factory_.GetWeakPtr());
+          web_contents(), weak_factory_.GetWeakPtr());
       prompt_model_->StartFirstDisplayTime();
       break;
     case Variant::kAdministratorGranted:
       prompt_view = new EmbeddedPermissionPromptPolicyView(
-          browser(), weak_factory_.GetWeakPtr(),
+          web_contents(), weak_factory_.GetWeakPtr(),
           /*is_permission_allowed=*/true);
       break;
     case Variant::kAdministratorDenied:
       prompt_view = new EmbeddedPermissionPromptPolicyView(
-          browser(), weak_factory_.GetWeakPtr(),
+          web_contents(), weak_factory_.GetWeakPtr(),
           /*is_permission_allowed=*/false);
       break;
     case Variant::kUninitialized:
@@ -115,9 +124,22 @@ void EmbeddedPermissionPrompt::CloseCurrentViewAndMaybeShowNext(
           web_contents()->IgnoreInputEvents(std::nullopt);
       // Creating the widget will display it. That's why we create it only if
       // the tab can show modal UI.
-      tabs::TabInterface* tab =
-          tabs::TabInterface::GetFromContents(web_contents());
-      scoped_tab_modal_ui_ = tab->ShowModalUI();
+
+      // Permission prompts from side panels/omnibox popup do not have a
+      // `TabInterface`, but there is never a concern with showing a modal on
+      // them because if they can request permission, they are open and
+      // available to have a modal to show on top of them unlike tabs, which can
+      // be switched between. This function is only called after embedded
+      // permission prompt has been chosen as the prompt type. Embedded
+      // permission prompt path is not run for WebUIs like omnibox popup/side
+      // panels if the omnibox embedded permission flag is not enabled, so, in
+      // those cases, accessing a null `TabInterface` is avoided.
+      if (!permissions::PermissionsClient::Get()
+               ->IsPrivilegedInternalWebUIForUIRouting(web_contents())) {
+        tabs::TabInterface* tab =
+            tabs::TabInterface::GetFromContents(web_contents());
+        scoped_tab_modal_ui_ = tab->ShowModalUI();
+      }
 
       content_scrim_widget_ =
           EmbeddedPermissionPromptContentScrimView::CreateScrimWidget(
@@ -313,7 +335,7 @@ EmbeddedPermissionPrompt::GetPermissionPromptDelegate() const {
   return delegate_->GetWeakPtr();
 }
 
-const std::vector<base::WeakPtr<permissions::PermissionRequest>>&
+const std::vector<base::SafeRef<permissions::PermissionRequest>>&
 EmbeddedPermissionPrompt::Requests() const {
   return prompt_model_->requests();
 }
@@ -434,8 +456,36 @@ void EmbeddedPermissionPrompt::CloseViewAndScrim() {
   scoped_tab_modal_ui_.reset();
 }
 
-void EmbeddedPermissionPrompt::FinalizePrompt() {
+void EmbeddedPermissionPrompt::FocusThenClose() {
+  // The native Browser UI (the Omnibox) does not have web contents like web
+  // pages do. If OS restores focus to the WebContents when the prompt closes,
+  // it steals focus from the Omnibox, which triggers `OnKillFocus`
+  // and incorrectly collapses the omnibox popup and therefore voice search.
+  views::View* previously_focused_view =
+      previously_focused_view_tracker_.view();
+  // Reset to avoid reuse and any re-entrancy.
+  previously_focused_view_tracker_.SetView(nullptr);
+
+  // Only restore focus if the view still exists, is still drawn on screen,
+  // and is still capable of receiving focus.
+  if (previously_focused_view && previously_focused_view->IsDrawn() &&
+      previously_focused_view->IsFocusable()) {
+    previously_focused_view->RequestFocus();
+  } else if (web_contents()) {
+    // Focus must be restored to the browser before the prompt widget is
+    // destroyed to ensure the OS properly targets the browser window when the
+    // prompt closes instead of an available window (which, with status race
+    // conditions caused by the prompt, does not include Chrome sometimes). This
+    // is a particular bug related to how native Windows handles focus after an
+    // ambiguous focus release.
+    web_contents()->Focus();
+  }
+
   CloseViewAndScrim();
+}
+
+void EmbeddedPermissionPrompt::FinalizePrompt() {
+  FocusThenClose();
 
   // If by this point we've not sent an action to the delegate, send a dismiss
   // action.

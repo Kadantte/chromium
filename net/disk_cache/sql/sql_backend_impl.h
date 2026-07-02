@@ -12,12 +12,14 @@
 #include <variant>
 #include <vector>
 
+#include "base/byte_size.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
+#include "base/timer/elapsed_timer.h"
 #include "base/types/expected.h"
 #include "base/types/strong_alias.h"
 #include "net/base/net_errors.h"
@@ -28,6 +30,7 @@
 #include "net/disk_cache/sql/entry_db_handle.h"
 #include "net/disk_cache/sql/entry_write_buffer.h"
 #include "net/disk_cache/sql/exclusive_operation_coordinator.h"
+#include "net/disk_cache/sql/sql_async_task_manager.h"
 #include "net/disk_cache/sql/sql_persistent_store.h"
 #include "net/disk_cache/sql/sql_write_buffer_memory_monitor.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
@@ -88,6 +91,8 @@ class NET_EXPORT_PRIVATE SqlBackendImpl final : public Backend {
   int64_t MaxFileSize() const override;
   base::expected<int32_t, net::Error> GetEntryCount(
       GetEntryCountCallback callback) const override;
+  void SetMaxBytes(base::ByteSize max_bytes) override;
+  base::ByteSize GetMaxBytesForTesting() const override;
   EntryResult OpenOrCreateEntry(const std::string& key,
                                 net::RequestPriority priority,
                                 EntryResultCallback callback) override;
@@ -157,6 +162,8 @@ class NET_EXPORT_PRIVATE SqlBackendImpl final : public Backend {
                      EntryWriteBuffer buffer,
                      bool truncate,
                      base::Time last_used,
+                     bool sparse_write,
+                     int64_t header_size,
                      bool copy_buffer_for_optimistic_write,
                      CompletionOnceCallback callback);
 
@@ -198,9 +205,8 @@ class NET_EXPORT_PRIVATE SqlBackendImpl final : public Backend {
     return write_buffer_monitor_;
   }
 
-  // Sends a dummy operation through the background task runner via the
-  // operation coordinator, for unit tests.
-  int FlushQueueForTest(CompletionOnceCallback callback);
+  // Runs the message loop until all tracked tasks are complete, for unit tests.
+  void RunUntilAllTasksCompleteForTest();
 
   std::vector<scoped_refptr<base::SequencedTaskRunner>>&
   GetBackgroundTaskRunnersForTest() {
@@ -208,6 +214,8 @@ class NET_EXPORT_PRIVATE SqlBackendImpl final : public Backend {
   }
 
   SqlPersistentStore* GetSqlStoreForTest() { return store_.get(); }
+
+  SqlAsyncTaskManager& async_task_manager() { return async_task_manager_; }
 
   // Enables a strict corruption checking mode for testing purposes. When
   // enabled, any detected database corruption will cause an immediate crash
@@ -277,10 +285,22 @@ class NET_EXPORT_PRIVATE SqlBackendImpl final : public Backend {
   };
 
   void OnInitialized(CompletionOnceCallback callback,
+                     base::ElapsedTimer init_start_time,
                      const std::vector<bool>& results);
+  void OnCheckFakeIndexFileFinished(CompletionOnceCallback callback,
+                                    base::ElapsedTimer init_start_time,
+                                    bool success);
+  void OnStoreInitialized(CompletionOnceCallback callback,
+                          base::ElapsedTimer init_start_time,
+                          SqlPersistentStore::Error error);
   void RunDelayedPostInitializationTasks();
 
   SqlEntryImpl* GetActiveEntry(const CacheEntryKey& key);
+
+  // Flushes the write buffers of all active entries.
+  // This is primarily used to ensure that lazy entry creations and pending
+  // writes are visible to subsequent asynchronous database operations.
+  void FlushActiveEntriesBuffers() const;
 
   // Checks if the cache size has exceeded the high watermark and, if so,
   // schedules an eviction task. This is typically called after operations that
@@ -396,6 +416,8 @@ class NET_EXPORT_PRIVATE SqlBackendImpl final : public Backend {
       EntryWriteBuffer buffer,
       bool truncate,
       base::Time last_used,
+      bool sparse_write,
+      int64_t header_size,
       SqlPersistentStore::ResIdOrErrorCallback callback,
       PopInFlightEntryModificationRunner pop_in_flight_entry_modification,
       std::unique_ptr<ExclusiveOperationCoordinator::OperationHandle> handle);
@@ -410,6 +432,8 @@ class NET_EXPORT_PRIVATE SqlBackendImpl final : public Backend {
       EntryWriteBuffer buffer,
       bool truncate,
       base::Time last_used,
+      bool sparse_write,
+      int64_t header_size,
       SqlPersistentStore::ResIdOrErrorCallback callback,
       PopInFlightEntryModificationRunner pop_in_flight_entry_modification,
       std::unique_ptr<ExclusiveOperationCoordinator::OperationHandle> handle);
@@ -490,6 +514,8 @@ class NET_EXPORT_PRIVATE SqlBackendImpl final : public Backend {
   void ApplyInFlightEntryModifications(
       const CacheEntryKey& key,
       SqlPersistentStore::EntryInfo& entry_info);
+
+  SqlAsyncTaskManager async_task_manager_;
 
   const base::FilePath path_;
 

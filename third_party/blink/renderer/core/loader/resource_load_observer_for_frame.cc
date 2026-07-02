@@ -213,8 +213,8 @@ void ResourceLoadObserverForFrame::DidReceiveResponse(
                                                            response);
       frame->GetLocalFrameHostRemote().DidLoadResourceFromMemoryCache(
           resource_request.Url(),
-          String::FromUTF8(resource_request.HttpMethod().Utf8()),
-          String::FromUTF8(response.MimeType().Utf8()),
+          String::FromUtf8(resource_request.HttpMethod().Utf8()),
+          String::FromUtf8(response.MimeType().Utf8()),
           resource_request.GetRequestDestination(),
           response.RequestIncludeCredentials());
     }
@@ -251,7 +251,7 @@ void ResourceLoadObserverForFrame::DidReceiveResponse(
   // Count usage of Content-Disposition header in SVGUse resources.
   if (resource->Options().initiator_info.name ==
           fetch_initiator_type_names::kUse &&
-      request.Url().ProtocolIsInHTTPFamily() && response.IsAttachment()) {
+      request.Url().ProtocolIsInHttpFamily() && response.IsAttachment()) {
     CountUsage(WebFeature::kContentDispositionInSvgUse);
   }
 
@@ -378,10 +378,9 @@ void ResourceLoadObserverForFrame::DidFailLoading(
 void ResourceLoadObserverForFrame::DidChangeRenderBlockingBehavior(
     Resource* resource,
     const FetchParameters& params) {
-  TRACE_EVENT_INSTANT_WITH_TIMESTAMP1(
+  TRACE_EVENT_INSTANT(
       "devtools.timeline", "PreloadRenderBlockingStatusChange",
-      TRACE_EVENT_SCOPE_THREAD, base::TimeTicks::Now(), "data",
-      [&](perfetto::TracedValue ctx) {
+      base::TimeTicks::Now(), "data", [&](perfetto::TracedValue ctx) {
         inspector_change_render_blocking_behavior_event::Data(
             std::move(ctx), document_->Loader(),
             resource->GetResourceRequest().InspectorId(),

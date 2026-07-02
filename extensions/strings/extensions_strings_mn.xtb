@@ -11,10 +11,12 @@
 <translation id="1556537182262721003">Өргөтгөлийн директорыг профайл руу зөөж чадсангүй.</translation>
 <translation id="1610570795592207282">Скриптэд css '<ph name="RELATIVE_PATH" />'-г ачаалж чадсангүй.</translation>
 <translation id="1616298854599875024">"<ph name="IMPORT_NAME" />" өргөтгөл нь хуваалцсан модуль биш тул үүнийг импорт хийх боломжгүй</translation>
+<translation id="1757786065507923842">Эцэг эхийн зөвшөөрлийн хүсэлт амжилтгүй боллоо.</translation>
 <translation id="1803557475693955505">'<ph name="BACKGROUND_PAGE" />' үндсэн хуудсыг ачаалж чадсангүй.</translation>
 <translation id="1875387611427697908">Үүнийг зөвхөн <ph name="CHROME_WEB_STORE" />-с нэмэх боломжтой</translation>
 <translation id="2131077480075264">"<ph name="APP_NAME" />" апликейшнийг <ph name="IMPORT_NAME" />-н зөвшөөрөлгүйгээр суулгах боломжгүй байна.</translation>
 <translation id="2159915644201199628">Дүрсний кодыг тайлах боломжгүй байна: <ph name="IMAGE_NAME" /> '</translation>
+<translation id="2193567467390483943">Танай эцэг эх энэ өргөтгөлийг зөвшөөрөөгүй</translation>
 <translation id="2350172092385603347">Байрлалыг ашигласан, анхдагч байрлалыг контентын жагсаалтанд зааж өгсөн.</translation>
 <translation id="2576842806987913196">Ийм нэртэй CRX файл аль хэдийн байна.</translation>
 <translation id="2662876636500006917">Chrome веб дэлгүүр</translation>
@@ -25,13 +27,16 @@
 <translation id="3115238746683532089"><ph name="VENDOR_ID" /> борлуулагчийн <ph name="PRODUCT_ID" /> тодорхойгүй бүтээгдэхүүн (серийн дугаар <ph name="SERIAL_NUMBER" />)</translation>
 <translation id="3144135466825225871">crx файлыг солих боломжгүй байна.Файл нээлттэй байгаа эсэхийг шалгана уу.</translation>
 <translation id="3163201441334626963"><ph name="PRODUCT_ID" /> үйлдвэрлэгчийн <ph name="VENDOR_ID" /> тодорхойгүй бүтээгдэхүүн</translation>
+<translation id="3174723475300476613">Энэ өргөтгөлд хандах эрхийг танай байгууллагаас блоклосон.</translation>
 <translation id="3242289508736283383">'Kiosk_only' тодорхойлогч атрибуттай аппыг ChromeOS-н kiosk горимд суулгах ёстой</translation>
+<translation id="3364986687961713424">Таны администратораас: <ph name="ADMIN_MESSAGE" /></translation>
 <translation id="3393440416772303020"><ph name="PRODUCT_NAME" /> (серийн дугаар <ph name="SERIAL_NUMBER" />)</translation>
 <translation id="3466070586188012397"><ph name="PRODUCT_NAME" /> борлуулагчийн <ph name="VENDOR_ID" /> (сериалын дугаар <ph name="SERIAL_NUMBER" />)</translation>
 <translation id="3561217442734750519">Хувийн түлхүүрт оруулах оролтын утга нь хүчин төгөлдөр байх ёстой.</translation>
 <translation id="3834775135533257713">"<ph name="TO_INSTALL_APP_NAME" />" апп нь "<ph name="INSTALLED_APP_NAME" />"-тай зөрчилдөж байгаа тул үүнийг нэмэх боломжгүй байна.</translation>
 <translation id="388442998277590542">Сонголтууд хуудсыг '<ph name="OPTIONS_PAGE" />' ачаалж чадсангүй.</translation>
 <translation id="3984413272403535372">Өргөтгөл рүү нэвтрэх үед алдаа гарлаа</translation>
+<translation id="4094452115117798451">Энэ өргөтгөлийн ангилалд хандах эрхийг танай байгууллагаас блоклосон.</translation>
 <translation id="4233778200880751280">'<ph name="ABOUT_PAGE" />' Тухай хуудсыг ачаалж чадсангүй.</translation>
 <translation id="424963718355121712">Аппыг нөлөөлдөг толгой компьютероос нь ажиллуулах шаардлагатай</translation>
 <translation id="4306119971288449206">Аппыг заавал "<ph name="CONTENT_TYPE" />" агуулгын төрөлтэй ажиллуулах шаардлагатай</translation>
@@ -64,6 +69,7 @@
 <translation id="7003844668372540529"><ph name="VENDOR_NAME" />-ын тодорхойгүй бүтээгдэхүүн <ph name="PRODUCT_ID" /></translation>
 <translation id="7068383018033524534">Тодорхойлогч файл буруу байна</translation>
 <translation id="7217838517480956708">Энэ машины админаас суулгах <ph name="EXTENSION_NAME" />-ийг шаардаж байна. Үүнийг устгах юмуу өөрчилж болохгүй.</translation>
+<translation id="7287143125007575591">Хандалтыг зөвшөөрөөгүй.</translation>
 <translation id="7612608473764576263">Хувийн түлхүүрийн оролтын утга хүчинтэй формат байх ёстой (PKCS#8-формат PEM-кодолсон RSA түлхүүр).</translation>
 <translation id="765293928828334535">Энэ вебсайтаас апп, өргөтгөлүүд болон хэрэглэгчийн скриптийг нэмэх боломжгүй</translation>
 <translation id="7876803335449432072">Контентын скриптэд зориулж '<ph name="RELATIVE_PATH" />' файлыг ачаалж чадсангүй. Контентын скриптийн style sheet-г зөвхөн .css файл зэрэг дэмжигдсэн style sheet файлаас ачаалж болно.</translation>

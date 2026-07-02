@@ -50,6 +50,7 @@
 #include "net/http/http_stream_pool.h"
 #include "net/http/http_stream_pool_group.h"
 #include "net/http/http_stream_pool_handle.h"
+#include "net/http/http_stream_pool_tcp_based_attempt.h"
 #include "net/http/http_stream_pool_test_util.h"
 #include "net/http/http_stream_request.h"
 #include "net/log/net_log_with_source.h"
@@ -158,7 +159,7 @@ class Preconnector {
             stream_key.secure_dns_policy(),
             stream_key.disable_cert_network_fetches(),
             alternative_service_info_, AdvertisedAltSvcState::kUnknown,
-            allowed_alpns_, load_flags_, proxy_info_,
+            allowed_alpns_, load_flags_, proxy_info_, target_network_,
             NetLogWithSource::Make(
                 pool.http_network_session()->net_log(),
                 NetLogSourceType::HTTP_STREAM_JOB_CONTROLLER)),
@@ -199,6 +200,7 @@ class Preconnector {
   NextProtoSet allowed_alpns_ = NextProtoSet::All();
   ProxyInfo proxy_info_ = ProxyInfo::Direct();
   int load_flags_ = 0;
+  handles::NetworkHandle target_network_ = handles::kInvalidNetworkHandle;
 
   std::optional<int> result_;
   base::OnceClosure wait_result_closure_;
@@ -300,7 +302,7 @@ class StreamRequester : public HttpStreamRequest::Delegate {
             stream_key.secure_dns_policy(),
             stream_key.disable_cert_network_fetches(),
             alternative_service_info_, AdvertisedAltSvcState::kUnknown,
-            allowed_alpns_, load_flags_, proxy_info_,
+            allowed_alpns_, load_flags_, proxy_info_, target_network_,
             NetLogWithSource::Make(
                 pool.http_network_session()->net_log(),
                 NetLogSourceType::HTTP_STREAM_JOB_CONTROLLER)),
@@ -446,6 +448,7 @@ class StreamRequester : public HttpStreamRequest::Delegate {
   int load_flags_ = 0;
   ProxyInfo proxy_info_ = ProxyInfo::Direct();
   AlternativeServiceInfo alternative_service_info_;
+  handles::NetworkHandle target_network_ = handles::kInvalidNetworkHandle;
 
   std::unique_ptr<HttpStreamRequest> request_;
 
@@ -466,9 +469,11 @@ class StreamRequester : public HttpStreamRequest::Delegate {
 
 class HttpStreamPoolAttemptManagerTest : public TestWithTaskEnvironment {
  public:
+  // TODO(crbug.com/463794414): Enable per-priority task queues for these tests.
   HttpStreamPoolAttemptManagerTest()
       : TestWithTaskEnvironment(
-            base::test::TaskEnvironment::TimeSource::MOCK_TIME) {
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME,
+            {features::kNetworkServicePerPriorityTaskQueues}) {
     FLAGS_quic_enable_http3_grease_randomness = false;
     feature_list_.InitAndEnableFeature(features::kHappyEyeballsV3);
     InitializeSession();
@@ -558,6 +563,8 @@ class HttpStreamPoolAttemptManagerTest : public TestWithTaskEnvironment {
   quic::ParsedQuicVersion quic_version() {
     return quic::ParsedQuicVersion::RFCv1();
   }
+
+  RecordingNetLogObserver& net_log_observer() { return net_log_observer_; }
 
   base::WeakPtr<SpdySession> CreateFakeSpdySession(
       const HttpStreamKey& stream_key,
@@ -1196,6 +1203,29 @@ TEST_F(HttpStreamPoolAttemptManagerTest, TcpFailAfterNeedsClientAuth) {
             HostPortPair::FromSchemeHostPort(kDestination));
 }
 
+// Verifies the AttemptManager's base SSLConfig allows TLS renegotiation for
+// HTTP/1.1 but not HTTP/2.
+TEST_F(HttpStreamPoolAttemptManagerTest, BaseSSLConfigAllowsRenegotiation) {
+  // Keep DNS resolution pending so the AttemptManager stays alive.
+  resolver()->AddFakeRequest();
+
+  StreamRequester requester;
+  requester.set_destination(url::SchemeHostPort(GURL("https://a.test")))
+      .RequestStream(pool());
+
+  AttemptManager* attempt_manager =
+      pool()
+          .GetOrCreateGroupForTesting(requester.GetStreamKey())
+          .attempt_manager();
+  ASSERT_TRUE(attempt_manager);
+
+  SSLConfig ssl_config = attempt_manager->GetBaseSSLConfig();
+
+  EXPECT_TRUE(ssl_config.renego_allowed_default);
+  EXPECT_THAT(ssl_config.renego_allowed_for_protos,
+              testing::ElementsAre(NextProto::kProtoHTTP11));
+}
+
 TEST_F(HttpStreamPoolAttemptManagerTest, RequestCanceledBeforeAttemptSuccess) {
   base::WeakPtr<FakeServiceEndpointRequest> endpoint_request =
       resolver()->AddFakeRequest();
@@ -1216,16 +1246,8 @@ TEST_F(HttpStreamPoolAttemptManagerTest, RequestCanceledBeforeAttemptSuccess) {
   requester.ResetRequest();
   ASSERT_TRUE(requester.associated_attempt_manager()->is_shutting_down());
 
-  // Ensure invoking service endpoint callbacks does nothing on the associated
-  // AttemptManager.
-  CHECK(endpoint_request);
-  endpoint_request->add_endpoint(
-      ServiceEndpointBuilder().add_v4("192.0.2.2").endpoint());
-  endpoint_request->CallOnServiceEndpointsUpdated();
-  ASSERT_TRUE(requester.associated_attempt_manager()->is_shutting_down());
-
-  endpoint_request->CallOnServiceEndpointRequestFinished(OK);
-  ASSERT_TRUE(requester.associated_attempt_manager()->is_shutting_down());
+  // AttemptManager should have reset its ServiceEndpointRequest.
+  ASSERT_FALSE(endpoint_request);
 
   WaitForAttemptManagerComplete(requester.associated_attempt_manager().get());
   ASSERT_FALSE(pool().GetGroupForTesting(requester.GetStreamKey()));
@@ -1415,7 +1437,63 @@ TEST_F(HttpStreamPoolAttemptManagerTest, IPEndPointSlow) {
   ASSERT_EQ(pool().TotalActiveStreamCount(), 1u);
 }
 
-// Tests that when endpoints are slow, other endpoints are attempted.
+// Tests that an empty slot is not considered slow.
+TEST_F(HttpStreamPoolAttemptManagerTest, TcpBasedAttemptSlotEmptyIsNotSlow) {
+  HttpStreamPool::TcpBasedAttemptSlot slot;
+  EXPECT_TRUE(slot.empty());
+  EXPECT_FALSE(slot.IsSlow());
+
+  slot.UpdateIsSlow();
+  EXPECT_FALSE(slot.IsSlow());
+}
+
+// Tests that IsSlow() remains consistent when an attempt is taken from a slot.
+TEST_F(HttpStreamPoolAttemptManagerTest, CalculateIsSlowAfterFastAttemptFails) {
+  // Set the max stream sockets per group to 1 to force the second attempt into
+  // the same slot as the first attempt when it falls back.
+  constexpr size_t kMaxPerGroup = 1;
+  pool().set_max_stream_sockets_per_group_for_testing(kMaxPerGroup);
+
+  base::WeakPtr<FakeServiceEndpointRequest> endpoint_request =
+      resolver()->AddFakeRequest();
+
+  // Make the first attempt (IPv6) stalled.
+  auto data1 = std::make_unique<SequencedSocketData>();
+  data1->set_connect_data(MockConnect(ASYNC, ERR_IO_PENDING));
+  socket_factory()->AddSocketDataProvider(data1.get());
+
+  // Make the second attempt (IPv4) fail asynchronously.
+  auto data2 = std::make_unique<SequencedSocketData>();
+  data2->set_connect_data(MockConnect(ASYNC, ERR_CONNECTION_FAILED));
+  socket_factory()->AddSocketDataProvider(data2.get());
+
+  StreamRequester requester;
+  HttpStreamRequest* request = requester.RequestStream(pool());
+
+  endpoint_request->add_endpoint(ServiceEndpointBuilder()
+                                     .add_v6("2001:db8::1")
+                                     .add_v4("192.0.2.1")
+                                     .endpoint());
+  endpoint_request->CallOnServiceEndpointRequestFinished(OK);
+
+  AttemptManager* manager =
+      pool().GetGroupForTesting(requester.GetStreamKey())->attempt_manager();
+
+  // The first attempt should have started and occupied the only slot.
+  ASSERT_EQ(manager->TcpBasedAttemptSlotCount(), 1u);
+  ASSERT_FALSE(request->completed());
+
+  // Fast forward by the connection attempt delay.
+  // This makes the first attempt (IPv6) slow. Because max stream sockets per
+  // group is 1, the manager will start the fallback attempt (IPv4) in the same
+  // slot. The fallback attempt will fail asynchronously because of
+  // ERR_CONNECTION_FAILED, and will be extracted from the slot.
+  // This triggers a call to `UpdateIsSlow()`. Prior to crbug.com/484352875,
+  // this incorrectly evaluated the slot's "slow" status and triggered a DCHECK.
+  // This test ensures the DCHECK is not hit.
+  FastForwardBy(HttpStreamPool::GetConnectionAttemptDelay());
+}
+
 TEST_F(HttpStreamPoolAttemptManagerTest, IPEndPointsSlow) {
   base::WeakPtr<FakeServiceEndpointRequest> endpoint_request =
       resolver()->AddFakeRequest();
@@ -1916,15 +1994,15 @@ TEST_F(HttpStreamPoolAttemptManagerTest, ReachedPoolLimit) {
   pool().set_max_stream_sockets_per_group_for_testing(kMaxPerGroup);
   pool().set_max_stream_sockets_per_pool_for_testing(kMaxPerPool);
 
-  const HttpStreamKey key_a(url::SchemeHostPort("http", "a.test", 80),
-                            PRIVACY_MODE_DISABLED, SocketTag(),
-                            NetworkAnonymizationKey(), SecureDnsPolicy::kAllow,
-                            /*disable_cert_network_fetches=*/false);
+  const HttpStreamKey key_a(
+      url::SchemeHostPort("http", "a.test", 80), PRIVACY_MODE_DISABLED,
+      SocketTag(), NetworkAnonymizationKey(), SecureDnsPolicy::kAllow,
+      /*disable_cert_network_fetches=*/false, handles::kInvalidNetworkHandle);
 
-  const HttpStreamKey key_b(url::SchemeHostPort("http", "b.test", 80),
-                            PRIVACY_MODE_DISABLED, SocketTag(),
-                            NetworkAnonymizationKey(), SecureDnsPolicy::kAllow,
-                            /*disable_cert_network_fetches=*/false);
+  const HttpStreamKey key_b(
+      url::SchemeHostPort("http", "b.test", 80), PRIVACY_MODE_DISABLED,
+      SocketTag(), NetworkAnonymizationKey(), SecureDnsPolicy::kAllow,
+      /*disable_cert_network_fetches=*/false, handles::kInvalidNetworkHandle);
 
   // Create HttpStreams up to the group limit in group A.
   Group& group_a = pool().GetOrCreateGroupForTesting(key_a);
@@ -2413,15 +2491,15 @@ TEST_F(HttpStreamPoolAttemptManagerTest,
   pool().set_max_stream_sockets_per_group_for_testing(kMaxPerGroup);
   pool().set_max_stream_sockets_per_pool_for_testing(kMaxPerPool);
 
-  const HttpStreamKey key_a(url::SchemeHostPort("http", "a.test", 80),
-                            PRIVACY_MODE_DISABLED, SocketTag(),
-                            NetworkAnonymizationKey(), SecureDnsPolicy::kAllow,
-                            /*disable_cert_network_fetches=*/false);
+  const HttpStreamKey key_a(
+      url::SchemeHostPort("http", "a.test", 80), PRIVACY_MODE_DISABLED,
+      SocketTag(), NetworkAnonymizationKey(), SecureDnsPolicy::kAllow,
+      /*disable_cert_network_fetches=*/false, handles::kInvalidNetworkHandle);
 
-  const HttpStreamKey key_b(url::SchemeHostPort("http", "b.test", 80),
-                            PRIVACY_MODE_DISABLED, SocketTag(),
-                            NetworkAnonymizationKey(), SecureDnsPolicy::kAllow,
-                            /*disable_cert_network_fetches=*/false);
+  const HttpStreamKey key_b(
+      url::SchemeHostPort("http", "b.test", 80), PRIVACY_MODE_DISABLED,
+      SocketTag(), NetworkAnonymizationKey(), SecureDnsPolicy::kAllow,
+      /*disable_cert_network_fetches=*/false, handles::kInvalidNetworkHandle);
 
   // Add idle streams up to the group's limit in group A.
   Group& group_a = pool().GetOrCreateGroupForTesting(key_a);
@@ -6770,6 +6848,48 @@ TEST_F(HttpStreamPoolAttemptManagerTest, AltSvcH2OkOriginFail) {
   requester.ResetRequest();
   EXPECT_FALSE(http_server_properties()->IsAlternativeServiceBroken(
       alternative_service, NetworkAnonymizationKey()));
+}
+
+// Tests that if an alternative service destination uses a restricted port,
+// connection attempt to the alternative service is skipped and the request
+// falls back to the origin connection.
+// Regression test for crbug.com/501851312
+TEST_F(HttpStreamPoolAttemptManagerTest, AltSvcH2UnsafePort) {
+  const url::SchemeHostPort kOrigin(url::kHttpsScheme, "origin.example.org",
+                                    443);
+  const HostPortPair kAlternative("alt.example.org", 10080);
+
+  const AlternativeService alternative_service(NextProto::kProtoHTTP2,
+                                               kAlternative);
+  const base::Time expiration = base::Time::Now() + base::Days(1);
+
+  StreamRequester requester;
+  requester.set_destination(kOrigin).set_alternative_service_info(
+      AlternativeServiceInfo::CreateHttp2AlternativeServiceInfo(
+          alternative_service, expiration));
+
+  resolver()
+      ->AddFakeRequest()
+      ->add_endpoint(ServiceEndpointBuilder().add_v4("192.0.2.1").endpoint())
+      .CompleteStartSynchronously(OK);
+
+  // For the origin. The connection is refused.
+  StaticSocketDataProvider origin_data;
+  origin_data.set_connect_data(MockConnect(ASYNC, ERR_CONNECTION_REFUSED));
+  socket_factory()->AddSocketDataProvider(&origin_data);
+
+  requester.RequestStream(pool());
+  requester.WaitForResult();
+
+  // The alternative job is not started because of the unsafe port,
+  // and the origin job fails with ERR_CONNECTION_REFUSED.
+  EXPECT_THAT(requester.result(), Optional(IsError(ERR_CONNECTION_REFUSED)));
+
+  auto entries = net_log_observer().GetEntriesWithType(
+      NetLogEventType::
+          HTTP_STREAM_POOL_JOB_CONTROLLER_SKIPPED_ALTSVC_RESTRICTED_PORT);
+  ASSERT_EQ(entries.size(), 1u);
+  EXPECT_THAT(entries[0].params.FindInt("port"), Optional(10080));
 }
 
 TEST_F(HttpStreamPoolAttemptManagerTest, AltSvcFailOriginOk) {

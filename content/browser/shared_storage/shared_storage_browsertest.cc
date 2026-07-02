@@ -36,6 +36,7 @@
 #include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "components/metrics/dwa/dwa_recorder.h"
 #include "content/browser/fenced_frame/fenced_frame_config.h"
 #include "content/browser/renderer_host/navigation_request.h"
@@ -630,6 +631,14 @@ IN_PROC_BROWSER_TEST_P(SharedStorageBrowserTest,
                     "UsePersistentCacheForCodeCache is enabled.";
   }
 
+  // V8 code caching is explicitly disabled on Fuchsia size-optimized builds
+  // to save storage space.
+  static constexpr bool expect_code_cache =
+#if BUILDFLAG(IS_FUCHSIA) && defined(__OPTIMIZE_SIZE__)
+      false;
+#else
+      true;
+#endif
   // The test assumes pages get deleted after navigation. To ensure this,
   // disable back/forward cache.
   content::DisableBackForwardCacheForTesting(
@@ -654,7 +663,11 @@ IN_PROC_BROWSER_TEST_P(SharedStorageBrowserTest,
 
   mojo_base::BigBuffer code_cache_data1 = GetCodeCacheDataForUrl(
       shell()->web_contents()->GetPrimaryMainFrame(), module_url);
-  EXPECT_GT(code_cache_data1.size(), 0u);
+  if (expect_code_cache) {
+    EXPECT_GT(code_cache_data1.size(), 0u);
+  } else {
+    EXPECT_EQ(code_cache_data1.size(), 0u);
+  }
 
   // After the first script loading, the code cache has some data.
   EXPECT_TRUE(NavigateToURL(shell(), url));
@@ -668,7 +681,11 @@ IN_PROC_BROWSER_TEST_P(SharedStorageBrowserTest,
   // expected, as we won't store the cached code entirely for first seen URLs.
   mojo_base::BigBuffer code_cache_data2 = GetCodeCacheDataForUrl(
       shell()->web_contents()->GetPrimaryMainFrame(), module_url);
-  EXPECT_GT(code_cache_data2.size(), code_cache_data1.size());
+  if (expect_code_cache) {
+    EXPECT_GT(code_cache_data2.size(), code_cache_data1.size());
+  } else {
+    EXPECT_EQ(code_cache_data2.size(), 0u);
+  }
 
   EXPECT_TRUE(NavigateToURL(shell(), url));
   EXPECT_TRUE(ExecJs(shell(), R"(
@@ -680,9 +697,13 @@ IN_PROC_BROWSER_TEST_P(SharedStorageBrowserTest,
   // implies that the code cache was used for the third compilation.
   mojo_base::BigBuffer code_cache_data3 = GetCodeCacheDataForUrl(
       shell()->web_contents()->GetPrimaryMainFrame(), module_url);
-  EXPECT_EQ(code_cache_data3.size(), code_cache_data2.size());
-  EXPECT_TRUE(std::equal(code_cache_data3.begin(), code_cache_data3.end(),
-                         code_cache_data2.begin()));
+  if (expect_code_cache) {
+    EXPECT_EQ(code_cache_data3.size(), code_cache_data2.size());
+    EXPECT_TRUE(std::equal(code_cache_data3.begin(), code_cache_data3.end(),
+                           code_cache_data2.begin()));
+  } else {
+    EXPECT_EQ(code_cache_data3.size(), 0u);
+  }
 }
 
 IN_PROC_BROWSER_TEST_P(SharedStorageBrowserTest, RunOperation_Success) {
@@ -9312,6 +9333,17 @@ class SharedStorageCreateWorkletCustomDataOriginBrowserTest
                      base::ListValue()
                          .Append("https://y.test:{{port}}")
                          .Append("https://a.test:{{port}}")))));
+    // We expect failure for script with origin "https://b.test:{{port}}" and
+    // context origin "https://a.test:{{port}}" when one of the following values
+    // is served.
+    trusted_origins_lists.push_back(static_cast<base::Value>(
+        base::ListValue()
+            .Append(base::DictValue()
+                        .Set("scriptOrigin", "https://b.test:{{port}}")
+                        .Set("contextOrigin", "https://d.test:{{port}}"))
+            .Append(base::DictValue()
+                        .Set("scriptOrigin", "https://d.test:{{port}}")
+                        .Set("contextOrigin", "https://a.test:{{port}}"))));
     return trusted_origins_lists;
   }
 };
@@ -9667,6 +9699,26 @@ IN_PROC_BROWSER_TEST_P(
         SharedStorageEventParams::CreateForCreateWorklet(
             module_script_url, custom_data_origin_str,
             /*worklet_ordinal=*/0, GetFirstWorkletHostDevToolsToken())}});
+}
+
+IN_PROC_BROWSER_TEST_P(SharedStorageCreateWorkletCustomDataOriginBrowserTest,
+                       CrossOriginScript_Failure_CrossEntryCarryOver) {
+  set_trusted_origins_list_index(14);
+  GURL url = https_server()->GetURL("a.test", kSimplePagePath);
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  GURL module_script_url = https_server()->GetURL(
+      "b.test", "/shared_storage/module_with_cors_header.js");
+
+  url::Origin custom_data_origin =
+      url::Origin::Create(https_server()->GetURL("c.test", kSimplePagePath));
+
+  EXPECT_THAT(
+      EvalJs(
+          shell(),
+          JsReplace("sharedStorage.createWorklet($1, {dataOrigin: $2})",
+                    module_script_url.spec(), custom_data_origin.Serialize())),
+      EvalJsResult::ErrorIs(testing::HasSubstr("has not been allowed")));
 }
 
 IN_PROC_BROWSER_TEST_P(SharedStorageBrowserTest,

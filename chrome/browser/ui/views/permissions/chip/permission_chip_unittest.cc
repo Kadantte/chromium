@@ -12,8 +12,10 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/test_with_browser_view.h"
 #include "chrome/browser/ui/views/permissions/chip/chip_controller.h"
+#include "chrome/browser/ui/views/permissions/chip/permission_chip_view.h"
 #include "chrome/browser/ui/views/permissions/permission_prompt_chip.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
+#include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/infobars/content/content_infobar_manager.h"
 #include "components/infobars/core/infobar_manager.h"
@@ -29,8 +31,10 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/gfx/animation/animation_test_api.h"
+#include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/test/ax_event_counter.h"
 #include "ui/views/test/button_test_api.h"
+#include "ui/views/view_utils.h"
 
 namespace {
 using ::content::RenderFrameHost;
@@ -246,7 +250,11 @@ class PermissionChipUnitTest : public TestWithBrowserView {
   }
 
   void ClickOnChip(ChipController* controller) {
-    views::test::ButtonTestApi(controller->chip())
+    views::test::ButtonTestApi(
+        views::AsViewClass<views::Button>(
+            views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
+                PermissionChipView::kPermissionRequestChipElementId,
+                views::ElementTrackerViews::GetContextForView(browser_view()))))
         .NotifyClick(ui::MouseEvent(ui::EventType::kMousePressed, gfx::Point(),
                                     gfx::Point(), ui::EventTimeForNow(),
                                     ui::EF_LEFT_MOUSE_BUTTON, 0));
@@ -278,7 +286,7 @@ TEST_F(PermissionChipUnitTest, AlreadyDisplayedRequestTest) {
 
   EXPECT_TRUE(delegate.WasCurrentRequestAlreadyDisplayed());
 
-  PermissionPromptChip chip_prompt(browser(), web_contents_, &delegate);
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
   ChipController* chip_controller =
       chip_prompt.get_chip_controller_for_testing();
 
@@ -315,13 +323,15 @@ TEST_F(PermissionChipUnitTest, AccessibleName) {
 
   EXPECT_TRUE(delegate.WasCurrentRequestAlreadyDisplayed());
 
-  PermissionPromptChip chip_prompt(browser(), web_contents_, &delegate);
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
   ChipController* chip_controller =
       chip_prompt.get_chip_controller_for_testing();
 
   AddTab(browser(), GURL("http://a.com"));
 
-  std::u16string tab_title = browser()->GetTitleForTab(0);
+  std::u16string tab_title =
+      WindowMetadataController::From(browser())->GetTitleForTab(
+          browser()->tab_strip_model()->GetTabAtIndex(0)->GetHandle());
   std::u16string permission_title = l10n_util::GetStringFUTF16(
       IDS_TAB_AX_LABEL_PERMISSION_REQUESTED_FORMAT, tab_title);
 
@@ -357,7 +367,7 @@ TEST_F(PermissionChipUnitTest, ClickOnRequestChipTest) {
   auto& delegate = *test::MockPermissionRequestManager::CreateForWebContents(
       GURL("https://test.origin"), {permissions::RequestType::kNotifications},
       true, web_contents_);
-  PermissionPromptChip chip_prompt(browser(), web_contents_, &delegate);
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
   ChipController* chip_controller =
       chip_prompt.get_chip_controller_for_testing();
 
@@ -366,9 +376,14 @@ TEST_F(PermissionChipUnitTest, ClickOnRequestChipTest) {
   EXPECT_FALSE(chip_controller->is_dismiss_timer_running_for_testing());
 
   // Animation does not work. Most probably it is unit tests limitations.
-  // `chip.is_fully_collapsed()` will not work as well.
+  // `chip.IsFullyCollapsed()` will not work as well.
   EXPECT_TRUE(chip_controller->IsAnimating());
-  chip_controller->stop_animation_for_test();
+  views::AsViewClass<PermissionChipView>(
+      views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
+          PermissionChipView::kPermissionRequestChipElementId,
+          views::ElementTrackerViews::GetContextForView(browser_view())))
+      ->StopAnimationForTesting();
+  chip_controller->OnExpandAnimationEnded();
   EXPECT_FALSE(chip_controller->IsAnimating());
 
   EXPECT_FALSE(chip_controller->is_collapse_timer_running_for_testing());
@@ -400,7 +415,7 @@ TEST_F(PermissionChipUnitTest, DisplayQuietChipNoAbusiveTest) {
   EXPECT_CALL(delegate, PreIgnoreQuietPrompt()).WillOnce([&delegate]() {
     return delegate.PermissionRequestManager::PreIgnoreQuietPrompt();
   });
-  PermissionPromptChip chip_prompt(browser(), web_contents_, &delegate);
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
   ChipController* chip_controller =
       chip_prompt.get_chip_controller_for_testing();
 
@@ -411,9 +426,14 @@ TEST_F(PermissionChipUnitTest, DisplayQuietChipNoAbusiveTest) {
   EXPECT_FALSE(chip_controller->is_dismiss_timer_running_for_testing());
 
   // Animation does not work. Most probably it is unit tests limitations.
-  // `chip.is_fully_collapsed()` will not work as well.
+  // `chip.IsFullyCollapsed()` will not work as well.
   EXPECT_TRUE(chip_controller->IsAnimating());
-  chip_controller->stop_animation_for_test();
+  views::AsViewClass<PermissionChipView>(
+      views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
+          PermissionChipView::kPermissionRequestChipElementId,
+          views::ElementTrackerViews::GetContextForView(browser_view())))
+      ->StopAnimationForTesting();
+  chip_controller->OnExpandAnimationEnded();
   EXPECT_FALSE(chip_controller->IsAnimating());
 
   EXPECT_TRUE(chip_controller->is_collapse_timer_running_for_testing());
@@ -454,11 +474,16 @@ TEST_F(PermissionChipUnitTest, ClickOnQuietChipNoAbusiveTest) {
   EXPECT_CALL(delegate, PreIgnoreQuietPrompt()).WillOnce([&delegate]() {
     return delegate.PermissionRequestManager::PreIgnoreQuietPrompt();
   });
-  PermissionPromptChip chip_prompt(browser(), web_contents_, &delegate);
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
   ChipController* chip_controller =
       chip_prompt.get_chip_controller_for_testing();
 
-  chip_controller->stop_animation_for_test();
+  views::AsViewClass<PermissionChipView>(
+      views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
+          PermissionChipView::kPermissionRequestChipElementId,
+          views::ElementTrackerViews::GetContextForView(browser_view())))
+      ->StopAnimationForTesting();
+  chip_controller->OnExpandAnimationEnded();
 
   // Open a permission popup bubble.
   ClickOnChip(chip_controller);
@@ -494,7 +519,7 @@ TEST_F(PermissionChipUnitTest, DisplayQuietChipAbusiveTest) {
   EXPECT_CALL(delegate, PreIgnoreQuietPrompt()).WillOnce([&delegate]() {
     return delegate.PermissionRequestManager::PreIgnoreQuietPrompt();
   });
-  PermissionPromptChip chip_prompt(browser(), web_contents_, &delegate);
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
   ChipController* chip_controller =
       chip_prompt.get_chip_controller_for_testing();
 
@@ -534,7 +559,7 @@ TEST_F(PermissionChipUnitTest, ClickOnQuietChipAbusiveTest) {
   EXPECT_CALL(delegate, PreIgnoreQuietPrompt()).WillOnce([&delegate]() {
     return delegate.PermissionRequestManager::PreIgnoreQuietPrompt();
   });
-  PermissionPromptChip chip_prompt(browser(), web_contents_, &delegate);
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
   ChipController* chip_controller =
       chip_prompt.get_chip_controller_for_testing();
 
@@ -573,7 +598,7 @@ TEST_F(PermissionPromiseLifetimeModulationTest,
       true,
       /*quiet_ui_reason=*/std::nullopt, web_contents_);
 
-  PermissionPromptChip chip_prompt(browser(), web_contents_, &delegate);
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
   EXPECT_TRUE(delegate.IsRequestInProgress());
   delegate.ClearRequests();
 }
@@ -584,7 +609,7 @@ TEST_F(PermissionPromiseLifetimeModulationTest,
       GURL("https://test.origin"), {permissions::RequestType::kGeolocation},
       true, /*quiet_ui_reason=*/std::nullopt, web_contents_);
 
-  PermissionPromptChip chip_prompt(browser(), web_contents_, &delegate);
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
   EXPECT_TRUE(delegate.IsRequestInProgress());
   delegate.ClearRequests();
 }
@@ -628,7 +653,7 @@ TEST_P(QuietUiPreignoreTest,
   EXPECT_CALL(delegate, PreIgnoreQuietPrompt()).WillOnce([&delegate]() {
     return delegate.PermissionRequestManager::PreIgnoreQuietPrompt();
   });
-  PermissionPromptChip chip_prompt(browser(), web_contents_, &delegate);
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
   delegate.ClearRequests();
 }
 
@@ -657,7 +682,7 @@ TEST_P(QuietUiAbusiveRequestsTest, GetsDenied) {
   EXPECT_CALL(delegate, PreIgnoreQuietPrompt()).WillOnce([&delegate]() {
     return delegate.PermissionRequestManager::PreIgnoreQuietPrompt();
   });
-  PermissionPromptChip chip_prompt(browser(), web_contents_, &delegate);
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
   ChipController* chip_controller =
       chip_prompt.get_chip_controller_for_testing();
 
@@ -697,7 +722,7 @@ TEST_P(QuietUiNonAbusiveRequestsTest, GetsAccepted) {
   EXPECT_CALL(delegate, PreIgnoreQuietPrompt()).WillOnce([&delegate]() {
     return delegate.PermissionRequestManager::PreIgnoreQuietPrompt();
   });
-  PermissionPromptChip chip_prompt(browser(), web_contents_, &delegate);
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
   ChipController* chip_controller =
       chip_prompt.get_chip_controller_for_testing();
 
@@ -741,8 +766,8 @@ TEST_P(InfobarTest, ShowInfobarIfNecessary) {
     return delegate.PermissionRequestManager::PreIgnoreQuietPrompt();
   });
 
-  auto chip_prompt = std::make_unique<PermissionPromptChip>(
-      browser(), web_contents_, &delegate);
+  auto chip_prompt =
+      std::make_unique<PermissionPromptChip>(web_contents_, &delegate);
   ChipController* chip_controller =
       chip_prompt->get_chip_controller_for_testing();
   delegate.SetView(std::move(chip_prompt));

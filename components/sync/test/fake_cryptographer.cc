@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <iterator>
 
+#include "base/containers/span.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "components/sync/protocol/encryption.pb.h"
@@ -90,9 +91,9 @@ bool FakeCryptographer::DecryptToString(const sync_pb::EncryptedData& encrypted,
   return true;
 }
 
-const CrossUserSharingPublicPrivateKeyPair&
-FakeCryptographer::GetCrossUserSharingKeyPair(uint32_t version) const {
-  return cross_user_sharing_key_pair_;
+std::array<uint8_t, 32> FakeCryptographer::GetCrossUserSharingRawPublicKey()
+    const {
+  return cross_user_sharing_key_pair_.GetRawPublicKey();
 }
 
 std::optional<std::vector<uint8_t>>

@@ -20,21 +20,8 @@ constexpr char kLnaPath[] =
     "?Access-Control-Allow-Origin: *";
 
 class LocalNetworkAccessIframeBrowserTest
-    : public LocalNetworkAccessBrowserTestBase,
-      public ::testing::WithParamInterface<bool> {
+    : public LocalNetworkAccessBrowserTestBase {
  public:
-  LocalNetworkAccessIframeBrowserTest() {
-    if (split_permissions_enabled()) {
-      feature_list_.InitAndEnableFeature(
-          network::features::kLocalNetworkAccessChecksSplitPermissions);
-    } else {
-      feature_list_.InitAndDisableFeature(
-          network::features::kLocalNetworkAccessChecksSplitPermissions);
-    }
-  }
-
-  bool split_permissions_enabled() { return GetParam(); }
-
   // Helper function for running iframe navigation tests that are intended to
   // succeed.
   //
@@ -58,10 +45,8 @@ class LocalNetworkAccessIframeBrowserTest
       child.allow = "local-network-access";
       document.body.appendChild(child);
     )";
-    EXPECT_THAT(
-        content::EvalJs(web_contents(),
-                        content::JsReplace(script_template, iframe_url)),
-        content::EvalJsResult::IsOk());
+    EXPECT_TRUE(content::ExecJs(
+        web_contents(), content::JsReplace(script_template, iframe_url)));
     // Check that the child iframe was successfully fetched.
     ASSERT_TRUE(iframe_url_nav_manager.WaitForNavigationFinished());
     EXPECT_TRUE(iframe_url_nav_manager.was_successful());
@@ -69,12 +54,9 @@ class LocalNetworkAccessIframeBrowserTest
     ASSERT_TRUE(nav_url_nav_manager.WaitForNavigationFinished());
     EXPECT_TRUE(nav_url_nav_manager.was_successful());
   }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
 };
 
-IN_PROC_BROWSER_TEST_P(LocalNetworkAccessIframeBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessIframeBrowserTest,
                        IframeDenyPermission) {
   ASSERT_TRUE(content::NavigateToURL(
       web_contents(),
@@ -93,16 +75,15 @@ IN_PROC_BROWSER_TEST_P(LocalNetworkAccessIframeBrowserTest,
     child.src = $1;
     document.body.appendChild(child);
   )";
-  EXPECT_THAT(content::EvalJs(web_contents(),
-                              content::JsReplace(script_template, iframe_url)),
-              content::EvalJsResult::IsOk());
+  EXPECT_TRUE(content::ExecJs(web_contents(),
+                              content::JsReplace(script_template, iframe_url)));
   ASSERT_TRUE(nav_manager.WaitForNavigationFinished());
 
   // Check that the child iframe failed to fetch.
   EXPECT_FALSE(nav_manager.was_successful());
 }
 
-IN_PROC_BROWSER_TEST_P(LocalNetworkAccessIframeBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessIframeBrowserTest,
                        IframeAcceptPermission) {
   ASSERT_TRUE(content::NavigateToURL(
       web_contents(),
@@ -121,9 +102,8 @@ IN_PROC_BROWSER_TEST_P(LocalNetworkAccessIframeBrowserTest,
     child.src = $1;
     document.body.appendChild(child);
   )";
-  EXPECT_THAT(content::EvalJs(web_contents(),
-                              content::JsReplace(script_template, iframe_url)),
-              content::EvalJsResult::IsOk());
+  EXPECT_TRUE(content::ExecJs(web_contents(),
+                              content::JsReplace(script_template, iframe_url)));
   ASSERT_TRUE(nav_manager.WaitForNavigationFinished());
 
   // Check that the child iframe was successfully fetched.
@@ -132,7 +112,7 @@ IN_PROC_BROWSER_TEST_P(LocalNetworkAccessIframeBrowserTest,
 
 // Open a public page that iframes a public page, then navigate it to a loopback
 // page.
-IN_PROC_BROWSER_TEST_P(LocalNetworkAccessIframeBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessIframeBrowserTest,
                        IframeNavigationPublicPagePublicIframe) {
   GURL initial_url = https_server().GetURL(
       "a.com", "/local_network_access/no-favicon-treat-as-public-address.html");
@@ -148,7 +128,7 @@ IN_PROC_BROWSER_TEST_P(LocalNetworkAccessIframeBrowserTest,
 
 // Open a public page that iframes a loopback page, then navigate it to a
 // loopback page.
-IN_PROC_BROWSER_TEST_P(LocalNetworkAccessIframeBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessIframeBrowserTest,
                        IframeNavigationPublicPageLoopbackIframe) {
   GURL initial_url = https_server().GetURL(
       "a.com", "/local_network_access/no-favicon-treat-as-public-address.html");
@@ -161,7 +141,7 @@ IN_PROC_BROWSER_TEST_P(LocalNetworkAccessIframeBrowserTest,
 
 // Open a loopback page that iframes a public page, then navigate it to a
 // loopback page.
-IN_PROC_BROWSER_TEST_P(LocalNetworkAccessIframeBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessIframeBrowserTest,
                        IframeNavLoopbackPagePublicIframe) {
   GURL initial_url =
       https_server().GetURL("a.com", "/local_network_access/no-favicon.html");
@@ -176,7 +156,7 @@ IN_PROC_BROWSER_TEST_P(LocalNetworkAccessIframeBrowserTest,
 
 // Open a loopback page that iframes a loopback page, then navigate it to a
 // loopback page.
-IN_PROC_BROWSER_TEST_P(LocalNetworkAccessIframeBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessIframeBrowserTest,
                        IframeNavLoopbackPageLoopbackIframe) {
   GURL initial_url =
       https_server().GetURL("a.com", "/local_network_access/no-favicon.html");
@@ -189,7 +169,7 @@ IN_PROC_BROWSER_TEST_P(LocalNetworkAccessIframeBrowserTest,
 
 // Open a public page that iframes a public page, then navigate it to a loopback
 // page. The page and the iframe have the same origin
-IN_PROC_BROWSER_TEST_P(LocalNetworkAccessIframeBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessIframeBrowserTest,
                        IframeNavPublicPagePublicLoopbackSameOrigin) {
   GURL initial_url = https_server().GetURL(
       "a.com", "/local_network_access/no-favicon-treat-as-public-address.html");
@@ -205,7 +185,7 @@ IN_PROC_BROWSER_TEST_P(LocalNetworkAccessIframeBrowserTest,
 
 // Open a loopback page that iframes a loopback page, then navigate it to a
 // loopback page. The page and the iframe have the same origin.
-IN_PROC_BROWSER_TEST_P(LocalNetworkAccessIframeBrowserTest,
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessIframeBrowserTest,
                        IframeNavLoopbackPageLoopbackIframeSameOrigin) {
   GURL initial_url =
       https_server().GetURL("a.com", "/local_network_access/no-favicon.html");
@@ -215,9 +195,5 @@ IN_PROC_BROWSER_TEST_P(LocalNetworkAccessIframeBrowserTest,
       "/local_network_access/client-redirect.html?url=" + final_url.spec());
   RunIframeNavigationTest(initial_url, iframe_url, final_url);
 }
-
-INSTANTIATE_TEST_SUITE_P(SplitPermissions,
-                         LocalNetworkAccessIframeBrowserTest,
-                         testing::Bool());
 
 }  // namespace local_network_access

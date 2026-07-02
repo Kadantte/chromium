@@ -14,7 +14,6 @@ return html`<!--_html_template_start_-->
     aria-level="${this.depth + 1}"
     .size="${this.listItemSize}"
     .url="${this.getUrl_()}"
-    ?selected="${this.isSelected}"
     .imageUrls="${this.getBookmarkImageUrls_()}"
     .count="${this.bookmark.children?.length}"
     .title="${this.bookmark.title}"
@@ -22,15 +21,26 @@ return html`<!--_html_template_start_-->
     .descriptionMeta="${this.getBookmarkDescriptionMeta_()}"
     .itemAriaLabel="${this.getBookmarkA11yLabel_()}"
     .itemAriaDescription="${this.getBookmarkA11yDescription_()}"
-    @click="${this.onRowClicked_}"
-    @auxclick="${this.onRowClicked_}"
-    @contextmenu="${this.onContextMenu_}"
+    @click="${this.onClick_}"
+    @auxclick="${this.onAuxclick_}"
+    @contextmenu="${this.onContextmenu_}"
     ?force-hover="${this.getBookmarkForceHover_()}">
+
+  ${this.isExpandable ? html`
+    <cr-expand-button slot="prefix" id="expandButton"
+        no-hover
+        .expanded="${this.expanded}"
+        aria-expanded="${this.expanded}"
+        tab-index="-1"
+        collapse-icon="cr:expand-more"
+        expand-icon="cr:chevron-right"
+        @expanded-changed="${this.onExpandedChanged_}">
+    </cr-expand-button>` : ''}
 
   ${this.hasCheckbox ? html`
     <cr-checkbox id="checkbox" slot="prefix"
         ?checked="${this.isCheckboxChecked_()}"
-        @checked-changed="${this.onCheckboxChange_}"
+        @checked-changed="${this.onCheckboxCheckedChanged_}"
         ?disabled="${!this.canEdit_()}">
       $i18n{checkboxA11yLabel}
     </cr-checkbox>` : ''}
@@ -39,7 +49,7 @@ return html`<!--_html_template_start_-->
     <cr-input slot="content" id="input" .value="${this.bookmark.title}"
         class="stroked"
         @change="${this.onInputChange_}" @blur="${this.onInputBlur_}"
-        @keydown="${this.onInputKeyDown_}"
+        @keydown="${this.onInputKeydown_}"
         .ariaLabel="${this.getBookmarkA11yLabel_()}"
         .ariaDescription="${this.getBookmarkA11yDescription_()}">
     </cr-input>` : ''}
@@ -56,7 +66,7 @@ return html`<!--_html_template_start_-->
     </sp-list-item-badge>
   ` : ''}
     <cr-icon-button slot="suffix" iron-icon="cr:more-vert"
-        @click="${this.onTrailingIconClicked_}"
+        @click="${this.onTrailingIconClick_}"
         .title="${this.trailingIconTooltip}"
         .ariaLabel="${this.getBookmarkMenuA11yLabel_()}">
     </cr-icon-button>

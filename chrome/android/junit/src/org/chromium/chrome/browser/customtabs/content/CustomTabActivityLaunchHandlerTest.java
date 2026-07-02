@@ -29,12 +29,12 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features;
 import org.chromium.chrome.browser.autofill.AndroidAutofillAvailabilityStatus;
 import org.chromium.chrome.browser.autofill.AutofillClientProviderUtils;
+import org.chromium.chrome.browser.browserservices.trustedwebactivityui.TwaIntentHandlingStrategy;
+import org.chromium.chrome.browser.browserservices.trustedwebactivityui.sharing.TwaSharingController;
 import org.chromium.chrome.browser.customtabs.CustomTabIntentDataProvider;
 import org.chromium.chrome.browser.flags.ActivityType;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.user_prefs.UserPrefsJni;
 
@@ -46,7 +46,6 @@ import java.util.Objects;
  */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
-@Features.EnableFeatures({ChromeFeatureList.ANDROID_WEB_APP_LAUNCH_HANDLER})
 public class CustomTabActivityLaunchHandlerTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -123,12 +122,33 @@ public class CustomTabActivityLaunchHandlerTest {
     }
 
     @Test
-    @Features.DisableFeatures({ChromeFeatureList.ANDROID_WEB_APP_LAUNCH_HANDLER})
-    public void disabledLaunchHandler() {
-        doTestLaunchHandler(0, env.intentDataProvider);
+    public void trustedWebActivityInitialIntent_tabClearedBeforeAsyncCallback() {
+        CustomTabIntentHandlingStrategy defaultStrategy =
+                new DefaultCustomTabIntentHandlingStrategy(
+                        env.tabProvider,
+                        mNavigationController,
+                        env.customTabObserver,
+                        env.verifier,
+                        env.currentPageVerifier,
+                        env.activity);
+        CustomTabIntentHandlingStrategy twaStrategy =
+                new TwaIntentHandlingStrategy(
+                        defaultStrategy,
+                        new TwaSharingController(
+                                env.tabProvider, mNavigationController, env.verifier));
 
-        CustomTabIntentDataProvider dataProvider = createIntentDataProvider();
+        new CustomTabIntentHandler(
+                env.tabProvider,
+                env.intentDataProvider,
+                twaStrategy,
+                env.activity,
+                env.mMinimizationManagerHolder);
+        env.tabProvider.swapTab(null);
 
-        doTestLaunchHandler(0, dataProvider);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        verify(mNavigationController, times(0)).navigate(any(), any());
+        verify(mWebAppLaunchHandlerJniMock, times(0))
+                .notifyLaunchQueue(any(), anyBoolean(), any(), any(), any());
     }
 }

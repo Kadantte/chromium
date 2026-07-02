@@ -248,11 +248,6 @@ SyncableServiceBasedBridge::~SyncableServiceBasedBridge() {
   }
 }
 
-std::unique_ptr<MetadataChangeList>
-SyncableServiceBasedBridge::CreateMetadataChangeList() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return DataTypeStore::WriteBatch::CreateMetadataChangeList();
-}
 
 std::optional<ModelError> SyncableServiceBasedBridge::MergeFullSyncData(
     std::unique_ptr<MetadataChangeList> metadata_change_list,
@@ -333,6 +328,14 @@ std::string SyncableServiceBasedBridge::GetStorageKey(
   return syncable_service_->GetClientTag(entity_data);
 }
 
+sync_pb::EntitySpecifics
+SyncableServiceBasedBridge::TrimAllSupportedFieldsFromRemoteSpecifics(
+    const sync_pb::EntitySpecifics& entity_specifics) const {
+  // Clears all fields by default to avoid the memory and I/O overhead of an
+  // additional copy of the data.
+  return sync_pb::EntitySpecifics();
+}
+
 bool SyncableServiceBasedBridge::IsEntityDataValid(
     const EntityData& entity_data) const {
   // Implementation is trivial as this bridge is meant to cache locally a copy
@@ -373,7 +376,8 @@ void SyncableServiceBasedBridge::ApplyDisableSyncChanges(
   DCHECK(store_);
 
   in_memory_store_.clear();
-  store_->DeleteAllDataAndMetadata(base::DoNothing());
+  store_->DeleteAllDataAndMetadata(std::move(delete_metadata_change_list),
+                                   base::DoNothing());
 
   if (syncable_service_started_) {
     syncable_service_->StopSyncing(type_);
@@ -470,7 +474,8 @@ void SyncableServiceBasedBridge::OnSyncableServiceReady(
           metadata_batch->GetDataTypeState().initial_sync_state()) &&
       !in_memory_store_.empty()) {
     in_memory_store_.clear();
-    store_->DeleteAllDataAndMetadata(base::DoNothing());
+    store_->DeleteAllDataAndMetadata(/*metadata_change_list=*/nullptr,
+                                     base::DoNothing());
     change_processor()->ModelReadyToSync(std::make_unique<MetadataBatch>());
     DCHECK(!change_processor()->IsTrackingMetadata());
     return;
@@ -488,8 +493,8 @@ void SyncableServiceBasedBridge::OnSyncableServiceReady(
     } else {
       // Using the same range as Sync.DataTypeConfigurationTime.* metric.
       base::UmaHistogramCustomTimes(
-          base::StringPrintf("Sync.SyncableServiceStartTime.%s",
-                             DataTypeToHistogramSuffix(type_)),
+          base::StrCat({"Sync.SyncableServiceStartTime.",
+                        DataTypeToHistogramSuffix(type_)}),
           base::Time::Now() - init_start_time_,
           /*min=*/base::Milliseconds(1),
           /*max=*/base::Seconds(60), /*buckets=*/50);
@@ -592,8 +597,8 @@ void SyncableServiceBasedBridge::ProcessRemoteAddOrUpdate(
 SyncChangeList SyncableServiceBasedBridge::StoreAndConvertRemoteChanges(
     std::unique_ptr<MetadataChangeList> initial_metadata_change_list,
     EntityChangeList input_entity_change_list) {
-  std::unique_ptr<DataTypeStore::WriteBatch> batch = store_->CreateWriteBatch();
-  batch->TakeMetadataChangesFrom(std::move(initial_metadata_change_list));
+  std::unique_ptr<DataTypeStore::WriteBatch> batch =
+      store_->CreateWriteBatch(std::move(initial_metadata_change_list));
 
   SyncChangeList output_sync_change_list;
   output_sync_change_list.reserve(input_entity_change_list.size());

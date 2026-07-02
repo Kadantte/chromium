@@ -189,14 +189,13 @@ static int WriteToStringBuilder(void* context, const char* buffer, int len) {
     return 0;
 
   // SAFETY: libxslt provides `len` bytes pointed to by `buffer`.
-  auto source_buffer =
-      UNSAFE_BUFFERS(base::span(buffer, base::checked_cast<size_t>(len)));
+  auto source_buffer = UNSAFE_BUFFERS(
+      base::span(base::unchecked, buffer, base::checked_cast<size_t>(len)));
 
   StringBuffer<UChar> string_buffer(len);
   unicode::ConversionResult result = unicode::ConvertUtf8ToUtf16(
       base::as_bytes(source_buffer), string_buffer.Span());
-  CHECK(result.status == unicode::kConversionOK ||
-        result.status == unicode::kSourceExhausted);
+  CHECK(result.IsSuccess() || result.status == unicode::kSourceExhausted);
 
   StringBuilder& result_output = *static_cast<StringBuilder*>(context);
   result_output.Append(result.converted);
@@ -375,7 +374,8 @@ bool XSLTProcessor::TransformToString(Node* source_node,
 
     xsltTransformContextPtr transform_context =
         xsltNewTransformContext(sheet, source_doc);
-    RegisterXSLTExtensions(transform_context);
+    RegisterXSLTExtensions(transform_context,
+                           source_node->GetExecutionContext());
 
     xsltSecurityPrefsPtr security_prefs = xsltNewSecurityPrefs();
     // Read permissions are checked by docLoaderFunc.

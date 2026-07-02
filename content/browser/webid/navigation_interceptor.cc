@@ -11,11 +11,17 @@
 #include "content/browser/renderer_host/frame_tree_node.h"
 #include "content/browser/webid/flags.h"
 #include "content/browser/webid/identity_registry.h"
+#include "content/browser/webid/request.h"
 #include "content/browser/webid/request_service.h"
 #include "content/browser/webid/webid_utils.h"
+#include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/web_contents.h"
+#include "content/public/browser/webid/federated_embedder_login_request.h"
+#include "content/public/browser/webid/identity_credential_source.h"
+#include "content/public/common/content_client.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/url_util.h"
 #include "net/http/http_response_headers.h"
@@ -31,7 +37,8 @@ namespace content::webid {
 // static
 void NavigationInterceptor::MaybeCreateAndAdd(
     NavigationThrottleRegistry& registry) {
-  if (!IsNavigationInterceptionEnabled()) {
+  if (!IsNavigationInterceptionEnabled() &&
+      !IsEmbedderInitiatedLoginEnabled()) {
     return;
   }
   registry.AddThrottle(std::make_unique<NavigationInterceptor>(registry));
@@ -41,17 +48,16 @@ NavigationInterceptor::NavigationInterceptor(
     NavigationThrottleRegistry& registry)
     : NavigationInterceptor(
           registry,
-          base::BindRepeating(
-              [](content::RenderFrameHost* rfh) -> RequestService* {
-                return webid::RequestService::GetOrCreateForCurrentDocument(
-                    rfh);
-              })) {}
+          base::BindRepeating([](content::RenderFrameHost* rfh) -> Request* {
+            return webid::RequestService::GetOrCreateForCurrentDocument(rfh)
+                ->GetOrCreateActiveRequest();
+          })) {}
 
 NavigationInterceptor::NavigationInterceptor(
     NavigationThrottleRegistry& registry,
-    RequestServiceBuilder service_builder)
+    RequestFactory request_factory)
     : content::NavigationThrottle(registry),
-      service_builder_(std::move(service_builder)) {}
+      request_factory_(std::move(request_factory)) {}
 
 NavigationInterceptor::~NavigationInterceptor() = default;
 
@@ -69,16 +75,22 @@ NavigationInterceptor::WillStartRequest() {
 
 NavigationThrottle::ThrottleCheckResult
 NavigationInterceptor::WillRedirectRequest() {
-  return ProcessRequest();
+  // Despite the name of this method, the request was already redirected when
+  // this invoked. This implies that the headers we're about to process came
+  // from the 2nd to last URL on the redirect chain.
+  const std::vector<GURL>& redirect_chain =
+      navigation_handle()->GetRedirectChain();
+  CHECK_GE(redirect_chain.size(), 2u);
+  return ProcessRequest(redirect_chain[redirect_chain.size() - 2]);
 }
 
 NavigationThrottle::ThrottleCheckResult
 NavigationInterceptor::WillProcessResponse() {
-  return ProcessRequest();
+  return ProcessRequest(navigation_handle()->GetURL());
 }
 
-NavigationThrottle::ThrottleCheckResult
-NavigationInterceptor::ProcessRequest() {
+NavigationThrottle::ThrottleCheckResult NavigationInterceptor::ProcessRequest(
+    const GURL& intercepted_url) {
   if (!document_.AsRenderFrameHostIfValid()) {
     // Some other navigation has happened in the meantime.
     return PROCEED;
@@ -102,16 +114,43 @@ NavigationInterceptor::ProcessRequest() {
     return PROCEED;
   }
 
-  std::optional<std::string> header =
-      headers->GetNormalizedHeader("FedCM-Intercept-Navigation");
+  // TODO(crbug.com/498095297): Use only one header name once it is finalized.
+  std::optional<std::string> intercept_header =
+      headers->GetNormalizedHeader("Federation-Initiate-Request");
+  if (!intercept_header) {
+    intercept_header =
+        headers->GetNormalizedHeader("FedCM-Intercept-Navigation");
+  }
 
-  if (!header) {
+  std::optional<std::string> connection_status_header =
+      headers->GetNormalizedHeader("Federation-RP-Connection-Status");
+
+  if (!intercept_header && !connection_status_header) {
     return PROCEED;
   }
 
   content::RenderFrameHost* rfh = document_.AsRenderFrameHostIfValid();
 
   if (!rfh) {
+    return PROCEED;
+  }
+
+  // We intercept if the user explicitly enabled interception, or if there is
+  // an active embedder login request.
+  bool has_embedder_login_request = HasEmbedderLoginRequest(rfh);
+  if (!IsNavigationInterceptionEnabled() && !has_embedder_login_request) {
+    return PROCEED;
+  }
+
+  if (FrameTreeNode::From(rfh)->is_on_initial_empty_document() &&
+      rfh->GetLastCommittedOrigin().opaque()) {
+    // Navigations out of an initial empty document with an opaque origin
+    // (e.g., target="_blank" which defaults to rel="noopener") cannot support
+    // FedCM because the Relying Party context is opaque.
+    // An initial empty document has an opaque origin ONLY when there is no
+    // opener relationship; if an opener were present (e.g., window.open or
+    // rel="opener"), the origin would have been inherited from the opener
+    // and would not be opaque.
     return PROCEED;
   }
 
@@ -125,9 +164,25 @@ NavigationInterceptor::ProcessRequest() {
     return PROCEED;
   }
 
-  data_decoder::DataDecoder::ParseStructuredHeaderDictionaryIsolated(
-      *header, base::BindOnce(&NavigationInterceptor::OnHeaderParsed,
-                              weak_ptr_factory_.GetWeakPtr()));
+  if (connection_status_header) {
+    // It's possible that both headers are present. In that case, if there's no
+    // embedder login request, we should just proceed.
+    if (has_embedder_login_request) {
+      data_decoder::DataDecoder::ParseStructuredHeaderDictionaryIsolated(
+          *connection_status_header,
+          base::BindOnce(&NavigationInterceptor::OnConnectionStatusHeaderParsed,
+                         weak_ptr_factory_.GetWeakPtr(), intercepted_url));
+    } else {
+      return PROCEED;
+    }
+  } else if (intercept_header) {
+    data_decoder::DataDecoder::ParseStructuredHeaderDictionaryIsolated(
+        *intercept_header,
+        base::BindOnce(&NavigationInterceptor::OnHeaderParsed,
+                       weak_ptr_factory_.GetWeakPtr(), intercepted_url));
+  } else {
+    return PROCEED;
+  }
 
   // TODO(http://crbug.com/455614294): Ideally, we'd like to cancel the
   // navigation early on so that the spinner stops. However, we need to
@@ -137,7 +192,63 @@ NavigationInterceptor::ProcessRequest() {
   return DEFER;
 }
 
+void NavigationInterceptor::OnConnectionStatusHeaderParsed(
+    const GURL& intercepted_url,
+    base::expected<net::structured_headers::Dictionary, std::string> result) {
+  content::RenderFrameHost* rfh = document_.AsRenderFrameHostIfValid();
+  if (!rfh) {
+    // The document is no longer valid, likely because the target frame has
+    // navigated in the meantime.
+    // Resume the deferred navigation without cancelling.
+    Resume();
+    return;
+  }
+
+  FederatedEmbedderLoginRequest* embedder_login_request =
+      FederatedEmbedderLoginRequest::Get(WebContents::FromRenderFrameHost(rfh));
+  if (!embedder_login_request) {
+    Resume();
+    return;
+  }
+
+  if (!result.has_value()) {
+    // The header was available, but malformed.
+    // Cancel the navigation because it is a developer error.
+    CancelDeferredNavigation(CANCEL);
+    return;
+  }
+
+  auto it = result->find("status");
+  if (it != result->end() && it->second.member.size() == 1 &&
+      it->second.member[0].item.is_string() &&
+      it->second.member[0].item.GetString() == "connected") {
+    std::optional<std::string> account_id;
+    auto account_id_it = result->find("account_id");
+    if (account_id_it != result->end() &&
+        account_id_it->second.member.size() == 1 &&
+        account_id_it->second.member[0].item.is_string()) {
+      account_id = account_id_it->second.member[0].item.GetString();
+    }
+
+    // The server can send this header without embedder login request.
+    if (net::SchemefulSite::IsSameSite(embedder_login_request->idp_origin(),
+                                       url::Origin::Create(intercepted_url))) {
+      if (account_id == embedder_login_request->account_id()) {
+        embedder_login_request->OnFederatedResultReceived(
+            FederatedLoginResult::kSuccess);
+      } else {
+        embedder_login_request->OnFederatedResultReceived(
+            FederatedLoginResult::kExpectedAccountNotPresent);
+      }
+    }
+  }
+
+  // Resume the deferred navigation without cancelling.
+  Resume();
+}
+
 void NavigationInterceptor::OnHeaderParsed(
+    const GURL& intercepted_url,
     base::expected<net::structured_headers::Dictionary, std::string> result) {
   content::RenderFrameHost* rfh = document_.AsRenderFrameHostIfValid();
   if (!rfh) {
@@ -156,7 +267,7 @@ void NavigationInterceptor::OnHeaderParsed(
   }
 
   RequestBuilder request_builder;
-  auto idp_get_params_vector = request_builder.Build(*result);
+  auto idp_get_params_vector = request_builder.Build(intercepted_url, *result);
 
   if (!idp_get_params_vector) {
     // The header was available, parsed, but contained an invalid set of
@@ -166,10 +277,10 @@ void NavigationInterceptor::OnHeaderParsed(
     return;
   }
 
-  service_builder_.Run(rfh)->RequestToken(
+  request_factory_.Run(rfh)->RequestToken(
       std::move(*idp_get_params_vector),
       password_manager::CredentialMediationRequirement::kOptional,
-      navigation_handle(),
+      navigation_handle(), intercepted_url,
       base::BindOnce(&NavigationInterceptor::OnTokenResponse,
                      weak_ptr_factory_.GetWeakPtr()));
 }
@@ -182,8 +293,8 @@ void NavigationInterceptor::OnTokenResponse(
     bool is_auto_selected) {
   // The token response is not used in the navigation interception flow because
   // the IdP is expected to respond with a "redirect_to" field which is handled
-  // in RequestService.
-  // We cancel this specific navigation, assuming that the RequestService
+  // in Request.
+  // We cancel this specific navigation, assuming that the Request
   // will have already started a new navigation.
   CancelDeferredNavigation(CANCEL);
 }
@@ -194,6 +305,7 @@ const char* NavigationInterceptor::GetNameForLogging() {
 
 std::optional<std::vector<blink::mojom::IdentityProviderGetParametersPtr>>
 NavigationInterceptor::RequestBuilder::Build(
+    const GURL& base_url,
     const net::structured_headers::Dictionary& dictionary) {
   auto get_string =
       [&dictionary](const std::string& key) -> std::optional<std::string> {
@@ -205,8 +317,15 @@ NavigationInterceptor::RequestBuilder::Build(
     return it->second.member[0].item.GetString();
   };
 
-  auto config_url = get_string("config_url");
-  if (!config_url) {
+  auto config_url_str = get_string("config_url");
+  if (!config_url_str) {
+    return std::nullopt;
+  }
+  GURL config_url = base_url.Resolve(*config_url_str);
+  if (!config_url.is_valid()) {
+    return std::nullopt;
+  }
+  if (!url::IsSameOriginWith(base_url, config_url)) {
     return std::nullopt;
   }
 
@@ -252,7 +371,8 @@ NavigationInterceptor::RequestBuilder::Build(
   }
 
   auto idp_config = blink::mojom::IdentityProviderConfig::New();
-  idp_config->config_url = GURL(*config_url);
+  idp_config->config_url = config_url;
+
   idp_config->client_id = *client_id;
 
   idp_options->config = std::move(idp_config);

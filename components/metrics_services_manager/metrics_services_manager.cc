@@ -10,11 +10,11 @@
 #include "base/check.h"
 #include "base/check_is_test.h"
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
 #include "components/metrics/dwa/dwa_recorder.h"
 #include "components/metrics/dwa/dwa_service.h"
 #include "components/metrics/enabled_state_provider.h"
+#include "components/metrics/metrics_reporting_choice_service.h"
 #include "components/metrics/metrics_service.h"
 #include "components/metrics/metrics_service_client.h"
 #include "components/metrics/metrics_state_manager.h"
@@ -50,6 +50,17 @@ MetricsServicesManager::GetSyntheticTrialRegistry() {
         std::make_unique<variations::SyntheticTrialRegistry>();
   }
   return synthetic_trial_registry_.get();
+}
+
+metrics::MetricsReportingChoiceService*
+MetricsServicesManager::GetMetricsReportingChoiceService() {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  if (!metrics_reporting_choice_service_) {
+    metrics_reporting_choice_service_ =
+        std::make_unique<metrics::MetricsReportingChoiceService>(
+            client_->GetLocalState());
+  }
+  return metrics_reporting_choice_service_.get();
 }
 
 metrics::MetricsService* MetricsServicesManager::GetMetricsService() {
@@ -170,9 +181,15 @@ void MetricsServicesManager::UpdatePermissions(bool current_may_record,
                                                bool current_consent_given,
                                                bool current_may_upload) {
   DCHECK(thread_checker_.CalledOnValidThread());
-  // If the user has opted out of metrics, delete local UKM and DWA states.
-  // TODO(crbug.com/40267999): Investigate if UMA needs purging logic.
+  // If the user has opted out of metrics, delete local UMA, UKM and DWA states.
+  // TODO(crbug.com/40267999): The purges clean up the logs in the local state
+  // but there is an additional last log that is created and stored right after
+  // this in UpdateRunningServices() and is not cleaned up. Fix this.
   if (consent_given_ && !current_consent_given) {
+    metrics::MetricsService* metrics = GetMetricsService();
+    if (metrics) {
+      metrics->Purge();
+    }
     ukm::UkmService* ukm = GetUkmService();
     if (ukm) {
       ukm->Purge();
@@ -238,6 +255,7 @@ void MetricsServicesManager::LoadingStateChanged(bool is_loading) {
     GetMetricsService()->OnPageLoadStarted();
   }
 }
+
 
 void MetricsServicesManager::OnRendererUnresponsive() {
   DCHECK(thread_checker_.CalledOnValidThread());

@@ -10,33 +10,41 @@
 #include "base/callback_list.h"
 #include "base/check.h"
 #include "base/functional/bind.h"
+#include "base/memory/ptr_util.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/ui/layout_constants.h"
+#include "chrome/browser/ui/page_action/page_action_controller.h"
+#include "chrome/browser/ui/page_action/page_action_model.h"
+#include "chrome/browser/ui/page_action/page_action_triggers.h"
 #include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
-#include "chrome/browser/ui/views/page_action/page_action_controller.h"
-#include "chrome/browser/ui/views/page_action/page_action_model.h"
-#include "chrome/browser/ui/views/page_action/page_action_triggers.h"
 #include "chrome/browser/ui/views/page_action/page_action_view_params.h"
 #include "ui/actions/actions.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/models/image_model.h"
 #include "ui/color/color_id.h"
+#include "ui/events/event.h"
 #include "ui/gfx/animation/slide_animation.h"
 #include "ui/gfx/font_list.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/animation/ink_drop.h"
+#include "ui/views/controls/button/single_animated_image_container.h"
 #include "ui/views/view_class_properties.h"
+#include "ui/views/widget/widget_delegate.h"
 
 namespace page_actions {
 
 PageActionView::PageActionView(actions::ActionItem* action_item,
                                const PageActionViewParams& params,
+                               PageActionIconType type,
                                ui::ElementIdentifier element_identifier)
     : IconLabelBubbleView(gfx::FontList(), params.icon_label_bubble_delegate),
       action_item_(action_item->GetAsWeakPtr()),
       icon_size_(params.icon_size),
-      icon_insets_(params.icon_insets) {
+      icon_insets_(params.icon_insets),
+      type_(type) {
   CHECK(action_item_->GetActionId().has_value());
   SetUpForAnimation(base::Milliseconds(600));
 
@@ -66,10 +74,20 @@ PageActionView::~PageActionView() {
   // might attempt to trigger an ink drop change even though we're
   // mid-destruction. Disable the ink drop to prevent this.
   views::InkDrop::Get(this)->SetMode(views::InkDropHost::InkDropMode::OFF);
+
+  if (anchored_message_) {
+    CHECK(anchored_message_widget_);
+    anchored_message_ = nullptr;
+    anchored_message_widget_ = nullptr;
+  }
 }
 
 bool PageActionView::IsChipVisible() const {
   return ShouldShowLabel();
+}
+
+bool PageActionView::IsAnchoredMessageVisible() const {
+  return (anchored_message_ != nullptr);
 }
 
 base::CallbackListSubscription PageActionView::AddChipVisibilityChangedCallback(
@@ -77,20 +95,52 @@ base::CallbackListSubscription PageActionView::AddChipVisibilityChangedCallback(
   return chip_visibility_changed_callbacks_.Add(std::move(callback));
 }
 
+base::CallbackListSubscription
+PageActionView::AddAnchoredMessageVisibilityChangedCallback(
+    AnchoredMessageVisibilityCallback callback) {
+  return anchored_message_visibility_changed_callbacks_.Add(
+      std::move(callback));
+}
+
 void PageActionView::SetIsChipShowingChangedCallback(
     IsChipShowingChangedCallback callback) {
   is_chip_showing_changed_callback_ = std::move(callback);
+  last_notified_is_chip_showing_.reset();
+}
+
+void PageActionView::SetImageAnimationStartedCallback(
+    ImageAnimationStartedCallback callback) {
+  image_animation_started_callback_ = std::move(callback);
+}
+
+void PageActionView::SetAnchoredMessageCloseCallback(
+    base::RepeatingClosure callback) {
+  anchored_message_close_callback_ = std::move(callback);
+}
+
+void PageActionView::SetClickCallback(
+    base::RepeatingCallback<void(PageActionTrigger)> callback) {
+  click_callback_ = std::move(callback);
+}
+
+void PageActionView::SetAnchoredMessageExpandCallback(
+    base::RepeatingClosure callback) {
+  anchored_message_expand_callback_ = std::move(callback);
+}
+
+void PageActionView::SetAnchoredMessageCollapseCallback(
+    base::RepeatingClosure callback) {
+  anchored_message_collapse_callback_ = std::move(callback);
 }
 
 void PageActionView::OnNewActiveController(PageActionController* controller) {
+  chip_shown_metric_recorded_ = false;
   observation_.Reset();
   action_item_controller_subscription_ = {};
   if (controller) {
-    controller->RegisterIsChipShowingChangedCallback(
-        PassKey(), action_item_->GetActionId().value(), this);
+    controller->RegisterCallbacks(PassKey(),
+                                  action_item_->GetActionId().value(), this);
 
-    click_callback_ = controller->GetClickCallback(
-        PassKey(), action_item_->GetActionId().value());
     controller->AddObserver(action_item_->GetActionId().value(), observation_);
     // TODO(crbug.com/388524315): Have the controller manage its own ActionItem
     // observation. See bug for more explanation.
@@ -98,17 +148,24 @@ void PageActionView::OnNewActiveController(PageActionController* controller) {
         controller->CreateActionItemSubscription(action_item_.get());
     OnPageActionModelChanged(*observation_.GetSource());
   } else {
+    SetIsChipShowingChangedCallback(base::NullCallback());
+    SetAnchoredMessageCloseCallback(base::NullCallback());
+    SetClickCallback(base::NullCallback());
     SetVisible(false);
   }
 }
 
 void PageActionView::OnPageActionModelChanged(
     const PageActionModelInterface& model) {
-  SetEnabled(model.GetVisible());
-  SetVisible(model.GetVisible());
-  SetLabel(model.GetText(), model.GetAccessibleName());
-  SetTooltipText(model.GetTooltipText());
-  UpdateIconImage();
+  const bool visible = model.GetVisible();
+  SetEnabled(visible);
+  SetVisible(visible);
+
+  if (visible) {
+    SetLabel(model.GetText(), model.GetAccessibleName());
+    SetTooltipText(model.GetTooltipText());
+    UpdateIconImage();
+  }
 
   if (model.GetActionActive() && !highlight_) {
     highlight_ = AddAnchorHighlight();
@@ -117,7 +174,7 @@ void PageActionView::OnPageActionModelChanged(
   }
 
   const bool was_chip_visible = IsChipVisible();
-  if (!model.GetVisible()) {
+  if (!visible) {
     ResetSlideAnimation(/*show=*/false);
     NotifyIsChipShowingChange();
   } else if (model.ShouldShowSuggestionChip()) {
@@ -134,6 +191,13 @@ void PageActionView::OnPageActionModelChanged(
     NotifyIsChipShowingChange();
   }
 
+  if (visible && model.ShouldShowAnchoredMessage()) {
+    CreateAndShowAnchoredMessage(model);
+  } else if (anchored_message_ && anchored_message_widget_) {
+    anchored_message_ = nullptr;
+    anchored_message_widget_ = nullptr;
+  }
+
   // Announce the chip only if announcements are enabled and the chip was
   // newly shown.
   if (model.GetShouldAnnounceChip() && !was_chip_visible && IsChipVisible()) {
@@ -143,9 +207,31 @@ void PageActionView::OnPageActionModelChanged(
 
 void PageActionView::OnPageActionModelWillBeDeleted(
     const PageActionModelInterface& model) {
+  anchored_message_ = nullptr;
+  anchored_message_widget_ = nullptr;
   observation_.Reset();
   action_item_controller_subscription_ = {};
   SetVisible(false);
+}
+
+views::BubbleAnchor PageActionView::GetBubbleAnchor() {
+  return views::BubbleAnchor(this);
+}
+
+std::u16string PageActionView::GetTooltipText() const {
+  return IconLabelBubbleView::GetTooltipText();
+}
+
+std::u16string PageActionView::GetAccessibleName() const {
+  return IconLabelBubbleView::GetAccessibleName();
+}
+
+void PageActionView::SetVisible(bool visible) {
+  IconLabelBubbleView::SetVisible(visible);
+}
+
+IconLabelBubbleView* PageActionView::GetIconLabelBubbleViewNotMigrated() {
+  NOTREACHED();
 }
 
 actions::ActionId PageActionView::GetActionId() const {
@@ -192,6 +278,10 @@ bool PageActionView::ShouldUpdateInkDropOnClickCanceled() const {
 }
 
 void PageActionView::NotifyClick(const ui::Event& event) {
+  if (IsAnchoredMessageVisible()) {
+    return;
+  }
+
   PageActionTrigger trigger_source;
   if (event.IsMouseEvent()) {
     trigger_source = PageActionTrigger::kMouse;
@@ -214,6 +304,10 @@ void PageActionView::NotifyClick(const ui::Event& event) {
           .SetProperty(kPageActionTriggerKey,
                        static_cast<std::underlying_type_t<PageActionTrigger>>(
                            trigger_source))
+          .SetProperty(
+              kPageActionEntryPointKey,
+              static_cast<std::underlying_type_t<PageActionEntryPoint>>(
+                  PageActionEntryPoint::kSuggestionChip))
           .Build());
 }
 
@@ -223,15 +317,24 @@ void PageActionView::AnimationEnded(const gfx::Animation* animation) {
 }
 
 void PageActionView::UpdateIconImage() {
-  if (observation_.GetSource() == nullptr ||
+  if (!GetVisible() || observation_.GetSource() == nullptr ||
       observation_.GetSource()->GetImage().IsEmpty()) {
     return;
   }
+
   const auto& icon_image = observation_.GetSource()->GetImage();
   const SkColor icon_color = observation_.GetSource()->GetColorSource() ==
                                      PageActionColorSource::kForeground
                                  ? GetForegroundColor()
                                  : views::GetCascadingAccentColor(this);
+
+  if (observation_.GetSource()->GetShouldAnimateImage()) {
+    std::optional<page_actions::PageActionAnimationParams> params =
+        observation_.GetSource()->GetImageAnimationParameters();
+    CHECK(params.has_value());
+    AnimateImage(params.value(), icon_color);
+  }
+
   // If image does not have a vector icon, set it directly.
   if (icon_image.IsVectorIcon()) {
     SetImageModel(ui::ImageModel::FromVectorIcon(
@@ -243,6 +346,26 @@ void PageActionView::UpdateIconImage() {
     // set on instantiation and does not need to be updated again.
     UpdateBorder();
   }
+}
+
+void PageActionView::AnimateImage(
+    const page_actions::PageActionAnimationParams& params,
+    SkColor icon_color) {
+  views::SingleAnimatedImageContainer::AnimationConfig config{
+      .tween = params.tween,
+      .duration = params.duration};
+
+  if (params.start_offset != 0.0f || params.end_offset != 1.0f) {
+    config.boundary = views::SingleAnimatedImageContainer::AnimationBoundary{
+        .start_offset = params.start_offset, .end_offset = params.end_offset};
+  }
+
+  animated_image_container().PlayAnimation(
+      {params.resource_id, icon_color,
+       views::SingleAnimatedImageContainer::AnimationDirection::kForward,
+       views::SingleAnimatedImageContainer::AnimationEndBehavior::kReset},
+      config);
+  image_animation_started_callback_.Run();
 }
 
 const gfx::Insets PageActionView::GetInsetsForNonVectorIcon() const {
@@ -290,6 +413,10 @@ bool PageActionView::IsBubbleShowing() const {
 }
 
 bool PageActionView::IsTriggerableEvent(const ui::Event& event) {
+  if (IsAnchoredMessageVisible()) {
+    return false;
+  }
+
   // Returns whether the bubble should be shown given the event. Only trigger an
   // action when action UI isn't already showing (managed at the
   // IconLabelBubbleView level), and if mouse input, when event is a left button
@@ -305,6 +432,10 @@ bool PageActionView::IsTriggerableEvent(const ui::Event& event) {
 }
 
 void PageActionView::OnLabelVisibilityChanged() {
+  if (!GetVisible()) {
+    chip_visibility_changed_callbacks_.Notify(this);
+    return;
+  }
   UpdateBackground();
   UpdateLabelColors();
   UpdateIconImage();
@@ -320,10 +451,123 @@ gfx::SlideAnimation& PageActionView::GetSlideAnimationForTesting() {
 }
 
 void PageActionView::NotifyIsChipShowingChange() {
+  const bool is_chip_showing = IsChipVisible();
+  if (last_notified_is_chip_showing_ == is_chip_showing) {
+    return;
+  }
+  last_notified_is_chip_showing_ = is_chip_showing;
+  if (!is_chip_showing) {
+    chip_shown_metric_recorded_ = false;
+  }
   // Defer to avoid re-entrancy into PageActionModel::NotifyChange().
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE,
-      base::BindOnce(is_chip_showing_changed_callback_, IsChipVisible()));
+      base::BindOnce(is_chip_showing_changed_callback_, is_chip_showing));
+}
+
+void PageActionView::CreateAndShowAnchoredMessage(
+    const PageActionModelInterface& model) {
+  const std::u16string chip_text(label()->GetText());
+
+  if (anchored_message_) {
+    anchored_message_->UpdateContent(model);
+    return;
+  }
+
+  auto message_delegate = std::make_unique<AnchoredMessageBubbleView>(
+      views::BubbleAnchor(this), model, *this);
+  anchored_message_ = message_delegate.get();
+
+  anchored_message_widget_ =
+      base::WrapUnique(views::BubbleDialogDelegate::CreateBubbleDeprecated(
+          std::move(message_delegate),
+          views::Widget::InitParams::CLIENT_OWNS_WIDGET));
+
+  if (anchored_message_widget_) {
+    anchored_message_widget_->MakeCloseSynchronous(
+        base::BindOnce(&PageActionView::OnAnchoredMessageWidgetClose,
+                       weak_factory_.GetWeakPtr()));
+
+    // Don't steal focus when shown
+    anchored_message_widget_->ShowInactive();
+  } else {
+    anchored_message_ = nullptr;
+  }
+
+  anchored_message_visibility_changed_callbacks_.Notify(this);
+}
+void PageActionView::OnAnchoredMessageWidgetClose(
+    views::Widget::ClosedReason closed_reason) {
+  CHECK(anchored_message_);
+  CHECK(anchored_message_widget_);
+  anchored_message_ = nullptr;
+  anchored_message_widget_.reset();
+  anchored_message_visibility_changed_callbacks_.Notify(this);
+}
+
+void PageActionView::AnchoredMessageChipClick() {
+  CHECK(click_callback_);
+  click_callback_.Run(PageActionTrigger::kMouse);
+  action_item_->InvokeAction(
+      actions::ActionInvocationContext::Builder()
+          .SetProperty(kPageActionTriggerKey,
+                       static_cast<std::underlying_type_t<PageActionTrigger>>(
+                           PageActionTrigger::kMouse))
+          .SetProperty(
+              kPageActionEntryPointKey,
+              static_cast<std::underlying_type_t<PageActionEntryPoint>>(
+                  PageActionEntryPoint::kAnchoredMessage))
+          .Build());
+  anchored_message_close_callback_.Run();
+}
+
+void PageActionView::CloseAnchoredMessage() {
+  anchored_message_close_callback_.Run();
+}
+
+void PageActionView::AnchoredMessageExpanded() {
+  anchored_message_expand_callback_.Run();
+}
+
+void PageActionView::AnchoredMessageCollapsed() {
+  anchored_message_collapse_callback_.Run();
+}
+
+AnchoredMessageBubbleView* PageActionView::GetAnchoredMessageForTesting() {
+  return anchored_message_;
+}
+
+void PageActionView::BeforeApplyLayout(const views::ProposedLayout& layout) {
+  if (!GetVisible() || !IsChipVisible() || chip_shown_metric_recorded_ ||
+      GetAnimationValue() != 1.0 || GetText().empty()) {
+    return;
+  }
+  int label_width = 0;
+  for (const auto& child_layout : layout.child_layouts) {
+    if (child_layout.child_view == label()) {
+      label_width = child_layout.bounds.width();
+      break;
+    }
+  }
+  MaybeRecordCollapsedMetrics(label_width);
+}
+
+void PageActionView::MaybeRecordCollapsedMetrics(int label_width) {
+  int preferred_width =
+      GetSizeForLabelWidth(label()->GetPreferredSize().width()).width();
+
+  base::UmaHistogramEnumeration(
+      "PageActionController.ChipCollapseAnalysisCount.ActionType", type_);
+
+  if (label_width == 0) {
+    base::UmaHistogramEnumeration(
+        "PageActionController.Chip.CollapsedDueToSpace.ActionType", type_);
+    base::UmaHistogramCounts1000(
+        "PageActionController.Chip.CollapsedDueToSpace.PreferredWidth",
+        preferred_width);
+  }
+
+  chip_shown_metric_recorded_ = true;
 }
 
 BEGIN_METADATA(PageActionView)

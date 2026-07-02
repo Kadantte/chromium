@@ -122,7 +122,6 @@ async function asyncGetBrowsingTopicsConfiguration() {
   // Enabled status fields
   ['browsing-topics-enabled-div',
    'privacy-sandbox-ads-apis-override-enabled-div',
-   'override-privacy-sandbox-settings-local-testing-enabled-div',
    'browsing-topics-bypass-ip-is-publicly-routable-check-enabled-div',
    'browsing-topics-document-api-enabled-div',
    'browsing-topics-parameters-enabled-div']
@@ -183,7 +182,7 @@ async function asyncGetBrowsingTopicsState(calculateNow: boolean) {
   if (result.overrideStatusMessage) {
     document.querySelector(
                 '#topics-state-override-status-message-div')!.textContent =
-        result.overrideStatusMessage.toString();
+        result.overrideStatusMessage;
     setElementVisible('topics-state-override-status-message-div', true);
     return;
   }
@@ -295,7 +294,7 @@ async function asyncGetModelInfo() {
   if (result.overrideStatusMessage) {
     document.querySelector(
                 '#model-info-override-status-message-div')!.textContent =
-        result.overrideStatusMessage.toString();
+        result.overrideStatusMessage;
     setElementVisible('model-info-override-status-message-div', true);
     return;
   }

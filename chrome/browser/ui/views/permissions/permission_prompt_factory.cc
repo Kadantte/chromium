@@ -7,7 +7,8 @@
 
 #include "base/command_line.h"
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/lens/lens_overlay_controller.h"
 #include "chrome/browser/ui/permission_bubble/permission_prompt.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
@@ -20,11 +21,11 @@
 #include "chrome/browser/ui/views/permissions/permission_prompt_quiet_icon.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/permissions/permission_request.h"
 #include "components/permissions/permission_uma_util.h"
 #include "components/permissions/permission_util.h"
+#include "components/permissions/permissions_client.h"
 #include "components/permissions/request_type.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
@@ -38,8 +39,23 @@
 
 namespace {
 
-bool IsFullScreenMode(Browser* browser) {
-  DCHECK(browser);
+BrowserWindowInterface* GetBrowser(content::WebContents* web_contents) {
+  tabs::TabInterface* tab =
+      web_contents ? tabs::TabInterface::MaybeGetFromContents(web_contents)
+                   : nullptr;
+  BrowserWindowInterface* browser_window_interface =
+      tab ? tab->GetBrowserWindowInterface() : nullptr;
+  if (!browser_window_interface) {
+    browser_window_interface = webui::GetBrowserWindowInterface(web_contents);
+  }
+  return browser_window_interface;
+}
+
+bool IsFullScreenMode(content::WebContents* web_contents) {
+  BrowserWindowInterface* browser = GetBrowser(web_contents);
+  if (!browser) {
+    return false;
+  }
 
   // PWA uses the title bar as a substitute for LocationBarView.
   if (web_app::AppBrowserController::IsWebApp(browser)) {
@@ -51,15 +67,19 @@ bool IsFullScreenMode(Browser* browser) {
     return false;
   }
 
-  LocationBarView* location_bar = browser_view->GetLocationBarView();
+  LocationBar* location_bar = browser_view->GetLocationBar();
 
   return !location_bar || !location_bar->IsDrawn() ||
-         location_bar->GetWidget()->GetTopLevelWidget()->IsFullscreen();
+         location_bar->IsFullscreen();
 }
 
-LocationBarView* GetLocationBarView(Browser* browser) {
+LocationBar* GetLocationBar(content::WebContents* web_contents) {
+  BrowserWindowInterface* browser = GetBrowser(web_contents);
+  if (!browser) {
+    return nullptr;
+  }
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
-  return browser_view ? browser_view->GetLocationBarView() : nullptr;
+  return browser_view ? browser_view->GetLocationBar() : nullptr;
 }
 
 // A permission request should be auto-ignored if:
@@ -70,10 +90,8 @@ LocationBarView* GetLocationBarView(Browser* browser) {
 //      prompts until the Lens Overlay is closed.
 bool ShouldIgnorePermissionRequest(
     content::WebContents* web_contents,
-    Browser* browser,
     permissions::PermissionPrompt::Delegate* delegate) {
   DCHECK(web_contents);
-  DCHECK(browser);
 
   // Allow permission prompts for WebUI pages that should bypass the omnibox
   // empty or editing state check:
@@ -82,25 +100,29 @@ bool ShouldIgnorePermissionRequest(
   // - Omnibox Popup is an embedded WebUI that itself may request permissions.
   const GURL visible_url = web_contents->GetVisibleURL();
   const GURL committed_url = web_contents->GetLastCommittedURL();
-  if (visible_url == GURL(chrome::kChromeUINewTabURL) ||
+  if (visible_url == chrome::ChromeUINewTabURLAsGURL() ||
       committed_url.host() == chrome::kChromeUIOmniboxPopupHost ||
       committed_url.host() == chrome::kChromeUIContextualTasksHost) {
     return false;
   }
 
   // Suppress permission prompts if the omnibox is being edited or is empty.
-  LocationBarView* location_bar = GetLocationBarView(browser);
+  LocationBar* location_bar = GetLocationBar(web_contents);
   bool can_display_prompt = !(location_bar && location_bar->IsEditingOrEmpty());
 
-  LensOverlayController* lens_overlay_controller =
-      browser->tab_strip_model()
-          ->GetActiveTab()
-          ->GetTabFeatures()
-          ->lens_overlay_controller();
-  // Don't show prompt if Lens Overlay is showing
-  // TODO(b/331940245): Refactor to be decoupled from LensOverlayController
-  if (lens_overlay_controller && lens_overlay_controller->IsOverlayShowing()) {
-    can_display_prompt = false;
+  BrowserWindowInterface* browser = GetBrowser(web_contents);
+  if (browser) {
+    LensOverlayController* lens_overlay_controller =
+        browser->GetTabStripModel()
+            ->GetActiveTab()
+            ->GetTabFeatures()
+            ->lens_overlay_controller();
+    // Don't show prompt if Lens Overlay is showing
+    // TODO(b/331940245): Refactor to be decoupled from LensOverlayController
+    if (lens_overlay_controller &&
+        lens_overlay_controller->IsOverlayShowing()) {
+      can_display_prompt = false;
+    }
   }
 
   permissions::PermissionUmaUtil::RecordPermissionPromptAttempt(
@@ -126,10 +148,9 @@ bool ShouldUseChip(permissions::PermissionPrompt::Delegate* delegate) {
       });
 }
 
-bool IsLocationBarDisplayed(Browser* browser) {
-  LocationBarView* lbv = GetLocationBarView(browser);
-  return lbv && lbv->IsDrawn() &&
-         !lbv->GetWidget()->GetTopLevelWidget()->IsFullscreen();
+bool IsLocationBarDisplayed(content::WebContents* web_contents) {
+  LocationBar* lb = GetLocationBar(web_contents);
+  return lb && lb->IsDrawn() && !lb->IsFullscreen();
 }
 
 bool ShouldCurrentRequestUseQuietChip(
@@ -157,78 +178,86 @@ bool ShouldCurrentRequestUseExclusiveAccessUI(
              });
 }
 
-bool CanCurrentRequestUseModalUI(content::WebContents* web_contents) {
+bool CanCurrentRequestUseModalUI(
+    content::WebContents* web_contents,
+    permissions::PermissionPrompt::Delegate* delegate) {
+  // Permission prompts from side panels and omnibox popup do not
+  // have a TabInterface since they are not tab-based, but there is never a
+  // concern with showing a modal on them because if they can request
+  // permission, they are open and available unlike tabs, which can be switched
+  // between.
+  // This function is only called after embedded permission prompt has
+  // been chosen as the prompt type. Embedded permission prompt path is not run
+  // for WebUIs like omnibox popup/side panels if the omnibox embedded
+  // permission flag is not enabled, so, in those cases, accessing a null
+  // `TabInterface` is avoided.
+  if (permissions::PermissionsClient::Get()
+          ->IsPrivilegedInternalWebUIOrNewTabPage(
+              web_contents, delegate->GetRequestingOrigin(),
+              /*already_overrode_requester=*/true)) {
+    return true;
+  }
   return tabs::TabInterface::GetFromContents(web_contents)->CanShowModalUI();
 }
 
 std::unique_ptr<permissions::PermissionPrompt> CreatePwaPrompt(
-    Browser* browser,
     content::WebContents* web_contents,
     permissions::PermissionPrompt::Delegate* delegate) {
   if (permissions::PermissionUtil::
           ShouldCurrentRequestUsePermissionElementSecondaryUI(delegate)) {
     // Run this check inside the if statement to avoid creating another prompt
     // type for embedded permission prompts.
-    return CanCurrentRequestUseModalUI(web_contents)
-               ? std::make_unique<EmbeddedPermissionPrompt>(
-                     browser, web_contents, delegate)
+    return CanCurrentRequestUseModalUI(web_contents, delegate)
+               ? std::make_unique<EmbeddedPermissionPrompt>(web_contents,
+                                                            delegate)
                : nullptr;
   } else if (delegate->ShouldCurrentRequestUseQuietUI()) {
-    return std::make_unique<PermissionPromptQuietIcon>(browser, web_contents,
-                                                       delegate);
+    return std::make_unique<PermissionPromptQuietIcon>(web_contents, delegate);
   } else {
-    return std::make_unique<PermissionPromptBubble>(browser, web_contents,
-                                                    delegate);
+    return std::make_unique<PermissionPromptBubble>(web_contents, delegate);
   }
 }
 
 std::unique_ptr<permissions::PermissionPrompt> CreateNormalPrompt(
-    Browser* browser,
     content::WebContents* web_contents,
     permissions::PermissionPrompt::Delegate* delegate) {
   DCHECK(!delegate->ShouldCurrentRequestUseQuietUI());
 
   if (ShouldCurrentRequestUseExclusiveAccessUI(delegate)) {
-    return CanCurrentRequestUseModalUI(web_contents)
-               ? std::make_unique<ExclusiveAccessPermissionPrompt>(
-                     browser, web_contents, delegate)
+    return CanCurrentRequestUseModalUI(web_contents, delegate)
+               ? std::make_unique<ExclusiveAccessPermissionPrompt>(web_contents,
+                                                                   delegate)
                : nullptr;
   } else if (permissions::PermissionUtil::
                  ShouldCurrentRequestUsePermissionElementSecondaryUI(
-                     delegate)) {
+                     delegate, web_contents)) {
     // Run this check inside the if statement to avoid creating another prompt
     // type for embedded permission prompts.
-    return CanCurrentRequestUseModalUI(web_contents)
-               ? std::make_unique<EmbeddedPermissionPrompt>(
-                     browser, web_contents, delegate)
+    return CanCurrentRequestUseModalUI(web_contents, delegate)
+               ? std::make_unique<EmbeddedPermissionPrompt>(web_contents,
+                                                            delegate)
                : nullptr;
-  } else if (ShouldUseChip(delegate) && IsLocationBarDisplayed(browser)) {
-    return std::make_unique<PermissionPromptChip>(browser, web_contents,
-                                                  delegate);
+  } else if (ShouldUseChip(delegate) && IsLocationBarDisplayed(web_contents)) {
+    return std::make_unique<PermissionPromptChip>(web_contents, delegate);
   } else {
-    return std::make_unique<PermissionPromptBubble>(browser, web_contents,
-                                                    delegate);
+    return std::make_unique<PermissionPromptBubble>(web_contents, delegate);
   }
 }
 
 std::unique_ptr<permissions::PermissionPrompt> CreateQuietPrompt(
-    Browser* browser,
     content::WebContents* web_contents,
     permissions::PermissionPrompt::Delegate* delegate) {
   if (ShouldCurrentRequestUseQuietChip(delegate)) {
-    if (IsLocationBarDisplayed(browser)) {
-      return std::make_unique<PermissionPromptChip>(browser, web_contents,
-                                                    delegate);
+    if (IsLocationBarDisplayed(web_contents)) {
+      return std::make_unique<PermissionPromptChip>(web_contents, delegate);
     } else {
       // If LocationBar is not displayed (Fullscreen mode), display a default
       // bubble only for non-abusive origins.
       DCHECK(!delegate->ShouldDropCurrentRequestIfCannotShowQuietly());
-      return std::make_unique<PermissionPromptBubble>(browser, web_contents,
-                                                      delegate);
+      return std::make_unique<PermissionPromptBubble>(web_contents, delegate);
     }
   } else {
-    return std::make_unique<PermissionPromptQuietIcon>(browser, web_contents,
-                                                       delegate);
+    return std::make_unique<PermissionPromptQuietIcon>(web_contents, delegate);
   }
 }
 
@@ -237,28 +266,12 @@ std::unique_ptr<permissions::PermissionPrompt> CreateQuietPrompt(
 std::unique_ptr<permissions::PermissionPrompt> CreatePermissionPrompt(
     content::WebContents* web_contents,
     permissions::PermissionPrompt::Delegate* delegate) {
-  Browser* browser = chrome::FindBrowserWithTab(web_contents);
-  if (!browser) {
-    // For embedded WebUIs (e.g., Omnibox Popup and Contextual Tasks), try
-    // getting the browser window that contains this WebContents.
-    BrowserWindowInterface* browser_window =
-        webui::GetBrowserWindowInterface(web_contents);
-    if (browser_window) {
-      browser = browser_window->GetBrowserForMigrationOnly();
-    }
-  }
-  if (!browser) {
-    DLOG(WARNING) << "Permission prompt suppressed because the WebContents is "
-                     "not attached to any Browser window.";
-    return nullptr;
-  }
-
   if (delegate->ShouldDropCurrentRequestIfCannotShowQuietly() &&
-      IsFullScreenMode(browser)) {
+      IsFullScreenMode(web_contents)) {
     return nullptr;
   }
 
-  if (ShouldIgnorePermissionRequest(web_contents, browser, delegate)) {
+  if (ShouldIgnorePermissionRequest(web_contents, delegate)) {
     return nullptr;
   }
 
@@ -277,10 +290,10 @@ std::unique_ptr<permissions::PermissionPrompt> CreatePermissionPrompt(
   }
 #endif
 
-  if (web_app::AppBrowserController::IsWebApp(browser)) {
-    return CreatePwaPrompt(browser, web_contents, delegate);
+  if (web_app::AppBrowserController::IsWebApp(GetBrowser(web_contents))) {
+    return CreatePwaPrompt(web_contents, delegate);
   } else if (delegate->ShouldCurrentRequestUseQuietUI()) {
-    return CreateQuietPrompt(browser, web_contents, delegate);
+    return CreateQuietPrompt(web_contents, delegate);
   }
-  return CreateNormalPrompt(browser, web_contents, delegate);
+  return CreateNormalPrompt(web_contents, delegate);
 }

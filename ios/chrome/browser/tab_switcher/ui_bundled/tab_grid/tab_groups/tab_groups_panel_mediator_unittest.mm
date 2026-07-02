@@ -162,7 +162,7 @@ class TabGroupsPanelMediatorTest : public PlatformTest {
     browser_ = std::make_unique<TestBrowser>(profile_.get());
     browser_list_ = BrowserListFactory::GetForProfile(profile_.get());
     browser_list_->AddBrowser(browser_.get());
-    mode_holder_ = [[TabGridModeHolder alloc] init];
+    mode_holder_ = [[TabGridModeHolder alloc] initWithTabGridState:nil];
     tab_group_service_ = std::make_unique<TabGroupService>(
         profile_.get(), &tab_group_sync_service_);
     share_kit_service_ = std::make_unique<TestShareKitService>(
@@ -369,11 +369,7 @@ TEST_F(TabGroupsPanelMediatorTest,
   EXPECT_FALSE(toolbars_mutator.configuration.addToButton);
 
   EXPECT_FALSE(toolbars_mutator.configuration.closeAllButton);
-  if (base::FeatureList::IsEnabled(kTabRecallNewTabGroupButton)) {
-    EXPECT_TRUE(toolbars_mutator.configuration.newTabButton);
-  } else {
-    EXPECT_FALSE(toolbars_mutator.configuration.newTabButton);
-  }
+  EXPECT_TRUE(toolbars_mutator.configuration.newTabButton);
   EXPECT_FALSE(toolbars_mutator.configuration.searchButton);
   EXPECT_FALSE(toolbars_mutator.configuration.selectTabsButton);
   EXPECT_FALSE(toolbars_mutator.configuration.undoButton);
@@ -424,11 +420,7 @@ TEST_F(TabGroupsPanelMediatorTest,
   EXPECT_FALSE(toolbars_mutator.configuration.addToButton);
 
   EXPECT_FALSE(toolbars_mutator.configuration.closeAllButton);
-  if (base::FeatureList::IsEnabled(kTabRecallNewTabGroupButton)) {
-    EXPECT_TRUE(toolbars_mutator.configuration.newTabButton);
-  } else {
-    EXPECT_FALSE(toolbars_mutator.configuration.newTabButton);
-  }
+  EXPECT_TRUE(toolbars_mutator.configuration.newTabButton);
   EXPECT_FALSE(toolbars_mutator.configuration.searchButton);
   EXPECT_FALSE(toolbars_mutator.configuration.selectTabsButton);
   EXPECT_FALSE(toolbars_mutator.configuration.undoButton);

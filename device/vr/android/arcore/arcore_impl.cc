@@ -5,16 +5,21 @@
 #include "device/vr/android/arcore/arcore_impl.h"
 
 #include <algorithm>
+#include <array>
 #include <optional>
 
 #include "base/android/jni_android.h"
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "base/dcheck_is_on.h"
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/logging.h"
 #include "base/numerics/checked_math.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "base/types/pass_key.h"
 #include "device/vr/android/arcore/arcore_math_utils.h"
@@ -81,10 +86,9 @@ std::set<ArTrackableType> GetArCoreEntityTypes(
 // Helper, computes mojo_from_input_source transform based on mojo_from_viever
 // pose and input source state (containing input_from_pointer transform, which
 // in case of input sources is equivalent to viewer_from_pointer).
-// TODO(crbug.com/40669002): this currently assumes that the input source
-// ray mode is "tapping", which is OK for input sources available for AR on
-// Android, but is not true in the general case. This method should duplicate
-// the logic found in XRTargetRaySpace::MojoFromNative().
+// This currently assumes that the input source ray mode is "tapping", which
+// is OK for input sources available for AR on Android, but is not true in
+// the general case.
 std::optional<gfx::Transform> GetMojoFromInputSource(
     const device::mojom::XRInputSourceStatePtr& input_source_state,
     const gfx::Transform& mojo_from_viewer) {
@@ -550,8 +554,6 @@ std::optional<ArCore::InitializeResult> ArCoreImpl::Initialize(
     std::optional<ArCore::DepthSensingConfiguration> depth_sensing_config) {
   DCHECK(IsOnGlThread());
   DCHECK(!arcore_session_.is_valid());
-
-  // TODO(crbug.com/41386064): Notify error earlier if this will fail.
 
   JNIEnv* env = base::android::AttachCurrentThread();
   if (!env) {
@@ -1284,8 +1286,6 @@ std::optional<HitTestSubscriptionId> ArCoreImpl::SubscribeToHitTest(
       // Unsupported by ARCore:
       return std::nullopt;
     case mojom::XRNativeOriginInformation::Tag::kImageIndex:
-      // TODO(crbug.com/40728355): Add hit test support for tracked
-      // images.
       return std::nullopt;
     case mojom::XRNativeOriginInformation::Tag::kAnchorId:
       // Validate that we know which anchor's space the hit test is interested
@@ -1295,6 +1295,8 @@ std::optional<HitTestSubscriptionId> ArCoreImpl::SubscribeToHitTest(
         return std::nullopt;
       }
       break;
+    case mojom::XRNativeOriginInformation::Tag::kMeshId:
+      return std::nullopt;
   }
 
   auto subscription_id = CreateHitTestSubscriptionId();
@@ -1527,8 +1529,8 @@ bool ArCoreImpl::NativeOriginExists(
     case mojom::XRNativeOriginInformation::Tag::kHandJointSpaceInfo:
       return false;
     case mojom::XRNativeOriginInformation::Tag::kImageIndex:
-      // TODO(crbug.com/40728355): Needed for anchor creation relaitve to
-      // tracked images.
+      return false;
+    case mojom::XRNativeOriginInformation::Tag::kMeshId:
       return false;
   }
 }
@@ -1577,8 +1579,8 @@ std::optional<gfx::Transform> ArCoreImpl::GetMojoFromNativeOrigin(
       return std::nullopt;
 
     case mojom::XRNativeOriginInformation::Tag::kImageIndex:
-      // TODO(crbug.com/40728355): Needed for hit test and anchors
-      // support for tracked images.
+      return std::nullopt;
+    case mojom::XRNativeOriginInformation::Tag::kMeshId:
       return std::nullopt;
   }
 }

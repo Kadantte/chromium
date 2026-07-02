@@ -10,6 +10,8 @@
 #include <string_view>
 
 #include "base/memory/raw_ptr.h"
+#include "base/observer_list.h"
+#include "base/scoped_observation_traits.h"
 #include "base/time/time.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
@@ -24,6 +26,8 @@ class LocationBarModel;
 class LocationBarTesting;
 class OmniboxController;
 class OmniboxView;
+class OmniboxPopupView;
+class Profile;
 
 namespace bubble_anchor_util {
 struct AnchorConfiguration;
@@ -34,6 +38,7 @@ class WebContents;
 }
 
 namespace ui {
+class MouseEvent;
 class TrackedElement;
 }
 
@@ -56,8 +61,14 @@ class LocationBar {
     std::string_view extra_headers;
   };
 
-  explicit LocationBar(CommandUpdater* command_updater)
-      : command_updater_(command_updater) {}
+  class Observer : public base::CheckedObserver {
+   public:
+    ~Observer() override;
+
+    virtual void OnLocationBarBoundsChanged();
+  };
+
+  explicit LocationBar(CommandUpdater* command_updater);
 
   const NavigationParams& navigation_params() { return navigation_params_; }
   void set_navigation_params(NavigationParams navigation_params) {
@@ -71,11 +82,18 @@ class LocationBar {
   // Renderer-initiated focuses (like browser startup or NTP finished loading),
   // should have |is_user_initiated| set to false, so we can avoid disrupting
   // user actions and avoid requesting on-focus suggestions.
-  virtual void FocusLocation(bool is_user_initiated) = 0;
+  //
+  // If `clear_focus_if_failed` is true, the focus should be cleared entirely
+  // if the location bar can't take it.
+  virtual void FocusLocation(bool is_user_initiated,
+                             bool clear_focus_if_failed) = 0;
 
   // Puts the user into keyword mode with their default search provider.
   // TODO(tommycli): See if there's a more descriptive name for this method.
   virtual void FocusSearch() = 0;
+
+  // Adjust whether the location bar is focusable based on toolbar visibility.
+  virtual void UpdateFocusBehavior(bool toolbar_visible) = 0;
 
   // Updates the state of the images showing the content settings status.
   virtual void UpdateContentSettingsIcons() = 0;
@@ -89,8 +107,14 @@ class LocationBar {
 
   virtual OmniboxView* GetOmniboxView() = 0;
 
+  virtual OmniboxPopupView* GetOmniboxPopupView() = 0;
+
   // Returns the OmniboxController owned by this LocationBar.
   virtual OmniboxController* GetOmniboxController() = 0;
+
+  // Returns true if given mouse event should result in omnibox popup getting
+  // closed.
+  virtual bool ShouldCloseOmniboxPopup(ui::MouseEvent* event) = 0;
 
   // Returns the WebContents of the currently active tab.
   virtual content::WebContents* GetWebContents() = 0;
@@ -120,10 +144,21 @@ class LocationBar {
   // Gets an anchor for the entire location bar.
   virtual ui::TrackedElement* GetAnchorOrNull() = 0;
 
+  // Returns true if the location bar is currently in the middle of a popup
+  // state transition.
+  virtual bool in_popup_state_transition() const;
+
   // Returns the Browser object this is for. This may be nullptr sometimes;
   // known cases include captive portals on ChromeOS and
   // PresentationReceiverWindowView.
   virtual Browser* GetBrowser() = 0;
+
+  // Returns the profile this is for.
+  virtual Profile* GetProfile() = 0;
+
+  // Returns true if the location bar finished initializing --- it's linked to
+  // the UI and has the subobjects all created.
+  virtual bool IsInitialized() const = 0;
 
   // Returns true if the location bar is visible.
   virtual bool IsVisible() const = 0;
@@ -132,18 +167,23 @@ class LocationBar {
   // equivalent of IsVisible() that also checks the parent UI elements.
   virtual bool IsDrawn() const = 0;
 
-  // True if the top-level window this location bar is on is in a full-screen
-  // mode.
-  virtual bool IsTopLevelFullscreen() const = 0;
+  // True if the window this location bar is in is in a full-screen mode.
+  virtual bool IsFullscreen() const = 0;
 
   // Returns true if corresponding omnibox is editing text or empty.
   virtual bool IsEditingOrEmpty() const = 0;
 
+  // Returns true if the mouse is over the location bar.
+  virtual bool IsMouseHovered() const = 0;
+
   // Tells whatever UI system is used that it should recompute sizes of things.
   virtual void InvalidateLayout() = 0;
 
-  // Returns the the location bar's bounds; see views::View::bounds().
+  // Returns the the location bar's bounds relative to the toolbar.
   virtual gfx::Rect Bounds() const = 0;
+
+  // Returns the the location bar's bounds in screen coordinates.
+  virtual gfx::Rect BoundsInScreen() const = 0;
 
   // Returns the minimum size of the location bar.
   virtual gfx::Size MinimumSize() const = 0;
@@ -165,12 +205,18 @@ class LocationBar {
   // Returns a pointer to the testing interface.
   virtual LocationBarTesting* GetLocationBarForTesting() = 0;
 
+  void AddLocationBarObserver(Observer* observer);
+  void RemoveLocationBarObserver(Observer* observer);
+
  protected:
-  virtual ~LocationBar() = default;
+  virtual ~LocationBar();
+
+  void NotifyBoundsChanged();
 
  private:
   NavigationParams navigation_params_;
   const raw_ptr<CommandUpdater, DanglingUntriaged> command_updater_;
+  base::ObserverList<Observer> observers_;
 };
 
 class LocationBarTesting {
@@ -185,5 +231,21 @@ class LocationBarTesting {
  protected:
   virtual ~LocationBarTesting() = default;
 };
+
+namespace base {
+
+template <>
+struct ScopedObservationTraits<LocationBar, LocationBar::Observer> {
+  static void AddObserver(LocationBar* source,
+                          LocationBar::Observer* observer) {
+    source->AddLocationBarObserver(observer);
+  }
+  static void RemoveObserver(LocationBar* source,
+                             LocationBar::Observer* observer) {
+    source->RemoveLocationBarObserver(observer);
+  }
+};
+
+}  // namespace base
 
 #endif  // CHROME_BROWSER_UI_LOCATION_BAR_LOCATION_BAR_H_

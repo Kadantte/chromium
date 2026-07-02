@@ -63,10 +63,12 @@
 #include "chrome/browser/ssl/ssl_error_controller_client.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/ui/webui/certificate_viewer/certificate_viewer_webui.h"
@@ -86,6 +88,7 @@
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/error_page/content/browser/net_error_auto_reloader.h"
+#include "components/metrics/content/subprocess_metrics_provider.h"
 #include "components/network_session_configurator/common/network_switches.h"
 #include "components/network_time/network_time_test_utils.h"
 #include "components/network_time/network_time_tracker.h"
@@ -118,6 +121,7 @@
 #include "components/security_state/content/security_state_tab_helper.h"
 #include "components/security_state/core/security_state.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/back_forward_cache.h"
 #include "content/public/browser/browser_context.h"
@@ -188,8 +192,10 @@
 #include "net/test/embedded_test_server/http_response.h"
 #include "net/test/embedded_test_server/install_default_websocket_handlers.h"
 #include "net/test/embedded_test_server/request_handler_util.h"
+#include "net/test/quic_simple_test_server.h"
 #include "net/test/test_certificate_data.h"
 #include "net/test/test_data_directory.h"
+#include "net/third_party/quiche/src/quiche/quic/platform/api/quic_flags.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/network_switches.h"
 #include "services/network/public/mojom/network_service.mojom.h"
@@ -350,12 +356,6 @@ class ChromeContentBrowserClientForMixedContentTest
   bool strict_mixed_content_checking_ = false;
   bool strictly_block_blockable_mixed_content_ = false;
 };
-
-std::string EncodeQuery(const std::string& query) {
-  url::RawCanonOutputT<char> buffer;
-  url::EncodeURIComponent(query, &buffer);
-  return std::string(buffer.view());
-}
 
 // Returns the Sha256 hash of the SPKI of |cert|.
 std::array<uint8_t, crypto::hash::kSha256Size> GetSPKIHash(
@@ -649,15 +649,18 @@ class SSLUITestBase : public InProcessBrowserTest,
       const GURL& app_url) {
     Profile* profile = browser()->profile();
 
-    size_t num_browsers = chrome::GetBrowserCount(profile);
-    EXPECT_EQ(app_browser, chrome::FindLastActive());
+    size_t num_browsers =
+        ProfileBrowserCollection::GetForProfile(profile)->GetSize();
+    EXPECT_TRUE(ui_test_utils::IsBrowserActive(app_browser));
     int num_tabs = browser()->tab_strip_model()->count();
 
     ProceedThroughInterstitial(
         app_browser->tab_strip_model()->GetActiveWebContents());
+    ui_test_utils::WaitUntilBrowserBecomeActive(browser());
 
-    EXPECT_EQ(--num_browsers, chrome::GetBrowserCount(profile));
-    EXPECT_EQ(browser(), chrome::FindLastActive());
+    EXPECT_EQ(--num_browsers,
+              ProfileBrowserCollection::GetForProfile(profile)->GetSize());
+    EXPECT_TRUE(ui_test_utils::IsBrowserActive(browser()));
     EXPECT_EQ(++num_tabs, browser()->tab_strip_model()->count());
 
     WebContents* new_tab = browser()->tab_strip_model()->GetActiveWebContents();
@@ -1251,9 +1254,11 @@ IN_PROC_BROWSER_TEST_F(SSLUITest, TestNoFaviconOnInterstitial) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), https_server_expired_.GetURL("/ssl/google.html")));
 
-  WebContents* tab = browser()->tab_strip_model()->GetActiveWebContents();
-  ASSERT_TRUE(chrome_browser_interstitials::IsShowingInterstitial(tab));
-  EXPECT_FALSE(browser()->ShouldDisplayFavicon(tab));
+  tabs::TabInterface* const tab_interface =
+      browser()->tab_strip_model()->GetActiveTab();
+  ASSERT_TRUE(chrome_browser_interstitials::IsShowingInterstitial(
+      tab_interface->GetContents()));
+  EXPECT_FALSE(TabUIHelper::From(tab_interface)->ShouldDisplayFavicon());
 }
 
 class SSLUITestWithWebApps : public SSLUITest {
@@ -1271,6 +1276,7 @@ class SSLUITestWithWebApps : public SSLUITest {
         web_app::test::InstallWebApp(profile, std::move(web_app_info));
 
     Browser* app_browser = web_app::LaunchWebAppBrowserAndWait(profile, app_id);
+    ui_test_utils::WaitUntilBrowserBecomeActive(app_browser);
     return app_browser;
   }
 
@@ -1278,10 +1284,9 @@ class SSLUITestWithWebApps : public SSLUITest {
   web_app::OsIntegrationTestOverrideBlockingRegistration faked_os_integration_;
 };
 
-// Visits a page in an app window with https error and proceed:
-// Disabled due to flaky failures; see https://crbug.com/1156046.
+// Visits a page in an app window with https error and proceed.
 IN_PROC_BROWSER_TEST_F(SSLUITestWithWebApps,
-                       DISABLED_InAppTestHTTPSExpiredCertAndProceed) {
+                       InAppTestHTTPSExpiredCertAndProceed) {
   ASSERT_TRUE(https_server_expired_.Start());
 
   const GURL app_url = https_server_expired_.GetURL("/ssl/google.html");
@@ -1346,7 +1351,7 @@ IN_PROC_BROWSER_TEST_F(SSLUITest, TestInterstitialCrossSiteNavigation) {
   WebContents* tab = browser()->tab_strip_model()->GetActiveWebContents();
 
   // Navigate from 127.0.0.1 to localhost so it triggers a
-  // cross-site navigation to make sure http://crbug.com/5800 is gone.
+  // cross-site navigation to make sure http://crbug.com/41235852 is gone.
   GURL cross_site_url = https_server_mismatched_.GetURL("/ssl/google.html");
   ASSERT_EQ("localhost", cross_site_url.GetHost());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), cross_site_url));
@@ -1455,7 +1460,7 @@ IN_PROC_BROWSER_TEST_F(SSLUITest, TestHTTPSExpiredCertAndGoBackViaButton) {
   ssl_test_util::CheckAuthenticationBrokenState(
       tab, net::CERT_STATUS_DATE_INVALID, AuthState::SHOWING_INTERSTITIAL);
 
-  // Simulate user clicking on back button (crbug.com/39248).
+  // Simulate user clicking on back button (crbug.com/40373975).
   chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
   EXPECT_TRUE(content::WaitForLoadStop(tab));
 
@@ -1480,8 +1485,8 @@ IN_PROC_BROWSER_TEST_F(SSLUITest, TestHTTPSExpiredCertAndGoBackViaMenu) {
   ssl_test_util::CheckAuthenticationBrokenState(
       tab, net::CERT_STATUS_DATE_INVALID, AuthState::SHOWING_INTERSTITIAL);
 
-  // Simulate user clicking and holding on back button (crbug.com/37215). With
-  // committed interstitials enabled, this triggers a navigation.
+  // Simulate user clicking and holding on back button (crbug.com/41106657).
+  // With committed interstitials enabled, this triggers a navigation.
   content::TestNavigationObserver nav_observer(tab);
   tab->GetController().GoToOffset(-1);
   nav_observer.Wait();
@@ -1516,21 +1521,15 @@ IN_PROC_BROWSER_TEST_F(SSLUITest, TestHTTPSExpiredCertGoBackUsingCommand) {
   ssl_test_util::CheckUnauthenticatedState(tab, AuthState::NONE);
 }
 
-// Visits a page that uses a SHA-1 leaf certificate, which should be rejected
-// by default.
-IN_PROC_BROWSER_TEST_F(SSLUITest, SHA1IsDefaultDisabled) {
-  EXPECT_FALSE(last_ssl_config_.sha1_local_anchors_enabled);
-  EXPECT_FALSE(CreateDefaultNetworkContextParams()
-                   ->initial_ssl_config->sha1_local_anchors_enabled);
-
+// Visits a page that uses a SHA-1 leaf certificate, which should be rejected.
+IN_PROC_BROWSER_TEST_F(SSLUITest, SHA1IsNotAllowed) {
   ASSERT_TRUE(https_server_sha1_.Start());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), https_server_sha1_.GetURL("/ssl/google.html")));
 
   ssl_test_util::CheckAuthenticationBrokenState(
       browser()->tab_strip_model()->GetActiveWebContents(),
-      net::CERT_STATUS_WEAK_SIGNATURE_ALGORITHM,
-      AuthState::SHOWING_INTERSTITIAL);
+      net::CERT_STATUS_INVALID, AuthState::SHOWING_INTERSTITIAL);
 }
 
 // Visit a HTTP page which request WSS connection to a server providing invalid
@@ -1646,7 +1645,7 @@ class SSLUITestWithClientCert : public SSLUITestBase {
 
 // SSL client certificate tests are only enabled when using NSS for private key
 // storage, as only NSS can avoid modifying global machine state when testing.
-// See http://crbug.com/51132
+// See http://crbug.com/41189152
 
 // Visit a HTTPS page which requires client cert authentication. The client
 // cert will be selected automatically, then a test which uses WebSocket runs.
@@ -1876,7 +1875,7 @@ IN_PROC_BROWSER_TEST_F(SSLUITest, TestBrowserUseClientCertStoreDynamicUpdate) {
 
 // Tests that requests from service workers can also use certificates
 // auto-selected by policy.
-// https://crbug.com/1417601.
+// https://crbug.com/40894162.
 IN_PROC_BROWSER_TEST_F(SSLUITest, TestServiceWorkerRequestsUseClientCertStore) {
   // Make the browser use the ClientCertStoreStub instead of the regular one.
   ProfileNetworkContextServiceFactory::GetForContext(browser()->profile())
@@ -2153,7 +2152,7 @@ IN_PROC_BROWSER_TEST_F(SSLUITest, TestCertDBChangedFlushesClientAuthCache) {
 // Open a page with a HTTPS error in a tab with no prior navigation (through a
 // link with a blank target).  This is to test that the lack of navigation entry
 // does not cause any problems (it was causing a crasher, see
-// http://crbug.com/19941).
+// http://crbug.com/40981931).
 IN_PROC_BROWSER_TEST_F(SSLUITest, TestHTTPSErrorWithNoNavEntry) {
   ASSERT_TRUE(https_server_expired_.Start());
 
@@ -2316,7 +2315,7 @@ IN_PROC_BROWSER_TEST_F(SSLUITest, TestExtensionEvents) {
 
 // Visits a page that runs insecure content and tries to suppress the insecure
 // content warnings by randomizing location.hash.
-// Based on http://crbug.com/8706
+// Based on http://crbug.com/40092102
 IN_PROC_BROWSER_TEST_F(SSLUITest, TestRunsInsecuredContentRandomizeHash) {
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(https_server_.Start());
@@ -2353,7 +2352,8 @@ IN_PROC_BROWSER_TEST_F(SSLUITest, TestUnsafeContents) {
     // The state is expected to be authenticated.
     ssl_test_util::CheckAuthenticatedState(tab, AuthState::NONE);
     // The iframe should be able to open a popup.
-    EXPECT_EQ(2u, chrome::GetBrowserCount(browser()->profile()));
+    EXPECT_EQ(2u, ProfileBrowserCollection::GetForProfile(browser()->profile())
+                      ->GetSize());
     // In order to check that the image was loaded, check its width.
     // The actual image (Google logo) is 276 pixels wide.
     EXPECT_EQ(276, content::EvalJs(tab, "ImageWidth();"));
@@ -2374,7 +2374,8 @@ IN_PROC_BROWSER_TEST_F(SSLUITest, TestUnsafeContents) {
     ssl_test_util::CheckAuthenticatedState(tab, AuthState::NONE);
     // The iframe attempts to open a popup window, but it shouldn't be able to.
     // Previous popup is still open.
-    EXPECT_EQ(2u, chrome::GetBrowserCount(browser()->profile()));
+    EXPECT_EQ(2u, ProfileBrowserCollection::GetForProfile(browser()->profile())
+                      ->GetSize());
     // The broken image width is zero.
     EXPECT_EQ(16, content::EvalJs(tab, "ImageWidth();"));
     // Check that variable |foo| is not set.
@@ -2613,9 +2614,9 @@ IN_PROC_BROWSER_TEST_F(SSLUITest, TestRefNavigation) {
 }
 
 // Tests that closing a page that opened a pop-up with an interstitial does not
-// crash the browser (crbug.com/1966).
-// TODO(crbug.com/1119359, crbug.com/1338068): Test is flaky on Linux and Chrome
-// OS.
+// crash the browser (crbug.com/40979342).
+// TODO(crbug.com/40714131, crbug.com/40848837): Test is flaky on Linux and
+// Chrome OS.
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #define MAYBE_TestCloseTabWithUnsafePopup DISABLED_TestCloseTabWithUnsafePopup
 #else
@@ -2637,14 +2638,21 @@ IN_PROC_BROWSER_TEST_F(SSLUITest, MAYBE_TestCloseTabWithUnsafePopup) {
   content::TestNavigationObserver nav_observer(
       https_server_expired_.GetURL("/ssl/bad_iframe.html"));
   nav_observer.StartWatchingNewWebContents();
-  ASSERT_EQ(1u, chrome::GetBrowserCount(browser()->profile()));
+  ASSERT_EQ(
+      1u,
+      ProfileBrowserCollection::GetForProfile(browser()->profile())->GetSize());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL(replacement_path)));
-  ASSERT_EQ(2u, chrome::GetBrowserCount(browser()->profile()));
+  ASSERT_EQ(
+      2u,
+      ProfileBrowserCollection::GetForProfile(browser()->profile())->GetSize());
 
   // Last activated browser should be the popup.
-  Browser* popup_browser = chrome::FindBrowserWithProfile(browser()->profile());
-  WebContents* popup = popup_browser->tab_strip_model()->GetActiveWebContents();
+  BrowserWindowInterface* popup_browser =
+      ProfileBrowserCollection::GetForProfile(browser()->profile())
+          ->GetLastActiveBrowser();
+  WebContents* popup =
+      popup_browser->GetTabStripModel()->GetActiveWebContents();
   EXPECT_NE(popup, tab1);
   nav_observer.Wait();
   ASSERT_TRUE(popup->GetController().GetVisibleEntry());
@@ -2764,7 +2772,7 @@ IN_PROC_BROWSER_TEST_F(SSLUITest, TestRedirectHTTPSToHTTP) {
 
 // Visit a page over https that is a redirect to a non-existent page with http
 // (to make sure we don't keep the secure state when redirecting to an error).
-// Regression test for crbug.com/1154754.
+// Regression test for crbug.com/40735055.
 IN_PROC_BROWSER_TEST_F(SSLUITest, TestRedirectHTTPSToInvalidHTTP) {
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(https_server_.Start());
@@ -2843,15 +2851,15 @@ IN_PROC_BROWSER_TEST_F(SSLUITestWaitForDOMNotification,
   // Be sure to use a non-localhost name for the mixed content request,
   // since local hostnames are not considered mixed content.
   http_url_replacements.SetHostStr("example.test");
-  std::string http_url_query =
-      EncodeQuery(https_server_.GetURL("/ssl/google_files/logo.gif").spec());
-  http_url_replacements.SetQueryStr(http_url_query);
+  url::UriComponentEncoder http_url_query(
+      https_server_.GetURL("/ssl/google_files/logo.gif").spec());
+  http_url_replacements.SetQueryStr(http_url_query.view());
   http_url = http_url.ReplaceComponents(http_url_replacements);
 
   GURL https_url = https_server_.GetURL("/server-redirect?");
   GURL::Replacements https_url_replacements;
-  std::string https_url_query = EncodeQuery(http_url.spec());
-  https_url_replacements.SetQueryStr(https_url_query);
+  url::UriComponentEncoder https_url_query(http_url.spec());
+  https_url_replacements.SetQueryStr(https_url_query.view());
   https_url = https_url.ReplaceComponents(https_url_replacements);
 
   base::RunLoop run_loop;
@@ -3158,7 +3166,7 @@ class SSLUIWorkerFetchTest
     // processes can get re-used under Site Isolation and retain their mixed
     // content status (see crbug.com/41417895). This ensures all error state is
     // cleared.
-    chrome::NewTab(browser());
+    chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
     WebContents* tab = browser()->tab_strip_model()->GetActiveWebContents();
     EXPECT_TRUE(content::WaitForLoadStop(tab));
 
@@ -3363,7 +3371,7 @@ IN_PROC_BROWSER_TEST_P(SSLUIWorkerFetchTest,
 // This test checks the behavior of mixed content blocking for the requests
 // from a dedicated worker by changing the settings in WebPreferences
 // with allow_running_insecure_content = true.
-// Flaky. See https://crbug.com/1145674.
+// Flaky. See https://crbug.com/40729606.
 IN_PROC_BROWSER_TEST_P(
     SSLUIWorkerFetchTest,
     DISABLED_MixedContentSettings_AllowRunningInsecureContent) {
@@ -3406,7 +3414,7 @@ IN_PROC_BROWSER_TEST_P(
 // This test checks the behavior of mixed content blocking for the requests
 // from a dedicated worker by changing the settings in WebPreferences
 // with allow_running_insecure_content = false.
-// Disabled due to being flaky. crbug.com/1116670
+// Disabled due to being flaky. crbug.com/40712072
 IN_PROC_BROWSER_TEST_P(
     SSLUIWorkerFetchTest,
     DISABLED_MixedContentSettings_DisallowRunningInsecureContent) {
@@ -4311,7 +4319,7 @@ IN_PROC_BROWSER_TEST_F(SSLUITest, BadCertFollowedByGoodCertSubresource) {
 // Verifies that if a bad certificate is seen for a host and the user proceeds
 // through the interstitial, the decision to proceed is not forgotten once blob
 // URLs are loaded (blob loads never have certificate errors).  This is a
-// regression test for https://crbug.com/1049625.
+// regression test for https://crbug.com/40117754.
 IN_PROC_BROWSER_TEST_F(SSLUITest, BadCertFollowedByBlobUrl) {
   ASSERT_TRUE(https_server_expired_.Start());
   std::string https_server_host =
@@ -4350,7 +4358,7 @@ IN_PROC_BROWSER_TEST_F(SSLUITest, BadCertFollowedByBlobUrl) {
   ASSERT_TRUE(console_observer.Wait());
 
   // Verify that the decision to accept the broken cert has not been revoked
-  // (this is a regression test for https://crbug.com/1049625).
+  // (this is a regression test for https://crbug.com/40117754).
   EXPECT_TRUE(state->HasAllowException(
       https_server_host, tab->GetPrimaryMainFrame()->GetStoragePartition()));
 }
@@ -6923,9 +6931,10 @@ class SSLUIDynamicInterstitialTest : public CertVerifierBrowserTest {
     verify_result.verified_cert = cert;
     verify_result.cert_status = net::CERT_STATUS_COMMON_NAME_INVALID;
 
-    net::HashValue hash;
-    ASSERT_TRUE(hash.FromString(kMatchingDynamicInterstitialCert));
-    verify_result.public_key_hashes.push_back(hash.sha256hashvalue());
+    std::optional<net::HashValue> hash =
+        net::HashValue::FromString(kMatchingDynamicInterstitialCert);
+    ASSERT_TRUE(hash.has_value());
+    verify_result.public_key_hashes.push_back(hash->sha256hashvalue());
 
     mock_cert_verifier()->AddResultForCert(cert, verify_result,
                                            net::ERR_CERT_COMMON_NAME_INVALID);
@@ -6947,7 +6956,7 @@ class SSLUIDynamicInterstitialTest : public CertVerifierBrowserTest {
   static std::string MakeSha256String(uint8_t i) {
     net::SHA256HashValue value;
     value.fill(i);
-    return net::HashValue(value).ToString();
+    return net::HashValue(net::HASH_VALUE_SHA256, value).ToString();
   }
 
   // Adds a dynamic interstitial to |config_proto|. All of the dynamic
@@ -7378,7 +7387,7 @@ IN_PROC_BROWSER_TEST_F(SSLUITest, ActiveMixedContentTrackedByOrigin) {
   // Note that the security indicator is not downgraded on the initial
   // about:blank navigation in the new tab. Initial about:blank navigations
   // don't have navigation entries (yet), so there is no way to track the mixed
-  // content state for these navigations. See https://crbug.com/1038765.
+  // content state for these navigations. See https://crbug.com/40113310.
   ui_test_utils::TabAddedWaiter tab_waiter(browser());
   ASSERT_TRUE(content::ExecJs(tab, "w = window.open()"));
   tab_waiter.Wait();
@@ -7682,3 +7691,168 @@ IN_PROC_BROWSER_TEST_F(InsecureFormNavigationThrottleFencedFrameBrowserTest,
 // XMLHttpRequest over bad ssl in synchronous mode.
 
 // XMLHttpRequest over OK ssl in synchronous mode.
+
+class SSLServerPaddingBrowserTest
+    : public SSLUITest,
+      public testing::WithParamInterface<std::optional<int>> {
+ public:
+  SSLServerPaddingBrowserTest() {
+    if (padding_enabled()) {
+      feature_list_.InitAndEnableFeatureWithParameters(
+          net::features::kAddTLSServerHandshakePadding,
+          {{"AddTLSServerHandshakePaddingBytes",
+            base::NumberToString(GetParam().value())}});
+    } else {
+      feature_list_.InitAndDisableFeature(
+          net::features::kAddTLSServerHandshakePadding);
+    }
+  }
+
+  bool padding_enabled() { return GetParam().has_value(); }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+using testing::Gt;
+using testing::SizeIs;
+
+IN_PROC_BROWSER_TEST_P(SSLServerPaddingBrowserTest,
+                       ValidHandshakeAndHistograms) {
+  base::HistogramTester histograms;
+  net::EmbeddedTestServer https_server(net::EmbeddedTestServer::TYPE_HTTPS);
+  net::SSLServerConfig ssl_config;
+  ssl_config.server_padding_enabled = true;
+  https_server.SetSSLConfig(net::EmbeddedTestServer::CERT_OK, ssl_config);
+  https_server.AddDefaultHandlers(GetChromeTestDataDir());
+  ASSERT_TRUE(https_server.Start());
+
+  // Make sure there's no favicon so that only one request is sent.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), https_server.GetURL("/no-favicon.html")));
+
+  content::FetchHistogramsFromChildProcesses();
+  base::test::TestFuture<void> future;
+  metrics::SubprocessMetricsProvider::MergeHistogramDeltasForTesting(
+      /*async=*/true, future.GetCallback());
+  ASSERT_TRUE(future.Wait());
+
+  if (padding_enabled()) {
+    // Most of the time, there is only one handshake, and so there should be
+    // only one entry. This isn't always true on all platforms, so just
+    // check to make sure we have at least one entry in each histogram.
+    //
+    // See crbug.com/517861023
+    EXPECT_THAT(
+        histograms.GetAllSamples("Net.SSL_Connection_Latency_ServerPadding"),
+        SizeIs(Gt(0)));
+    EXPECT_THAT(
+        histograms.GetAllSamples("Net.HttpTimeToFirstByte.ServerPadding"),
+        SizeIs(Gt(0)));
+  } else {
+    histograms.ExpectTotalCount("Net.SSL_Connection_Latency_ServerPadding", 0);
+    histograms.ExpectTotalCount("Net.HttpTimeToFirstByte.ServerPadding", 0);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(,
+                         SSLServerPaddingBrowserTest,
+                         ::testing::Values(std::optional(128),
+                                           std::optional(0),
+                                           std::nullopt));
+
+class QuicSSLServerPaddingBrowserTest
+    : public SSLUITest,
+      public testing::WithParamInterface<std::optional<int>> {
+ public:
+  QuicSSLServerPaddingBrowserTest() {
+    SetQuicRestartFlag(tls_server_padding_support, true);
+    if (padding_enabled()) {
+      feature_list_.InitAndEnableFeatureWithParameters(
+          net::features::kAddTLSServerHandshakePadding,
+          {{"AddTLSServerHandshakePaddingBytes",
+            base::NumberToString(GetParam().value())}});
+    } else {
+      feature_list_.InitAndDisableFeature(
+          net::features::kAddTLSServerHandshakePadding);
+    }
+  }
+
+  bool padding_enabled() { return GetParam().has_value(); }
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    SSLUITest::SetUpCommandLine(command_line);
+    command_line->AppendSwitchASCII(switches::kOriginToForceQuicOn, "*");
+    command_line->AppendSwitch(switches::kEnableQuic);
+    mock_cert_verifier_.SetUpCommandLine(command_line);
+  }
+
+  void SetUpOnMainThread() override {
+    SSLUITest::SetUpOnMainThread();
+    ConfigureMockCertVerifier();
+    ASSERT_TRUE(net::QuicSimpleTestServer::Start());
+    host_resolver()->AddRule("*", "127.0.0.1");
+  }
+
+  void TearDownOnMainThread() override {
+    net::QuicSimpleTestServer::Shutdown();
+    SSLUITest::TearDownOnMainThread();
+  }
+
+ protected:
+  void ConfigureMockCertVerifier() {
+    auto test_cert =
+        net::ImportCertFromFile(net::GetTestCertsDirectory(), "quic-chain.pem");
+    net::CertVerifyResult verify_result;
+    verify_result.verified_cert = test_cert;
+    mock_cert_verifier_.mock_cert_verifier()->AddResultForCert(
+        test_cert, verify_result, net::OK);
+    mock_cert_verifier_.mock_cert_verifier()->set_default_result(net::OK);
+  }
+
+  void SetUpInProcessBrowserTestFixture() override {
+    SSLUITest::SetUpInProcessBrowserTestFixture();
+    mock_cert_verifier_.SetUpInProcessBrowserTestFixture();
+  }
+
+  void TearDownInProcessBrowserTestFixture() override {
+    mock_cert_verifier_.TearDownInProcessBrowserTestFixture();
+    SSLUITest::TearDownInProcessBrowserTestFixture();
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+  content::ContentMockCertVerifier mock_cert_verifier_;
+};
+
+IN_PROC_BROWSER_TEST_P(QuicSSLServerPaddingBrowserTest,
+                       ValidHandshakeAndHistograms) {
+  base::HistogramTester histograms;
+
+  GURL url = net::QuicSimpleTestServer::GetFileURL(
+      net::QuicSimpleTestServer::GetHelloPath());
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+
+  content::FetchHistogramsFromChildProcesses();
+  metrics::SubprocessMetricsProvider::MergeHistogramDeltasForTesting();
+
+  if (padding_enabled()) {
+    EXPECT_THAT(
+        histograms.GetAllSamples("Net.HttpTimeToFirstByte.ServerPadding"),
+        SizeIs(Gt(0)));
+    EXPECT_THAT(histograms.GetAllSamples(
+                    "Net.QuicSession.HandshakeConfirmedTime.ServerPadding"),
+                SizeIs(Gt(0)));
+  } else {
+    histograms.ExpectTotalCount(
+        "Net.QuicSession.HandshakeConfirmedTime.ServerPadding", 0);
+    histograms.ExpectTotalCount("Net.HttpTimeToFirstByte.ServerPadding", 0);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(QUIC,
+                         QuicSSLServerPaddingBrowserTest,
+                         ::testing::Values(std::optional(128),
+                                           std::optional(0),
+                                           std::nullopt));

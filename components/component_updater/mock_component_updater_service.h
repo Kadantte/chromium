@@ -19,6 +19,7 @@
 #include "base/functional/callback.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/version.h"
+#include "build/branding_buildflags.h"
 #include "components/component_updater/component_installer.h"
 #include "components/component_updater/component_updater_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -51,12 +52,16 @@ class MockComponentUpdateService : public ComponentUpdateService {
   MOCK_CONST_METHOD0(GetComponentIDs, std::vector<std::string>());
   MOCK_CONST_METHOD0(GetComponents, std::vector<ComponentInfo>());
   MOCK_METHOD0(GetOnDemandUpdater, OnDemandUpdater&());
+  MOCK_METHOD0(Stop, void());
   MOCK_METHOD2(DoMaybeThrottle,
                void(const std::string& id, const base::OnceClosure& callback));
   MOCK_METHOD0(GetSequencedTaskRunner,
                scoped_refptr<base::SequencedTaskRunner>());
   MOCK_CONST_METHOD2(GetComponentDetails,
                      bool(const std::string& id, CrxUpdateItem* item));
+#if BUILDFLAG(CHROME_FOR_TESTING)
+  MOCK_METHOD1(EnsureRequiredComponentsReady, void(base::TimeDelta timeout));
+#endif
 };
 
 }  // namespace component_updater

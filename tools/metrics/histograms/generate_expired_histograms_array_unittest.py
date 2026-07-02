@@ -7,7 +7,7 @@ import datetime
 import unittest
 import xml.dom.minidom
 
-import setup_modules
+import setup_modules  # pylint: disable=unused-import
 
 import chromium_src.tools.metrics.histograms.generate_expired_histograms_array as generate_expired_histograms_array
 
@@ -170,7 +170,7 @@ class ExpiredHistogramsTest(unittest.TestCase):
     This is a summary.
   </summary>
     </histogram>
-  <histogram name="ThirdHistogram" expires_after="M60" units="units">
+  <histogram name="ThirdHistogram" expires_after="M59" units="units">
     <owner>me@chromium.org</owner>
     <summary>
       This is a summary.

@@ -4,39 +4,57 @@
 
 #include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_import_utils.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
+#include <algorithm>
+#include <map>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "base/check_op.h"
+#include "base/containers/flat_tree.h"
+#include "base/containers/span.h"
 #include "base/containers/to_vector.h"
 #include "base/i18n/time_formatting.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
-#include "base/types/zip.h"
+#include "base/uuid.h"
 #include "components/autofill/core/browser/autofill_ai_form_rationalization.h"
 #include "components/autofill/core/browser/autofill_field.h"
+#include "components/autofill/core/browser/autofill_format_string.h"
 #include "components/autofill/core/browser/country_type.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/data_model/data_model_utils.h"
 #include "components/autofill/core/browser/data_quality/validation.h"
 #include "components/autofill/core/browser/field_type_utils.h"
+#include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/filling/autofill_ai/select_date_matching.h"
 #include "components/autofill/core/browser/form_processing/autofill_ai/determine_attribute_types.h"
-#include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_utils.h"
 #include "components/autofill/core/browser/proto/server.pb.h"
 #include "components/autofill/core/common/dense_set.h"
-#include "components/autofill/core/common/form_field_data.h"
+#include "components/autofill/core/common/unique_ids.h"
 
 namespace autofill {
 
 namespace {
 
-bool EntitySatisfiesImportConstraints(const EntityInstance& entity) {
-  return AttributesMeetImportConstraints(
-      entity.type(), DenseSet(entity.attributes(), &AttributeInstance::type));
+bool IsEntityImportable(const AutofillClient& client,
+                        const EntityInstance& entity) {
+  return !entity.type().read_only() &&
+         !IsAutofillAiEntityTypeBlockedByPolicy(
+             client, client.GetLastCommittedPrimaryMainFrameURL(),
+             entity.type()) &&
+         AttributesMeetImportConstraints(
+             entity.type(),
+             DenseSet(entity.attributes(), &AttributeInstance::type));
 }
 
 }  // namespace
@@ -208,7 +226,7 @@ std::vector<EntityInstance> GetPossibleEntitiesFromSubmittedForm(
           /*use_date=*/base::Time::Now(), record_type,
           EntityInstance::AreAttributesReadOnly(false),
           /*frecency_override=*/"");
-      if (!EntitySatisfiesImportConstraints(entity)) {
+      if (!IsEntityImportable(client, entity)) {
         continue;
       }
       entities_found_in_form.push_back(std::move(entity));
@@ -220,8 +238,8 @@ std::vector<EntityInstance> GetPossibleEntitiesFromSubmittedForm(
 
 std::optional<std::u16string> MaybeGetLocalizedDate(
     const AttributeInstance& attribute) {
-  FieldType field_type = attribute.type().field_type();
-  if (!IsDateFieldType(field_type)) {
+  std::optional<FieldType> field_type = attribute.type().field_type();
+  if (!field_type || !IsDateFieldType(*field_type)) {
     return std::nullopt;
   }
   auto get_part = [&](std::u16string format) {

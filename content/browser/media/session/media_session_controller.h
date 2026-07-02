@@ -20,6 +20,7 @@
 #include "media/base/picture_in_picture_events_info.h"
 #include "services/media_session/public/cpp/media_position.h"
 #include "services/media_session/public/mojom/media_session.mojom.h"
+#include "ui/gfx/geometry/size.h"
 
 namespace content {
 
@@ -58,13 +59,15 @@ class CONTENT_EXPORT MediaSessionController
   void OnPlaybackPaused(bool reached_end_of_stream);
 
   // MediaSessionPlayerObserver implementation.
-  void OnSuspend(int player_id) override;
-  void OnResume(int player_id) override;
+  void OnSuspend(int player_id, bool triggered_by_user) override;
+  void OnResume(int player_id, bool triggered_by_user) override;
   void OnSeekForward(int player_id, base::TimeDelta seek_time) override;
   void OnSeekBackward(int player_id, base::TimeDelta seek_time) override;
   void OnSeekTo(int player_id, base::TimeDelta seek_time) override;
   void OnSetVolumeMultiplier(int player_id, double volume_multiplier) override;
-  void OnEnterPictureInPicture(int player_id) override;
+  void OnEnterPictureInPicture(
+      int player_id,
+      const std::optional<gfx::Size>& min_size) override;
   void OnSetAudioSinkId(int player_id,
                         const std::string& raw_device_id) override;
   void OnSetMute(int player_id, bool mute) override;

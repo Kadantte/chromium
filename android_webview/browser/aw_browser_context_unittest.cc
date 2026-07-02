@@ -60,24 +60,6 @@ class AwBrowserContextTest : public testing::Test {
   raw_ptr<AwBrowserProcess> browser_process_;
 };
 
-// Tests that SHA-1 is still allowed for locally-installed trust anchors,
-// including those in application manifests, as it should behave like
-// the Android system.
-TEST_F(AwBrowserContextTest, SHA1LocalAnchorsAllowed) {
-  AwBrowserContext context(
-      AwBrowserContextStore::kDefaultContextName,
-      base::FilePath(AwBrowserContextStore::kDefaultContextPath),
-      /*is_default=*/true);
-  network::mojom::NetworkContextParams network_context_params;
-  cert_verifier::mojom::CertVerifierCreationParams cert_verifier_params;
-  context.ConfigureNetworkContextParams(
-      false, base::FilePath(), &network_context_params, &cert_verifier_params);
-
-  ASSERT_TRUE(network_context_params.initial_ssl_config);
-  ASSERT_TRUE(
-      network_context_params.initial_ssl_config->sha1_local_anchors_enabled);
-}
-
 TEST_F(AwBrowserContextTest, SetAllowedPrerenderingCount) {
   AwBrowserContext context(
       AwBrowserContextStore::kDefaultContextName,
@@ -105,8 +87,8 @@ TEST_F(AwBrowserContextTest, SetAllowedPrerenderingCount) {
   context.SetAllowedPrerenderingCount(nullptr, 4);
   EXPECT_EQ(context.AllowedPrerenderingCount(), kMaxAllowedPrerenderingCount);
 
-  // Reset to null (should go back to default 2).
-  context.SetAllowedPrerenderingCount(nullptr, std::nullopt);
+  // Clear the prerenders(should go back to default 2).
+  context.ClearAllowedPrerenderingCount(nullptr);
   EXPECT_EQ(context.AllowedPrerenderingCount(),
             kDefaultAllowedPrerenderingCount);
 

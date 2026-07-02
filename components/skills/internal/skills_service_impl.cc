@@ -10,12 +10,16 @@
 #include "base/notimplemented.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/uuid.h"
+#include "build/build_config.h"
 #include "components/optimization_guide/core/hints/optimization_guide_decider.h"
 #include "components/optimization_guide/proto/hints.pb.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/skills/features.h"
 #include "components/skills/internal/skills_downloader.h"
 #include "components/skills/internal/skills_sync_bridge.h"
 #include "components/skills/public/skill.h"
+#include "components/skills/public/skills_features.h"
+#include "components/skills/public/skills_prefs.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/base/report_unrecoverable_error.h"
 #include "components/sync/model/client_tag_based_data_type_processor.h"
@@ -24,27 +28,47 @@
 
 namespace skills {
 
+namespace {
+// Minimum time between discovery skills refreshes.
+constexpr base::TimeDelta kMinimumTimeBetweenDiscoverySkillsRefresh =
+    base::Hours(2);
+}  // namespace
+
 SkillsServiceImpl::SkillsServiceImpl(
+    PrefService* pref_service,
     optimization_guide::OptimizationGuideDecider* optimization_guide,
+    signin::IdentityManager* identity_manager,
     version_info::Channel channel,
     syncer::OnceDataTypeStoreFactory create_store_callback,
-    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory)
+    : pref_service_(pref_service),
+      optimization_guide_(optimization_guide),
+      identity_manager_(identity_manager),
+      url_loader_factory_(url_loader_factory) {
+  pref_registrar_.Init(pref_service_);
+  pref_registrar_.Add(
+      skills::prefs::kChromeSkillsEnabled,
+      base::BindRepeating(&SkillsServiceImpl::OnSkillsEnabledPrefChanged,
+                          base::Unretained(this)));
   sync_bridge_ = std::make_unique<SkillsSyncBridge>(
       std::make_unique<syncer::ClientTagBasedDataTypeProcessor>(
           syncer::SKILL,
           base::BindRepeating(&syncer::ReportUnrecoverableError, channel)),
       std::move(create_store_callback), *this);
-  if (base::FeatureList::IsEnabled(features::kSkillsEnabled)) {
+  if (IsSkillsEnabled(pref_service_)) {
     // If the Skills feature is enabled, register the optimization type to
     // signal to Optimization Guide that it should fetch and cache the URL-keyed
     // Skills on each page load.
-    if (optimization_guide) {
-      optimization_guide->RegisterOptimizationTypes(
+    if (optimization_guide_) {
+      optimization_guide_->RegisterOptimizationTypes(
           {optimization_guide::proto::SKILLS});
     }
   }
-  skills_downloader_ =
-      std::make_unique<SkillsDownloader>(std::move(url_loader_factory));
+  skills_downloader_ = std::make_unique<SkillsDownloader>(url_loader_factory_);
+
+  discovery_skills_refresh_timer_.Start(
+      FROM_HERE, kMinimumTimeBetweenDiscoverySkillsRefresh, this,
+      &SkillsServiceImpl::RefreshDiscoverySkills);
 }
 
 SkillsServiceImpl::~SkillsServiceImpl() = default;
@@ -56,9 +80,18 @@ void SkillsServiceImpl::Shutdown() {
 }
 
 void SkillsServiceImpl::NotifySkillChanged(std::string_view skill_id,
-                                           UpdateSource update_source) {
+                                           UpdateSource update_source,
+                                           bool is_position_changed) {
   for (Observer& observer : observers_) {
-    observer.OnSkillUpdated(skill_id, update_source);
+    observer.OnSkillUpdated(skill_id, update_source, is_position_changed);
+  }
+}
+
+void SkillsServiceImpl::NotifyTemporarySkillDisplayChanged(
+    std::string_view skill_id,
+    DisplayState display_state) {
+  for (Observer& observer : observers_) {
+    observer.OnTemporarySkillDisplay(skill_id, display_state);
   }
 }
 
@@ -139,17 +172,25 @@ void SkillsServiceImpl::DeleteSkill(std::string_view skill_id,
       });
 
   if (num_erased > 0) {
-    NotifySkillChanged(id_copy, update_source);
+    NotifySkillChanged(id_copy, update_source, /*is_position_changed=*/false);
   }
 }
 
 const Skill* SkillsServiceImpl::GetSkillById(std::string_view skill_id) const {
-  for (const std::unique_ptr<Skill>& skill : skills_) {
-    if (skill->id == skill_id) {
-      return skill.get();
-    }
+  // A skill can be either a 1st party skill, or a user generated skill.
+  // First, Attempt to retrieve the skill from the definitive list of 1P
+  // skills.
+  auto it = first_party_skill_objects_map_.find(skill_id);
+  if (it != first_party_skill_objects_map_.end()) {
+    return &it->second;
   }
-  return nullptr;
+
+  std::optional<size_t> skill_position = GetSkillPosition(skill_id);
+  if (!skill_position.has_value()) {
+    return nullptr;
+  }
+
+  return skills_[*skill_position].get();
 }
 
 const std::vector<std::unique_ptr<Skill>>& SkillsServiceImpl::GetSkills()
@@ -157,8 +198,13 @@ const std::vector<std::unique_ptr<Skill>>& SkillsServiceImpl::GetSkills()
   return skills_;
 }
 
-const SkillsService::SkillsMap& SkillsServiceImpl::Get1PSkills() const {
-  return first_party_skills_map_;
+const SkillProtoList& SkillsServiceImpl::Get1PSkills() const {
+  return first_party_data_.skills_list;
+}
+
+const std::vector<skills::proto::TopicInfo>&
+SkillsServiceImpl::Get1PTopicsInfo() const {
+  return first_party_data_.topics_info_list;
 }
 
 void SkillsServiceImpl::LoadInitialSkills(
@@ -189,9 +235,11 @@ SkillsService::ServiceStatus SkillsServiceImpl::GetServiceStatus() const {
 }
 
 void SkillsServiceImpl::SortSkills() {
-  std::sort(skills_.begin(), skills_.end(),
-            [](const std::unique_ptr<Skill>& a,
-               const std::unique_ptr<Skill>& b) { return a->name < b->name; });
+  std::sort(
+      skills_.begin(), skills_.end(),
+      [](const std::unique_ptr<Skill>& a, const std::unique_ptr<Skill>& b) {
+        return a->last_update_time > b->last_update_time;
+      });
 }
 
 void SkillsServiceImpl::AddObserver(Observer* observer) {
@@ -231,26 +279,74 @@ const Skill* SkillsServiceImpl::AddSkillImpl(std::unique_ptr<Skill> skill,
 
   const Skill* skill_ptr = skill.get();
   skills_.push_back(std::move(skill));
-  NotifySkillChanged(skill_ptr->id, update_source);
+  SortSkills();
+  NotifySkillChanged(skill_ptr->id, update_source,
+                     /*is_position_changed=*/true);
   return skill_ptr;
 }
 
 void SkillsServiceImpl::FetchDiscoverySkills() {
-  if (!base::FeatureList::IsEnabled(features::kSkillsEnabled)) {
+  if (!IsSkillsEnabled(pref_service_)) {
     return;
   }
+
+#if !BUILDFLAG(IS_ANDROID)
+  if (base::FeatureList::IsEnabled(features::kSkillsServiceApi) &&
+      identity_manager_ &&
+      identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
+    if (!skills_fetcher_) {
+      skills_fetcher_ = std::make_unique<SkillsFetcher>(url_loader_factory_,
+                                                        identity_manager_);
+    }
+    skills_fetcher_->FetchDiscoverySkills(
+        base::BindOnce(&SkillsServiceImpl::OnDiscoverySkillsFetchedFromService,
+                       weak_ptr_factory_.GetWeakPtr()));
+    return;
+  }
+#endif  // !BUILDFLAG(IS_ANDROID)
+
   skills_downloader_->FetchDiscoverySkills(base::BindOnce(
-      &SkillsServiceImpl::Handle1pSkillsMap, weak_ptr_factory_.GetWeakPtr()));
+      &SkillsServiceImpl::Handle1pSkills, weak_ptr_factory_.GetWeakPtr()));
 }
 
-void SkillsServiceImpl::Handle1pSkillsMap(
-    std::unique_ptr<SkillsMap> skills_map) {
-  SkillsMap* notification_ptr = nullptr;
-  // If skills_map is null, this means we don't have an updated value so we
-  // shouldn't modify the stored 1p map.
-  if (skills_map) {
-    first_party_skills_map_.swap(*skills_map);
-    notification_ptr = &first_party_skills_map_;
+#if !BUILDFLAG(IS_ANDROID)
+void SkillsServiceImpl::OnDiscoverySkillsFetchedFromService(
+    std::unique_ptr<FirstPartySkillData> first_party_skill_data) {
+  if (first_party_skill_data) {
+    Handle1pSkills(std::move(first_party_skill_data));
+    return;
+  }
+  // Fallback to downloader if API failed.
+  skills_downloader_->FetchDiscoverySkills(base::BindOnce(
+      &SkillsServiceImpl::Handle1pSkills, weak_ptr_factory_.GetWeakPtr()));
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+void SkillsServiceImpl::Handle1pSkills(
+    std::unique_ptr<FirstPartySkillData> first_party_skill_data) {
+  last_discovery_skills_fetch_time_ = base::Time::Now();
+  FirstPartySkillData* notification_ptr = nullptr;
+  // If first_party_skill_data is null, this means we don't have an updated
+  // value so we shouldn't modify the stored 1p data.
+  if (first_party_skill_data) {
+    first_party_data_ = std::move(*first_party_skill_data);
+    notification_ptr = &first_party_data_;
+
+    first_party_skill_objects_map_.clear();
+    first_party_skill_objects_map_.reserve(
+        first_party_data_.skills_list.size());
+    for (const auto& proto_skill : first_party_data_.skills_list) {
+      GURL image_url(proto_skill.image_url());
+      if (!SkillsService::IsValidSkillImageUrl(image_url)) {
+        image_url = GURL();
+      }
+      Skill skill(proto_skill.id(), proto_skill.name(), proto_skill.icon(),
+                  proto_skill.prompt(), proto_skill.description(),
+                  proto_skill.curated_by(), image_url,
+                  sync_pb::SkillSource::SKILL_SOURCE_FIRST_PARTY);
+      first_party_skill_objects_map_.insert(
+          {proto_skill.id(), std::move(skill)});
+    }
   }
 
   for (Observer& observer : observers_) {
@@ -260,6 +356,16 @@ void SkillsServiceImpl::Handle1pSkillsMap(
 
 Skill* SkillsServiceImpl::GetMutableSkillById(std::string_view skill_id) {
   return const_cast<Skill*>(GetSkillById(skill_id));
+}
+
+std::optional<size_t> SkillsServiceImpl::GetSkillPosition(
+    std::string_view skill_id) const {
+  for (size_t i = 0; i < skills_.size(); ++i) {
+    if (skills_[i]->id == skill_id) {
+      return i;
+    }
+  }
+  return std::nullopt;
 }
 
 void SkillsServiceImpl::UpdateSkillImpl(Skill* skill,
@@ -272,6 +378,8 @@ void SkillsServiceImpl::UpdateSkillImpl(Skill* skill,
   CHECK(skill);
 
   // Update the existing skill.
+  std::optional<size_t> old_position = GetSkillPosition(skill->id);
+
   bool is_changed = false;
   if (skill->name != name) {
     skill->name = name;
@@ -300,7 +408,58 @@ void SkillsServiceImpl::UpdateSkillImpl(Skill* skill,
 
   if (is_changed) {
     skill->last_update_time = update_time;
-    NotifySkillChanged(skill->id, update_source);
+    SortSkills();
+
+    const bool is_position_changed =
+        old_position != GetSkillPosition(skill->id);
+    NotifySkillChanged(skill->id, update_source, is_position_changed);
+  }
+}
+
+void SkillsServiceImpl::NotifyPanelWillOpen() {
+  RefreshDiscoverySkills();
+}
+
+void SkillsServiceImpl::RefreshDiscoverySkills() {
+  if (!IsSkillsEnabled(pref_service_)) {
+    return;
+  }
+
+  if (base::Time::Now() - last_discovery_skills_fetch_time_ <
+      kMinimumTimeBetweenDiscoverySkillsRefresh) {
+    // If the discovery skills have been fetched recently, do not refresh them
+    // again.
+    return;
+  }
+
+  // Check if any observers require a refresh of discovery skills.
+  // Note: call to FetchDiscoverySkills needs to be made outside of traversal
+  // of the observers list. Otherwise, if FetchDiscoverySkills returns too
+  // quickly, Handle1pSkills will be called, triggering another traversal of
+  // observers list. The observers list is configured so that it can only be
+  // traverse once at a time. This race condition would cause a crash.
+  bool requires_refresh = false;
+  for (Observer& observer : observers_) {
+    // If there are no glic panels currently open and needs to display
+    // 1P skills, do not fetch discovery skills. This avoids unnecessary
+    // fetches.
+    if (observer.Require1PSkillRefresh()) {
+      requires_refresh = true;
+      break;
+    }
+  }
+
+  if (requires_refresh) {
+    FetchDiscoverySkills();
+  }
+}
+
+void SkillsServiceImpl::OnSkillsEnabledPrefChanged() {
+  if (IsSkillsEnabled(pref_service_)) {
+    if (optimization_guide_) {
+      optimization_guide_->RegisterOptimizationTypes(
+          {optimization_guide::proto::SKILLS});
+    }
   }
 }
 

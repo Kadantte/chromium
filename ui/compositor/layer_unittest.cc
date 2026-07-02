@@ -61,6 +61,7 @@
 #include "ui/compositor/paint_context.h"
 #include "ui/compositor/paint_recorder.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
+#include "ui/compositor/scoped_layer_request.h"
 #include "ui/compositor/test/draw_waiter_for_test.h"
 #include "ui/compositor/test/layer_animator_test_controller.h"
 #include "ui/compositor/test/test_compositor_host.h"
@@ -852,11 +853,10 @@ TEST_P(LayerWithDelegateTest, Cloning) {
   layer->SetTransform(transform);
   layer->SetColor(SK_ColorRED);
   layer->SetLayerInverted(true);
+  layer->SetBackgroundInverted(true);
   layer->SetLayerSepia(initial_sepia_amount);
   layer->SetLayerHueRotation(initial_hue_amount);
   layer->SetLayerCustomColorMatrix(color_matrix);
-  layer->AddCacheRenderSurfaceRequest();
-  layer->AddTrilinearFilteringRequest();
   layer->SetClipRect(clip_rect);
   layer->SetRoundedCornerRadius({1, 2, 4, 5});
   layer->SetGradientMask(gradient_mask);
@@ -870,16 +870,11 @@ TEST_P(LayerWithDelegateTest, Cloning) {
   EXPECT_EQ(SK_ColorRED, clone->background_color());
   EXPECT_EQ(SK_ColorRED, clone->GetTargetColor());
   EXPECT_TRUE(clone->layer_inverted());
+  EXPECT_TRUE(clone->background_inverted());
   EXPECT_FLOAT_EQ(initial_sepia_amount, clone->layer_sepia());
   EXPECT_FLOAT_EQ(initial_hue_amount, clone->layer_hue_rotation());
   EXPECT_TRUE(clone->LayerHasCustomColorMatrix());
   EXPECT_EQ(*(clone->GetLayerCustomColorMatrix()), color_matrix);
-  // Cloning should not preserve cache_render_surface flag.
-  EXPECT_NE(layer->cc_layer_for_testing()->cache_render_surface(),
-            clone->cc_layer_for_testing()->cache_render_surface());
-  // Cloning should not preserve trilinear_filtering flag.
-  EXPECT_NE(layer->cc_layer_for_testing()->trilinear_filtering(),
-            clone->cc_layer_for_testing()->trilinear_filtering());
   EXPECT_EQ(clip_rect, clone->clip_rect());
   EXPECT_EQ(layer->rounded_corner_radii(), clone->rounded_corner_radii());
   EXPECT_EQ(layer->gradient_mask(), clone->gradient_mask());
@@ -895,6 +890,7 @@ TEST_P(LayerWithDelegateTest, Cloning) {
   layer->SetTransform(gfx::Transform());
   layer->SetColor(SK_ColorGREEN);
   layer->SetLayerInverted(false);
+  layer->SetBackgroundInverted(false);
   layer->SetLayerSepia(new_layer_sepia);
   layer->SetLayerHueRotation(new_layer_hue_rotation);
   layer->ClearLayerCustomColorMatrix();
@@ -911,6 +907,7 @@ TEST_P(LayerWithDelegateTest, Cloning) {
   EXPECT_EQ(SK_ColorRED, clone->background_color());
   EXPECT_EQ(SK_ColorRED, clone->GetTargetColor());
   EXPECT_TRUE(clone->layer_inverted());
+  EXPECT_TRUE(clone->background_inverted());
   EXPECT_FLOAT_EQ(initial_sepia_amount, clone->layer_sepia());
   EXPECT_FLOAT_EQ(initial_hue_amount, clone->layer_hue_rotation());
   EXPECT_TRUE(clone->LayerHasCustomColorMatrix());
@@ -960,6 +957,38 @@ TEST_P(LayerWithDelegateTest, Cloning) {
   EXPECT_FALSE(clone->visible());
   EXPECT_EQ(0.0f, clone->opacity());
   EXPECT_EQ(SK_ColorGREEN, clone->background_color());
+}
+
+TEST_P(LayerWithDelegateTest, CloneWithCacheRenderSurface) {
+  std::unique_ptr<Layer> layer = CreateLayer(LAYER_SOLID_COLOR);
+  EXPECT_FALSE(layer->cc_layer_for_testing()->cache_render_surface());
+
+  {
+    ScopedCacheRenderSurfaceLock lock(layer.get());
+    EXPECT_TRUE(layer->cc_layer_for_testing()->cache_render_surface());
+
+    auto clone = layer->Clone();
+    // Cloning should not preserve cache_render_surface flag.
+    EXPECT_FALSE(clone->cc_layer_for_testing()->cache_render_surface());
+  }
+
+  EXPECT_FALSE(layer->cc_layer_for_testing()->cache_render_surface());
+}
+
+TEST_P(LayerWithDelegateTest, CloneWithTrilinearFiltering) {
+  std::unique_ptr<Layer> layer = CreateLayer(LAYER_SOLID_COLOR);
+  EXPECT_FALSE(layer->cc_layer_for_testing()->trilinear_filtering());
+
+  {
+    ScopedTrilinearFilteringLock lock(layer.get());
+    EXPECT_TRUE(layer->cc_layer_for_testing()->trilinear_filtering());
+
+    auto clone = layer->Clone();
+    // Cloning should not preserve trilinear_filtering flag.
+    EXPECT_FALSE(clone->cc_layer_for_testing()->trilinear_filtering());
+  }
+
+  EXPECT_FALSE(layer->cc_layer_for_testing()->trilinear_filtering());
 }
 
 TEST_P(LayerWithDelegateTest, CloneDamagedRegion) {
@@ -1655,39 +1684,41 @@ TEST_P(LayerWithNullDelegateTest, UpdateDamageInDeferredPaint) {
   EXPECT_EQ(gfx::Rect(), root->damaged_region_for_testing());
   EXPECT_EQ(bound, LastInvalidation());
 
+  gfx::Rect expected_invalidation;
+
   // Deferring paint.
-  root->AddDeferredPaintRequest();
+  {
+    ScopedPaintLock paint_lock(root.get());
 
-  // During deferring paint request, invalid_rect will not be set to
-  // cc_layer_->inputs_->update_rect, and the paint_region is empty.
-  gfx::Rect bound1(gfx::Rect(100, 100));
-  root->SchedulePaint(bound1);
-  EXPECT_EQ(bound1, root->damaged_region_for_testing());
-  root->SendDamagedRects();
-  EXPECT_EQ(gfx::Rect(), root->cc_layer_for_testing()->update_rect());
-  root->PaintContentsToDisplayList();
-  EXPECT_EQ(gfx::Rect(), LastInvalidation());
+    // During deferring paint request, invalid_rect will not be set to
+    // cc_layer_->inputs_->update_rect, and the paint_region is empty.
+    gfx::Rect bound1(gfx::Rect(100, 100));
+    root->SchedulePaint(bound1);
+    expected_invalidation.Union(bound1);
+    EXPECT_EQ(expected_invalidation, root->damaged_region_for_testing());
+    root->SendDamagedRects();
+    EXPECT_EQ(gfx::Rect(), root->cc_layer_for_testing()->update_rect());
+    root->PaintContentsToDisplayList();
+    EXPECT_EQ(gfx::Rect(), LastInvalidation());
 
-  // During deferring paint request, a new invalid_rect will be accumulated.
-  gfx::Rect bound2(gfx::Rect(100, 200, 100, 100));
-  gfx::Rect bound_union(bound1);
-  bound_union.Union(bound2);
-  root->SchedulePaint(bound2);
-  EXPECT_EQ(bound_union, root->damaged_region_for_testing().bounds());
-  root->SendDamagedRects();
-  EXPECT_EQ(gfx::Rect(), root->cc_layer_for_testing()->update_rect());
-  root->PaintContentsToDisplayList();
-  EXPECT_EQ(gfx::Rect(), LastInvalidation());
-
-  // Remove deferring paint request.
-  root->RemoveDeferredPaintRequest();
+    // During deferring paint request, a new invalid_rect will be accumulated.
+    gfx::Rect bound2(gfx::Rect(100, 200, 100, 100));
+    expected_invalidation.Union(bound2);
+    root->SchedulePaint(bound2);
+    EXPECT_EQ(expected_invalidation,
+              root->damaged_region_for_testing().bounds());
+    root->SendDamagedRects();
+    EXPECT_EQ(gfx::Rect(), root->cc_layer_for_testing()->update_rect());
+    root->PaintContentsToDisplayList();
+    EXPECT_EQ(gfx::Rect(), LastInvalidation());
+  }
 
   // The invalidation region should be accumulated invalid_rect during deferred
   // paint, i.e. union of bound1 and bound2.
   root->SendDamagedRects();
-  EXPECT_EQ(bound_union, root->cc_layer_for_testing()->update_rect());
+  EXPECT_EQ(expected_invalidation, root->cc_layer_for_testing()->update_rect());
   root->PaintContentsToDisplayList();
-  EXPECT_EQ(bound_union, LastInvalidation());
+  EXPECT_EQ(expected_invalidation, LastInvalidation());
 }
 
 // Tests that Layer::SendDamagedRects() always recurses into its mask layer, if
@@ -2130,6 +2161,45 @@ TEST_P(LayerWithRealCompositorTest, ModifyHierarchy) {
   ASSERT_FALSE(bitmap.empty());
   EXPECT_TRUE(MatchesPNGFile(bitmap, ref_img2,
                              cc::AlphaDiscardingExactPixelComparator()));
+}
+
+#if BUILDFLAG(IS_FUCHSIA) && defined(ARCH_CPU_ARM64) && !defined(NDEBUG)
+// This test triggers LLVM 10.0 crashes in swiftshader on arm64 debug builds.
+#define MAYBE_BackgroundInvert DISABLED_BackgroundInvert
+#else
+#define MAYBE_BackgroundInvert BackgroundInvert
+#endif
+TEST_P(LayerWithRealCompositorTest, MAYBE_BackgroundInvert) {
+  viz::ParentLocalSurfaceIdAllocator allocator;
+  allocator.GenerateId();
+  GetCompositor()->SetScaleAndSize(1.0f, gfx::Size(100, 100),
+                                   allocator.GetCurrentLocalSurfaceId());
+
+  const SkColor kBackgroundColor = SK_ColorWHITE;
+  const SkColor kInvertedBackgroundColor = SK_ColorBLACK;
+
+  std::unique_ptr<Layer> l0 =
+      CreateColorLayer(kBackgroundColor, gfx::Rect(0, 0, 100, 100));
+  std::unique_ptr<Layer> l1 =
+      CreateColorLayer(SK_ColorTRANSPARENT, gfx::Rect(25, 25, 50, 50));
+  l1->SetFillsBoundsOpaquely(false);
+  l1->SetBackgroundInverted(true);
+  EXPECT_TRUE(l1->background_inverted());
+
+  l0->Add(l1.get());
+  DrawTree(l0.get());
+
+  SkBitmap bitmap;
+  ReadPixels(&bitmap);
+  ASSERT_FALSE(bitmap.empty());
+
+  const gfx::PointF kPixelLocationInL1(50, 50);
+  const gfx::PointF kPixelLocationNotInL1(10, 10);
+
+  EXPECT_EQ(kInvertedBackgroundColor,
+            bitmap.getColor(kPixelLocationInL1.x(), kPixelLocationInL1.y()));
+  EXPECT_EQ(kBackgroundColor, bitmap.getColor(kPixelLocationNotInL1.x(),
+                                              kPixelLocationNotInL1.y()));
 }
 
 // TODO(crbug.com/40280155): Flaky on fuchsia-arm64 builds. Re-enable this test.
@@ -2936,7 +3006,7 @@ TEST_P(LayerWithRealCompositorTest, SwitchCCLayerCacheRenderSurface) {
   GetCompositor()->SetRootLayer(root.get());
   root->Add(l1.get());
 
-  l1->AddCacheRenderSurfaceRequest();
+  ScopedCacheRenderSurfaceLock cache_render_surface_lock(l1.get());
 
   // Change l1's cc::Layer.
   ASSERT_TRUE(l1->SwitchCCLayerForTest());
@@ -2953,7 +3023,7 @@ TEST_P(LayerWithRealCompositorTest, SwitchCCLayerTrilinearFiltering) {
   GetCompositor()->SetRootLayer(root.get());
   root->Add(l1.get());
 
-  l1->AddTrilinearFilteringRequest();
+  ScopedTrilinearFilteringLock trilinear_lock(l1.get());
 
   // Change l1's cc::Layer.
   ASSERT_TRUE(l1->SwitchCCLayerForTest());

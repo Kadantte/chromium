@@ -485,7 +485,9 @@ suite('CheckupDetailsSectionTest', function() {
 
     const section = document.createElement('checkup-details-section');
     section.prefs = makePasswordManagerPrefs();
-    section.prefs.profile.password_dismiss_compromised_alert.value = false;
+    const prefObject =
+        section.getPref<boolean>('profile.password_dismiss_compromised_alert');
+    prefObject.value = false;
     document.body.appendChild(section);
     await passwordManager.whenCalled('getInsecureCredentials');
     await flushTasks();
@@ -560,6 +562,66 @@ suite('CheckupDetailsSectionTest', function() {
 
             // Verify that 'Already change password?' link is visible.
             assertFalse(alreadyChange.hidden);
+          }));
+
+  [CheckupSubpage.COMPROMISED, CheckupSubpage.REUSED, CheckupSubpage.WEAK]
+      .forEach(
+        type => test(
+          `Automated change password click for ${type}`, async function () {
+            Router.getInstance().navigateTo(Page.CHECKUP_DETAILS, type);
+
+            const insecureCredential = makeInsecureCredential({
+              id: 42,
+              url: 'test.com',
+              username: 'viking',
+              types: [
+                CompromiseType.LEAKED,
+                CompromiseType.WEAK,
+                CompromiseType.REUSED,
+              ],
+              isAutomaticPasswordChangeSupported: true,
+            });
+            passwordManager.data.insecureCredentials = [insecureCredential];
+            passwordManager.data.credentialWithReusedPassword =
+                [{entries: [insecureCredential]}];
+
+            const section = document.createElement('checkup-details-section');
+            document.body.appendChild(section);
+            await passwordManager.whenCalled('getInsecureCredentials');
+            if (type === CheckupSubpage.REUSED) {
+              await passwordManager.whenCalled(
+                  'getCredentialsWithReusedPassword');
+            }
+            await pluralString.whenCalled('getPluralString');
+            await flushTasks();
+
+            const listItemElements =
+                section.shadowRoot!.querySelectorAll('checkup-list-item');
+            assertEquals(1, listItemElements.length);
+            assertTrue(!!listItemElements[0]);
+            assertTrue(isVisible(listItemElements[0]));
+
+            // Verify that standard 'Change password' button is hidden.
+            const changePassword =
+                listItemElements[0].shadowRoot!.querySelector<HTMLElement>(
+                    '#changePasswordButton');
+            assertFalse(!!changePassword);
+
+            // Verify that 'Already change password?' link is hidden.
+            const alreadyChange =
+                listItemElements[0].shadowRoot!.querySelector<HTMLElement>(
+                    '#alreadyChanged');
+            assertTrue(!!alreadyChange);
+            assertTrue(alreadyChange.hidden);
+
+            const autoChangePassword =
+                listItemElements[0].shadowRoot!.querySelector<HTMLElement>(
+                    '#autoChangePasswordButton');
+            assertTrue(!!autoChangePassword);
+            assertTrue(autoChangePassword.classList.contains('tonal-button'));
+
+            // Verify ARIA label is set.
+            assertTrue(!!autoChangePassword.getAttribute('aria-label'));
           }));
 
   [CheckupSubpage.COMPROMISED, CheckupSubpage.REUSED, CheckupSubpage.WEAK]

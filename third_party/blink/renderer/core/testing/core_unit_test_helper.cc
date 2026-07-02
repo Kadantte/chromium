@@ -65,10 +65,18 @@ LocalFrame* SingleChildLocalFrameClient::CreateFrame(
   auto policy_container = std::make_unique<PolicyContainer>(
       dummy_host.Unbind(), std::move(policy_container_data));
 
+  std::unique_ptr<base::UnguessableToken> sandbox_origin_token;
+  if ((policy_container->GetPolicies().sandbox_flags &
+       network::mojom::blink::WebSandboxFlags::kOrigin) !=
+      network::mojom::blink::WebSandboxFlags::kNone) {
+    sandbox_origin_token = std::make_unique<base::UnguessableToken>(
+        base::UnguessableToken::Create());
+  }
+
   child->Init(/*opener=*/nullptr, DocumentToken(), std::move(policy_container),
               parent_frame->DomWindow()->GetStorageKey(),
               /*document_ukm_source_id=*/ukm::kInvalidSourceId,
-              /*creator_base_url=*/KURL());
+              /*creator_base_url=*/KURL(), std::move(sandbox_origin_token));
 
   return child;
 }
@@ -191,8 +199,11 @@ PhysicalRect VisualRectInDocument(const LayoutObject& object,
     return PhysicalRect();
   }
   if (object.IsSVG() || IsA<LayoutSVGInline>(object)) {
-    return SVGLayoutSupport::VisualRectInAncestorSpace(object, *object.View(),
-                                                       flags);
+    PhysicalRect rect;
+    SVGLayoutSupport::MapToVisualRectInAncestorSpace(
+        object, object.View(), object.VisualRectInLocalSVGCoordinates(), rect,
+        flags);
+    return rect;
   }
   if (const auto* layout_inline = DynamicTo<LayoutInline>(object)) {
     PhysicalRect rect = layout_inline->VisualOverflowRect();

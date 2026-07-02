@@ -124,6 +124,21 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
  public:
   METADATA_HEADER_BASE(Window);
 
+  // A helper class to ensure that the Window is not deleted while it is
+  // notifying observers or doing other operations where re-entrant deletion
+  // would be problematic. Attempting to delete the Window while a
+  // ScopedDeleteBlocker is active will cause a crash.
+  class ScopedDeleteBlocker {
+   public:
+    explicit ScopedDeleteBlocker(aura::Window* window) : window_(window) {
+      window_->delete_block_count_++;
+    }
+    ScopedDeleteBlocker(const ScopedDeleteBlocker&) = delete;
+    ScopedDeleteBlocker& operator=(const ScopedDeleteBlocker&) = delete;
+    ~ScopedDeleteBlocker() { window_->delete_block_count_--; }
+    raw_ptr<aura::Window> window_;
+  };
+
   // Initial value of id() for newly created windows.
   static constexpr int kInitialId = -1;
 
@@ -180,6 +195,12 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
   }
   bool owned_by_parent() const { return owned_by_parent_; }
 
+  // Sets whether the window's layer is managed by its parent window.
+  // If set to false, the layer is not automatically parented to the parent
+  // window's layer, and stacking operations (z-order) are ignored.
+  void SetLayerManagedByParent(bool layer_managed_by_parent);
+  bool layer_managed_by_parent() const { return layer_managed_by_parent_; }
+
   // A type is used to identify a class of Windows and customize behavior such
   // as event handling and parenting.  This field should only be consumed by the
   // shell -- Aura itself shouldn't contain type-specific logic.
@@ -211,6 +232,11 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
   WindowDelegate* delegate() { return delegate_; }
   const WindowDelegate* delegate() const { return delegate_; }
 
+  // Returns the bounds of the window relative to its parent.
+  // Note that if the window's layer is not managed by its parent (see
+  // SetLayerManagedByParent), the layer's bounds may be in a different
+  // coordinate space, but `bounds()` still represents the window's logical
+  // bounds relative to its parent window.
   const gfx::Rect& bounds() const { return bounds_; }
 
   Window* parent() { return parent_; }
@@ -334,6 +360,11 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
 
   // Changes the bounds of the window. If present, the window's parent's
   // LayoutManager may adjust the bounds.
+  // If the window's layer is not managed by its parent (see
+  // SetLayerManagedByParent), the layer's bounds are updated to match the
+  // new bounds in the coordinate system of the parent window's layer. This
+  // requires that the transform between the layer and its parent's layer is
+  // a simple translation, otherwise it will crash.
   // Note: Must be called after initializing the window.
   void SetBounds(const gfx::Rect& new_bounds);
 
@@ -344,7 +375,9 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
                          const display::Display& dst_display);
 
   // Returns the target bounds of the window. If the window's layer is
-  // not animating, it simply returns the current bounds.
+  // not managed by its parent, this returns the layer's target bounds
+  // converted to the parent window's coordinate space. Otherwise, if the
+  // window's layer is not animating, it simply returns the current bounds.
   gfx::Rect GetTargetBounds() const;
 
   // Forwards directly to the layer. See Layer::ScheduleDraw() for details.
@@ -550,6 +583,11 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
 
   // ui::GestureConsumer:
   bool RequiresDoubleTapGestureEvents() const override;
+  base::WeakPtr<ui::GestureConsumer> GetWeakPtr() override;
+
+  // This method is provided to return a WeakPtr of aura::Window instead of
+  // ui::GestureConsumer, as c++ do not support template covariant return type.
+  base::WeakPtr<aura::Window> GetWeakPtrAsWindow();
 
   // Returns |state| as a string. This is generally only useful for debugging.
   static const std::u16string OcclusionStateToString(OcclusionState state);
@@ -580,15 +618,6 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
   //       enable window shape based occlusion.
   void SetOpaqueRegionsForOcclusion(
       const std::vector<gfx::Rect>& opaque_regions_for_occlusion);
-
-#if BUILDFLAG(IS_CHROMEOS)
-  // Override the occlusion state on this window.
-  // TODO(crbug.com/476220853): Remove this once the better fix is landed.
-  void SetOcclusionStateOverride(std::optional<OcclusionState> occlusion_state);
-  bool has_occlusion_state_override() const {
-    return !!occlusion_state_override_;
-  }
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
   const std::vector<gfx::Rect>& opaque_regions_for_occlusion() const {
     return opaque_regions_for_occlusion_;
@@ -631,6 +660,11 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
 
   // Changes the bounds of the window without condition.
   void SetBoundsInternal(const gfx::Rect& new_bounds);
+
+  // Helper method to notify observers, layout manager, and delegate when the
+  // window's bounds change.
+  void NotifyBoundsChanged(const gfx::Rect& old_bounds,
+                           ui::PropertyChangeReason reason);
 
   // Updates the visible state of the layer and the Window, but does not make
   // visible-state specific changes. Called from Show()/Hide().
@@ -773,10 +807,19 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
 
   // True if this window is being destroyed.
   bool is_destroying_ = false;
+  // True if this window is being destroyed and past the point that
+  // it should no longer be used.
+  bool is_destroyed_ = false;
 
   // True if the Window is owned by its parent - i.e. it will be deleted by its
   // parent during its parents destruction.
   bool owned_by_parent_ = true;
+
+  // True if the window's layer is managed by its parent window.
+  // When false, the layer is not automatically added/removed from the parent's
+  // layer, and stacking operations (z-order) are ignored for this window's
+  // layer.
+  bool layer_managed_by_parent_ = true;
 
   raw_ptr<WindowDelegate, AcrossTasksDanglingUntriaged> delegate_;
 
@@ -793,9 +836,6 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
 
   // Occlusion state of the window.
   OcclusionState occlusion_state_ = OcclusionState::UNKNOWN;
-#if BUILDFLAG(IS_CHROMEOS)
-  std::optional<OcclusionState> occlusion_state_override_ = std::nullopt;
-#endif
 
   // Occluded region of the window in the root window coordinates.
   SkRegion occluded_region_in_root_;
@@ -874,6 +914,10 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
 
   // Used when this is embedding external content.
   base::WeakPtr<cc::LayerTreeFrameSink> frame_sink_;
+
+  size_t delete_block_count_ = 0;
+
+  base::WeakPtrFactory<Window> weak_factory_{this};
 };
 
 }  // namespace aura

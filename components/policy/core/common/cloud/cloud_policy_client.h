@@ -59,6 +59,9 @@ inline constexpr char kPolicyFetchingTimeHistogramName[] =
 
 POLICY_EXPORT BASE_DECLARE_FEATURE(kPolicyFetchWithSha256);
 
+// Returns the form factor of the device.
+POLICY_EXPORT enterprise_management::FormFactor GetFormFactor();
+
 // Implements the core logic required to talk to the device management service.
 // Also keeps track of the current state of the association with the service,
 // such as whether there is a valid registration (DMToken is present in that
@@ -191,7 +194,7 @@ class POLICY_EXPORT CloudPolicyClient {
     // PSM protocol execution result. Its value will exist if the device
     // undergoes enrollment and a PSM server-backed state determination was
     // performed before (on Chrome OS, as encoded in the
-    // `prefs::kEnrollmentPsmResult` pref).
+    // `ash::prefs::kEnrollmentPsmResult` pref).
     std::optional<
         enterprise_management::DeviceRegisterRequest::PsmExecutionResult>
         psm_execution_result;
@@ -199,7 +202,7 @@ class POLICY_EXPORT CloudPolicyClient {
     // The following field is relevant only to Chrome OS.
     // PSM protocol determination timestamp. Its value will exist if the device
     // undergoes enrollment and PSM got executed successfully (on ChromeOS, as
-    // encoded in `prefs::kEnrollmentPsmDeterminationTime` pref).
+    // encoded in `ash::prefs::kEnrollmentPsmDeterminationTime` pref).
     std::optional<int64_t> psm_determination_timestamp;
 
     // The following field is relevant only to Chrome OS Demo Mode.
@@ -646,6 +649,18 @@ class POLICY_EXPORT CloudPolicyClient {
 
   void AddPolicyTypeToFetch(const PolicyTypeToFetch& params);
 
+  bool HasPolicyTypeToFetch(const std::string& policy_type,
+                            const std::string& settings_entity_id) const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    return types_to_fetch_.contains(
+        PolicyTypeToFetch(policy_type, settings_entity_id));
+  }
+
+  bool HasPolicyTypeToFetch() const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    return !types_to_fetch_.empty();
+  }
+
   // FetchPolicy() calls won't request the given policy type and optional
   // |settings_entity_id| anymore.
   void RemovePolicyTypeToFetch(const std::string& policy_type,
@@ -739,6 +754,10 @@ class POLICY_EXPORT CloudPolicyClient {
 
   void SetURLLoaderFactoryForTesting(
       scoped_refptr<network::SharedURLLoaderFactory> factory);
+
+  base::WeakPtr<CloudPolicyClient> GetWeakPtr() {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
 
  protected:
   // A map of (policy type, settings entity ID) pairs to fetch to the set of

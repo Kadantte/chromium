@@ -87,8 +87,6 @@ public class AndroidPaymentAppFinderUnitTest {
     public static BaseActivityTestRule<BlankUiTestActivity> sActivityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
 
-    private static Activity sActivity;
-
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Rule public ChromeBrowserTestRule mTestRule = new ChromeBrowserTestRule();
 
@@ -106,7 +104,7 @@ public class AndroidPaymentAppFinderUnitTest {
 
     @BeforeClass
     public static void setupSuite() {
-        sActivity = sActivityTestRule.launchActivity(null);
+        sActivityTestRule.launchActivity(null);
     }
 
     @Before
@@ -114,12 +112,13 @@ public class AndroidPaymentAppFinderUnitTest {
         mWindowAndroid =
                 ThreadUtils.runOnUiThreadBlocking(
                         () -> {
+                            Activity activity = sActivityTestRule.getActivity();
                             return new ActivityWindowAndroid(
-                                    sActivity,
+                                    activity,
                                     /* listenToActivityState= */ true,
-                                    IntentRequestTracker.createFromActivity(sActivity),
+                                    IntentRequestTracker.createFromActivity(activity),
                                     mInsetObserver,
-                                    /* trackOcclusion= */ true);
+                                    /* occlusionTrackingAllowed= */ true);
                         });
 
         NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
@@ -427,7 +426,6 @@ public class AndroidPaymentAppFinderUnitTest {
     @SmallTest
     @Test
     @UiThreadTest
-    @Features.EnableFeatures({PaymentFeatureList.RESTRICT_IS_READY_TO_PAY_QUERY})
     public void testQueryBobPay_CanMakePaymentPrefIsTrue() {
         Mockito.when(mParams.prefsCanMakePayment()).thenReturn(true);
 
@@ -445,10 +443,6 @@ public class AndroidPaymentAppFinderUnitTest {
     @SmallTest
     @Test
     @UiThreadTest
-    @Features.EnableFeatures({
-        PaymentFeatureList.RESTRICT_IS_READY_TO_PAY_QUERY,
-        PaymentFeatureList.ALLOW_SHOW_WITHOUT_READY_TO_PAY
-    })
     public void testQueryBobPay_CanMakePaymentPrefIsFalse() {
         Mockito.when(mParams.prefsCanMakePayment()).thenReturn(false);
 
@@ -466,62 +460,15 @@ public class AndroidPaymentAppFinderUnitTest {
     @SmallTest
     @Test
     @UiThreadTest
-    @Features.DisableFeatures({PaymentFeatureList.RESTRICT_IS_READY_TO_PAY_QUERY})
-    public void testQueryBobPay_FeatureDisabledCanMakePaymentPrefIsTrue() {
-        Mockito.when(mParams.prefsCanMakePayment()).thenReturn(true);
-        runTestForQueryBobPayWithOneAppThatHasIsReadyToPayService();
-
-        // Verify that IS_READY_TO_PAY service was queried.
-        Mockito.verify(mPackageManagerDelegate, Mockito.times(1))
-                .getServicesThatCanRespondToIntent(
-                        ArgumentMatchers.argThat(
-                                new IntentArgumentMatcher(
-                                        new Intent(
-                                                WebPaymentIntentHelper.ACTION_IS_READY_TO_PAY))));
-    }
-
-    @SmallTest
-    @Test
-    @UiThreadTest
-    @Features.DisableFeatures({PaymentFeatureList.RESTRICT_IS_READY_TO_PAY_QUERY})
-    public void testQueryBobPay_FeatureDisabledCanMakePaymentPrefIsFalse() {
-        Mockito.when(mParams.prefsCanMakePayment()).thenReturn(false);
-        runTestForQueryBobPayWithOneAppThatHasIsReadyToPayService();
-
-        // Verify that IS_READY_TO_PAY service was queried.
-        Mockito.verify(mPackageManagerDelegate, Mockito.times(1))
-                .getServicesThatCanRespondToIntent(
-                        ArgumentMatchers.argThat(
-                                new IntentArgumentMatcher(
-                                        new Intent(
-                                                WebPaymentIntentHelper.ACTION_IS_READY_TO_PAY))));
-    }
-
-    @SmallTest
-    @Test
-    @UiThreadTest
-    @Features.EnableFeatures({PaymentFeatureList.ALLOW_SHOW_WITHOUT_READY_TO_PAY})
     public void testQueryBobPayWithOneAppThatHasBrokenIsReadyToPayService() {
-        runTestForQueryBobPayWithOneApp(
-                /* bypassIsReadyToPayService= */ false, /* expectAppCreated= */ true);
-    }
-
-    @SmallTest
-    @Test
-    @UiThreadTest
-    @Features.DisableFeatures({PaymentFeatureList.ALLOW_SHOW_WITHOUT_READY_TO_PAY})
-    public void testQueryBobPayWithOneAppThatHasBrokenIsReadyToPayServiceAndDoesntCreateApp() {
-        runTestForQueryBobPayWithOneApp(
-                /* bypassIsReadyToPayService= */ false, /* expectAppCreated= */ false);
+        runTestForQueryBobPayWithOneApp(/* bypassIsReadyToPayService= */ false);
     }
 
     public void runTestForQueryBobPayWithOneAppThatHasIsReadyToPayService() {
-        runTestForQueryBobPayWithOneApp(
-                /* bypassIsReadyToPayService= */ true, /* expectAppCreated= */ true);
+        runTestForQueryBobPayWithOneApp(/* bypassIsReadyToPayService= */ true);
     }
 
-    public void runTestForQueryBobPayWithOneApp(
-            boolean bypassIsReadyToPayService, boolean expectAppCreated) {
+    public void runTestForQueryBobPayWithOneApp(boolean bypassIsReadyToPayService) {
         List<ResolveInfo> activities = new ArrayList<>();
         ResolveInfo bobPay = new ResolveInfo();
         bobPay.activityInfo = new ActivityInfo();
@@ -640,7 +587,7 @@ public class AndroidPaymentAppFinderUnitTest {
                         mPackageManagerDelegate,
                         bypassIsReadyToPayService);
 
-        Mockito.verify(delegate, Mockito.times(expectAppCreated ? 1 : 0))
+        Mockito.verify(delegate, Mockito.times(1))
                 .onPaymentAppCreated(
                         ArgumentMatchers.argThat(Matches.paymentAppIdentifier("com.bobpay.app")));
         Mockito.verify(delegate).onDoneCreatingPaymentApps(/* factory= */ null);

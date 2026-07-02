@@ -13,19 +13,22 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_util.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/ash/account_manager/account_apps_availability.h"
 #include "chrome/browser/ash/account_manager/account_apps_availability_factory.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/account_manager/account_manager_factory.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "components/account_manager_core/account_manager_facade.h"
+#include "components/account_manager_core/account_manager_metrics.h"
+#include "components/account_manager_core/account_upsertion_result.h"
 #include "components/account_manager_core/chromeos/account_manager.h"
+#include "components/account_manager_core/chromeos/account_manager_mojo_service.h"
+#include "components/account_manager_core/chromeos/fake_account_manager_ui.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
@@ -36,6 +39,9 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_web_ui.h"
 #include "google_apis/gaia/gaia_id.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -43,6 +49,8 @@ namespace {
 
 using testing::Contains;
 using testing::Not;
+using testing::Optional;
+using testing::StrEq;
 
 using ::account_manager::AccountManager;
 
@@ -50,6 +58,9 @@ constexpr char kSecondaryAccount1Email[] = "secondary1@example.com";
 constexpr char kSecondaryAccount2Email[] = "secondary2@example.com";
 constexpr char kGetAccountsMessage[] = "getAccounts";
 constexpr char kHandleFunctionName[] = "handleFunctionName";
+constexpr char kAddAccountMessage[] = "addAccount";
+constexpr char kReauthAccountEmail[] = "settings-reauth@example.com";
+constexpr char kReauthenticateAccountMessage[] = "reauthenticateAccount";
 
 struct DeviceAccountInfo {
   std::string id;
@@ -140,7 +151,11 @@ class AccountManagerUIHandlerTest
     : public InProcessBrowserTest,
       public testing::WithParamInterface<DeviceAccountInfo> {
  public:
-  AccountManagerUIHandlerTest() = default;
+  AccountManagerUIHandlerTest()
+      : test_shared_loader_factory_(
+            base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
+                &test_url_loader_factory_)) {}
+
   AccountManagerUIHandlerTest(const AccountManagerUIHandlerTest&) = delete;
   AccountManagerUIHandlerTest& operator=(const AccountManagerUIHandlerTest&) =
       delete;
@@ -209,10 +224,9 @@ class AccountManagerUIHandlerTest
     ProfileHelper::Get()->SetUserToProfileMappingForTesting(user,
                                                             profile_.get());
 
-    auto* factory =
-        g_browser_process->platform_part()->GetAccountManagerFactory();
-    account_manager_ = factory->GetAccountManager(profile_->GetPath().value());
-
+    account_manager_ = AccountManagerFactory::Get()->GetAccountManager(
+        profile_->GetPath().value());
+    account_manager_->SetUrlLoaderFactoryForTests(test_shared_loader_factory_);
     account_manager_->UpsertAccount(
         ::account_manager::AccountKey{GetDeviceAccountInfo().id,
                                       GetDeviceAccountInfo().account_type},
@@ -258,6 +272,9 @@ class AccountManagerUIHandlerTest
   content::TestWebUI web_ui_;
   std::unique_ptr<TestingAccountManagerUIHandler> handler_;
   raw_ptr<AccountAppsAvailability> account_apps_availability_;
+
+  network::TestURLLoaderFactory test_url_loader_factory_;
+  scoped_refptr<network::SharedURLLoaderFactory> test_shared_loader_factory_;
 };
 
 IN_PROC_BROWSER_TEST_P(AccountManagerUIHandlerTest,
@@ -390,6 +407,85 @@ IN_PROC_BROWSER_TEST_P(AccountManagerUIHandlerTest,
             expected_account_info.GetAccountId()),
         account.FindBool("isSignedIn").value());
   }
+}
+
+IN_PROC_BROWSER_TEST_P(AccountManagerUIHandlerTest,
+                       ReauthenticateAccountOpensReauthDialog) {
+  base::HistogramTester histogram_tester;
+  crosapi::AccountManagerMojoService* account_manager_mojo_service =
+      AccountManagerFactory::Get()->GetAccountManagerMojoService(
+          profile()->GetPath().value());
+  ASSERT_TRUE(account_manager_mojo_service);
+
+  auto fake_account_manager_ui = std::make_unique<FakeAccountManagerUI>();
+  FakeAccountManagerUI* fake_account_manager_ui_ptr =
+      fake_account_manager_ui.get();
+  account_manager_mojo_service->SetAccountManagerUI(
+      std::move(fake_account_manager_ui));
+
+  base::ListValue args;
+  args.Append(kReauthAccountEmail);
+  web_ui()->HandleReceivedMessage(kReauthenticateAccountMessage, args);
+
+  EXPECT_EQ(1, fake_account_manager_ui_ptr
+                   ->show_account_reauthentication_dialog_calls());
+  EXPECT_THAT(fake_account_manager_ui_ptr->last_reauth_email(),
+              Optional(StrEq(kReauthAccountEmail)));
+  EXPECT_EQ(0,
+            fake_account_manager_ui_ptr->show_account_addition_dialog_calls());
+  histogram_tester.ExpectUniqueSample(
+      account_manager::kAccountAdditionSourceHistogramName,
+      account_manager::AccountAdditionSource::kSettingsReauthAccountButton,
+      /*expected_count=*/1);
+  histogram_tester.ExpectTotalCount(
+      account_manager::kAccountUpsertionResultStatusHistogramName, 0);
+
+  fake_account_manager_ui_ptr->CloseDialog();
+  histogram_tester.ExpectUniqueSample(
+      account_manager::kAccountUpsertionResultStatusHistogramName,
+      account_manager::AccountUpsertionResult::Status::kCancelledByUser,
+      /*expected_count=*/1);
+}
+
+IN_PROC_BROWSER_TEST_P(AccountManagerUIHandlerTest,
+                       AddAccountOpensAddAccountDialog) {
+  base::HistogramTester histogram_tester;
+  crosapi::AccountManagerMojoService* account_manager_mojo_service =
+      AccountManagerFactory::Get()->GetAccountManagerMojoService(
+          profile()->GetPath().value());
+  ASSERT_TRUE(account_manager_mojo_service);
+
+  auto fake_account_manager_ui = std::make_unique<FakeAccountManagerUI>();
+  FakeAccountManagerUI* fake_account_manager_ui_ptr =
+      fake_account_manager_ui.get();
+  account_manager_mojo_service->SetAccountManagerUI(
+      std::move(fake_account_manager_ui));
+
+  base::ListValue args;
+  web_ui()->HandleReceivedMessage(kAddAccountMessage, args);
+
+  EXPECT_EQ(1,
+            fake_account_manager_ui_ptr->show_account_addition_dialog_calls());
+  EXPECT_EQ(0, fake_account_manager_ui_ptr
+                   ->show_account_reauthentication_dialog_calls());
+  ASSERT_TRUE(
+      fake_account_manager_ui_ptr->last_add_account_options().has_value());
+  EXPECT_TRUE(fake_account_manager_ui_ptr->last_add_account_options()
+                  ->is_available_in_arc);
+  EXPECT_FALSE(fake_account_manager_ui_ptr->last_add_account_options()
+                   ->show_arc_availability_picker);
+  histogram_tester.ExpectUniqueSample(
+      account_manager::kAccountAdditionSourceHistogramName,
+      account_manager::AccountAdditionSource::kSettingsAddAccountButton,
+      /*expected_count=*/1);
+  histogram_tester.ExpectTotalCount(
+      account_manager::kAccountUpsertionResultStatusHistogramName, 0);
+
+  fake_account_manager_ui_ptr->CloseDialog();
+  histogram_tester.ExpectUniqueSample(
+      account_manager::kAccountUpsertionResultStatusHistogramName,
+      account_manager::AccountUpsertionResult::Status::kCancelledByUser,
+      /*expected_count=*/1);
 }
 
 INSTANTIATE_TEST_SUITE_P(AccountManagerUIHandlerTestSuite,

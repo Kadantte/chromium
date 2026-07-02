@@ -15,7 +15,9 @@
 #include "base/time/time.h"
 #include "chrome/browser/password_manager/password_change/change_password_form_filling_submission_helper.h"
 #include "chrome/browser/password_manager/password_change/change_password_form_finder.h"
+#include "chrome/browser/password_manager/password_change/detached_web_contents.h"
 #include "chrome/browser/password_manager/password_change/model_quality_logs_uploader.h"
+#include "chrome/browser/password_manager/password_change/password_change_submission_verifier.h"
 #include "chrome/browser/password_manager/password_change_delegate.h"
 #include "chrome/browser/ui/passwords/password_change_ui_controller.h"
 #include "components/password_manager/core/browser/password_form.h"
@@ -34,6 +36,7 @@ class PasswordFormManager;
 }  // namespace password_manager
 
 class CrossOriginNavigationObserver;
+class DetachedWebContents;
 enum class LoginCheckResult;
 class LoginStateChecker;
 class Profile;
@@ -64,24 +67,24 @@ class PasswordChangeDelegateImpl : public PasswordChangeDelegate {
   ChangePasswordFormFinder* form_finder() { return form_finder_.get(); }
   PasswordChangeUIController* ui_controller() { return ui_controller_.get(); }
   std::u16string generated_password() { return generated_password_; }
-  ChangePasswordFormFillingSubmissionHelper* submission_verifier() {
-    return submission_verifier_.get();
+  ChangePasswordFormFillingSubmissionHelper* form_submission_helper() {
+    return form_submission_helper_.get();
   }
 
   void SetCustomUIController(
       std::unique_ptr<PasswordChangeUIController> controller) {
     ui_controller_ = std::move(controller);
   }
+
+  void inject_hidden_executor_for_testing(
+      std::unique_ptr<DetachedWebContents> detached_web_contents) {
+    hidden_executor_ = std::move(detached_web_contents);
+  }
 #endif
 
-  // Called by the OtpFieldDetector if an OTP field is detected in any relevant
-  // frame of executor_. Visible for testing.
-  void OnOtpFieldDetected();
 
   // Returns the web contents, on which the password change is run.
-  content::WebContents* executor() {
-    return hidden_executor_ ? hidden_executor_.get() : visible_executor_.get();
-  }
+  content::WebContents* executor() const;
 
  private:
   // PasswordChangeDelegate Impl
@@ -92,7 +95,6 @@ class PasswordChangeDelegateImpl : public PasswordChangeDelegate {
   void Stop() override;
   void OpenPasswordChangeTab() override;
   void OpenPasswordDetails() override;
-  void OnPasswordFormSubmission(content::WebContents* web_contents) override;
   void OnPrivacyNoticeAccepted() override;
   void OnPasswordChangeDeclined() override;
   void RetryLoginCheck() override;
@@ -114,9 +116,10 @@ class PasswordChangeDelegateImpl : public PasswordChangeDelegate {
       password_manager::PasswordFormManager* form_manager);
   void OnPasswordChangeFormNotFound(
       ChangePasswordFormFinder::ErrorCase error_case);
-
-  void OnChangeFormSubmissionVerified(
+  void OnChangeFormSubmitted(
       ChangePasswordFormFillingSubmissionHelper::SubmissionResult result);
+  void OnChangeFormSubmissionVerified(
+      PasswordChangeSubmissionVerifier::SubmissionVerificationResult result);
 
   bool IsPrivacyNoticeAcknowledged() const;
 
@@ -126,6 +129,10 @@ class PasswordChangeDelegateImpl : public PasswordChangeDelegate {
 
   void ReportFlowInterruption(ModelQualityLogsUploader::QualityStatus status);
 
+  // Resets all helpers. `hidden_executor_` is kept as it is as user might want
+  // to open it.
+  void ResetInternalState();
+
   const GURL change_password_url_;
   const std::u16string username_;
   const std::u16string original_password_;
@@ -134,10 +141,9 @@ class PasswordChangeDelegateImpl : public PasswordChangeDelegate {
   std::u16string generated_password_;
 
   raw_ptr<content::WebContents> originator_ = nullptr;
-  // If the password change tab is visible to the user, hidden_executor_ will be
-  // null, if it's hidden, visible_executor_ will be null.
-  std::unique_ptr<content::WebContents> hidden_executor_;
-  raw_ptr<content::WebContents> visible_executor_ = nullptr;
+  // If the password change tab is visible to the user (moved to tab strip),
+  // `hidden_executor_` will be null.
+  std::unique_ptr<DetachedWebContents> hidden_executor_;
 
   const raw_ptr<Profile> profile_ = nullptr;
 
@@ -151,7 +157,13 @@ class PasswordChangeDelegateImpl : public PasswordChangeDelegate {
 
   // Helper class which submits a form and verifies submission.
   std::unique_ptr<ChangePasswordFormFillingSubmissionHelper>
-      submission_verifier_;
+      form_submission_helper_;
+
+  // Helper object which verifies whether password was updated successfully.
+  std::unique_ptr<PasswordChangeSubmissionVerifier> submission_verifier_;
+
+  // PasswordFormManager for a submitted change password form.
+  std::unique_ptr<password_manager::PasswordFormManager> form_manager_;
 
   // Helper class for checking the login state in the main tab.
   std::unique_ptr<LoginStateChecker> login_state_checker_;
@@ -174,9 +186,6 @@ class PasswordChangeDelegateImpl : public PasswordChangeDelegate {
   // the website requires it. This subscription is only used before the password
   // change flow starts.
   base::CallbackListSubscription otp_fields_submitted_subscription_;
-  // Subscription on adding OTP fields in `executor_` in case the user is
-  // interrupted to enter an OTP while the password change flow happens.
-  base::CallbackListSubscription otp_fields_detected_subscription_;
 
   ukm::SourceId ukm_source_id_ = ukm::kInvalidSourceId;
 

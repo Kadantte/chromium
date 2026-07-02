@@ -65,6 +65,7 @@
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/test_utils.h"
 #include "net/base/address_list.h"
+#include "net/base/network_handle.h"
 #include "net/socket/tcp_client_socket.h"
 #include "third_party/zlib/google/compression_utils.h"
 #include "ui/events/keycodes/dom/dom_key.h"
@@ -741,7 +742,10 @@ bool WebPageReplayServerWrapper::Start(
         net::IPEndPoint(net::IPAddress(127, 0, 0, 1), host_http_port_));
     ++connect_attempts;
     client_socket = std::make_unique<net::TCPClientSocket>(
-        addr, nullptr, nullptr, nullptr, net::NetLogSource());
+        addr, nullptr, nullptr, nullptr, net::NetLogSource(),
+        // No need to use a target network here. This is an external tool not
+        // used in production.
+        net::handles::kInvalidNetworkHandle);
     int connect_result = client_socket->Connect(on_connect_complete);
     // On ERR_IO_PENDING, `on_connect_complete` will be invoked
     // asynchronously, so need to let the message loop spin until that
@@ -844,37 +848,19 @@ bool WebPageReplayServerWrapper::RunWebPageReplayCmd(
   }
 
   base::FilePath web_page_replay_binary_dir = exe_dir.AppendASCII("third_party")
-                                                  .AppendASCII("catapult")
-                                                  .AppendASCII("telemetry")
-                                                  .AppendASCII("telemetry")
-                                                  .AppendASCII("bin");
+                                                  .AppendASCII("webpagereplay")
+                                                  .AppendASCII("scripts");
   options.current_directory = web_page_replay_binary_dir;
-
+  base::FilePath wpr_executable_binary =
+      base::FilePath(FILE_PATH_LITERAL("run_wpr.py"));
+  base::CommandLine full_command(base::FilePath(FILE_PATH_LITERAL(
 #if BUILDFLAG(IS_WIN)
-  base::FilePath wpr_executable_binary =
-      base::FilePath(FILE_PATH_LITERAL("win"))
-          .AppendASCII("AMD64")
-          .AppendASCII("wpr.exe");
-#elif BUILDFLAG(IS_MAC)
-  base::FilePath wpr_executable_binary =
-      base::FilePath(FILE_PATH_LITERAL("mac"))
-#if defined(ARCH_CPU_ARM64)
-          .AppendASCII("arm64")
-#elif defined(ARCH_CPU_X86_64)
-          .AppendASCII("x86_64")
+      "vpython3.bat"
 #else
-#error Mac CPU arch is not supported.
+      "vpython3"
 #endif
-          .AppendASCII("wpr");
-#elif BUILDFLAG(IS_POSIX)
-  base::FilePath wpr_executable_binary =
-      base::FilePath(FILE_PATH_LITERAL("linux"))
-          .AppendASCII("x86_64")
-          .AppendASCII("wpr");
-#else
-#error Platform is not supported.
-#endif
-  base::CommandLine full_command(
+      )));
+  full_command.AppendArgPath(
       web_page_replay_binary_dir.Append(wpr_executable_binary));
   full_command.AppendArg(cmd_name());
 

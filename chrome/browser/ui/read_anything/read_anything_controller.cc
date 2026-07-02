@@ -5,25 +5,36 @@
 #include "chrome/browser/ui/read_anything/read_anything_controller.h"
 
 #include "base/functional/bind.h"
+#include "base/metrics/histogram_functions.h"
+#include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/accelerator_utils.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/find_bar/find_bar_controller.h"
+#include "chrome/browser/ui/read_anything/read_anything_entry_point_controller.h"
+#include "chrome/browser/ui/read_anything/read_anything_enums.h"
+#include "chrome/browser/ui/read_anything/read_anything_hats_survey_controller.h"
 #include "chrome/browser/ui/read_anything/read_anything_omnibox_controller.h"
+#include "chrome/browser/ui/read_anything/read_anything_prefs.h"
 #include "chrome/browser/ui/read_anything/read_anything_service.h"
+#include "chrome/browser/ui/side_panel/side_panel_entry.h"
+#include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
+#include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/view_ids.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/contents_container_view.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_entry.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_entry_id.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_ui.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/feature_engagement/public/feature_constants.h"
+#include "components/find_in_page/find_tab_helper.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/page.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -94,7 +105,9 @@ ReadAnythingController* ReadAnythingController::From(tabs::TabInterface* tab) {
 ReadAnythingController::ReadAnythingController(
     tabs::TabInterface* tab,
     SidePanelRegistry* side_panel_registry)
-    : tab_(tab),
+    : tabs::ContentsObservingTabFeature(*tab),
+      tab_(tab),
+      side_panel_registry_(side_panel_registry),
       scoped_unowned_user_data_(tab->GetUnownedUserDataHost(), *this),
       read_anything_side_panel_controller_(
           std::make_unique<ReadAnythingSidePanelController>(
@@ -105,21 +118,23 @@ ReadAnythingController::ReadAnythingController(
   // IsImmersiveReadAnythingEnabled is enabled
   CHECK(features::IsImmersiveReadAnythingEnabled());
 
-  tab_subscriptions_.push_back(
-      tab_->RegisterWillDetach(base::BindRepeating(
-          &ReadAnythingController::TabWillDetach, weak_factory_.GetWeakPtr())));
-
-  main_page_observer_ = std::make_unique<WebContentsObserverInstance>(
-      /*web_contents=*/tab_->GetContents(),
-      /*primary_page_changed_callback=*/
-      base::BindRepeating(&ReadAnythingController::OnMainPagePrimaryPageChanged,
-                          base::Unretained(this)),
-      /*renderer_crashed_callback=*/base::DoNothing(),
-      /*visibility_changed_callback=*/base::DoNothing());
+  // Point the FindBar to IRM's WebContents, if it's open. We already call
+  // MaybeUpdateFindBarController when IRM opens and closes, but if IRM is open
+  // on a split view, it can stay open even if the tab is not active, so we need
+  // this to update the FindBar when the IRM tab is reactivated.
+  tab_did_activate_subscription_ = tab_->RegisterDidActivate(
+      base::IgnoreArgs<tabs::TabInterface*>(base::BindRepeating(
+          &ReadAnythingController::MaybeUpdateFindBarController,
+          base::Unretained(this))));
 
   if (features::IsReadAnythingOmniboxChipEnabled() &&
       base::FeatureList::IsEnabled(features::kPageActionsMigration)) {
     omnibox_controller_ = std::make_unique<ReadAnythingOmniboxController>(tab_);
+  }
+
+  if (features::IsHatsReadingModeSurveyEnabled()) {
+    hats_survey_ =
+        std::make_unique<ReadAnythingHatsSurveyController>(this, tab_);
   }
 }
 
@@ -127,7 +142,7 @@ ReadAnythingController::~ReadAnythingController() {
   observers_.Notify(&Observer::OnDestroyed);
 
   if (GetPresentationState() == PresentationState::kInImmersiveOverlay) {
-    CloseImmersiveUI();
+    CloseImmersiveUI(ReadAnythingCloseReason::kControllerDestroyed);
   }
 
   // Notify the renderer that we don't need the main webpage treated as
@@ -137,14 +152,14 @@ ReadAnythingController::~ReadAnythingController() {
   // this here too.
   ReleaseMainContentsCapture();
 
-  // This method is transiently used to reset features that do not handle tab
-  // discarding themselves.
-  read_anything_side_panel_controller_->ResetForTabDiscard();
-
   if (ra_web_ui_observer_ && ra_web_ui_observer_->web_contents()) {
     ra_web_ui_observer_->web_contents()->RemoveUserData(
         ReadAnythingControllerGlue::UserDataKey());
   }
+
+  // If the Side Panel was showing, it might still hold the WebContents. Ensure
+  // the glue is removed from there too.
+  read_anything_side_panel_controller_->RemoveReadAnythingControllerGlue();
 }
 
 void ReadAnythingController::AddObserver(Observer* observer) {
@@ -176,7 +191,7 @@ void ReadAnythingController::RemoveImmersiveActivationObserver(
     ReadAnythingImmersiveActivationObserver* observer) {
   // If the observer detaches, we need to close IRM if showing
   if (GetPresentationState() == PresentationState::kInImmersiveOverlay) {
-    CloseImmersiveUI(/*closed_by_tab_switch=*/true);
+    CloseImmersiveUI(ReadAnythingCloseReason::kTabSwitched);
   }
 
   immersive_activation_observers_.RemoveObserver(observer);
@@ -184,7 +199,8 @@ void ReadAnythingController::RemoveImmersiveActivationObserver(
 
 void ReadAnythingController::OnEntryShown(
     std::optional<ReadAnythingOpenTrigger> trigger) {
-  observers_.Notify(&Observer::Activate, true, trigger);
+  observers_.Notify(&Observer::Activate, /*active=*/true, trigger,
+                    /*completed_session_duration=*/std::nullopt);
   active_service_ =
       ReadAnythingService::Get(tab_->GetBrowserWindowInterface()->GetProfile());
   // At the moment, services are created for normal, guest, and incognito
@@ -194,11 +210,46 @@ void ReadAnythingController::OnEntryShown(
   if (active_service_) {
     active_service_->OnReadAnythingShown();
   }
+
+  if (is_presentation_transitioning_) {
+    is_presentation_transitioning_ = false;
+  } else {
+    // Log once per tab session.
+    if (entry_shown_timestamp_.is_null() &&
+        trigger != ReadAnythingOpenTrigger::kTabSwitch) {
+      content::RenderWidgetHostView* view =
+          tab_->GetContents()->GetRenderWidgetHostView();
+      bool has_selection = view && !view->GetSelectedText().empty();
+      base::UmaHistogramBoolean(
+          "Accessibility.ReadAnything.MainPanelSelectionOnOpen", has_selection);
+    }
+
+    entry_shown_timestamp_ = base::TimeTicks::Now();
+  }
+
+  if (auto* user_ed = BrowserUserEducationInterface::From(
+          tab_->GetBrowserWindowInterface())) {
+    if (GetPresentationState() == PresentationState::kInImmersiveOverlay ||
+        GetPresentationState() == PresentationState::kInSidePanel) {
+      user_ed->MaybeShowFeaturePromo(
+          feature_engagement::kIPHReadingModeKeyboardShortcutFeature);
+    }
+    if (GetPresentationState() == PresentationState::kInImmersiveOverlay) {
+      user_ed->MaybeShowFeaturePromo(
+          feature_engagement::kIPHReadingModePresentationModeFeature);
+    }
+  }
+
+  MaybeUpdateFindBarController();
 }
 
 void ReadAnythingController::OnEntryHidden() {
-  observers_.Notify(&Observer::Activate, false,
-                    std::optional<ReadAnythingOpenTrigger>());
+  std::optional<base::TimeDelta> completed_session_duration =
+      RecordEntryHiddenMetrics();
+
+  observers_.Notify(&Observer::Activate, /*active=*/false,
+                    /*trigger=*/std::optional<ReadAnythingOpenTrigger>(),
+                    completed_session_duration);
 
   if (active_service_) {
     active_service_->OnReadAnythingHidden();
@@ -206,18 +257,46 @@ void ReadAnythingController::OnEntryHidden() {
   }
 }
 
-void ReadAnythingController::TabWillDetach(
-    tabs::TabInterface* tab,
-    tabs::TabInterface::DetachReason reason) {
-  observers_.Notify(&Observer::OnTabWillDetach);
+std::optional<base::TimeDelta>
+ReadAnythingController::RecordEntryHiddenMetrics() {
+  // If we are transitioning between UI modes (e.g., Side Panel to Immersive),
+  // don't record OnEntryHidden metrics.
+  if (is_presentation_transitioning_) {
+    return std::nullopt;
+  }
+
+  // Record whether the UI was closed before it was successfully shown.
+  const bool hidden_before_shown = entry_shown_timestamp_.is_null();
+  base::UmaHistogramBoolean("Accessibility.ReadAnything.HiddenBeforeShown",
+                            hidden_before_shown);
+
+  if (hidden_before_shown) {
+    return std::nullopt;
+  }
+
+  // Calculate the duration that Reading Mode was visible in this tab session.
+  base::TimeDelta completed_session_duration =
+      base::TimeTicks::Now() - entry_shown_timestamp_;
+
+  // Only record if RM was successfully shown.
+  base::UmaHistogramCustomTimes(
+      "Accessibility.ReadAnything.ShownDurationMax1Day",
+      completed_session_duration, /*min=*/base::Seconds(1),
+      /*max=*/base::Hours(24), /*buckets=*/100);
+
+  // Reset the timestamp to null to avoid polluting data if the next RM show
+  // request is closed before it's fully shown.
+  entry_shown_timestamp_ = base::TimeTicks();
+
+  return completed_session_duration;
 }
 
 // Returns the SidePanelUI for the active tab if the tab is active and has a
 // browser window interface. Returns nullptr otherwise.
 SidePanelUI* ReadAnythingController::GetSidePanelUI() {
-  CHECK(tab_);
-  CHECK(tab_->IsActivated());
-  CHECK(tab_->GetBrowserWindowInterface());
+  if (!tab_ || !tab_->IsActivated() || !tab_->GetBrowserWindowInterface()) {
+    return nullptr;
+  }
 
   return tab_->GetBrowserWindowInterface()->GetFeatures().side_panel_ui();
 }
@@ -250,6 +329,8 @@ ReadAnythingController::GetOrCreateWebUIWrapper(
 
     ReadAnythingControllerGlue::CreateForWebContents(
         web_ui_wrapper_->web_contents(), this);
+    find_in_page::FindTabHelper::CreateForWebContents(
+        web_ui_wrapper_->web_contents());
   }
   return std::move(web_ui_wrapper_);
 }
@@ -266,13 +347,9 @@ void ReadAnythingController::OnRendererCrashed() {
   // crashes (see WebUIContentsWrapper::PrimaryMainFrameRenderProcessGone).
   RecreateWebUIWrapper();
   if (GetPresentationState() == PresentationState::kInImmersiveOverlay) {
-    CloseImmersiveUI();
+    CloseImmersiveUI(ReadAnythingCloseReason::kRendererCrashed);
   } else if (GetPresentationState() == PresentationState::kInSidePanel) {
-    if (SidePanelUI* side_panel_ui = GetSidePanelUI()) {
-      side_panel_ui->Close(SidePanelEntry::PanelType::kContent,
-                           SidePanelEntryHideReason::kSidePanelClosed,
-                           /*suppress_animations=*/true);
-    }
+    CloseSidePanelUI(ReadAnythingCloseReason::kRendererCrashed);
   }
 }
 
@@ -284,11 +361,62 @@ void ReadAnythingController::SetWebUIWrapperForTest(
 
 void ReadAnythingController::TransferWebUiOwnership(
     std::unique_ptr<WebUIContentsWrapperT<ReadAnythingUntrustedUI>>
-        web_ui_wrapper) {
+        web_ui_wrapper,
+    PresentationState from_presentation) {
+  // Ignore the returned wrapper if it's coming from a UI that is no longer
+  // the active presentation.
+  if (GetPresentationState() != from_presentation) {
+    return;
+  }
   CHECK(web_ui_wrapper);
   CHECK(!web_ui_wrapper_);
   web_ui_wrapper_ = std::move(web_ui_wrapper);
   SetPresentationState(PresentationState::kInactive);
+
+  // If the WebUI was never shown, it likely means it was still loading when
+  // we closed it. If we reuse this wrapper, we might miss the "ShowUI" signal
+  // if it fires while detached. Force recreation to ensure a fresh signal
+  // next time.
+  if (!has_shown_ui_) {
+    RecreateWebUIWrapper();
+  }
+
+  // Ensure the find-in-page target is updated to reflect the new presentation
+  // state.
+  MaybeUpdateFindBarController();
+}
+
+void ReadAnythingController::MaybeUpdateFindBarController() {
+  if (!tab_ || !tab_->IsActivated() || !tab_->GetBrowserWindowInterface()) {
+    return;
+  }
+
+  content::WebContents* target_contents;
+  if (GetPresentationState() == PresentationState::kInImmersiveOverlay &&
+      ra_web_ui_observer_ && ra_web_ui_observer_->web_contents()) {
+    target_contents = ra_web_ui_observer_->web_contents();
+  } else {
+    // We're not in IRM so track main WebContents
+    target_contents = tab_->GetContents();
+  }
+
+  // If the target is just the main web contents, we don't need to force the
+  // FindBarController's creation if it doesn't already exist.
+  auto& window_features = tab_->GetBrowserWindowInterface()->GetFeatures();
+  if (target_contents == tab_->GetContents() &&
+      !window_features.HasFindBarController()) {
+    return;
+  }
+
+  auto* find_bar_controller = window_features.GetFindBarController();
+  if (!find_bar_controller) {
+    return;
+  }
+
+  // Direct the FindBarController to track the new target WebContents
+  if (find_bar_controller->web_contents() != target_contents) {
+    find_bar_controller->ChangeWebContents(target_contents);
+  }
 }
 
 void ReadAnythingController::ShowImmersiveUI(ReadAnythingOpenTrigger trigger) {
@@ -296,6 +424,9 @@ void ReadAnythingController::ShowImmersiveUI(ReadAnythingOpenTrigger trigger) {
   // Reading Mode was inactive.
   if (distillation_state_ == DistillationState::kDistillationEmpty &&
       GetPresentationState() == PresentationState::kInactive) {
+    base::UmaHistogramEnumeration(
+        "Accessibility.ReadAnything.SidePanelTriggeredByEmptyState", trigger);
+
     SidePanelOpenTrigger side_panel_open_trigger =
         read_anything::ReadAnythingToSidePanelOpenTrigger(trigger);
 
@@ -308,11 +439,8 @@ void ReadAnythingController::ShowImmersiveUI(ReadAnythingOpenTrigger trigger) {
   }
 
   if (GetPresentationState() == PresentationState::kInSidePanel) {
-    SidePanelUI* side_panel_ui = GetSidePanelUI();
-    CHECK(side_panel_ui);
-    side_panel_ui->Close(SidePanelEntry::PanelType::kContent,
-                         SidePanelEntryHideReason::kSidePanelClosed,
-                         /*suppress_animations=*/true);
+    is_presentation_transitioning_ = true;
+    CloseSidePanelUI(ReadAnythingCloseReason::kToggledPresentation);
     // Ensure we got the web_ui_wrapper_ back from the Side Panel if one ever
     // existed.
     CHECK(!has_shown_ui_ || web_ui_wrapper_);
@@ -327,7 +455,8 @@ void ReadAnythingController::ShowImmersiveUI(ReadAnythingOpenTrigger trigger) {
 
 void ReadAnythingController::ShowSidePanelUI(SidePanelOpenTrigger trigger) {
   if (GetPresentationState() == PresentationState::kInImmersiveOverlay) {
-    CloseImmersiveUI();
+    is_presentation_transitioning_ = true;
+    CloseImmersiveUI(ReadAnythingCloseReason::kToggledPresentation);
     // Ensure we got the web_ui_wrapper_ back from the immersive overlay if one
     // ever existed.
     CHECK(!has_shown_ui_ || web_ui_wrapper_);
@@ -338,18 +467,19 @@ void ReadAnythingController::ShowSidePanelUI(SidePanelOpenTrigger trigger) {
   }
 }
 
-void ReadAnythingController::CloseImmersiveUI(bool closed_by_tab_switch) {
+void ReadAnythingController::CloseImmersiveUI(ReadAnythingCloseReason reason) {
   if (GetPresentationState() != PresentationState::kInImmersiveOverlay) {
     return;
   }
 
+  observers_.Notify(&ReadAnythingLifecycleObserver::OnWillClose, reason);
   immersive_activation_observers_.Notify(
       &ReadAnythingImmersiveActivationObserver::OnCloseImmersive);
 
   // If a tab switch is the reason we're closing immersive mode, we want to
   // set should_show_immersive_on_tab_reactivate_ so we know to activate
   // immersive mode again if the tab becomes active.
-  if (closed_by_tab_switch) {
+  if (reason == ReadAnythingCloseReason::kTabSwitched) {
     should_show_immersive_on_tab_reactivate_ = true;
   }
 
@@ -357,42 +487,97 @@ void ReadAnythingController::CloseImmersiveUI(bool closed_by_tab_switch) {
   CHECK(web_ui_wrapper_);
 }
 
+void ReadAnythingController::CloseSidePanelUI(ReadAnythingCloseReason reason) {
+  if (GetPresentationState() != PresentationState::kInSidePanel) {
+    return;
+  }
+
+  if (SidePanelUI* side_panel_ui = GetSidePanelUI()) {
+    SidePanelEntryHideReason hide_reason =
+        (reason == ReadAnythingCloseReason::kTabSwitched)
+            ? SidePanelEntryHideReason::kBackgrounded
+            : SidePanelEntryHideReason::kSidePanelClosed;
+    side_panel_ui->Close(hide_reason,
+                         /*suppress_animations=*/true);
+  }
+}
+
+void ReadAnythingController::ShowInPreferredUI(
+    ReadAnythingOpenTrigger trigger) {
+  if (!tab_ || !tab_->GetBrowserWindowInterface()) {
+    // This is not likely to happen, but if it ever does, default to showing
+    // the UI via ShowImmersiveUI and using any of its error handling.
+    ShowImmersiveUI(trigger);
+    return;
+  }
+
+  PrefService* prefs =
+      tab_->GetBrowserWindowInterface()->GetProfile()->GetPrefs();
+  if (!prefs) {
+    // This is not likely to happen, but if it ever does, default to showing
+    // the UI via ShowImmersiveUI.
+    ShowImmersiveUI(trigger);
+    return;
+  }
+
+  int last_presentation_state = prefs->GetInteger(
+      prefs::kAccessibilityReadAnythingLastOpenedPresentationState);
+  if (last_presentation_state ==
+      static_cast<int>(
+          read_anything::mojom::ReadAnythingPresentationState::kInSidePanel)) {
+    ShowSidePanelUI(read_anything::ReadAnythingToSidePanelOpenTrigger(trigger));
+  } else {
+    ShowImmersiveUI(trigger);
+  }
+}
+
 void ReadAnythingController::ToggleUI(ReadAnythingOpenTrigger trigger) {
+  if (trigger == ReadAnythingOpenTrigger::kKeyboardShortcut) {
+    if (auto* user_ed = BrowserUserEducationInterface::From(
+            tab_->GetBrowserWindowInterface())) {
+      user_ed->NotifyFeaturePromoFeatureUsed(
+          feature_engagement::kIPHReadingModeKeyboardShortcutFeature,
+          FeaturePromoFeatureUsedAction::kClosePromoIfPresent);
+    }
+  }
+
   PresentationState state = GetPresentationState();
   if (state == PresentationState::kInImmersiveOverlay) {
-    CloseImmersiveUI();
+    CloseImmersiveUI(ReadAnythingCloseReason::kClosedByUser);
     return;
   }
 
   if (state == PresentationState::kInSidePanel) {
-    ToggleReadAnythingSidePanel(SidePanelOpenTrigger::kAppMenu);
+    CloseSidePanelUI(ReadAnythingCloseReason::kClosedByUser);
     return;
   }
 
-  ShowImmersiveUI(trigger);
+  ShowInPreferredUI(trigger);
 }
 
-void ReadAnythingController::TogglePresentation() {
+void ReadAnythingController::TogglePresentation(bool is_user_initiated) {
   if (GetPresentationState() == PresentationState::kInImmersiveOverlay) {
+    if (is_user_initiated) {
+      SavePresentationPreference(PresentationState::kInSidePanel);
+    }
     ShowSidePanelUI(
         SidePanelOpenTrigger::kReadAnythingTogglePresentationButton);
   } else if (GetPresentationState() == PresentationState::kInSidePanel) {
+    if (is_user_initiated) {
+      SavePresentationPreference(PresentationState::kInImmersiveOverlay);
+    }
     ShowImmersiveUI(
         ReadAnythingOpenTrigger::kReadAnythingTogglePresentationButton);
   }
 }
 
-void ReadAnythingController::ToggleReadAnythingSidePanel(
-    SidePanelOpenTrigger trigger) {
-  if (GetPresentationState() == PresentationState::kInImmersiveOverlay) {
-    CloseImmersiveUI();
-    // Ensure we got the web_ui_wrapper_ back from the immersive overlay if one
-    // ever existed.
-    CHECK(!has_shown_ui_ || web_ui_wrapper_);
-  }
-  if (SidePanelUI* side_panel_ui = GetSidePanelUI()) {
-    side_panel_ui->Toggle(SidePanelEntryKey(SidePanelEntryId::kReadAnything),
-                          trigger);
+void ReadAnythingController::SavePresentationPreference(
+    PresentationState state) {
+  if (state == PresentationState::kInSidePanel ||
+      state == PresentationState::kInImmersiveOverlay) {
+    tab_->GetBrowserWindowInterface()->GetProfile()->GetPrefs()->SetInteger(
+        prefs::kAccessibilityReadAnythingLastOpenedPresentationState,
+        static_cast<int>(state));
   }
 }
 
@@ -410,11 +595,26 @@ void ReadAnythingController::SetPresentationState(PresentationState new_state) {
   observers_.Notify(&Observer::OnReadingModePresenterChanged);
 }
 
-void ReadAnythingController::OnMainPagePrimaryPageChanged() {
+void ReadAnythingController::PrimaryPageChanged(content::Page& page) {
   if (GetPresentationState() == PresentationState::kInImmersiveOverlay) {
-    CloseImmersiveUI();
+    CloseImmersiveUI(ReadAnythingCloseReason::kPageChanged);
   }
 }
+
+void ReadAnythingController::OnSoftNavigation() {
+  // Soft navigations are Single Page App (SPA) navigations (URL change + DOM
+  // update). They are not emitted via PrimaryPageChanged. We handle them
+  // here to differentiate them from simple fragment/anchor navigations, which
+  // should *not* close Reading Mode. For true soft navigations, we close IRM if
+  // it's open
+  if (GetPresentationState() == PresentationState::kInImmersiveOverlay) {
+    CloseImmersiveUI(ReadAnythingCloseReason::kPageChangedSoftNavigation);
+  }
+  // Currently, Readability doesn't redistill on soft navigations,
+  // so we recreate the WebUI on the next time it's opened to force a redistill.
+  RecreateWebUIWrapper();
+}
+
 void ReadAnythingController::OnReadAnythingVisibilityChanged(
     content::Visibility visibility) {
   if (visibility == content::Visibility::VISIBLE) {
@@ -462,7 +662,11 @@ void ReadAnythingController::OnDistillationStateChanged(
 
   if (new_state == DistillationState::kDistillationEmpty &&
       GetPresentationState() == PresentationState::kInImmersiveOverlay) {
-    TogglePresentation();
+    base::UmaHistogramEnumeration(
+        "Accessibility.ReadAnything.SidePanelTriggeredByEmptyState",
+        ReadAnythingOpenTrigger::kReadAnythingTogglePresentationButton);
+
+    TogglePresentation(/*is_user_initiated=*/false);
   }
   distillation_state_ = new_state;
 }

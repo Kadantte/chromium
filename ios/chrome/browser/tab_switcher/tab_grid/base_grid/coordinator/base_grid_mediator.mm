@@ -762,7 +762,7 @@ web::WebState* WebStateWithSnapshotID(WebStateList& web_state_list,
       GridItemIdentifier* groupItemIdentifier =
           [GridItemIdentifier groupIdentifier:currentGroup];
       CHECK(groupItemIdentifier.tabGroupItem.tabGroup);
-      if (IsTabGridDragAndDropEnabled() && _destinationItemForGroupCreation) {
+      if (_destinationItemForGroupCreation) {
         [self.consumer replaceItem:_destinationItemForGroupCreation
                withReplacementItem:groupItemIdentifier];
         _destinationItemForGroupCreation = nil;
@@ -853,6 +853,10 @@ web::WebState* WebStateWithSnapshotID(WebStateList& web_state_list,
 #pragma mark - SnapshotStorageObserver
 
 - (void)didUpdateSnapshotStorageWithSnapshotID:(SnapshotIDWrapper*)snapshotID {
+  if (IsGridMediatorSnapshotUpdateBatchGuardEnabled() && self.webStateList &&
+      self.webStateList->IsBatchInProgress()) {
+    return;
+  }
   web::WebState* webState = WebStateWithSnapshotID(
       CHECK_DEREF(self.webStateList), snapshotID.snapshot_id);
   if (webState) {
@@ -1006,7 +1010,6 @@ web::WebState* WebStateWithSnapshotID(WebStateList& web_state_list,
 }
 
 - (void)closeTabsExceptID:(web::WebStateID)itemID {
-  CHECK(IsCloseOtherTabsEnabled());
   if (!self.webStateList) {
     return;
   }
@@ -1458,6 +1461,19 @@ web::WebState* WebStateWithSnapshotID(WebStateList& web_state_list,
                                        });
 
     if (sourceWebStateIndex == WebStateList::kInvalidIndex) {
+      BrowserList* browser_list = BrowserListFactory::GetForProfile(_profile);
+      const BrowserList::BrowserType browserTypes =
+          _profile->IsOffTheRecord()
+              ? BrowserList::BrowserType::kIncognito
+              : BrowserList::BrowserType::kRegularAndInactive;
+      std::set<Browser*> browsers = browser_list->BrowsersOfType(browserTypes);
+      BrowserAndIndex tab_info = FindBrowserAndIndex(tabInfo.tabID, browsers);
+      if (!tab_info.browser ||
+          tab_info.tab_index == WebStateList::kInvalidIndex) {
+        // Tab is not found in any browser. Could be that the tab was removed
+        // during the drag.
+        return;
+      }
       // Move tab across Browsers.
       base::UmaHistogramEnumeration(kUmaGridViewDragOrigin,
                                     DragItemOrigin::kOtherBrowser);
@@ -1791,7 +1807,7 @@ web::WebState* WebStateWithSnapshotID(WebStateList& web_state_list,
   NOTREACHED() << "Should be implemented in a subclass.";
 }
 
-- (void)setPageAsActive {
+- (void)setPageAsActiveWithBehavior:(TabGridScrollBehavior)behavior {
   NOTREACHED() << "Should be implemented in a subclass.";
 }
 

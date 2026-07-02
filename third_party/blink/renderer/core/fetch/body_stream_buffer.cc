@@ -389,13 +389,13 @@ void BodyStreamBuffer::OnStateChange() {
     case BytesConsumer::PublicState::kReadableOrWaiting:
       break;
     case BytesConsumer::PublicState::kClosed:
-      Close(PassThroughException(script_state_->GetIsolate()));
+      Close(ASSERT_NO_EXCEPTION);
       return;
     case BytesConsumer::PublicState::kErrored:
       GetError();
       return;
   }
-  ProcessData(PassThroughException(script_state_->GetIsolate()));
+  ProcessData(ASSERT_NO_EXCEPTION);
 }
 
 void BodyStreamBuffer::ContextDestroyed() {
@@ -428,19 +428,11 @@ void BodyStreamBuffer::CloseAndLockAndDisturb(ExceptionState& exception_state) {
 
   cached_metadata_handler_ = nullptr;
 
-  // TODO(477424489): see comment below.
-  CHECK(!script_state_->GetIsolate()->HasPendingException());
-
   if (IsStreamReadable()) {
     // Note that the stream cannot be "draining", because it doesn't have
     // the internal buffer.
     Close(exception_state);
   }
-  // TODO(477424489): These CHECKs are to pinpoint a cause for a
-  // CHECK(!isolate->HasPendingException()) being hit within LockAndDisturb()
-  // and can be removed once the bug is fixed.
-  CHECK(!exception_state.HadException());
-  CHECK(!script_state_->GetIsolate()->HasPendingException());
   stream_->LockAndDisturb(script_state_);
 }
 

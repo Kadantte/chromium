@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-
 #include "remoting/host/client_session.h"
 
 #include <algorithm>
@@ -15,12 +14,14 @@
 #include <vector>
 
 #include "base/check.h"
+#include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/strings/string_split.h"
+#include "base/test/run_until.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
@@ -37,21 +38,27 @@
 #include "remoting/host/host_extension.h"
 #include "remoting/host/host_extension_session.h"
 #include "remoting/host/host_mock_objects.h"
+#include "remoting/host/security_key/security_key_auth_handler.h"
+#include "remoting/host/security_key/security_key_data_channel_handler.h"
+#include "remoting/host/security_key/security_key_extension.h"
+
+#if BUILDFLAG(IS_POSIX)
+#include "remoting/host/security_key/security_key_auth_handler_posix.h"
+#endif
+
 #include "remoting/proto/control.pb.h"
 #include "remoting/proto/event.pb.h"
 #include "remoting/protocol/capability_names.h"
 #include "remoting/protocol/fake_connection_to_client.h"
 #include "remoting/protocol/fake_desktop_capturer.h"
 #include "remoting/protocol/fake_message_pipe.h"
+#include "remoting/protocol/fake_message_pipe_wrapper.h"
 #include "remoting/protocol/fake_session.h"
 #include "remoting/protocol/message_pipe.h"
 #include "remoting/protocol/protocol_mock_objects.h"
-#include "remoting/protocol/session_config.h"
 #include "remoting/protocol/test_event_matchers.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/libjingle_xmpp/xmllite/qname.h"
-#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_capture_types.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_geometry.h"
 #include "ui/events/types/event_type.h"
@@ -63,7 +70,6 @@ using protocol::MockClientStub;
 using protocol::MockHostStub;
 using protocol::MockInputStub;
 using protocol::MockVideoStub;
-using protocol::SessionConfig;
 using protocol::test::EqualsClipboardEvent;
 using protocol::test::EqualsKeyEvent;
 using protocol::test::EqualsMouseButtonEvent;
@@ -576,17 +582,17 @@ TEST_F(ClientSessionTest, DisableInputs) {
   client_session_->DisconnectSession(ErrorCode::OK, {}, FROM_HERE);
   client_session_.reset();
 
-  EXPECT_EQ(2U, mouse_events_.size());
+  EXPECT_EQ(mouse_events_.size(), 2U);
   EXPECT_THAT(mouse_events_[0], EqualsMouseMoveEvent(100, 101));
   EXPECT_THAT(mouse_events_[1], EqualsMouseMoveEvent(300, 301));
 
-  EXPECT_EQ(4U, key_events_.size());
+  EXPECT_EQ(key_events_.size(), 4U);
   EXPECT_THAT(key_events_[0], EqualsKeyEvent(1, true));
   EXPECT_THAT(key_events_[1], EqualsKeyEvent(1, false));
   EXPECT_THAT(key_events_[2], EqualsKeyEvent(3, true));
   EXPECT_THAT(key_events_[3], EqualsKeyEvent(3, false));
 
-  EXPECT_EQ(2U, clipboard_events_.size());
+  EXPECT_EQ(clipboard_events_.size(), 2U);
   EXPECT_THAT(clipboard_events_[0],
               EqualsClipboardEvent(kMimeTypeTextUtf8, "a"));
   EXPECT_THAT(clipboard_events_[1],
@@ -615,14 +621,14 @@ TEST_F(ClientSessionTest, InputAllowedFromRemotePolicy) {
   client_session_->DisconnectSession(ErrorCode::OK, {}, FROM_HERE);
   client_session_.reset();
 
-  EXPECT_EQ(1U, mouse_events_.size());
+  EXPECT_EQ(mouse_events_.size(), 1U);
   EXPECT_THAT(mouse_events_[0], EqualsMouseMoveEvent(100, 101));
 
-  EXPECT_EQ(2U, key_events_.size());
+  EXPECT_EQ(key_events_.size(), 2U);
   EXPECT_THAT(key_events_[0], EqualsKeyEvent(1, true));
   EXPECT_THAT(key_events_[1], EqualsKeyEvent(1, false));
 
-  EXPECT_EQ(1U, clipboard_events_.size());
+  EXPECT_EQ(clipboard_events_.size(), 1U);
   EXPECT_THAT(clipboard_events_[0],
               EqualsClipboardEvent(kMimeTypeTextUtf8, "a"));
 }
@@ -649,9 +655,9 @@ TEST_F(ClientSessionTest, InputDisabledFromRemotePolicy) {
   client_session_->DisconnectSession(ErrorCode::OK, {}, FROM_HERE);
   client_session_.reset();
 
-  EXPECT_EQ(0U, mouse_events_.size());
-  EXPECT_EQ(0U, key_events_.size());
-  EXPECT_EQ(0U, clipboard_events_.size());
+  EXPECT_EQ(mouse_events_.size(), 0U);
+  EXPECT_EQ(key_events_.size(), 0U);
+  EXPECT_EQ(clipboard_events_.size(), 0U);
 }
 
 TEST_F(ClientSessionTest, LocalInputTest) {
@@ -682,7 +688,7 @@ TEST_F(ClientSessionTest, LocalInputTest) {
   connection_->input_stub()->InjectMouseEvent(MakeMouseMoveEvent(300, 301));
 
   // Verify that we've received correct set of mouse events.
-  ASSERT_EQ(2U, mouse_events_.size());
+  ASSERT_EQ(mouse_events_.size(), 2U);
   EXPECT_THAT(mouse_events_[0], EqualsMouseMoveEvent(100, 101));
   EXPECT_THAT(mouse_events_[1], EqualsMouseMoveEvent(200, 201));
 
@@ -727,13 +733,13 @@ TEST_F(ClientSessionTest, RestoreEventState) {
   client_session_->DisconnectSession(ErrorCode::OK, {}, FROM_HERE);
   client_session_.reset();
 
-  EXPECT_EQ(2U, mouse_events_.size());
+  EXPECT_EQ(mouse_events_.size(), 2U);
   EXPECT_THAT(mouse_events_[0],
               EqualsMouseButtonEvent(protocol::MouseEvent::BUTTON_LEFT, true));
   EXPECT_THAT(mouse_events_[1],
               EqualsMouseButtonEvent(protocol::MouseEvent::BUTTON_LEFT, false));
 
-  EXPECT_EQ(4U, key_events_.size());
+  EXPECT_EQ(key_events_.size(), 4U);
   EXPECT_THAT(key_events_[0], EqualsKeyEvent(1, true));
   EXPECT_THAT(key_events_[1], EqualsKeyEvent(2, true));
   EXPECT_THAT(key_events_[2], EqualsKeyEvent(1, false));
@@ -769,7 +775,7 @@ TEST_F(ClientSessionTest, ClampMouseEvents) {
       connection_->input_stub()->InjectMouseEvent(
           MakeMouseMoveEvent(input_x[i], input_y[j]));
 
-      EXPECT_EQ(1U, mouse_events_.size());
+      EXPECT_EQ(mouse_events_.size(), 1U);
       EXPECT_THAT(mouse_events_[0],
                   EqualsMouseMoveEvent(expected_x[i], expected_y[j]));
     }
@@ -856,10 +862,10 @@ TEST_F(ClientSessionTest, DataChannelCallbackIsCalled) {
 
 TEST_F(ClientSessionTest, ForwardHostSessionOptions1) {
   auto session = std::make_unique<protocol::FakeSession>();
-  auto configuration = std::make_unique<jingle_xmpp::XmlElement>(
-      jingle_xmpp::QName(kChromotingXmlNamespace, "host-configuration"));
-  configuration->SetBodyText("Detect-Updated-Region:true");
-  session->SetAttachment(0, std::move(configuration));
+  Attachment attachment;
+  attachment.host_config.emplace();
+  attachment.host_config->settings["Detect-Updated-Region"] = "true";
+  session->SetAttachment(0, attachment);
   CreateClientSession(std::move(session));
   ConnectClientSession();
   ASSERT_TRUE(desktop_environment_factory_->last_desktop_environment()
@@ -870,10 +876,10 @@ TEST_F(ClientSessionTest, ForwardHostSessionOptions1) {
 
 TEST_F(ClientSessionTest, ForwardHostSessionOptions2) {
   auto session = std::make_unique<protocol::FakeSession>();
-  auto configuration = std::make_unique<jingle_xmpp::XmlElement>(
-      jingle_xmpp::QName(kChromotingXmlNamespace, "host-configuration"));
-  configuration->SetBodyText("Detect-Updated-Region:false");
-  session->SetAttachment(0, std::move(configuration));
+  Attachment attachment;
+  attachment.host_config.emplace();
+  attachment.host_config->settings["Detect-Updated-Region"] = "false";
+  session->SetAttachment(0, attachment);
   CreateClientSession(std::move(session));
   ConnectClientSession();
   ASSERT_FALSE(desktop_environment_factory_->last_desktop_environment()
@@ -902,59 +908,107 @@ TEST_F(ClientSessionTest, ActiveDisplayMessageSent) {
   monitor->SetActiveDisplay(static_cast<webrtc::ScreenId>(kDisplay1Id));
 }
 
-// Display selection behaves quite differently if capturing of the full desktop
-// is enabled or not. To simplify things these tests only handle the ChromeOS
-// situation, where full desktop capturing is disabled.
-#if BUILDFLAG(IS_CHROMEOS)
-TEST_F(ClientSessionTest, ShouldSelectFirstDesktopByDefault) {
+class ClientSessionSecurityKeyTest : public ClientSessionTest {
+ public:
+  ClientSessionSecurityKeyTest() {
+    // Bind the factory override to return the mock handler.
+    SecurityKeyAuthHandler::SetCreateHandlerCallbackForTesting(
+        base::BindRepeating(&ClientSessionSecurityKeyTest::CreateMockHandler,
+                            base::Unretained(this)));
+  }
+
+  ~ClientSessionSecurityKeyTest() override {
+    SecurityKeyAuthHandler::SetCreateHandlerCallbackForTesting(
+        base::NullCallback());
+  }
+
+  void SetUp() override {
+    ClientSessionTest::SetUp();
+
+    desktop_environment_options_.set_enable_security_key(true);
+    SessionPolicies policies;
+    policies.allow_gnubby_forwarding = true;
+    local_session_policies_provider_.set_local_policies(policies);
+  }
+
+  void TearDown() override {
+    mock_handler_ = nullptr;
+    ClientSessionTest::TearDown();
+  }
+
+ protected:
+  std::unique_ptr<SecurityKeyAuthHandler> CreateMockHandler(
+      ClientSessionDetails* client_session_details) {
+    auto mock =
+        std::make_unique<testing::NiceMock<MockSecurityKeyAuthHandler>>();
+    mock_handler_ = mock.get();
+    return mock;
+  }
+
+  raw_ptr<testing::NiceMock<MockSecurityKeyAuthHandler>> mock_handler_ =
+      nullptr;
+};
+
+// Verifies that the security key extension is created and its capabilities
+// advertised.
+TEST_F(ClientSessionSecurityKeyTest, AdvertisesCapabilities) {
+  // Expect that the client stub gets both legacy and V2 capabilities
+  // advertised.
+  EXPECT_CALL(client_stub_, SetCapabilities(IncludesCapabilities(
+                                std::string(SecurityKeyExtension::kCapability) +
+                                " " + protocol::kSecurityKeyV2Capability)));
+
+  CreateClientSession();
+  ConnectClientSession();
+}
+
+// Verifies that when the WebRTC data channel connects, the legacy extension
+// session is destroyed.
+TEST_F(ClientSessionSecurityKeyTest, DataChannelTakeoverDestroysLegacySession) {
   CreateClientSession();
   ConnectClientSession();
 
-  SetupMultiDisplay();
+  // Negotiate capabilities. The client supports both.
+  protocol::Capabilities capabilities_message;
 
-  EXPECT_THAT(GetSelectedSourceDisplayId(), Eq(kDisplay1Id));
+  capabilities_message.set_capabilities(
+      std::string(SecurityKeyExtension::kCapability) + " " +
+      protocol::kSecurityKeyV2Capability);
+  client_session_->SetCapabilities(capabilities_message);
+
+  // The signaling session should have been created.
+  HostExtensionSession* extension_session =
+      client_session_->extension_manager_for_tests()->FindExtensionSession(
+          SecurityKeyExtension::kCapability);
+  ASSERT_TRUE(extension_session);
+
+  // Now mimic WebRTC data channel connection.
+  // The data channel manager will invoke our callback.
+  // In the real flow, the connection will trigger this. We can trigger it by
+  // creating the channel.
+  auto pipe = std::make_unique<protocol::FakeMessagePipe>(true);
+
+  // Expect that when the data channel connects:
+  // 1. The legacy extension session is destroyed.
+  // 2. The data channel handler binds to the handler.
+
+  // We can verify that the extension session is destroyed by checking the
+  // manager.
+  client_session_->OnIncomingDataChannel(
+      SecurityKeyDataChannelHandler::kChannelName, pipe->Wrap());
+
+  // Open the pipe to trigger OnConnected() and the takeover.
+  pipe->OpenPipe();
+
+  // Wait until the legacy extension session is destroyed.
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !client_session_->extension_manager_for_tests()
+                ->FindExtensionSession(SecurityKeyExtension::kCapability);
+  }));
+
+  // Close the pipe to clean up the handler and avoid dangling pointers.
+  pipe->ClosePipe();
+  ASSERT_TRUE(base::test::RunUntil([&]() { return !pipe->HasWrappers(); }));
 }
-
-TEST_F(ClientSessionTest,
-       ShouldChangeSelectedSourceDisplayWhenSwitchingDisplay) {
-  CreateClientSession();
-  ConnectClientSession();
-  SetupMultiDisplay();
-
-  MultiMon_SelectSecondDisplay();
-  EXPECT_THAT(GetSelectedSourceDisplayId(), Eq(kDisplay2Id));
-
-  MultiMon_SelectFirstDisplay();
-  EXPECT_THAT(GetSelectedSourceDisplayId(), Eq(kDisplay1Id));
-}
-
-TEST_F(ClientSessionTest,
-       ShouldFallBackToPrimaryDisplayWhenSwitchingToInvalidDisplay) {
-  CreateClientSession();
-  ConnectClientSession();
-  SetupMultiDisplay();
-
-  MultiMon_SelectDisplay("Not an integer");
-  EXPECT_THAT(GetSelectedSourceDisplayId(), Eq(kDisplay1Id));
-
-  MultiMon_SelectDisplay("123456");  // There is no display with this id.
-  EXPECT_THAT(GetSelectedSourceDisplayId(), Eq(kDisplay1Id));
-
-  // Full desktop capturing is not supported on ChromeOS.
-  MultiMon_SelectDisplay("all");
-  EXPECT_THAT(GetSelectedSourceDisplayId(), Eq(kDisplay1Id));
-}
-
-TEST_F(ClientSessionTest,
-       ShouldFallBackToPrimaryDisplayWhenSelectedDisplayIsDisconnected) {
-  CreateClientSession();
-  ConnectClientSession();
-  SetupMultiDisplay();
-  MultiMon_SelectSecondDisplay();
-
-  SetupSingleDisplay();
-  EXPECT_THAT(GetSelectedSourceDisplayId(), Eq(kDisplay1Id));
-}
-#endif  // if BUILDFLAG(IS_CHROMEOS)
 
 }  // namespace remoting

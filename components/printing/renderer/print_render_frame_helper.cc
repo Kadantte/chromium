@@ -41,11 +41,13 @@
 #include "base/trace_event/trace_event.h"
 #include "base/types/expected.h"
 #include "base/types/fixed_array.h"
+#include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "components/grit/components_resources.h"
 #include "components/printing/common/print_params.h"
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_thread.h"
+#include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "mojo/public/cpp/bindings/pending_associated_remote.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "printing/buildflags/buildflags.h"
@@ -179,7 +181,7 @@ void ExecuteScript(blink::WebLocalFrame* frame,
                    std::string_view suffix) {
   std::string json = base::WriteJson(parameters).value_or("");
   frame->ExecuteScript(blink::WebScriptSource(
-      blink::WebString::FromUTF8(base::StrCat({prefix, json, suffix}))));
+      blink::WebString::FromUtf8(base::StrCat({prefix, json, suffix}))));
 }
 
 int GetDPI(const mojom::PrintParams& print_params) {
@@ -1262,7 +1264,24 @@ void PrintRenderFrameHelper::ScriptedPrint(bool user_initiated) {
     return;
   }
 
+#if BUILDFLAG(IS_ANDROID)
+  // On Android, the PDF rendering process is driven asynchronously by the
+  // system's PrintDocumentAdapter. The browser process shows the system print
+  // dialog, and the framework later requests the document's content.
+  // To ensure window.print() behaves synchronously from the web page's
+  // perspective, start a nested run loop. This blocks JS execution until the
+  // user completes the print dialog and the system signals the end of the
+  // print session.
+  // Since the actual printing is triggered later by the system, do not call
+  // Print() here directly.
+  base::RunLoop loop{base::RunLoop::Type::kNestableTasksAllowed};
+  base::OnceClosure quit_closure = loop.QuitClosure();
+  GetPrintManagerHost()->SetupScriptedPrintAndroid(
+      mojo::WrapCallbackWithDefaultInvokeIfNotRun(std::move(quit_closure)));
+  loop.Run();
+#else
   Print(web_frame, blink::WebNode(), PrintRequestType::kScripted);
+#endif
   if (!weak_this) {
     return;
   }
@@ -1306,7 +1325,13 @@ void PrintRenderFrameHelper::PrintRequestedPagesInternal(
 
   blink::WebLocalFrame* frame = render_frame()->GetWebFrame();
 
-  if (!already_notified_frame) {
+#if BUILDFLAG(IS_ANDROID)
+  bool is_scripted = print_in_progress_;
+#else
+  constexpr bool is_scripted = false;
+#endif
+
+  if (!already_notified_frame && !is_scripted) {
     frame->DispatchBeforePrintEvent(/*print_client=*/nullptr);
     // Don't print if the RenderFrame is gone.
     if (render_frame_gone_) {
@@ -1333,7 +1358,9 @@ void PrintRenderFrameHelper::PrintRequestedPagesInternal(
     return;
   }
 
-  frame->DispatchAfterPrintEvent();
+  if (!is_scripted) {
+    frame->DispatchAfterPrintEvent();
+  }
   // WARNING: `this` may be gone at this point. Do not do any more work here and
   // just return.
 }
@@ -1379,7 +1406,7 @@ void PrintRenderFrameHelper::PrintWithParams(
                            mojom::SkiaDocumentType::kMSKP
                        ? DebugEvent::kSetPrintSettings1
                        : DebugEvent::kSetPrintSettings2);
-  SetPrintPagesParams(*settings);
+  SetPrintPagesParamsForPrinting(*settings);
   prep_frame_view_ =
       std::make_unique<PrepareFrameAndViewForPrint>(frame, plugin_node);
   prep_frame_view_->EnterPrintMode(*settings->params,
@@ -2150,7 +2177,7 @@ void PrintRenderFrameHelper::Print(blink::WebLocalFrame* frame,
                              mojom::SkiaDocumentType::kMSKP
                          ? DebugEvent::kSetPrintSettings3
                          : DebugEvent::kSetPrintSettings4);
-    SetPrintPagesParams(*print_settings);
+    SetPrintPagesParamsForPrinting(*print_settings);
   }
 
   // Render Pages for printing.
@@ -2228,6 +2255,9 @@ void PrintRenderFrameHelper::DidFinishPrinting(PrintingResult result) {
 void PrintRenderFrameHelper::Reset() {
   prep_frame_view_.reset();
   print_pages_params_.reset();
+#if BUILDFLAG(ENABLE_PRINT_PREVIEW)
+  preview_ui_id_ = base::UnguessableToken();
+#endif
   notify_browser_of_print_failure_ = true;
   snapshotter_.reset();
 
@@ -2416,7 +2446,7 @@ bool PrintRenderFrameHelper::InitPrintSettings(blink::WebLocalFrame* frame,
                            mojom::SkiaDocumentType::kMSKP
                        ? DebugEvent::kSetPrintSettings5
                        : DebugEvent::kSetPrintSettings6);
-  SetPrintPagesParams(settings);
+  SetPrintPagesParamsForPrinting(settings);
   return true;
 }
 
@@ -2451,48 +2481,40 @@ PrintRenderFrameHelper::SetOptionsFromPdfDocument() {
 bool PrintRenderFrameHelper::UpdatePrintSettings(
     blink::WebLocalFrame* frame,
     const blink::WebNode& node,
-    base::DictValue passed_job_settings) {
-  CHECK(!passed_job_settings.empty());
-
-  base::DictValue modified_job_settings;
-  const base::DictValue* job_settings;
-  bool source_is_html = !IsPrintingPdfFrame(frame, node);
-  if (source_is_html) {
-    job_settings = &passed_job_settings;
-  } else {
-    modified_job_settings.Merge(std::move(passed_job_settings));
-    modified_job_settings.Set(kSettingHeaderFooterEnabled, false);
-    modified_job_settings.Set(kSettingMarginsType,
-                              static_cast<int>(mojom::MarginType::kNoMargins));
-    job_settings = &modified_job_settings;
-  }
+    const base::DictValue& job_settings) {
+  CHECK(!job_settings.empty());
 
   mojom::PrintPagesParamsPtr settings;
-  GetPrintManagerHost()->UpdatePrintSettings(job_settings->Clone(), &settings);
+  GetPrintManagerHost()->GetPrintPreviewParams(&settings);
   if (!settings) {
     print_preview_context_.set_error(
         PrintPreviewErrorBuckets::kEmptyPrinterSettings);
     return false;
   }
 
-  settings->params->preview_ui_id = job_settings->FindInt(kPreviewUIID).value();
-
   // Validate expected print preview settings.
   settings->params->is_first_request =
-      job_settings->FindBool(kIsFirstRequest).value();
+      job_settings.FindBool(kIsFirstRequest).value();
   settings->params->preview_request_id =
-      job_settings->FindInt(kPreviewRequestID).value();
+      job_settings.FindInt(kPreviewRequestID).value();
 
-  settings->params->print_to_pdf = IsPrintToPdfRequested(*job_settings);
-  UpdateFrameMarginsCssInfo(*job_settings);
+  settings->params->print_to_pdf = IsPrintToPdfRequested(job_settings);
+  UpdateFrameMarginsCssInfo(job_settings);
+  const bool source_is_html = !IsPrintingPdfFrame(frame, node);
   settings->params->print_scaling_option = GetPrintScalingOption(
-      frame, node, source_is_html, *job_settings, *settings->params);
+      frame, node, source_is_html, job_settings, *settings->params);
 
   RecordDebugEvent(settings->params->printed_doc_type ==
                            mojom::SkiaDocumentType::kMSKP
                        ? DebugEvent::kSetPrintSettings7
                        : DebugEvent::kSetPrintSettings8);
-  SetPrintPagesParams(*settings);
+
+  const std::string* preview_ui_id_str = job_settings.FindString(kPreviewUIID);
+  CHECK(preview_ui_id_str);
+  std::optional<base::UnguessableToken> preview_ui_id =
+      base::UnguessableToken::DeserializeFromString(*preview_ui_id_str);
+  CHECK(preview_ui_id.has_value());
+  SetPrintPagesParamsForPrintPreview(*settings, preview_ui_id.value());
   return true;
 }
 #endif  // BUILDFLAG(ENABLE_PRINT_PREVIEW)
@@ -2518,6 +2540,9 @@ mojom::PrintPagesParamsPtr PrintRenderFrameHelper::GetPrintSettingsFromUser(
   GetPrintManagerHost()->DidShowPrintDialog();
 
   print_pages_params_.reset();
+#if BUILDFLAG(ENABLE_PRINT_PREVIEW)
+  preview_ui_id_ = base::UnguessableToken();
+#endif
 
   mojom::PrintPagesParamsPtr print_settings;
   GetPrintManagerHost()->ScriptedPrint(std::move(params), &print_settings);
@@ -2626,8 +2651,7 @@ void PrintRenderFrameHelper::SetupOnStopLoadingTimeout() {
 void PrintRenderFrameHelper::ShowScriptedPrintPreview() {
   if (is_scripted_preview_delayed_) {
     is_scripted_preview_delayed_ = false;
-    GetPrintManagerHost()->ShowScriptedPrintPreview(
-        print_preview_context_.IsModifiable());
+    GetPrintManagerHost()->ShowScriptedPrintPreview();
   }
 }
 
@@ -2756,9 +2780,8 @@ bool PrintRenderFrameHelper::CheckForCancel() {
   const mojom::PrintParams& print_params = *print_pages_params_->params;
   bool cancel = false;
 
-  if (!GetPrintManagerHost()->CheckForCancel(print_params.preview_ui_id,
-                                             print_params.preview_request_id,
-                                             &cancel)) {
+  if (!GetPrintManagerHost()->CheckForCancel(
+          preview_ui_id_, print_params.preview_request_id, &cancel)) {
     cancel = true;
   }
 
@@ -3098,11 +3121,25 @@ void PrintRenderFrameHelper::PrintPreviewContext::CalculatePluginAttributes() {
                                   : DebugEvent::kPrintPreviewIsNotModifiable);
 }
 
-void PrintRenderFrameHelper::SetPrintPagesParams(
+void PrintRenderFrameHelper::SetPrintPagesParamsForPrinting(
     const mojom::PrintPagesParams& settings) {
   CHECK(PrintMsgPrintParamsIsValid(*settings.params));
   print_pages_params_ = settings.Clone();
+#if BUILDFLAG(ENABLE_PRINT_PREVIEW)
+  // Invalid ID since this is not for Print Preview.
+  preview_ui_id_ = base::UnguessableToken();
+#endif
 }
+
+#if BUILDFLAG(ENABLE_PRINT_PREVIEW)
+void PrintRenderFrameHelper::SetPrintPagesParamsForPrintPreview(
+    const mojom::PrintPagesParams& settings,
+    const base::UnguessableToken& preview_ui_id) {
+  CHECK(PrintMsgPrintParamsIsValid(*settings.params));
+  print_pages_params_ = settings.Clone();
+  preview_ui_id_ = preview_ui_id;
+}
+#endif
 
 void PrintRenderFrameHelper::QuitScriptedPrintPreviewRunLoop() {
   closures_for_mojo_responses_->RunScriptedPrintPreviewQuitClosure();
@@ -3154,7 +3191,7 @@ bool PrintRenderFrameHelper::ScriptingThrottler::IsAllowed(
   }
 
   blink::WebString message(
-      blink::WebString::FromASCII("Ignoring too frequent calls to print()."));
+      blink::WebString::FromAscii("Ignoring too frequent calls to print()."));
   frame->AddMessageToConsole(blink::WebConsoleMessage(
       blink::mojom::ConsoleMessageLevel::kWarning, message));
   return false;

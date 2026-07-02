@@ -12,6 +12,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
+#include "base/scoped_observation.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
@@ -27,6 +28,7 @@
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -38,14 +40,15 @@
 #include "chrome/browser/ui/views/omnibox/omnibox_context_menu.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
 #include "chrome/browser/ui/views/page_action/page_action_container_view.h"
-#include "chrome/browser/ui/views/page_action/page_action_controller.h"
 #include "chrome/browser/ui/views/page_action/page_action_icon_controller.h"
 #include "chrome/browser/ui/views/page_action/page_action_icon_view.h"
 #include "chrome/browser/ui/views/page_action/page_action_view.h"
+#include "chrome/browser/ui/views/page_action/test_support/page_action_test_support.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/lens/lens_features.h"
+#include "components/omnibox/browser/aim_eligibility_service_features.h"
 #include "components/omnibox/browser/location_bar_model_impl.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
 #include "components/omnibox/browser/omnibox_prefs.h"
@@ -59,6 +62,7 @@
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/test_navigation_observer.h"
 #include "net/cert/ct_policy_status.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/ssl/ssl_info.h"
@@ -71,6 +75,8 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
+#include "ui/base/clipboard/clipboard.h"
+#include "ui/base/clipboard/scoped_clipboard_writer.h"
 #include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/events/event.h"
 #include "ui/events/event_constants.h"
@@ -84,6 +90,21 @@ void FocusNextView(views::FocusManager* focus_manager) {
       focus_manager->GetNextFocusableView(focused_view, nullptr, false, false);
   focus_manager->SetFocusedView(next_view);
 }
+
+class TestLocationBarObserver : public LocationBar::Observer {
+ public:
+  explicit TestLocationBarObserver(base::OnceClosure on_bounds_changed)
+      : on_bounds_changed_(std::move(on_bounds_changed)) {}
+
+  void OnLocationBarBoundsChanged() override {
+    ASSERT_FALSE(on_bounds_changed_.is_null());
+    std::move(on_bounds_changed_).Run();
+  }
+
+ private:
+  base::OnceClosure on_bounds_changed_;
+};
+
 }  // namespace
 
 class LocationBarViewBrowserTest : public InProcessBrowserTest {
@@ -111,7 +132,9 @@ class LocationBarViewBrowserTest : public InProcessBrowserTest {
     auto* toolbar_button_provider =
         BrowserView::GetBrowserViewForBrowser(browser())
             ->toolbar_button_provider();
-    return toolbar_button_provider->GetPageActionView(kActionZoomNormal);
+    return page_actions::GetIconLabelBubbleViewForTesting(
+        toolbar_button_provider->GetPageActionViewInterface(kActionZoomNormal),
+        kActionZoomNormal);
   }
 
   ContentSettingImageView& GetContentSettingImageView(
@@ -171,6 +194,48 @@ IN_PROC_BROWSER_TEST_F(LocationBarViewBrowserTest, LocationBarDecoration) {
   EXPECT_FALSE(zoom_bubble_coordinator_->bubble());
 }
 
+// Ensure that middle-clicking the location icon performs a "paste and go".
+IN_PROC_BROWSER_TEST_F(LocationBarViewBrowserTest, MiddleClickPasteAndGo) {
+  if (!ui::Clipboard::IsMiddleClickPasteEnabled() ||
+      !ui::Clipboard::IsSupportedClipboardBuffer(
+          ui::ClipboardBuffer::kSelection)) {
+    return;
+  }
+
+  ASSERT_TRUE(embedded_test_server()->Start());
+  GURL paste_url = embedded_test_server()->GetURL("/title1.html");
+
+  LocationBarView* location_bar_view = GetLocationBarView();
+  LocationIconView* location_icon_view =
+      location_bar_view->location_icon_view();
+
+  // Set some text in the selection clipboard.
+  const std::u16string kPasteText = base::UTF8ToUTF16(paste_url.spec());
+  {
+    ui::ScopedClipboardWriter writer(ui::ClipboardBuffer::kSelection);
+    writer.WriteText(kPasteText);
+  }
+
+  // Set up an observer to wait for the navigation.
+  content::TestNavigationObserver observer(
+      browser()->tab_strip_model()->GetActiveWebContents());
+
+  // Simulate a middle-click on the location icon.
+  ui::MouseEvent middle_click_event(ui::EventType::kMousePressed, gfx::Point(),
+                                    gfx::Point(), base::TimeTicks::Now(),
+                                    ui::EF_MIDDLE_MOUSE_BUTTON,
+                                    ui::EF_MIDDLE_MOUSE_BUTTON);
+  location_icon_view->OnMousePressed(middle_click_event);
+
+  // Wait for the navigation to finish.
+  observer.Wait();
+
+  EXPECT_EQ(paste_url, browser()
+                           ->tab_strip_model()
+                           ->GetActiveWebContents()
+                           ->GetLastCommittedURL());
+}
+
 // Ensure that location bar bubbles close when the webcontents hides.
 IN_PROC_BROWSER_TEST_F(LocationBarViewBrowserTest, BubblesCloseOnHide) {
   content::WebContents* web_contents =
@@ -187,7 +252,7 @@ IN_PROC_BROWSER_TEST_F(LocationBarViewBrowserTest, BubblesCloseOnHide) {
   EXPECT_TRUE(zoom_view->GetVisible());
   EXPECT_TRUE(zoom_bubble_coordinator_->bubble());
 
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   chrome::SelectNextTab(browser());
 
   base::RunLoop().RunUntilIdle();
@@ -195,7 +260,7 @@ IN_PROC_BROWSER_TEST_F(LocationBarViewBrowserTest, BubblesCloseOnHide) {
 }
 
 // Check that the script blocked icon shows up when user disables javascript.
-// Regression test for http://crbug.com/35011
+// Regression test for http://crbug.com/41093462
 IN_PROC_BROWSER_TEST_F(LocationBarViewBrowserTest, ScriptBlockedIcon) {
   const char kHtml[] =
       "<html>"
@@ -211,7 +276,7 @@ IN_PROC_BROWSER_TEST_F(LocationBarViewBrowserTest, ScriptBlockedIcon) {
 
   // Get the script blocked icon on the omnibox. It should be hidden.
   ContentSettingImageView& script_blocked_icon = GetContentSettingImageView(
-      ContentSettingImageModel::ImageType::JAVASCRIPT);
+      ContentSettingImageModel::ImageType::kJavaScript);
   EXPECT_FALSE(script_blocked_icon.GetVisible());
 
   // Disable javascript.
@@ -225,6 +290,19 @@ IN_PROC_BROWSER_TEST_F(LocationBarViewBrowserTest, ScriptBlockedIcon) {
   ASSERT_TRUE(base::test::RunUntil([&]() {
     return script_blocked_icon.GetVisible();
   })) << "Timeout waiting for the script blocked icon to become visible.";
+}
+
+IN_PROC_BROWSER_TEST_F(LocationBarViewBrowserTest, BoundsObserver) {
+  // Make sure that bounds change observer gets notified.
+  base::RunLoop run_loop;
+  TestLocationBarObserver bounds_observer(run_loop.QuitClosure());
+  base::ScopedObservation<LocationBar, LocationBar::Observer> obs(
+      &bounds_observer);
+  obs.Observe(GetLocationBarView());
+  auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+  browser_view->SetSize(
+      gfx::Size(browser_view->width() - 100, browser_view->height()));
+  run_loop.Run();
 }
 
 class TouchLocationBarViewBrowserTest : public LocationBarViewBrowserTest {
@@ -394,7 +472,7 @@ IN_PROC_BROWSER_TEST_F(LocationBarViewGeolocationBackForwardCacheBrowserTest,
 
   // Get the geolocation icon on the omnibox.
   ContentSettingImageView& geolocation_icon = GetContentSettingImageView(
-      ContentSettingImageModel::ImageType::GEOLOCATION);
+      ContentSettingImageModel::ImageType::kGeolocation);
 
   // Geolocation icon should be off in the beginning.
   EXPECT_FALSE(geolocation_icon.GetVisible());
@@ -452,9 +530,9 @@ class LocationBarViewPageActionsMigrationTest
   LocationBarViewPageActionsMigrationTest() {
     scoped_feature_list_.InitWithFeaturesAndParameters(
         {{::features::kPageActionsMigration,
-          {{::features::kPageActionsMigrationLensOverlay.name, "true"}}},
+          {{::features::kPageActionsMigrationBookmarkStar.name, "false"}}},
          {lens::features::kLensOverlayOmniboxEntryPoint, {}}},
-        {omnibox::kAiModeOmniboxEntryPoint});
+        {});
   }
   ~LocationBarViewPageActionsMigrationTest() override = default;
 
@@ -503,7 +581,8 @@ IN_PROC_BROWSER_TEST_F(LocationBarViewPageActionsMigrationTest,
   views::FocusManager* const focus_manager =
       GetLocationBarView()->GetFocusManager();
 
-  GetLocationBarView()->FocusLocation(true);
+  GetLocationBarView()->FocusLocation(/*is_user_initiated=*/true,
+                                      /*clear_focus_if_failed=*/false);
   OmniboxViewViews* const omnibox = GetLocationBarView()->omnibox_view();
   ASSERT_EQ(focus_manager->GetFocusedView(), omnibox);
 
@@ -618,11 +697,17 @@ class LocationBarViewAddContextButtonBrowserTest
     scoped_feature_list_.InitWithFeaturesAndParameters(
         /*enabled_features=*/
         {{omnibox::internal::kWebUIOmniboxAimPopup,
+          {{omnibox::kShowToolsAndModels.name, "true"}}},
+         {omnibox::internal::kWebUIOmniboxSimplification,
           {{omnibox::kWebUIOmniboxAimPopupAddContextButtonVariantParam.name,
             "inline"}}},
-         {omnibox::kWebUIOmniboxPopup, {}}},
-        /*disabled_features=*/{omnibox::kAimServerEligibilityEnabled});
+         {omnibox::internal::kWebUIOmniboxPopup, {}},
+         {omnibox::kAimEnabled, {}}},
+        /*disabled_features=*/{omnibox::kAimServerEligibilityEnabled,
+                               omnibox::kAimFuseboxEligibilityCheckEnabled,
+                               omnibox::kAimUsePecApi});
   }
+
   ~LocationBarViewAddContextButtonBrowserTest() override = default;
 
  private:
@@ -647,21 +732,18 @@ IN_PROC_BROWSER_TEST_F(LocationBarViewAddContextButtonBrowserTest,
   // The "Add Context" button doesn't show up when the Omnibox popup is
   // closed.
   EXPECT_FALSE(location_bar_view->GetOmniboxController()->IsPopupOpen());
-  EXPECT_FALSE(location_bar_view->GetOmniboxController()
-                   ->edit_model()
-                   ->ShouldShowAddContextButton());
+  EXPECT_FALSE(location_bar_view->ShouldShowAddContextButton());
   const auto icon_when_closed =
       location_icon_view->GetImageModel(views::Button::STATE_NORMAL);
 
   // The "Add Context" button does show up when the Omnibox popup is open.
-  location_bar_view->FocusLocation(true);
+  location_bar_view->FocusLocation(/*is_user_initiated=*/true,
+                                   /*clear_focus_if_failed=*/false);
   omnibox_view->SetUserText(u"test");
-  ASSERT_TRUE(base::test::RunUntil([&]() {
-    return location_bar_view->GetOmniboxController()->IsPopupOpen();
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return location_bar_view->GetOmniboxController()->IsPopupOpen() &&
+           location_bar_view->ShouldShowAddContextButton();
   }));
-  EXPECT_TRUE(location_bar_view->GetOmniboxController()
-                  ->edit_model()
-                  ->ShouldShowAddContextButton());
   const auto icon_when_open =
       location_icon_view->GetImageModel(views::Button::STATE_NORMAL);
   EXPECT_NE(icon_when_closed->GetVectorIcon().vector_icon(),
@@ -695,27 +777,26 @@ IN_PROC_BROWSER_TEST_F(LocationBarViewAddContextButtonBrowserTest,
   LocationBarView* location_bar_view = GetLocationBarView();
   OmniboxViewViews* omnibox_view = location_bar_view->omnibox_view();
   PrefService* prefs = browser()->profile()->GetPrefs();
-  OmniboxEditModel* edit_model =
-      location_bar_view->GetOmniboxController()->edit_model();
 
   // pref is initially true to show the button.
   prefs->SetBoolean(omnibox::kShowAiModeOmniboxButton, true);
 
   // Force "Add content" button to show by focusing and typing.
-  location_bar_view->FocusLocation(true);
+  location_bar_view->FocusLocation(/*is_user_initiated=*/true,
+                                   /*clear_focus_if_failed=*/false);
   omnibox_view->SetUserText(u"test");
   ASSERT_TRUE(base::test::RunUntil([&]() {
     return location_bar_view->GetOmniboxController()->IsPopupOpen();
   }));
   ASSERT_TRUE(base::test::RunUntil(
-      [&]() { return edit_model->ShouldShowAddContextButton(); }));
+      [&]() { return location_bar_view->ShouldShowAddContextButton(); }));
 
   // Set pref to false.
   prefs->SetBoolean(omnibox::kShowAiModeOmniboxButton, false);
   ASSERT_TRUE(base::test::RunUntil(
-      [&]() { return !edit_model->ShouldShowAddContextButton(); }));
+      [&]() { return !location_bar_view->ShouldShowAddContextButton(); }));
   // Set pref to true again.
   prefs->SetBoolean(omnibox::kShowAiModeOmniboxButton, true);
   ASSERT_TRUE(base::test::RunUntil(
-      [&]() { return edit_model->ShouldShowAddContextButton(); }));
+      [&]() { return location_bar_view->ShouldShowAddContextButton(); }));
 }

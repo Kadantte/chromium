@@ -8,14 +8,15 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/command_line.h"
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/observer_list.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "cc/base/switches.h"
@@ -30,7 +31,7 @@
 #include "content/browser/gpu/compositor_util.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/common/content_switches.h"
-#include "third_party/blink/public/mojom/widget/record_content_to_visible_time_request.mojom.h"
+#include "third_party/blink/public/common/page/content_to_visible_time_request.h"
 #include "third_party/khronos/GLES2/gl2.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/geometry/dip_util.h"
@@ -44,6 +45,13 @@ namespace {
 constexpr float kFrameContentCaptureQuality = 0.4f;
 
 }  // namespace
+
+////////////////////////////////////////////////////////////////////////////////
+// DelegatedFrameHostClient
+
+cc::DeadlinePolicy DelegatedFrameHostClient::GetResizeDeadlinePolicy() const {
+  return cc::DeadlinePolicy::UseSpecifiedDeadline(0u);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // DelegatedFrameHost
@@ -85,17 +93,19 @@ void DelegatedFrameHost::RemoveObserverForTesting(Observer* observer) {
 void DelegatedFrameHost::WasShown(
     const viz::LocalSurfaceId& new_local_surface_id,
     const gfx::Size& new_dip_size,
-    blink::mojom::RecordContentToVisibleTimeRequestPtr
+    std::optional<blink::RecordContentToVisibleTimeRequest>
         record_tab_switch_time_request) {
   // Cancel any pending frame eviction and unpause it if paused.
   SetFrameEvictionStateAndNotifyObservers(FrameEvictionState::kNotStarted);
 
   frame_evictor_->SetVisible(true);
   if (record_tab_switch_time_request && compositor_) {
+    // Only requests with saved frames should be sent to the DelegatedFrameHost.
+    CHECK(record_tab_switch_time_request
+              ->AllEventsAreTabSwitchesWithSavedFrame());
     compositor_->RequestSuccessfulPresentationTimeForNextFrame(
         tab_switch_time_recorder_.TabWasShown(
-            true /* has_saved_frames */,
-            std::move(record_tab_switch_time_request)));
+            std::move(*record_tab_switch_time_request)));
   }
 
   // Use the default deadline to synchronize web content with browser UI.
@@ -111,15 +121,17 @@ void DelegatedFrameHost::WasShown(
 }
 
 void DelegatedFrameHost::RequestSuccessfulPresentationTimeForNextFrame(
-    blink::mojom::RecordContentToVisibleTimeRequestPtr visible_time_request) {
-  CHECK(visible_time_request);
+    blink::RecordContentToVisibleTimeRequest visible_time_request) {
   if (!compositor_)
     return;
+
+  // Only requests with saved frames should be sent to the DelegatedFrameHost.
+  CHECK(visible_time_request.AllEventsAreTabSwitchesWithSavedFrame());
+
   // Tab was shown while widget was already painting, eg. due to being
   // captured.
   compositor_->RequestSuccessfulPresentationTimeForNextFrame(
-      tab_switch_time_recorder_.TabWasShown(true /* has_saved_frames */,
-                                            std::move(visible_time_request)));
+      tab_switch_time_recorder_.TabWasShown(std::move(visible_time_request)));
 }
 
 void DelegatedFrameHost::CancelSuccessfulPresentationTimeRequest() {
@@ -342,23 +354,25 @@ void DelegatedFrameHost::EmbedSurface(
   if (!primary_surface_id ||
       primary_surface_id->local_surface_id() != local_surface_id_) {
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
-    // On Windows and Linux, we would like to produce new content as soon as
-    // possible or the OS will create an additional black gutter. Until we can
-    // block resize on surface synchronization on these platforms, we will not
-    // block UI on the top-level renderer. The exception to this is if we're
-    // using an infinite deadline, in which case we should respect the
-    // specified deadline and block UI since that's what was requested.
-    //
-    // On macOS, we want to generate new content as quickly as possible;
-    // otherwise, the waiting time for the render process will make users feel
-    // sluggish when resizing windows.
+    // On Windows, Linux, and macOS, we would like to produce new content as
+    // soon as possible or the OS will create an additional black gutter.
+    // Until we can block resize on surface synchronization on these
+    // platforms, we will not block UI on the top-level renderer. The
+    // exception is if we're using an infinite deadline, in which case we
+    // should respect the specified deadline and block UI since that's what
+    // was requested. The actual deadline policy is determined by the
+    // client via GetResizeDeadlinePolicy().
     if (deadline_policy.policy_type() !=
             cc::DeadlinePolicy::kUseInfiniteDeadline &&
         !current_frame_size_in_dip_.IsEmpty() &&
         current_frame_size_in_dip_ != surface_dip_size_) {
-      deadline_policy = cc::DeadlinePolicy::UseSpecifiedDeadline(0u);
+      deadline_policy = client_->GetResizeDeadlinePolicy();
     }
-#endif
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
+    if (force_specified_deadline_.has_value()) {
+      deadline_policy =
+          cc::DeadlinePolicy::UseSpecifiedDeadline(*force_specified_deadline_);
+    }
     current_frame_size_in_dip_ = surface_dip_size_;
     client_->DelegatedFrameHostGetLayer()->SetShowSurface(
         new_primary_surface_id, current_frame_size_in_dip_, GetGutterColor(),
@@ -366,6 +380,11 @@ void DelegatedFrameHost::EmbedSurface(
     if (compositor_)
       compositor_->OnChildResizing();
   }
+}
+
+void DelegatedFrameHost::SetForceSpecifiedDeadline(
+    std::optional<uint32_t> deadline_in_frames) {
+  force_specified_deadline_ = deadline_in_frames;
 }
 
 SkColor DelegatedFrameHost::GetGutterColor() const {
@@ -502,7 +521,7 @@ void DelegatedFrameHost::DidCopyStaleContent(
   auto transfer_resource = viz::TransferableResource::Make(
       result->GetSharedImage(),
       viz::TransferableResource::ResourceSource::kStaleContent,
-      gpu::SyncToken(), /*override=*/{.color_space = gfx::ColorSpace()});
+      gpu::SyncToken());
   viz::ReleaseCallback release_callback = result->TakeSharedImageOwnership();
   CHECK(release_callback);
 
@@ -539,7 +558,8 @@ void DelegatedFrameHost::ContinueDelegatedFrameEviction(
   //
   // TODO(b/337467299): determine why we are evicting without finding valid
   // surfaces.
-  DCHECK(!local_surface_id_.is_valid() || !surface_ids.empty());
+  CHECK(!local_surface_id_.is_valid() || !surface_ids.empty(),
+        base::NotFatalUntil::M152);
   if (!surface_ids.empty()) {
     CHECK(host_frame_sink_manager_);
     host_frame_sink_manager_->EvictSurfaces(surface_ids);

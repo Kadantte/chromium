@@ -41,7 +41,6 @@
 #include "chrome/browser/sessions/tab_restore_service_load_waiter.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -413,7 +412,7 @@ IN_PROC_BROWSER_TEST_F(BrowserCloseManagerBrowserTest, PRE_TestSessionRestore) {
 // Test that the tab closed after the aborted shutdown attempt is not re-opened
 // when restoring the session.
 // Flaky on chromium.chromeos, chromium.linux, and chromium.mac bots. See
-// https://crbug.com/1145235. It was flaky on Windows, but  crrev.com/c/2559156,
+// https://crbug.com/40729351. It was flaky on Windows, but crrev.com/c/2559156,
 // which added retries to ReplaceFile, should fix the Windows flakiness.
 #if BUILDFLAG(IS_WIN)
 #define MAYBE_TestSessionRestore TestSessionRestore
@@ -768,7 +767,7 @@ IN_PROC_BROWSER_TEST_F(BrowserCloseManagerBrowserTest,
       WindowOpenDisposition::NEW_WINDOW,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_BROWSER);
   BrowserWindowInterface* browser2 = browser_created_observer->Wait();
-  EXPECT_EQ(2u, chrome::GetTotalBrowserCount());
+  EXPECT_EQ(2u, GlobalBrowserCollection::GetInstance()->GetSize());
   EXPECT_TRUE(content::WaitForLoadStop(
       browser2->GetTabStripModel()->GetWebContentsAt(0)));
 
@@ -800,7 +799,7 @@ IN_PROC_BROWSER_TEST_F(BrowserCloseManagerBrowserTest,
   content::RunAllPendingInMessageLoop();
 
   // Closing browser shouldn't happen because of beforeunload handler.
-  EXPECT_EQ(2u, chrome::GetTotalBrowserCount());
+  EXPECT_EQ(2u, GlobalBrowserCollection::GetInstance()->GetSize());
   // Add beforeunload handler for the 2nd (title2.html) tab which haven't had it
   // yet.
   ASSERT_TRUE(
@@ -816,7 +815,7 @@ IN_PROC_BROWSER_TEST_F(BrowserCloseManagerBrowserTest,
   // that could have an impact.
   content::RunAllPendingInMessageLoop();
   // It shouldn't close the whole window/browser.
-  EXPECT_EQ(2u, chrome::GetTotalBrowserCount());
+  EXPECT_EQ(2u, GlobalBrowserCollection::GetInstance()->GetSize());
   EXPECT_EQ(2, browser2->GetTabStripModel()->count());
   // Accept closing the second tab.
   base::MockCallback<BrowserWindowInterface::BrowserDidCloseCallback>
@@ -834,7 +833,7 @@ IN_PROC_BROWSER_TEST_F(BrowserCloseManagerBrowserTest,
   browser_created_observer.emplace();
   chrome::OpenWindowWithRestoredTabs(browser()->GetProfile());
   browser2 = browser_created_observer->Wait();
-  EXPECT_EQ(2u, chrome::GetTotalBrowserCount());
+  EXPECT_EQ(2u, GlobalBrowserCollection::GetInstance()->GetSize());
 
   // Check the restored browser contents.
   EXPECT_EQ(2, browser2->GetTabStripModel()->count());
@@ -1072,7 +1071,7 @@ IN_PROC_BROWSER_TEST_F(BrowserCloseManagerBrowserTest,
   Browser* otr_browser = CreateBrowser(otr_profile);
   {
     ui_test_utils::BrowserDestroyedObserver observer(browser());
-    browser()->window()->Close();
+    browser()->GetWindow()->Close();
     observer.Wait();
   }
   ASSERT_NO_FATAL_FAILURE(CreateStalledDownload(otr_browser));
@@ -1113,20 +1112,20 @@ IN_PROC_BROWSER_TEST_F(BrowserCloseManagerBrowserTest,
   navigation_observer.Wait();
 
   int num_downloads_blocking = 0;
-  ASSERT_EQ(
-      Browser::DownloadCloseType::kOk,
-      otr_browser->OkToCloseWithInProgressDownloads(&num_downloads_blocking));
+  ASSERT_EQ(UnloadController::DownloadCloseType::kOk,
+            UnloadController::From(otr_browser)
+                ->OkToCloseWithInProgressDownloads(&num_downloads_blocking));
   ASSERT_EQ(0, num_downloads_blocking);
 
   {
     ui_test_utils::BrowserDestroyedObserver observer(otr_browser);
-    otr_browser->window()->Close();
+    otr_browser->GetWindow()->Close();
     observer.Wait();
   }
 
-  ASSERT_EQ(
-      Browser::DownloadCloseType::kBrowserShutdown,
-      browser()->OkToCloseWithInProgressDownloads(&num_downloads_blocking));
+  ASSERT_EQ(UnloadController::DownloadCloseType::kBrowserShutdown,
+            UnloadController::From(browser())->OkToCloseWithInProgressDownloads(
+                &num_downloads_blocking));
   ASSERT_EQ(1, num_downloads_blocking);
 
   {
@@ -1169,7 +1168,7 @@ IN_PROC_BROWSER_TEST_F(BrowserCloseManagerBrowserTest,
   ASSERT_NO_FATAL_FAILURE(CreateStalledDownload(browser()));
   {
     ui_test_utils::BrowserDestroyedObserver observer(browser());
-    browser()->window()->Close();
+    browser()->GetWindow()->Close();
     observer.Wait();
   }
 
@@ -1184,6 +1183,8 @@ IN_PROC_BROWSER_TEST_F(BrowserCloseManagerBrowserTest,
   ui_test_utils::WaitUntilBrowserBecomeActive(opened_browser);
   EXPECT_FALSE(browser_shutdown::IsTryingToQuit());
   EXPECT_NE(other_profile_ptr, opened_browser->profile());
+  EXPECT_TRUE(content::WaitForLoadStop(
+      opened_browser->tab_strip_model()->GetActiveWebContents()));
   EXPECT_EQ(GURL(chrome::kChromeUIDownloadsURL),
             opened_browser->tab_strip_model()
                 ->GetActiveWebContents()
@@ -1300,7 +1301,7 @@ IN_PROC_BROWSER_TEST_F(BrowserCloseManagerWithBackgroundModeBrowserTest,
                        DISABLED_CloseSingleBrowserWithBackgroundMode) {
   EXPECT_FALSE(IsBackgroundModeSuspended());
   ui_test_utils::BrowserDestroyedObserver observer(browser());
-  browser()->window()->Close();
+  browser()->GetWindow()->Close();
   observer.Wait();
   EXPECT_FALSE(browser_shutdown::IsTryingToQuit());
   EXPECT_TRUE(GlobalBrowserCollection::GetInstance()->IsEmpty());
@@ -1318,7 +1319,7 @@ IN_PROC_BROWSER_TEST_F(
   ScopedProfileKeepAlive tmp_profile_keep_alive(
       browser()->profile(), ProfileKeepAliveOrigin::kBrowserWindow);
   ui_test_utils::BrowserDestroyedObserver observer(browser());
-  browser()->window()->Close();
+  browser()->GetWindow()->Close();
   observer.Wait();
   EXPECT_FALSE(browser_shutdown::IsTryingToQuit());
   EXPECT_TRUE(GlobalBrowserCollection::GetInstance()->IsEmpty());
@@ -1332,7 +1333,6 @@ IN_PROC_BROWSER_TEST_F(
 
 #endif  // BUILDFLAG(ENABLE_BACKGROUND_MODE)
 
-#if BUILDFLAG(ENABLE_GLIC)
 
 class BrowserCloseManagerWithGlicBrowserTest
     : public BrowserCloseManagerBrowserTest {
@@ -1369,5 +1369,3 @@ IN_PROC_BROWSER_TEST_F(BrowserCloseManagerWithGlicBrowserTest,
   EXPECT_TRUE(browser_shutdown::IsTryingToQuit());
   EXPECT_TRUE(GlobalBrowserCollection::GetInstance()->IsEmpty());
 }
-
-#endif  // BUILDFLAG(ENABLE_GLIC)

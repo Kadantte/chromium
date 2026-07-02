@@ -22,6 +22,7 @@
 #include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "build/build_config.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/omnibox/browser/answers_cache.h"
 #include "components/omnibox/browser/autocomplete_enums.h"
@@ -69,7 +70,7 @@ class SearchProvider : public BaseSearchProvider,
   static int CalculateRelevanceForKeywordVerbatim(
       metrics::OmniboxInputType type,
       bool allow_exact_keyword_match,
-      bool prefer_keyword);
+      bool in_keyword_mode);
 
   // The verbatim score for an input which is not a URL.
   static const int kNonURLVerbatimRelevance = 1300;
@@ -378,6 +379,13 @@ class SearchProvider : public BaseSearchProvider,
 
   // Finds image URLs in most relevant results and uses client to prefetch them.
   void PrefetchImages(SearchSuggestionParser::Results* results);
+
+#if !BUILDFLAG(IS_IOS)
+  // Create a location-sending duplicate of `match` with subtype
+  // `SUBTYPE_LOCATION_SUGGEST_TRIGGER`.
+  std::unique_ptr<AutocompleteMatch> CreateLocationSignalingMatch(
+      const AutocompleteMatch& match);
+#endif
 
   // Maintains the TemplateURLs used.
   Providers providers_;

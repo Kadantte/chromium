@@ -9,6 +9,8 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/pagination_state.h"
+#include "third_party/blink/renderer/core/html/html_element.h"
+#include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/layout_embedded_content.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
@@ -20,7 +22,7 @@
 #include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
 #include "third_party/blink/renderer/core/paint/paint_property_tree_builder.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_supplement.h"
-#include "third_party/blink/renderer/platform/instrumentation/histogram.h"
+#include "third_party/blink/renderer/platform/graphics/compositing/paint_artifact_compositor.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
@@ -76,8 +78,14 @@ bool SetFragmentContentsCullRect(PaintLayer& layer,
     }
   } else {
     SetLayerNeedsRepaintOnCullRectChange(layer);
-    if (auto* scrollable_area = layer.GetScrollableArea())
+    if (auto* scrollable_area = layer.GetScrollableArea()) {
       scrollable_area->DidUpdateCullRect();
+      if (auto* compositor = layer.GetLayoutObject()
+                                 .GetFrameView()
+                                 ->GetPaintArtifactCompositor()) {
+        compositor->SetScrollingContentsCullRectChanged();
+      }
+    }
   }
 
   fragment.SetContentsCullRect(contents_cull_rect);
@@ -95,6 +103,10 @@ bool ShouldUseInfiniteCullRect(
     return true;
 
   const LayoutObject& object = layer.GetLayoutObject();
+  if (object.IsInclusiveDescendantOfUnboundedElement()) {
+    DCHECK(RuntimeEnabledFeatures::UnboundedElementEnabled());
+    return true;
+  }
   bool is_printing = object.GetDocument().Printing();
   if (IsA<LayoutView>(object) && !object.GetFrame()->ClipsContent() &&
       // We use custom top cull rect per page when printing.
@@ -102,11 +114,19 @@ bool ShouldUseInfiniteCullRect(
     return true;
   }
 
-  if (RuntimeEnabledFeatures::CanvasDrawElementEnabled()) {
+  if (RuntimeEnabledFeatures::CanvasDrawElementEnabled(
+          object.GetDocument().GetExecutionContext())) {
     auto* element = DynamicTo<Element>(object.GetNode());
     if (element && element->IsInCanvasSubtree()) {
       return true;
     }
+  }
+
+  // TODO(crbug.com/501066634): This can likely be tighter bounded than
+  // infinite, but the expectation is that the elements in the overscroll areas
+  // are fairly small.
+  if (object.IsOverscrollAreaParent()) {
+    return true;
   }
 
   if (const auto* properties = object.FirstFragment().PaintProperties()) {
@@ -203,8 +223,6 @@ CullRectUpdater::CullRectUpdater(PaintLayer& starting_layer,
 void CullRectUpdater::Update() {
   DCHECK(starting_layer_.IsRootLayer());
   TRACE_EVENT0("blink,benchmark", "CullRectUpdate");
-  SCOPED_BLINK_UMA_HISTOGRAM_TIMER_HIGHRES("Blink.CullRect.UpdateTime");
-
   UpdateInternal(CullRect::Infinite());
 }
 

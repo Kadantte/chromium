@@ -94,8 +94,8 @@ class IntentPickerBubbleViewTest : public TestWithBrowserView {
     CommitPendingLoad(&web_contents->GetController());
 
     auto* widget = IntentPickerBubbleView::ShowBubble(
-        anchor_view_, /*highlighted_button=*/nullptr, bubble_type, web_contents,
-        app_info_, show_stay_in_chrome,
+        views::BubbleAnchor(anchor_view_), /*highlighted_element=*/std::nullopt,
+        bubble_type, web_contents, app_info_, show_stay_in_chrome,
         /*show_remember_selection=*/true, initiating_origin,
         base::BindOnce(&IntentPickerBubbleViewTest::OnBubbleClosed,
                        base::Unretained(this)));
@@ -551,14 +551,8 @@ TEST_P(IntentPickerBubbleViewLayoutTest, DoubleClickToAccept) {
 INSTANTIATE_TEST_SUITE_P(
     All,
     IntentPickerBubbleViewLayoutTest,
-#if BUILDFLAG(IS_CHROMEOS)
-    testing::Values(apps::test::LinkCapturingFeatureVersion::kV1DefaultOff,
-                    apps::test::LinkCapturingFeatureVersion::kV2DefaultOff)
-#else
     testing::Values(apps::test::LinkCapturingFeatureVersion::kV2DefaultOff,
-                    apps::test::LinkCapturingFeatureVersion::kV2DefaultOn)
-#endif  // BUILDFLAG(IS_CHROMEOS)
-        ,
+                    apps::test::LinkCapturingFeatureVersion::kV2DefaultOn),
     apps::test::LinkCapturingVersionToString);
 
 class IntentPickerBubbleViewGridLayoutTest
@@ -646,13 +640,6 @@ TEST_P(IntentPickerBubbleViewGridLayoutTest, MAYBE_OpenWithReturnKey) {
 INSTANTIATE_TEST_SUITE_P(
     ,
     IntentPickerBubbleViewGridLayoutTest,
-#if BUILDFLAG(IS_CHROMEOS)
-    // BUG(370548596): Enable test coverage for kV2DefaultOff once we figure
-    // out the test failures (listed in the bug).
-    testing::Values(apps::test::LinkCapturingFeatureVersion::kV1DefaultOff)
-#else
     testing::Values(apps::test::LinkCapturingFeatureVersion::kV2DefaultOff,
-                    apps::test::LinkCapturingFeatureVersion::kV2DefaultOn)
-#endif  // BUILDFLAG(IS_CHROMEOS)
-        ,
+                    apps::test::LinkCapturingFeatureVersion::kV2DefaultOn),
     apps::test::LinkCapturingVersionToString);

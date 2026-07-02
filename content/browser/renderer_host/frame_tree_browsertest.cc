@@ -683,7 +683,7 @@ class DedicatedWorkerObserver : public DedicatedWorkerService::Observer {
     }
   }
   void OnWorkerCreated(const blink::DedicatedWorkerToken& worker_token,
-                       int worker_process_id,
+                       ChildProcessId worker_process_id,
                        const url::Origin& security_origin,
                        DedicatedWorkerCreator creator) override {
     is_created_ = true;
@@ -1494,9 +1494,9 @@ IN_PROC_BROWSER_TEST_F(FrameTreeBrowserTest,
   EXPECT_FALSE(root->HasTransientUserActivation());
 
   // Set the user activation bits.
-  root->UpdateUserActivationState(
+  EXPECT_TRUE(root->UpdateUserActivationState(
       blink::mojom::UserActivationUpdateType::kNotifyActivation,
-      blink::mojom::UserActivationNotificationType::kTest);
+      blink::mojom::UserActivationNotificationType::kTest));
   EXPECT_TRUE(root->HasStickyUserActivation());
   EXPECT_TRUE(root->HasTransientUserActivation());
 
@@ -1949,9 +1949,9 @@ IN_PROC_BROWSER_TEST_F(CrossProcessFrameTreeBrowserTest,
   EXPECT_FALSE(root->HasTransientUserActivation());
 
   // Set the user activation bits.
-  root->UpdateUserActivationState(
+  EXPECT_TRUE(root->UpdateUserActivationState(
       blink::mojom::UserActivationUpdateType::kNotifyActivation,
-      blink::mojom::UserActivationNotificationType::kTest);
+      blink::mojom::UserActivationNotificationType::kTest));
   EXPECT_TRUE(root->HasStickyUserActivation());
   EXPECT_TRUE(root->HasTransientUserActivation());
 

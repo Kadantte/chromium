@@ -26,7 +26,7 @@ source_set("settings") {
     "//url",
   ]
 
-  if (enable_dice_support) {
+  if (enable_dice_support || is_chromeos) {
     public_deps +=
         [ "//ui/webui/resources/js/batch_upload_promo:mojo_bindings" ]
   }
@@ -48,9 +48,11 @@ source_set("impl") {
     "//chrome/browser/extensions",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/signin",
-    "//chrome/browser/ui/promos:service",
+    "//chrome/browser/ui/desktop_to_mobile_promos:service",
+    "//chrome/browser/ui/webui/version",
     "//components/content_settings/core/browser",
     "//components/desktop_to_mobile_promos",
+    "//components/password_manager/core/browser/features:password_features",
     "//components/permissions:permissions_common",
     "//components/prefs",
     "//components/safe_browsing/core/common:features",

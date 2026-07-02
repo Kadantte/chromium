@@ -8,6 +8,7 @@
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/logging.h"
 #include "base/metrics/user_metrics.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -15,6 +16,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
+#include "chrome/browser/ui/fullscreen/browser_window_fullscreen_controller.h"
 #include "chrome/browser/ui/views/exclusive_access_bubble_views.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/common/channel_info.h"
@@ -340,7 +342,8 @@ void FullscreenControlHost::OnPopupTimeout(
 bool FullscreenControlHost::IsExitUiNeeded() {
   return browser_view_->IsFullscreen() &&
          browser_view_->GetExclusiveAccessContext()->CanUserExitFullscreen() &&
-         browser_view_->ShouldHideUIForFullscreen();
+         BrowserWindowFullscreenController::From(browser_view_->browser())
+             ->ShouldHideUIForFullscreen();
 }
 
 bool FullscreenControlHost::IsPointerLocked() {

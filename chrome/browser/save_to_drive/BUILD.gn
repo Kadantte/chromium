@@ -55,6 +55,8 @@ source_set("save_to_drive") {
     "//components/pdf/browser",
     "//content/public/browser",
     "//extensions/browser",
+    "//extensions/browser/mime_handler",
+    "//extensions/browser/mime_handler:stream_container",
     "//pdf:features",
   ]
 }
@@ -89,8 +91,10 @@ source_set("unit_tests") {
   sources = [
     "drive_uploader_unittest.cc",
     "multipart_drive_uploader_unittest.cc",
+    "pdf_content_reader_unittest.cc",
     "resumable_drive_uploader_unittest.cc",
     "save_to_drive_recorder_unittest.cc",
+    "save_to_drive_utils_unittest.cc",
     "time_remaining_calculator_unittest.cc",
   ]
   deps = [

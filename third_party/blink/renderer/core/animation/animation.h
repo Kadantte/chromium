@@ -35,6 +35,7 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/time/time.h"
+#include "cc/animation/animation.h"
 #include "third_party/blink/renderer/bindings/core/v8/active_script_wrappable.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_property.h"
@@ -77,9 +78,6 @@ enum class BlinkAnimationType : int {
   kAnimationTypeEnumMax = 6
 };
 
-// Enum indicating why we're calling StartAnimationOnCompositor.
-enum class StartOnCompositorReason { kGeneric, kAnimationTrigger };
-
 class CORE_EXPORT Animation : public EventTarget,
                               public ActiveScriptWrappable<Animation>,
                               public ExecutionContextLifecycleObserver,
@@ -90,6 +88,7 @@ class CORE_EXPORT Animation : public EventTarget,
   USING_PRE_FINALIZER(Animation, Dispose);
 
  public:
+  using AutoRewind = cc::Animation::AutoRewind;
   // Priority for sorting getAnimation by Animation class, arranged from lowest
   // priority to highest priority as per spec:
   // https://w3.org/TR/web-animations-1/#dom-document-getanimations
@@ -212,7 +211,7 @@ class CORE_EXPORT Animation : public EventTarget,
   void OnActivePhaseStateChange(bool in_active_phase);
 
   bool Limited() const { return Limited(CurrentTimeInternal()); }
-  bool FinishedInternal() const { return finished_; }
+  bool Inactive() const { return inactive_; }
 
   DEFINE_ATTRIBUTE_EVENT_LISTENER(finish, kFinish)
   DEFINE_ATTRIBUTE_EVENT_LISTENER(cancel, kCancel)
@@ -262,8 +261,8 @@ class CORE_EXPORT Animation : public EventTarget,
   const std::optional<TimelineOffset>& GetRangeEndInternal() const {
     return range_end_;
   }
-  void SetRangeStartInternal(const std::optional<TimelineOffset>& range_start);
-  void SetRangeEndInternal(const std::optional<TimelineOffset>& range_end);
+  void SetRangeStartInternal(std::optional<TimelineOffset> range_start);
+  void SetRangeEndInternal(std::optional<TimelineOffset> range_end);
 
   // This method is only called during style update of a CSS animation.
   // Preventing an endpoint from stomping a value set via the rangeStart or
@@ -307,7 +306,7 @@ class CORE_EXPORT Animation : public EventTarget,
   // Pausing via this method is not reflected in the value returned by
   // paused() and must never overlap with pausing via pause().
   // Deprecated: Do not use in new tests.
-  void PauseForTesting(AnimationTimeDelta pause_time);
+  void PauseForTesting(AnimationTimeDelta hold_time);
   void DisableCompositedAnimationForTesting();
 
   // This should only be used for CSS
@@ -349,8 +348,7 @@ class CORE_EXPORT Animation : public EventTarget,
   // the influence of the compositor animation trigger attempting to push the
   // animation to the compositor. Returns false otherwise.
   bool StartTriggeredAnimationOnCompositor(
-      const PaintArtifactCompositor* paint_artifact_compositor,
-      bool& pause_keyframe_models);
+      const PaintArtifactCompositor* paint_artifact_compositor);
   void CancelAnimationOnCompositor();
   void RestartAnimationOnCompositor(
       CompositorPendingReason reason =
@@ -360,6 +358,16 @@ class CORE_EXPORT Animation : public EventTarget,
   CompositorAnimations::FailureReasons LastCompositorFailureReason() const {
     return last_compositor_failure_reasons_;
   }
+
+  // The compositor started playing this animation on the impl thread.
+  // Synchronize to the impl thread start time. This is only called for
+  // triggered[1] animations.
+  // [1] https://drafts.csswg.org/animation-triggers-1/
+  void NotifyAnimationStartedAsync(base::TimeDelta monotonic_time,
+                                   AutoRewind auto_rewind);
+  // The compositor paused this animation on the impl thread.
+  // This is only called for triggered animations.
+  void NotifyAnimationPausedAsync(base::TimeDelta monotonic_time);
 
   void NotifyReady(AnimationTimeDelta ready_time);
   void CommitPendingPlay(AnimationTimeDelta ready_time);
@@ -428,7 +436,7 @@ class CORE_EXPORT Animation : public EventTarget,
 
   bool IsInDisplayLockedSubtree();
 
-  base::TimeDelta ComputeCompositorTimeOffset() const;
+  std::optional<base::TimeDelta> ComputeCompositorHoldTime() const;
 
   // Updates |compositor_property_animations_have_no_effect_| and marks the
   // animation as pending if it changes.
@@ -497,10 +505,9 @@ class CORE_EXPORT Animation : public EventTarget,
   // Plays an animation. When auto_rewind is enabled, the current time can be
   // adjusted to accommodate reversal of an animation or snapping to an
   // endpoint.
-  enum class AutoRewind { kDisabled, kEnabled };
   void PlayInternal(AutoRewind auto_rewind, ExceptionState& exception_state);
   void PauseInternal(ExceptionState& exception_state);
-  void ReverseInternal(ExceptionState& exception_state);
+  void ReverseInternal(AutoRewind auto_rewind, ExceptionState& exception_state);
 
   void AddTrigger(AnimationTrigger* trigger);
   void RemoveTrigger(AnimationTrigger* trigger);
@@ -618,6 +625,8 @@ class CORE_EXPORT Animation : public EventTarget,
   // Returns the effective zoom for the keyframe effect's target, or 1.f if
   // there is no keyframe effect or no target with computed style.
   float GetKeyframeEffectTargetZoom() const;
+  float RangeOffsetZoom(const std::optional<TimelineOffset>& offset) const;
+  void ApplyZoomToTimelineOffset(std::optional<TimelineOffset>& offset);
 
   String id_;
 
@@ -682,9 +691,11 @@ class CORE_EXPORT Animation : public EventTarget,
   // has changed by means other than the ordinary progression of time
   bool outdated_;
 
-  // Indicates the animation is no longer active. Cancelled animation is marked
-  // as finished_.
-  bool finished_;
+  // Indicates the animation is no longer active. An animation in the idle state
+  // or a finished animation with a monotonic timeline, does not require
+  // animation updates.
+  bool inactive_;
+
   // Indicates finish notification has been handled.
   bool committed_finish_notification_;
   // Holds a 'finished' event queued for asynchronous dispatch via the
@@ -804,6 +815,8 @@ class CORE_EXPORT Animation : public EventTarget,
   FRIEND_TEST_ALL_PREFIXES(CSSAnimationsTriggerTest, ChangeTriggerAttachments);
   FRIEND_TEST_ALL_PREFIXES(CSSAnimationsTriggerTest,
                            SameTriggerNameDifferentSource);
+  FRIEND_TEST_ALL_PREFIXES(ScriptedTimelineTriggerTest,
+                           ForbidScriptDuringActivation);
 };
 
 }  // namespace blink

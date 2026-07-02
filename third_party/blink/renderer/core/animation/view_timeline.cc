@@ -302,7 +302,7 @@ ViewTimeline::ViewTimeline(Document* document,
       inset_(inset) {}
 
 void ViewTimeline::CalculateOffsets(PaintLayerScrollableArea* scrollable_area,
-                                    ScrollOrientation physical_orientation,
+                                    PhysicalAxis physical_orientation,
                                     TimelineState* state) const {
   // Do not call this method with an unresolved timeline.
   // Called from ScrollTimeline::ComputeTimelineState, which has safeguard.
@@ -322,12 +322,12 @@ void ViewTimeline::CalculateOffsets(PaintLayerScrollableArea* scrollable_area,
   DCHECK(subject_position);
 
   // TODO(crbug.com/1448801): Handle nested sticky elements.
-  double target_offset = physical_orientation == kHorizontalScroll
+  double target_offset = physical_orientation == PhysicalAxis::kHorizontal
                              ? subject_position->x()
                              : subject_position->y();
   double target_size;
   LayoutUnit viewport_size;
-  if (physical_orientation == kHorizontalScroll) {
+  if (physical_orientation == PhysicalAxis::kHorizontal) {
     target_size = subject_size->width();
     viewport_size = scrollable_area->LayoutContentRect().Width();
   } else {
@@ -383,7 +383,7 @@ void ViewTimeline::ApplyStickyAdjustments(ScrollOffsets& scroll_offsets,
                                           double viewport_size,
                                           double target_size,
                                           double target_offset,
-                                          ScrollOrientation orientation,
+                                          PhysicalAxis orientation,
                                           LayoutBox* scroll_container) const {
   if (!subject()) {
     return;
@@ -400,18 +400,17 @@ void ViewTimeline::ApplyStickyAdjustments(ScrollOffsets& scroll_offsets,
     return;
   }
 
-  StickyPositionScrollingConstraints* constraints =
+  StickyPositionScrollingConstraints constraints =
       sticky_container->StickyConstraints();
-  if (!constraints) {
+
+  const auto* axis_data = constraints.AxisData(orientation);
+  if (!axis_data) {
     return;
   }
 
-  const PhysicalRect& container =
-      constraints->scroll_container_relative_containing_block_rect;
-  const PhysicalRect& sticky_rect =
-      constraints->scroll_container_relative_sticky_box_rect;
-
-  bool is_horizontal = orientation == kHorizontalScroll;
+  const BoxEdge& container =
+      axis_data->scroll_container_relative_containing_block_range;
+  const BoxEdge& sticky = axis_data->scroll_container_relative_sticky_box_range;
 
   // This is the sticky element's maximum forward displacement (from its static
   // position) due to having "left" or "top" set. It is based on the available
@@ -431,35 +430,17 @@ void ViewTimeline::ApplyStickyAdjustments(ScrollOffsets& scroll_offsets,
 
   // The maximum adjustment from each offset property is the available room
   // from the opposite edge of the sticky element in its static position.
-  if (is_horizontal) {
-    if (constraints->left_inset) {
-      max_forward_adjust = (container.Right() - sticky_rect.Right()).ToDouble();
-      forward_stickiness =
-          ComputeStickinessRange(*constraints->left_inset, sticky_rect.X(),
-                                 viewport_size, target_size, target_offset);
-    }
-    if (constraints->right_inset) {
-      max_backward_adjust = (container.X() - sticky_rect.X()).ToDouble();
-      backward_stickiness = ComputeStickinessRange(
-          LayoutUnit(viewport_size) - *constraints->right_inset -
-              sticky_rect.Width(),
-          sticky_rect.X(), viewport_size, target_size, target_offset);
-    }
-  } else {  // Vertical.
-    if (constraints->top_inset) {
-      max_forward_adjust =
-          (container.Bottom() - sticky_rect.Bottom()).ToDouble();
-      forward_stickiness =
-          ComputeStickinessRange(*constraints->top_inset, sticky_rect.Y(),
-                                 viewport_size, target_size, target_offset);
-    }
-    if (constraints->bottom_inset) {
-      max_backward_adjust = (container.Y() - sticky_rect.Y()).ToDouble();
-      backward_stickiness = ComputeStickinessRange(
-          LayoutUnit(viewport_size) - *constraints->bottom_inset -
-              sticky_rect.Height(),
-          sticky_rect.Y(), viewport_size, target_size, target_offset);
-    }
+  if (axis_data->min_inset) {
+    max_forward_adjust = (container.End() - sticky.End()).ToDouble();
+    forward_stickiness =
+        ComputeStickinessRange(*axis_data->min_inset, sticky.offset,
+                               viewport_size, target_size, target_offset);
+  }
+  if (axis_data->max_inset) {
+    max_backward_adjust = (container.offset - sticky.offset).ToDouble();
+    backward_stickiness = ComputeStickinessRange(
+        LayoutUnit(viewport_size) - *axis_data->max_inset - sticky.size,
+        sticky.offset, viewport_size, target_size, target_offset);
   }
 
   // Now apply the necessary adjustments to scroll_offsets and view_offsets.
@@ -598,15 +579,14 @@ CSSNumericValue* ViewTimeline::getCurrentTime(const String& rangeName) {
   if (range == 0)
     return nullptr;
 
-  std::optional<base::TimeDelta> current_time = CurrentPhaseAndTime().time;
+  std::optional<base::TimeDelta> current_time = CurrentTimeInternal();
   // If current time is null then the timeline must be inactive, which is
   // handled above.
   DCHECK(current_time);
   DCHECK(GetDuration());
 
-  double timeline_progress =
-      CurrentPhaseAndTime().time.value().InMillisecondsF() /
-      GetDuration().value().InMillisecondsF();
+  double timeline_progress = current_time.value().InMillisecondsF() /
+                             GetDuration().value().InMillisecondsF();
 
   double named_range_progress =
       (timeline_progress - relative_start_offset) / range;

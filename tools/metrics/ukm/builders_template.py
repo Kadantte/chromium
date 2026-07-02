@@ -4,7 +4,7 @@
 
 """Templates for generating builder classes for UKM entries."""
 
-import setup_modules
+import setup_modules  # pylint: disable=unused-import
 
 import chromium_src.tools.metrics.ukm.codegen as codegen
 
@@ -97,6 +97,6 @@ const uint64_t {event.name}::k{metric.name}NameHash;
 """)
 
 
-def WriteFiles(outdir, relpath, data):
-  HEADER.WriteFile(outdir, relpath, data)
-  IMPL.WriteFile(outdir, relpath, data)
+def write_files(outdir, relpath, data):
+  HEADER.write_file(outdir, relpath, data)
+  IMPL.write_file(outdir, relpath, data)

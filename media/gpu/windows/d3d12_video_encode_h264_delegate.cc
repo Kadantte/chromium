@@ -4,6 +4,8 @@
 
 #include "media/gpu/windows/d3d12_video_encode_h264_delegate.h"
 
+#include <algorithm>
+
 #include "base/bits.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/strings/stringprintf.h"
@@ -394,6 +396,11 @@ EncoderStatus D3D12VideoEncodeH264Delegate::EncodeImpl(
       destroy_buffer = 1;
     }
   } else {
+    if (options.reference_buffers.size() > list0_reference_frames_.size()) {
+      return {EncoderStatus::Codes::kBadReferenceBuffer,
+              "Number of manual reference buffers exceeds that is supported by "
+              "encoder"};
+    }
     reference_buffers = options.reference_buffers;
     update_buffer = options.update_buffer;
   }
@@ -643,7 +650,13 @@ EncoderStatus D3D12VideoEncodeH264Delegate::InitializeVideoEncoder(
                                  "support manual reference control, got %u",
                                  picture_control_support_h264.MaxDPBCapacity)};
     }
-    max_num_ref_frames_ = picture_control_support_h264.MaxDPBCapacity;
+    // Manual reference control is implemented via H.264 long-term references,
+    // so the number of usable slots must not exceed the driver's
+    // MaxLongTermReferences. Reserve one extra DPB slot for frame_num gap
+    // handling (matches the SVC path), but never exceed MaxDPBCapacity.
+    max_num_ref_frames_ = std::min<uint32_t>(
+        picture_control_support_h264.MaxDPBCapacity,
+        picture_control_support_h264.MaxLongTermReferences + 1);
   }
 
   if ((config.bitrate.mode() == Bitrate::Mode::kConstant ||

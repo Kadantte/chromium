@@ -20,6 +20,8 @@
 #include "chrome/browser/preloading/prefetch/search_prefetch/search_prefetch_service.h"
 #include "chrome/browser/preloading/prefetch/search_prefetch/search_prefetch_service_factory.h"
 #include "chrome/browser/preloading/prerender/prerender_utils.h"
+#include "chrome/browser/preloading/prerender/search_prewarm_progress_service.h"
+#include "chrome/browser/preloading/prerender/search_prewarm_progress_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "components/omnibox/browser/autocomplete_match.h"
@@ -41,11 +43,11 @@
 #include "content/public/browser/web_contents_user_data.h"
 #include "content/public/common/content_features.h"
 #include "net/base/url_util.h"
+#include "net/http/http_response_headers.h"
 #include "url/gurl.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #endif
 
@@ -173,7 +175,12 @@ class PrerenderManager::SearchPrerenderTask {
   const GURL prerendered_canonical_search_url_;
 };
 
-PrerenderManager::~PrerenderManager() = default;
+PrerenderManager::~PrerenderManager() {
+  if (is_search_prewarm_ongoing_) {
+    // NotifySearchPrewarmFinished will remove the observer.
+    NotifySearchPrewarmFinished(content::PrerenderLifecycleStatus::kCancelled);
+  }
+}
 
 void PrerenderManager::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
@@ -229,7 +236,10 @@ PrerenderManager::StartPrerenderDirectUrlInput(
           /*planned_max_preloading_type=*/content::PreloadingType::kPrerender),
       &preloading_attempt,
       /*url_match_predicate=*/{},
-      /*prerender_navigation_handle_callback=*/{},
+      /*prerender_navigation_handle_callback=*/
+      base::BindRepeating(
+          &page_load_metrics::NavigationHandleUserData::
+              AttachOmniboxDirectUrlInputNavigationHandleUserData),
       /*allow_reuse=*/false);
 
   if (direct_url_input_prerender_handle_) {
@@ -239,8 +249,6 @@ PrerenderManager::StartPrerenderDirectUrlInput(
 }
 
 bool PrerenderManager::MaybeStartPrewarmSearchResult() {
-  // TODO(https://crbug.com/423465927): Revalidate the handle when the prewarm
-  // is reused for prerendering.
   GURL prewarm_url;
   PrewarmDecision decision = ShouldPrewarm(prewarm_url);
   base::UmaHistogramEnumeration(kHistogramPrerenderPrewarmDecision, decision);
@@ -284,10 +292,60 @@ bool PrerenderManager::MaybeStartPrewarmSearchResult() {
           GetWeakPtr()),
       /*allow_reuse=*/true);
 
+  if (search_prewarm_handle_ && search_prewarm_handle_->IsValid() &&
+      search_prewarm_handle_->IsWaitingForResponseHeaders()) {
+    auto* profile =
+        Profile::FromBrowserContext(web_contents()->GetBrowserContext());
+    auto* service = SearchPrewarmProgressServiceFactory::GetForProfile(profile);
+    if (service) {
+      service->OnSearchPrewarmStarted(
+          search_prewarm_handle_->GetPrerenderHostId());
+      is_search_prewarm_ongoing_ = true;
+      search_prewarm_handle_->AddObserver(this);
+    }
+  }
+
   return search_prewarm_handle_ != nullptr;
 }
 
+void PrerenderManager::NotifySearchPrewarmFinished(
+    content::PrerenderLifecycleStatus result) {
+  CHECK(is_search_prewarm_ongoing_);
+  is_search_prewarm_ongoing_ = false;
+  if (search_prewarm_handle_) {
+    search_prewarm_handle_->RemoveObserver(this);
+  }
+  auto* profile =
+      Profile::FromBrowserContext(web_contents()->GetBrowserContext());
+  auto* service = SearchPrewarmProgressServiceFactory::GetForProfile(profile);
+  if (service) {
+    service->OnSearchPrewarmFinished(
+        search_prewarm_handle_->GetPrerenderHostId(), result);
+  }
+}
+
+void PrerenderManager::OnLifecycleStateChanged(
+    content::PrerenderLifecycleStatus status) {
+  switch (status) {
+    case content::PrerenderLifecycleStatus::kHTTPSuccessResponse:
+    case content::PrerenderLifecycleStatus::kHttpBadResponse:
+    case content::PrerenderLifecycleStatus::kStop:
+    case content::PrerenderLifecycleStatus::kCancelled:
+    case content::PrerenderLifecycleStatus::kOtherFailure:
+      // Any terminal state (or headers received) for the prewarm phase
+      // should notify to unthrottle.
+      NotifySearchPrewarmFinished(status);
+      break;
+    case content::PrerenderLifecycleStatus::kActivated:
+      // PrerenderManager doesn't care about activation for prewarm.
+      break;
+  }
+}
+
 void PrerenderManager::StopPrewarmSearchResultForTesting() {
+  if (is_search_prewarm_ongoing_) {
+    NotifySearchPrewarmFinished(content::PrerenderLifecycleStatus::kStop);
+  }
   search_prewarm_handle_.reset();
 }
 
@@ -342,7 +400,10 @@ void PrerenderManager::StartPrerenderSearchResult(
               /*planned_max_preloading_type=*/content::PreloadingType::
                   kPrerender),
           preloading_attempt.get(), std::move(url_match_predicate),
-          /*prerender_navigation_handle_callback=*/{},
+          /*prerender_navigation_handle_callback=*/
+          base::BindRepeating(
+              &page_load_metrics::NavigationHandleUserData::
+                  AttachOmniboxDefaultSearchEngineNavigationHandleUserData),
           features::kPrerender2ReuseSearchResultHost.Get());
 
   if (prerender_handle) {
@@ -432,11 +493,16 @@ void PrerenderManager::ResetPrerenderHandlesOnPrimaryPageChanged(
 
 PrerenderManager::PrewarmDecision PrerenderManager::ShouldPrewarm(
     GURL& prewarm_url) {
-  if (search_prewarm_handle_ || HasSearchResultPagePrerendered()) {
+  if (IsPrewarmValid() || HasSearchResultPagePrerendered()) {
     return PrewarmDecision::kAlreadyExists;
   }
   if (!base::FeatureList::IsEnabled(features::kPrewarm)) {
     return PrewarmDecision::kDisabled;
+  }
+  auto* service = SearchPrewarmProgressServiceFactory::GetForProfile(
+      Profile::FromBrowserContext(web_contents()->GetBrowserContext()));
+  if (service && service->ShouldBlockPrewarm()) {
+    return PrewarmDecision::kDisabledByBlackout;
   }
   if (static_cast<uint64_t>(features::kMinMemoryThresholdMb.Get()) >
       base::SysInfo::AmountOfTotalPhysicalMemory().InMiB()) {
@@ -501,6 +567,14 @@ PrerenderManager::PrewarmDecision PrerenderManager::ShouldPrewarm(
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   return PrewarmDecision::kReady;
+}
+
+bool PrerenderManager::IsPrewarmValid() {
+  if (base::FeatureList::IsEnabled(features::kPrewarm) &&
+      features::kPrewarmRevalidate.Get()) {
+    return search_prewarm_handle_ && search_prewarm_handle_->IsValid();
+  }
+  return search_prewarm_handle_ != nullptr;
 }
 
 void PrerenderManager::OnSearchPrewarmPrerenderNavigationHandle(

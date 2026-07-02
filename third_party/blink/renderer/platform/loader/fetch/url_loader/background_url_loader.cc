@@ -9,6 +9,7 @@
 #include <memory>
 #include <variant>
 
+#include "base/byte_size.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
@@ -469,10 +470,10 @@ class BackgroundURLLoader::Context
     net::HttpRequestHeaders modified_headers;
     if (client_->WillFollowRedirect(
             url_, redirect_info.new_site_for_cookies,
-            WebString::FromUTF8(redirect_info.new_referrer),
+            WebString::FromUtf8(redirect_info.new_referrer),
             ReferrerUtils::NetToMojoReferrerPolicy(
                 redirect_info.new_referrer_policy),
-            WebString::FromUTF8(redirect_info.new_method), response,
+            WebString::FromUtf8(redirect_info.new_method), response,
             has_devtools_request_id_, &removed_headers, modified_headers,
             redirect_info.insecure_scheme_was_upgraded)) {
       PostCrossThreadTask(
@@ -516,15 +517,16 @@ class BackgroundURLLoader::Context
   }
   void OnCompletedRequest(const network::URLLoaderCompletionStatus& status) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(main_thread_sequence_checker_);
-    int64_t total_transfer_size = status.encoded_data_length;
-    int64_t encoded_body_size = status.encoded_body_length;
+    int64_t total_transfer_size = status.encoded_data_length.InBytes();
+    int64_t encoded_body_size = status.encoded_body_length.InBytes();
     if (status.error_code != net::OK) {
       client_->DidFail(WebURLError::Create(status, url_),
                        status.completion_time, total_transfer_size,
-                       encoded_body_size, status.decoded_body_length);
+                       encoded_body_size, status.decoded_body_length.InBytes());
     } else {
       client_->DidFinishLoading(status.completion_time, total_transfer_size,
-                                encoded_body_size, status.decoded_body_length);
+                                encoded_body_size,
+                                status.decoded_body_length.InBytes());
     }
   }
 

@@ -4,58 +4,224 @@
 
 package org.chromium.chrome.browser.ui.side_ui;
 
+import android.util.ArrayMap;
+
 import androidx.annotation.IntDef;
 import androidx.annotation.Px;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Target;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 
 /**
  * Coordinator for "side UI," with "side UI" referring to views that will anchor to either the left
  * or right side of the main browser window.
  */
 @NullMarked
-public interface SideUiCoordinator {
+public interface SideUiCoordinator extends SideUiStateProvider {
 
     /**
-     * The side of the window ({@link #START} or {@link #END}) that a {@link SideUiContainer} will
-     * anchor to.
+     * Minimum width (in dp) reserved for {@code WebContents} when calculating {@link SideUiSpecs}
+     * and determining {@link SideUiContainer}s' visibility.
      */
-    @IntDef({AnchorSide.START, AnchorSide.END})
+    int MIN_WEB_CONTENTS_WIDTH_DP = 412;
+
+    /**
+     * The IDs assigned to known {@link SideUiContainer}s listed in descending order of their
+     * priorities by which they consume available space. The smaller number indicates higher
+     * priority.
+     */
+    @IntDef({
+        SideUiId.VERTICAL_TABS,
+        SideUiId.SIDE_PANEL,
+        SideUiId.SIDE_UI_FOR_TESTING_HIGH_PRIORITY,
+        SideUiId.SIDE_UI_FOR_TESTING_LOW_PRIORITY
+    })
+    @Target(ElementType.TYPE_USE)
+    @interface SideUiId {
+        int VERTICAL_TABS = 0;
+        int SIDE_PANEL = 1;
+        int SIDE_UI_FOR_TESTING_HIGH_PRIORITY = 2;
+        int SIDE_UI_FOR_TESTING_LOW_PRIORITY = 3;
+        int NUM_ENTRIES = 4;
+    }
+
+    /**
+     * The sides of the window that a {@link SideUiContainer} will anchor to. Each value should have
+     * a corresponding container view in main_forked_with_secondary_ui_container.xml.
+     */
+    @IntDef({AnchorSide.LEFT, AnchorSide.RIGHT})
+    @Target(ElementType.TYPE_USE)
     @interface AnchorSide {
-        int START = 0;
-        int END = 1;
+        int LEFT = 0;
+        int RIGHT = 1;
         int NUM_ENTRIES = 2;
     }
 
     /**
-     * POD-type that holds the info for a request to reposition or resize a {@link SideUiContainer}.
+     * POD-type that holds the showability for {@link SideUiContainer}s.
+     *
+     * <p>What "showability" means:
+     *
+     * <ul>
+     *   <li>Showable: There is enough space to show a {@link SideUiContainer}, but it may not be
+     *       actually shown.
+     *   <li>Unshowable: There is not enough space to show a {@link SideUiContainer}, and that
+     *       container is guaranteed to be hidden.
+     * </ul>
+     *
+     * <p>One use case of showability is using it to control the entry point visibility of a feature
+     * that needs a {@link SideUiContainer}.
      */
-    final class SideUiContainerProperties {
-        final @AnchorSide int mAnchorSide;
-        final @Px int mWidth;
+    final class SideUiShowability {
+        /** IDs of showable {@link SideUiContainer}s. */
+        public final List<@SideUiId Integer> mShowableSideUiIds;
 
-        public SideUiContainerProperties(@AnchorSide int anchorSide, @Px int width) {
-            mAnchorSide = anchorSide;
-            mWidth = width;
+        /** IDs of unshowable {@link SideUiContainer}s. */
+        public final List<@SideUiId Integer> mUnshowableSideUiIds;
+
+        public SideUiShowability(
+                List<@SideUiId Integer> showableSideUiIds,
+                List<@SideUiId Integer> unshowableSideUiIds) {
+            mShowableSideUiIds = List.copyOf(showableSideUiIds);
+            mUnshowableSideUiIds = List.copyOf(unshowableSideUiIds);
+        }
+
+        @Override
+        public boolean equals(@Nullable Object obj) {
+            if (this == obj) {
+                return true;
+            }
+
+            if (!(obj instanceof SideUiShowability other)) {
+                return false;
+            }
+
+            return mShowableSideUiIds.equals(other.mShowableSideUiIds)
+                    && mUnshowableSideUiIds.equals(other.mUnshowableSideUiIds);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(mShowableSideUiIds, mUnshowableSideUiIds);
+        }
+    }
+
+    /** POD-type that holds the request for {@link #updateUi}. */
+    final class UiUpdateRequest {
+        /**
+         * ID of the {@link SideUiContainer} that requested the UI update.
+         *
+         * <p>This should be null if the request isn't from a {@link SideUiContainer}.
+         */
+        final @Nullable @SideUiId Integer mSideUiId;
+
+        /** Whether animations should be suppressed during the UI update. */
+        final boolean mSuppressAnimations;
+
+        public UiUpdateRequest(@Nullable @SideUiId Integer sideUiId, boolean suppressAnimations) {
+            mSideUiId = sideUiId;
+            mSuppressAnimations = suppressAnimations;
         }
     }
 
     /**
      * POD-type that holds the info about the Side UI specs to be used by a {@link SideUiObserver}.
-     * More specifically, this holds the startX (in px) where start-anchored UI ends and the endX
-     * (in px) where end-anchored UI starts.
+     * Specifically, this holds the widths (in px) for the parent ViewGroups (one for left-anchored
+     * UI and one for right-anchored UI for now ) that hold a {@link SideUiContainer}'s View, based
+     * on the SideUiContainer's specified {@link AnchorSide}.
+     *
+     * <p><strong>Note:</strong> This is a passive data spec and does not guarantee that these specs
+     * are currently applied to the active UI. To query the actual active UI state, use {@link
+     * SideUiStateProvider} instead.
      */
     final class SideUiSpecs {
-        /** A {@link SideUiSpecs} with a startX and endX of 0. */
-        static final SideUiSpecs EMPTY_SIDE_UI_SPECS =
-                new SideUiSpecs(/* startX= */ 0, /* endX= */ 0);
+        /** Maps @AnchorSide to ContainerWidth. */
+        private final Map<@AnchorSide Integer, Integer> mSideUiWidths = new ArrayMap<>();
 
-        final @Px int mStartX;
-        final @Px int mEndX;
+        public SideUiSpecs(Map<@AnchorSide Integer, Integer> sideUiWidths) {
+            mSideUiWidths.putAll(sideUiWidths);
+        }
 
-        public SideUiSpecs(@Px int startX, @Px int endX) {
-            mStartX = startX;
-            mEndX = endX;
+        public SideUiSpecs(@Px int leftContainerWidth, @Px int rightContainerWidth) {
+            assert leftContainerWidth >= 0;
+            assert rightContainerWidth >= 0;
+            mSideUiWidths.put(AnchorSide.LEFT, leftContainerWidth);
+            mSideUiWidths.put(AnchorSide.RIGHT, rightContainerWidth);
+        }
+
+        public int getWidth(@AnchorSide int side) {
+            return mSideUiWidths.getOrDefault(side, 0);
+        }
+
+        /**
+         * Returns all the entries in the SideUiSpecs. Each entry has a mapping from
+         * {@link @AnchorSide} to width.
+         */
+        public Set<Map.Entry<@AnchorSide Integer, Integer>> entrySet() {
+            return mSideUiWidths.entrySet();
+        }
+
+        /**
+         * Calculates the difference between this {@link SideUiSpecs} and the given {@link
+         * SideUiSpecs}.
+         *
+         * <p>For each {@link AnchorSide}, if the widths are different, the returned {@link
+         * SideUiSpecs} retains the width of this {@link SideUiSpecs}. Otherwise, the width is set
+         * to 0.
+         *
+         * <p>The returned {@link SideUiSpecs} is useful for only updating the parts in the UI that
+         * are changed.
+         *
+         * @param sideUiSpecs The {@link SideUiSpecs} to compare against.
+         * @return A {@link SideUiSpecs} representing the diff.
+         */
+        public SideUiSpecs diffAgainst(SideUiSpecs sideUiSpecs) {
+            Map<@AnchorSide Integer, Integer> diffWidths = new ArrayMap<>();
+
+            for (@AnchorSide int side = 0; side < AnchorSide.NUM_ENTRIES; side++) {
+                Integer thisWidth = mSideUiWidths.get(side);
+                Integer otherWidth = sideUiSpecs.mSideUiWidths.get(side);
+
+                if (thisWidth == null && otherWidth == null) {
+                    continue;
+                }
+
+                if (thisWidth == null) {
+                    diffWidths.put(side, 0);
+                } else if (!thisWidth.equals(otherWidth)) {
+                    diffWidths.put(side, thisWidth);
+                }
+            }
+
+            return new SideUiSpecs(diffWidths);
+        }
+
+        /** Returns true if the width for any {@link AnchorSide} doesn't exist. */
+        public boolean isEmpty() {
+            return mSideUiWidths.isEmpty();
+        }
+
+        @Override
+        public boolean equals(@Nullable Object obj) {
+            if (!(obj instanceof SideUiSpecs that)) return false;
+            return this.mSideUiWidths.equals(that.mSideUiWidths);
+        }
+
+        @Override
+        public String toString() {
+            return String.format(
+                    Locale.ENGLISH,
+                    "[LeftContainerWidth: %d, RightContainerWidth: %d]",
+                    mSideUiWidths.get(AnchorSide.LEFT),
+                    mSideUiWidths.get(AnchorSide.RIGHT));
         }
     }
 
@@ -63,6 +229,8 @@ public interface SideUiCoordinator {
      * Registers a {@link SideUiContainer} to be maintained by this coordinator.
      *
      * @param sideUiContainer The {@link SideUiContainer} to register.
+     * @throw IllegalArgumentException if the given sideUiContainer has conflicts with the existing
+     *     ones, such as duplicated {@link SideUiId} or {@link AnchorSide}.
      */
     void registerSideUiContainer(SideUiContainer sideUiContainer);
 
@@ -75,45 +243,15 @@ public interface SideUiCoordinator {
     void unregisterSideUiContainer(SideUiContainer sideUiContainer);
 
     /**
-     * Adds a {@link SideUiObserver}. The provided observer will be notified whenever a new {@link
-     * SideUiSpecs} is determined as a result of a change in a registered {@link SideUiContainer}.
+     * Updates all {@link SideUiContainer}s and {@link SideUiObserver}s.
      *
-     * <p>Upon being added, the provided observer will also be notified of the current state of the
-     * side UI so that it may immediately position itself accordingly. e.g. This accounts for the
-     * case where an observer registers itself while some {@link SideUiContainer} is already showing
-     * and there is no incoming update request that would trigger a notification for observers.
+     * <p>Each {@link SideUiContainer} or {@link SideUiObserver} will also be notified of relevant
+     * events before/during/after the new {@link SideUiSpecs} is applied to the UI. Please see their
+     * documentation for details.
      *
-     * <p>This is no-op (including being notified of the current {@link SideUiSpecs}) if the
-     * provided observer was already registered.
-     *
-     * @param observer The {@link SideUiObserver} to add.
+     * @param request The {@link UiUpdateRequest} for the update.
      */
-    void addObserver(SideUiObserver observer);
-
-    /**
-     * Removes a {@link SideUiObserver}.
-     *
-     * <p>Upon removal, the provided observer will be notified as if there were no side UI present.
-     * i.e. it will be passed a {@link SideUiSpecs#EMPTY_SIDE_UI_SPECS}, which represents the specs
-     * when no side UI is currently showing. The intent of this is to attempt to return a given
-     * observer to its state prior to observing Side UI.
-     *
-     * <p>This is no-op (including not being notified of empty Side UI specs) if the provided
-     * observer was not actually present in the list of observers.
-     *
-     * @param observer The {@link SideUiObserver} to remove.
-     */
-    void removeObserver(SideUiObserver observer);
-
-    /**
-     * Requests that the registered {@link SideUiContainer} change its width.
-     * <strong>Important:</strong> this should only be called by the feature that owns the affected
-     * {@link SideUiContainer}.
-     *
-     * @param properties The {@link SideUiContainerProperties} that defines the new requested
-     *     position for the registered {@link SideUiContainer}.
-     */
-    void requestUpdateContainer(SideUiContainerProperties properties);
+    void updateUi(UiUpdateRequest request);
 
     /** Destroys all objects owned by this coordinator. */
     void destroy();

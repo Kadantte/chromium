@@ -2,6 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// NOTE: For new tests, consider adding them to
+// chrome/browser/ui/extensions/settings_overridden_dialog_interactive_uitest.cc
+// which supports more complex interaction and explicit-choice dialogs.
+
 #include "chrome/browser/ui/extensions/settings_overridden_dialog.h"
 
 #include <algorithm>
@@ -127,7 +131,7 @@ class SettingsOverriddenDialogBrowserTest : public DialogBrowserTest {
     extensions::ShowSettingsOverriddenDialog(
         std::make_unique<TestDialogController>(std::move(params),
                                                &dialog_result_),
-        browser->window()->GetNativeWindow());
+        browser->GetWindow()->GetNativeWindow());
     return waiter.WaitIfNeededAndGet();
   }
 
@@ -197,7 +201,7 @@ class SettingsOverriddenDialogBrowserTest : public DialogBrowserTest {
 
   void NavigateToNewTab() {
     ui_test_utils::NavigateToURLWithDisposition(
-        browser(), GURL(chrome::kChromeUINewTabURL),
+        browser(), chrome::ChromeUINewTabURLAsGURL(),
         WindowOpenDisposition::NEW_FOREGROUND_TAB,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   }
@@ -279,17 +283,33 @@ IN_PROC_BROWSER_TEST_F(SettingsOverriddenDialogBrowserTest,
 // The chrome_settings_overrides API that allows extensions to override the
 // default search provider is only available on Windows and Mac.
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
-IN_PROC_BROWSER_TEST_F(SettingsOverriddenDialogBrowserTest,
+
+// Class to test the older non-explicit dialog. Delete this if the new dialog
+// launches. Note that the new dialog is tested via interactive UI tests, not
+// this file.
+class SearchOverriddenLegacyDialogBrowserTest
+    : public SettingsOverriddenDialogBrowserTest {
+ protected:
+  SearchOverriddenLegacyDialogBrowserTest() {
+    feature_list_.InitAndDisableFeature(
+        extensions_features::kSearchEngineExplicitChoiceDialog);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(SearchOverriddenLegacyDialogBrowserTest,
                        InvokeUi_SearchOverriddenDialog_BackToGoogle) {
   ShowAndVerifyUi();
 }
 
-IN_PROC_BROWSER_TEST_F(SettingsOverriddenDialogBrowserTest,
+IN_PROC_BROWSER_TEST_F(SearchOverriddenLegacyDialogBrowserTest,
                        InvokeUi_SearchOverriddenDialog_BackToOther) {
   ShowAndVerifyUi();
 }
 
-IN_PROC_BROWSER_TEST_F(SettingsOverriddenDialogBrowserTest,
+IN_PROC_BROWSER_TEST_F(SearchOverriddenLegacyDialogBrowserTest,
                        InvokeUi_SearchOverriddenDialog_Generic) {
   ShowAndVerifyUi();
 }

@@ -10,6 +10,7 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "ash/system/privacy_hub/privacy_hub_controller.h"
 #include "base/functional/bind.h"
 #include "base/run_loop.h"
@@ -27,7 +28,6 @@
 #include "chrome/browser/consent_auditor/consent_auditor_test_utils.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
@@ -74,24 +74,24 @@ using OwnershipStatus = ash::DeviceSettingsService::OwnershipStatus;
 class TestUserMetricsServiceClient
     : public ::metrics::TestMetricsServiceClient {
  public:
-  std::optional<bool> GetCurrentUserMetricsConsent() const override {
-    if (should_use_user_consent_) {
-      return current_user_metrics_consent_;
+  std::optional<bool> GetCurrentUserMetricsChoice() const override {
+    if (should_use_user_choice_) {
+      return current_user_choice_;
     }
     return std::nullopt;
   }
 
-  void UpdateCurrentUserMetricsConsent(bool metrics_consent) override {
-    current_user_metrics_consent_ = metrics_consent;
+  void UpdateCurrentUserMetricsChoice(bool user_choice) override {
+    current_user_choice_ = user_choice;
   }
 
-  void SetShouldUseUserConsent(bool should_use_user_consent) {
-    should_use_user_consent_ = should_use_user_consent;
+  void SetShouldUseUserChoice(bool should_use_user_choice) {
+    should_use_user_choice_ = should_use_user_choice;
   }
 
  private:
-  bool should_use_user_consent_ = false;
-  bool current_user_metrics_consent_ = false;
+  bool should_use_user_choice_ = false;
+  bool current_user_choice_ = false;
 };
 
 class MockErrorDelegate : public ArcSupportHost::ErrorDelegate {
@@ -217,7 +217,7 @@ class ArcTermsOfServiceDefaultNegotiatorTest
   }
 
   bool GetUserMetricsState() {
-    return *metrics_service_client()->GetCurrentUserMetricsConsent();
+    return *metrics_service_client()->GetCurrentUserMetricsChoice();
   }
 
   // BrowserWithTestWindowTest:
@@ -292,7 +292,7 @@ ArcGoogleLocationServiceConsent CreateBaseGoogleLocationServiceConsent() {
       IDS_ARC_OPT_IN_DIALOG_BUTTON_AGREE);
   google_location_service_consent.add_description_grd_ids(
       ash::features::IsCrosPrivacyHubLocationEnabled()
-          ? IDS_CROS_OPT_IN_LOCATION_SETTING
+          ? IDS_ARC_CROS_OPT_IN_LOCATION_SETTING
           : IDS_ARC_OPT_IN_LOCATION_SETTING);
   return google_location_service_consent;
 }
@@ -616,7 +616,7 @@ TEST_P(ArcTermsOfServiceDefaultNegotiatorForNonOwnerTest,
   negotiator()->StartNegotiation(UpdateStatusCallback(&status));
 
   // Setup metrics service to use user metrics.
-  metrics_service_client()->SetShouldUseUserConsent(true);
+  metrics_service_client()->SetShouldUseUserChoice(true);
 
   // TERMS page should be shown.
   EXPECT_EQ(status, Status::PENDING);

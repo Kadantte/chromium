@@ -34,6 +34,7 @@ source_set("terminal") {
     "//chrome/browser/policy:system_features_disable_list",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui",
+    "//chrome/browser/ui/browser_window",
     "//chrome/common:non_code_constants",
     "//chrome/common/extensions/api",
     "//chromeos/ash/components/dbus/cicerone",
@@ -55,7 +56,8 @@ source_set("startup_status") {
 
   public_deps = [
     "//base",
-    "//chrome/app:generated_resources_grit",
     "//content/public/browser",
   ]
+
+  deps = [ "//ash/strings" ]
 }

@@ -15,7 +15,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "hard_timeout": 1800,
           "io_timeout": 1800,
@@ -43,7 +43,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "hard_timeout": 1800,
           "io_timeout": 1800,
@@ -75,7 +75,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "hard_timeout": 1800,
           "io_timeout": 1800,
@@ -97,7 +97,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "hard_timeout": 1800,
           "io_timeout": 1800,
@@ -123,7 +123,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "hard_timeout": 1800,
           "io_timeout": 1800,
@@ -142,7 +142,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=4"
         ],
@@ -162,7 +162,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "hard_timeout": 1800,
           "idempotent": false,
@@ -180,7 +180,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
           "--dont-restore-color-profile-after-test",
@@ -209,7 +209,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "hard_timeout": 1800,
           "idempotent": false,
@@ -247,7 +247,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "hard_timeout": 1800,
           "idempotent": false,
@@ -285,7 +285,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "hard_timeout": 1800,
           "idempotent": false,
@@ -327,7 +327,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "hard_timeout": 1800,
           "idempotent": false,
@@ -345,7 +345,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
           "--dont-restore-color-profile-after-test",
@@ -374,7 +374,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "hard_timeout": 1800,
           "idempotent": false,
@@ -393,7 +393,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite",
           "--enforce-browser-version",
           "--dont-restore-color-profile-after-test",
           "--jobs=4"
@@ -414,7 +414,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "hard_timeout": 1800,
           "idempotent": false,
@@ -452,12 +452,13 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
+          "shards": 2
         },
         "test": "telemetry_gpu_integration_test",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/"
@@ -470,7 +471,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-features=SkiaGraphite --force_high_performance_gpu",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --disable-skia-graphite --force_high_performance_gpu",
           "--enforce-browser-version",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_mac_runtimes.json",
           "--jobs=4"
@@ -491,7 +492,7 @@
             "cpu": "x86-64",
             "display_attached": "1",
             "gpu": "8086:3e9b",
-            "os": "Mac-14.5"
+            "os": "Mac-15.5"
           },
           "hard_timeout": 1800,
           "idempotent": false,

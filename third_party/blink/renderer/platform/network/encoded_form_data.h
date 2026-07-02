@@ -91,7 +91,7 @@ class PLATFORM_EXPORT EncodedFormData : public RefCounted<EncodedFormData> {
 
  public:
   enum EncodingType {
-    kFormURLEncoded,    // for application/x-www-form-urlencoded
+    kFormUrlEncoded,    // for application/x-www-form-urlencoded
     kTextPlain,         // for text/plain
     kMultipartFormData  // for multipart/form-data
   };
@@ -145,11 +145,13 @@ class PLATFORM_EXPORT EncodedFormData : public RefCounted<EncodedFormData> {
   }
 
   static EncodingType ParseEncodingType(const String& type) {
-    if (EqualIgnoringASCIICase(type, "text/plain"))
+    if (EqualIgnoringAsciiCase(type, "text/plain")) {
       return kTextPlain;
-    if (EqualIgnoringASCIICase(type, "multipart/form-data"))
+    }
+    if (EqualIgnoringAsciiCase(type, "multipart/form-data")) {
       return kMultipartFormData;
-    return kFormURLEncoded;
+    }
+    return kFormUrlEncoded;
   }
 
   // Size of the elements making up the EncodedFormData.

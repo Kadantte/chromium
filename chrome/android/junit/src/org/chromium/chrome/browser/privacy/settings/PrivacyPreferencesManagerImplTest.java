@@ -22,6 +22,8 @@ import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.policy.PolicyServiceFactory;
+import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
+import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.components.policy.PolicyService;
 
 /**
@@ -47,6 +49,14 @@ public class PrivacyPreferencesManagerImplTest {
 
     private static final boolean CRASH_NETWORK_AVAILABLE = true;
     private static final boolean CRASH_NETWORK_UNAVAILABLE = false;
+
+    private PrivacyPreferencesManagerImpl.Natives mNativeMock;
+
+    @org.junit.Before
+    public void setUp() {
+        mNativeMock = mock(PrivacyPreferencesManagerImpl.Natives.class);
+        PrivacyPreferencesManagerImplJni.setInstanceForTesting(mNativeMock);
+    }
 
     @Test
     public void testUsageAndCrashReportingAccessors() {
@@ -110,6 +120,10 @@ public class PrivacyPreferencesManagerImplTest {
         when(policyService.isInitializationComplete()).thenReturn(false);
         PolicyServiceFactory.setPolicyServiceForTest(policyService);
 
+        PrivacyPreferencesManagerImpl.Natives preferenceManagerNatives =
+                mock(PrivacyPreferencesManagerImpl.Natives.class);
+        PrivacyPreferencesManagerImplJni.setInstanceForTesting(preferenceManagerNatives);
+
         // Simulate native initialization notification call.
         preferenceManager.onNativeInitialized();
 
@@ -129,10 +143,7 @@ public class PrivacyPreferencesManagerImplTest {
         PolicyServiceFactory.setPolicyServiceForTest(policyService);
 
         // Mock MetricsReportingEnabled=true.
-        PrivacyPreferencesManagerImpl.Natives preferenceManagerNatives =
-                mock(PrivacyPreferencesManagerImpl.Natives.class);
-        when(preferenceManagerNatives.isMetricsReportingDisabledByPolicy()).thenReturn(false);
-        PrivacyPreferencesManagerImplJni.setInstanceForTesting(preferenceManagerNatives);
+        when(mNativeMock.isMetricsReportingDisabledByPolicy()).thenReturn(false);
 
         // Simulate native initialization notification call.
         preferenceManager.onNativeInitialized();
@@ -153,16 +164,26 @@ public class PrivacyPreferencesManagerImplTest {
         PolicyServiceFactory.setPolicyServiceForTest(policyService);
 
         // Mock MetricsReportingEnabled=false.
-        PrivacyPreferencesManagerImpl.Natives preferenceManagerNatives =
-                mock(PrivacyPreferencesManagerImpl.Natives.class);
-        when(preferenceManagerNatives.isMetricsReportingDisabledByPolicy()).thenReturn(true);
-        PrivacyPreferencesManagerImplJni.setInstanceForTesting(preferenceManagerNatives);
+        when(mNativeMock.isMetricsReportingDisabledByPolicy()).thenReturn(true);
 
         // Simulate native initialization notification call.
         preferenceManager.onNativeInitialized();
 
         verify(policyService).addObserver(any());
         assertFalse(preferenceManager.isUsageAndCrashReportingPermittedByPolicy());
+    }
+
+    @Test
+    public void testShouldUseMetricsChoiceRestructure() {
+        Context context = mock(Context.class);
+        PrivacyPreferencesManagerImpl preferenceManager =
+                new TestPrivacyPreferencesManager(context);
+
+        writeBoolean(ChromePreferenceKeys.PRIVACY_SHOULD_USE_METRICS_CHOICE_RESTRUCTURE, true);
+        assertTrue(preferenceManager.shouldUseMetricsChoiceRestructure());
+
+        writeBoolean(ChromePreferenceKeys.PRIVACY_SHOULD_USE_METRICS_CHOICE_RESTRUCTURE, false);
+        assertFalse(preferenceManager.shouldUseMetricsChoiceRestructure());
     }
 
     private void runTest(
@@ -208,6 +229,10 @@ public class PrivacyPreferencesManagerImplTest {
                 msg,
                 expectedNetworkAvailableForCrashUploads,
                 preferenceManager.isNetworkAvailableForCrashUploads());
+    }
+
+    private void writeBoolean(String key, boolean value) {
+        ChromeSharedPreferences.getInstance().writeBoolean(key, value);
     }
 
     private static class TestPrivacyPreferencesManager extends PrivacyPreferencesManagerImpl {

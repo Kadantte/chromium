@@ -171,9 +171,6 @@ public class ContextualPageActionController {
                     AdaptiveToolbarButtonVariant.TAB_GROUPING,
                     new TabGroupingActionProvider(groupSuggestionButtonControllerSupplier));
         }
-        if (AdaptiveToolbarFeatures.isGlicActionEnabled()) {
-            mActionProviders.put(AdaptiveToolbarButtonVariant.GLIC, new GlicActionProvider());
-        }
     }
 
     @Nullable
@@ -215,12 +212,6 @@ public class ContextualPageActionController {
                 : mSignalAccumulator.getSignal(AdaptiveToolbarButtonVariant.READER_MODE);
     }
 
-    public boolean hasGlic() {
-        return mSignalAccumulator == null
-                ? false
-                : mSignalAccumulator.getSignal(AdaptiveToolbarButtonVariant.GLIC);
-    }
-
     private void removeProviders() {
         for (ActionProvider provider : mActionProviders.values()) {
             provider.destroy();
@@ -256,6 +247,11 @@ public class ContextualPageActionController {
     private void findBestAction() {
         Tab tab = getValidActiveTab();
         if (tab == null) return;
+        // IMPORTANT: The number of entries here MUST match kLabelInputSize in
+        // components/segmentation_platform/embedder/default_model/contextual_page_actions_model.cc;
+        // otherwise, ContextualPageActionsModel::ExecuteModelWithInput will return a null value,
+        // resulting in AdaptiveToolbarButtonVariant.UNKNOWN (0) and a fallback to the session
+        // default. Feature flag guarded page actions should not be conditionally added here.
         InputContext inputContext = new InputContext();
         assumeNonNull(mSignalAccumulator);
         inputContext.addEntry(
@@ -288,15 +284,6 @@ public class ContextualPageActionController {
                         mSignalAccumulator.getSignal(AdaptiveToolbarButtonVariant.TAB_GROUPING)
                                 ? 1.0f
                                 : 0.0f));
-
-        if (AdaptiveToolbarFeatures.isGlicActionEnabled()) {
-            inputContext.addEntry(
-                    Constants.CONTEXTUAL_PAGE_ACTIONS_GLIC_INPUT,
-                    ProcessedValue.fromFloat(
-                            mSignalAccumulator.getSignal(AdaptiveToolbarButtonVariant.GLIC)
-                                    ? 1.0f
-                                    : 0.0f));
-        }
         inputContext.addEntry("url", ProcessedValue.fromGURL(tab.getUrl()));
 
         ContextualPageActionControllerJni.get()

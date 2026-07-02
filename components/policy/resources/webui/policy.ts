@@ -18,7 +18,7 @@ document.addEventListener('DOMContentLoaded', () => {
 function getPolicyFieldsets() {
   const statusBoxes = document.querySelectorAll('status-box');
   return Array.from(statusBoxes)
-      .map(box => box.shadowRoot!.querySelector('.status-box-fields'));
+      .map(box => box.shadowRoot.querySelector('.status-box-fields'));
 }
 
 function getAllPolicyTables() {
@@ -26,12 +26,15 @@ function getAllPolicyTables() {
 }
 
 function getAllPolicyRows(policyTable: PolicyTableElement) {
-  return policyTable.shadowRoot!.querySelectorAll('policy-row');
+  return policyTable.shadowRoot.querySelectorAll('policy-row');
 }
 
 function getAllPolicyRowDivs(policyRow: PolicyRowElement) {
-  const row = policyRow.shadowRoot!.querySelector('.policy.row');
-  return row!.querySelectorAll('div');
+  const row = policyRow.shadowRoot ?
+      policyRow.shadowRoot.querySelector('.policy.row') :
+      null;
+  return row ? row.querySelectorAll('div') :
+               [] as unknown as NodeListOf<HTMLDivElement>;
 }
 
 function getPrecedenceRowValue() {
@@ -39,25 +42,25 @@ function getPrecedenceRowValue() {
   let precedenceRow = null;
   tables.forEach(table => {
     const row: PolicyPrecedenceRowElement|null =
-        table.shadowRoot!.querySelector('policy-precedence-row');
+        table.shadowRoot.querySelector('policy-precedence-row');
     if (row) {
-      precedenceRow = row.shadowRoot!.querySelector('.value');
+      precedenceRow = row.shadowRoot.querySelector('.value');
     }
   });
   return precedenceRow;
 }
 
 function getRefreshIntervalEl() {
-  return document.querySelector('status-box')!.shadowRoot!.querySelector(
+  return document.querySelector('status-box')!.shadowRoot.querySelector(
       '.refresh-interval');
 }
 
 function getReportButtonVisibility() {
-  const button: any = document.querySelector('button#upload-report');
+  const button = document.querySelector<HTMLElement>('button#upload-report');
   if (!button) {
     return 'none';
   }
-  return button!.style.display.toString();
+  return button.style.display;
 }
 
 Object.assign(window, {

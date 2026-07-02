@@ -5,10 +5,13 @@
 #ifndef COMPONENTS_FACILITATED_PAYMENTS_CORE_BROWSER_PIX_ACCOUNT_LINKING_MANAGER_H_
 #define COMPONENTS_FACILITATED_PAYMENTS_CORE_BROWSER_PIX_ACCOUNT_LINKING_MANAGER_H_
 
+#include <vector>
+
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "components/facilitated_payments/core/browser/network_api/facilitated_payments_network_interface.h"
+#include "components/facilitated_payments/core/browser/strike_databases/pix_account_linking_strike_database.h"
 #include "components/facilitated_payments/core/utils/facilitated_payments_ui_utils.h"
 #include "url/origin.h"
 
@@ -61,7 +64,8 @@ class PixAccountLinkingManager {
   void OnGetDetailsForCreatePaymentInstrumentResponseReceived(
       base::TimeTicks start_time,
       autofill::payments::PaymentsAutofillClient::PaymentsRpcResult result,
-      bool is_eligible_for_pix_account_linking);
+      bool is_eligible_for_pix_account_linking,
+      const std::vector<uint8_t>& action_token);
 
   // Owner.
   const raw_ref<FacilitatedPaymentsClient> client_;
@@ -78,6 +82,12 @@ class PixAccountLinkingManager {
 
   // The origin of the Pix payment page that triggered the account linking flow.
   url::Origin pix_payment_page_origin_;
+
+  // Returns the strike database for Pix account linking, creating it if needed.
+  PixAccountLinkingStrikeDatabase* GetOrCreateStrikeDatabase();
+
+  // Strike database to enforce strike limits and cool-off periods.
+  std::unique_ptr<PixAccountLinkingStrikeDatabase> strike_database_;
 
   base::WeakPtrFactory<PixAccountLinkingManager> weak_ptr_factory_{this};
 };

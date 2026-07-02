@@ -165,7 +165,7 @@ IN_PROC_BROWSER_TEST_F(WebAccessibleResourcesBrowserTest,
     EXPECT_EQ(expected, EvalJs(iframe, "document.body.innerText;"));
   };
 
-  static struct {
+  struct {
     const char* title;
     const GURL target;
     const GURL commit;
@@ -241,7 +241,7 @@ IN_PROC_BROWSER_TEST_F(
   //   is a renderer-initiated navigation, and should be limited to
   //   web-accessible resource checks.
   // * Verify where the navigation reached.
-  static struct {
+  struct {
     // The url to navigate the browser tab to.
     GURL site_url;
     // The url to navigate to via `document.location.replace()` (an extension
@@ -583,8 +583,14 @@ IN_PROC_BROWSER_TEST_F(WebAccessibleResourcesBrowserTest, DNRRedirect) {
 // Succeed when DNR redirects a script to a WAR where the redirect URL contains
 // both a query and a ref.
 // Regression test for crbug.com/461824106.
+// TODO(crbug.com/512084385): Flaky on Android.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_DNRRedirectWithQueryAndRef DISABLED_DNRRedirectWithQueryAndRef
+#else
+#define MAYBE_DNRRedirectWithQueryAndRef DNRRedirectWithQueryAndRef
+#endif
 IN_PROC_BROWSER_TEST_F(WebAccessibleResourcesBrowserTest,
-                       DNRRedirectWithQueryAndRef) {
+                       MAYBE_DNRRedirectWithQueryAndRef) {
   auto file_path = test_data_dir_.AppendASCII(
       "web_accessible_resources/dnr/redirect_query_and_ref");
   const Extension* extension = LoadExtension(file_path);
@@ -657,9 +663,9 @@ IN_PROC_BROWSER_TEST_F(WebAccessibleResourcesServiceWorkerBrowserTest,
                        DISABLED_DNRRedirect) {
   // Register a service worker and navigate to a page it controls.
   RegisterServiceWorker("example.com", "fetch_event_pass_through.js",
-                        std::nullopt);
-  EXPECT_TRUE(NavigateToURL(
-      browser_window_interface(),
+                        /*scope=*/std::nullopt);
+  ASSERT_TRUE(NavigateToURL(
+      GetActiveWebContents(),
       embedded_test_server()->GetURL("example.com",
                                      "/service_worker/fetch_from_page.html")));
 
@@ -678,6 +684,33 @@ IN_PROC_BROWSER_TEST_F(WebAccessibleResourcesServiceWorkerBrowserTest,
   EXPECT_TRUE(result.ExtractString().find(expected_content) !=
               std::string::npos)
       << expected_content << " not found in " << result.ExtractString();
+}
+
+// Test that DNR redirects to the extension's web accessible resource work when
+// the page has a service worker and the extension uses dynamic URLs.
+// Regression test for crbug.com/479743219.
+IN_PROC_BROWSER_TEST_F(WebAccessibleResourcesServiceWorkerBrowserTest,
+                       DNRRedirectDynamicUrl) {
+  const Extension* extension = LoadExtension(test_data_dir_.AppendASCII(
+      "web_accessible_resources/dnr/redirect_dynamic_url"));
+  ASSERT_TRUE(extension);
+
+  // Register a service worker and navigate to a page it controls.
+  RegisterServiceWorker("example.com", "fetch_event_pass_through.js",
+                        /*scope=*/std::nullopt);
+  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(),
+                            embedded_test_server()->GetURL(
+                                "example.com", "/service_worker/blank.html")));
+
+  // Fetch the page with no-cors. It should be redirected to the extension's
+  // dynamic web accessible resource.
+  auto result = EvalJs(GetActiveWebContents(),
+                       "fetch('/english_page.html', {mode: 'no-cors'}).then("
+                       "  () => 'SUCCESS',"
+                       "  (e) => `FAILED: ${e.message}`"
+                       ");");
+
+  EXPECT_EQ("SUCCESS", result.ExtractString());
 }
 
 // Test server redirect to a web accessible or extension resource.

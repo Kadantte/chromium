@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "ash/constants/ash_switches.h"
+#include "ash/constants/chrome_pref_names.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
@@ -27,7 +28,6 @@
 #include "chrome/browser/policy/developer_tools_policy_handler.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/dbus/concierge/concierge_client.h"
@@ -59,7 +59,6 @@
 #include "components/user_manager/scoped_user_manager.h"
 #include "content/public/test/browser_task_environment.h"
 #include "google_apis/gaia/gaia_id.h"
-#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -357,7 +356,6 @@ class ArcPolicyBridgeTestBase {
 
  private:
   content::BrowserTaskEnvironment task_environment_;
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
   user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
       fake_user_manager_;
   session_manager::SessionManager session_manager_{
@@ -606,9 +604,9 @@ TEST_F(ArcPolicyBridgeTest, CaCertificateTest) {
 
 TEST_F(ArcPolicyBridgeTest, DeveloperToolsPolicyAllowedTest) {
   profile()->GetTestingPrefService()->SetManagedPref(
-      ::prefs::kDevToolsAvailability,
+      ash::chrome_prefs::kDevToolsAvailability,
       std::make_unique<base::Value>(static_cast<int>(
-          policy::DeveloperToolsPolicyHandler::Availability::kAllowed)));
+          policy::DeveloperToolsAvailability::kAllowed)));
   GetPoliciesAndVerifyResult(
       "{\"apkCacheEnabled\":true,\"debuggingFeaturesDisabled\":false,"
       "\"guid\":\"" +
@@ -618,9 +616,9 @@ TEST_F(ArcPolicyBridgeTest, DeveloperToolsPolicyAllowedTest) {
 TEST_F(ArcPolicyBridgeTest,
        DeveloperToolsPolicyDisallowedForForceInstalledExtensionsTest) {
   profile()->GetTestingPrefService()->SetManagedPref(
-      ::prefs::kDevToolsAvailability,
+      ash::chrome_prefs::kDevToolsAvailability,
       std::make_unique<base::Value>(
-          static_cast<int>(policy::DeveloperToolsPolicyHandler::Availability::
+          static_cast<int>(policy::DeveloperToolsAvailability::
                                kDisallowedForForceInstalledExtensions)));
   GetPoliciesAndVerifyResult(
       "{\"apkCacheEnabled\":true,\"debuggingFeaturesDisabled\":false,"
@@ -630,9 +628,9 @@ TEST_F(ArcPolicyBridgeTest,
 
 TEST_F(ArcPolicyBridgeTest, DeveloperToolsPolicyDisallowedTest) {
   profile()->GetTestingPrefService()->SetManagedPref(
-      ::prefs::kDevToolsAvailability,
+      ash::chrome_prefs::kDevToolsAvailability,
       std::make_unique<base::Value>(static_cast<int>(
-          policy::DeveloperToolsPolicyHandler::Availability::kDisallowed)));
+          policy::DeveloperToolsAvailability::kDisallowed)));
   GetPoliciesAndVerifyResult(
       "{\"apkCacheEnabled\":true,\"debuggingFeaturesDisabled\":true,"
       "\"guid\":\"" +
@@ -641,9 +639,9 @@ TEST_F(ArcPolicyBridgeTest, DeveloperToolsPolicyDisallowedTest) {
 
 TEST_F(ArcPolicyBridgeTest, ForceDevToolsAvailabilityTest) {
   profile()->GetTestingPrefService()->SetManagedPref(
-      ::prefs::kDevToolsAvailability,
+      ash::chrome_prefs::kDevToolsAvailability,
       std::make_unique<base::Value>(static_cast<int>(
-          policy::DeveloperToolsPolicyHandler::Availability::kDisallowed)));
+          policy::DeveloperToolsAvailability::kDisallowed)));
   base::test::ScopedCommandLine command_line;
   command_line.GetProcessCommandLine()->AppendSwitch(
       switches::kForceDevToolsAvailable);

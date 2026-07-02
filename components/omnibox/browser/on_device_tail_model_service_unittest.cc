@@ -7,11 +7,11 @@
 #include "base/containers/flat_set.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
-#include "base/memory/memory_pressure_listener_registry.h"
+#include "base/memory_coordinator/test_memory_consumer_registry.h"
+#include "base/memory_coordinator/utils.h"
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
 #include "base/test/task_environment.h"
-#include "components/memory_pressure/fake_memory_pressure_monitor.h"
 #include "components/omnibox/browser/on_device_tail_model_executor.h"
 #include "components/optimization_guide/core/delivery/test_model_info_builder.h"
 #include "components/optimization_guide/core/delivery/test_optimization_guide_model_provider.h"
@@ -82,7 +82,7 @@ class OnDeviceTailModelServiceTest : public ::testing::Test {
     return service_->tail_model_executor_->IsReady();
   }
 
-  base::MemoryPressureListenerRegistry memory_pressure_listener_registry_;
+  base::TestMemoryConsumerRegistry memory_consumer_registry_;
   base::test::TaskEnvironment task_environment_;
   std::unique_ptr<OnDeviceTailModelService> service_;
   std::unique_ptr<optimization_guide::TestOptimizationGuideModelProvider>
@@ -151,7 +151,6 @@ TEST_F(OnDeviceTailModelServiceTest, MemoryPressureLevel) {
 
   OnDeviceTailModelExecutor::ModelInput input("faceb", "", 5);
   std::vector<OnDeviceTailModelExecutor::Prediction> results;
-  memory_pressure::test::FakeMemoryPressureMonitor mem_pressure_monitor;
 
   // The executor should be unloaded from memory when memory pressure level is
   // critical.
@@ -162,8 +161,9 @@ TEST_F(OnDeviceTailModelServiceTest, MemoryPressureLevel) {
         *results = std::move(predictions);
       },
       &results_1);
-  mem_pressure_monitor.SetAndNotifyMemoryPressure(
-      base::MEMORY_PRESSURE_LEVEL_CRITICAL);
+  memory_consumer_registry_.NotifyUpdateMemoryLimit(
+      base::kCriticalMemoryPressureThreshold);
+  memory_consumer_registry_.NotifyReleaseMemory();
   service_->GetPredictionsForInput(input, std::move(callback_1));
   task_environment_.RunUntilIdle();
   EXPECT_FALSE(IsExecutorReady());
@@ -177,8 +177,9 @@ TEST_F(OnDeviceTailModelServiceTest, MemoryPressureLevel) {
         *results = std::move(predictions);
       },
       &results_2);
-  mem_pressure_monitor.SetAndNotifyMemoryPressure(
-      base::MEMORY_PRESSURE_LEVEL_MODERATE);
+  memory_consumer_registry_.NotifyUpdateMemoryLimit(
+      base::kModerateMemoryPressureThreshold);
+  memory_consumer_registry_.NotifyReleaseMemory();
   service_->GetPredictionsForInput(input, std::move(callback_2));
   task_environment_.RunUntilIdle();
   EXPECT_TRUE(IsExecutorReady());

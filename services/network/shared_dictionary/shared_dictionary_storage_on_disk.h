@@ -12,10 +12,11 @@
 #include "base/containers/unique_ptr_adapters.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
-#include "base/memory/memory_pressure_listener.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/memory_coordinator/async_memory_consumer_registration.h"
+#include "base/memory_coordinator/memory_consumer.h"
 #include "base/time/time.h"
 #include "net/base/hash_value.h"
 #include "net/base/network_isolation_key.h"
@@ -39,7 +40,7 @@ class SharedDictionaryManagerOnDisk;
 
 // A SharedDictionaryStorage which is managed by SharedDictionaryManagerOnDisk.
 class SharedDictionaryStorageOnDisk : public SharedDictionaryStorage,
-                                      public base::MemoryPressureListener {
+                                      public base::PassiveMemoryConsumer {
  public:
   class WrappedDictionaryInfo : public net::SharedDictionaryInfo {
    public:
@@ -85,6 +86,8 @@ class SharedDictionaryStorageOnDisk : public SharedDictionaryStorage,
       const SharedDictionaryStorageOnDisk&) = delete;
 
   // SharedDictionaryStorage
+  const net::SharedDictionaryIsolationKey& isolation_key() const override;
+
   scoped_refptr<net::SharedDictionary> GetDictionarySync(
       const GURL& url,
       mojom::RequestDestination destination) override;
@@ -138,8 +141,6 @@ class SharedDictionaryStorageOnDisk : public SharedDictionaryStorage,
   void OnSharedDictionaryDeleted(
       const base::UnguessableToken& disk_cache_key_token);
 
-  void OnMemoryPressure(base::MemoryPressureLevel level) override;
-
   const std::map<
       url::SchemeHostPort,
       std::map<std::tuple<std::string, std::set<mojom::RequestDestination>>,
@@ -161,10 +162,7 @@ class SharedDictionaryStorageOnDisk : public SharedDictionaryStorage,
   std::map<base::UnguessableToken, raw_ptr<net::SharedDictionary>>
       dictionaries_;
 
-  std::unique_ptr<base::AsyncMemoryPressureListenerRegistration>
-      memory_pressure_listener_registration_;
-  base::MemoryPressureLevel memory_pressure_level_ =
-      base::MEMORY_PRESSURE_LEVEL_NONE;
+  base::AsyncMemoryConsumerRegistration memory_consumer_registration_;
 
   bool get_dictionary_called_ = false;
   bool is_metadata_ready_ = false;

@@ -14,6 +14,11 @@
 #include "chrome/browser/ui/extensions/extensions_toolbar_view_model.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_chip_button.h"
 #include "extensions/common/extension_id.h"
+#include "ui/views/input_event_activation_protector.h"
+
+namespace ui {
+class Event;
+}  // namespace ui
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "url/origin.h"
 
@@ -32,7 +37,7 @@ class ExtensionsRequestAccessButton : public ToolbarChipButton {
  public:
   explicit ExtensionsRequestAccessButton(
       BrowserWindowInterface* browser,
-      ExtensionsContainer* extensions_container,
+      ExtensionsToolbarViewModel* extensions_toolbar_view_model,
       ExtensionsContainerViews* extensions_container_views);
   ExtensionsRequestAccessButton(const ExtensionsRequestAccessButton&) = delete;
   const ExtensionsRequestAccessButton& operator=(
@@ -77,12 +82,16 @@ class ExtensionsRequestAccessButton : public ToolbarChipButton {
  private:
   // Grants one-time site access to `extension_ids` and shows a confirmation
   // message on the button.
-  void OnButtonPressed();
+  void OnButtonPressed(const ui::Event& event);
 
   content::WebContents* GetActiveWebContents() const;
 
+  // views::View:
+  void VisibilityChanged(views::View* starting_from, bool is_visible) override;
+  void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
+
   raw_ptr<BrowserWindowInterface> browser_;
-  raw_ptr<ExtensionsContainer> extensions_container_;
+  raw_ptr<ExtensionsToolbarViewModel> extensions_toolbar_view_model_;
   raw_ptr<ExtensionsContainerViews> extensions_container_views_;
 
   std::unique_ptr<ExtensionsRequestAccessHoverCardCoordinator>
@@ -100,6 +109,8 @@ class ExtensionsRequestAccessButton : public ToolbarChipButton {
 
   // Flag to not show confirmation message in tests.
   bool remove_confirmation_for_testing_{false};
+
+  std::unique_ptr<views::InputEventActivationProtector> input_protector_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_EXTENSIONS_EXTENSIONS_REQUEST_ACCESS_BUTTON_H_

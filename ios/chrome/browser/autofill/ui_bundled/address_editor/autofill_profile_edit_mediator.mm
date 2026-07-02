@@ -52,11 +52,10 @@ constexpr std::array<autofill::FieldType, 3> kStaticFieldsTypes = {
 @end
 
 @implementation AutofillProfileEditMediator {
-  raw_ptr<autofill::AutofillProfile, DanglingUntriaged> _autofillProfile;
+  raw_ptr<autofill::AutofillProfile> _autofillProfile;
 
   // Used for editing autofill profile.
-  raw_ptr<autofill::PersonalDataManager, DanglingUntriaged>
-      _personalDataManager;
+  raw_ptr<autofill::PersonalDataManager> _personalDataManager;
 
   // This property is for an interface which sends a response about saving the
   // edited profile.
@@ -124,7 +123,7 @@ constexpr std::array<autofill::FieldType, 3> kStaticFieldsTypes = {
     // through settings.
     _ignoreErrorMessage = _addManualAddress;
 
-    [self loadCountries];
+    _allCountries = [AutofillProfileEditMediator loadCountries];
   }
 
   return self;
@@ -145,6 +144,11 @@ constexpr std::array<autofill::FieldType, 3> kStaticFieldsTypes = {
 }
 
 #pragma mark - Public
+
+- (void)disconnect {
+  _autofillProfile = nullptr;
+  _personalDataManager = nullptr;
+}
 
 - (void)didSelectCountry:(CountryItem*)countryItem {
   if ([_selectedCountryCode isEqualToString:countryItem.countryCode]) {
@@ -373,7 +377,7 @@ constexpr std::array<autofill::FieldType, 3> kStaticFieldsTypes = {
 }
 
 // Loads the country codes and names and sets the default selected country code.
-- (void)loadCountries {
++ (NSArray<CountryItem*>*)loadCountries {
   autofill::CountryComboboxModel countryModel;
   const variations::VariationsService* variations_service =
       GetApplicationContext()->GetVariationsService();
@@ -402,7 +406,7 @@ constexpr std::array<autofill::FieldType, 3> kStaticFieldsTypes = {
       [countryItems addObject:countryItem];
     }
   }
-  _allCountries = countryItems;
+  return countryItems;
 }
 
 // Fetches and computes the required fields based on `_selectedCountryCode`.

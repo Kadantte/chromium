@@ -8,6 +8,7 @@
 #include "third_party/blink/public/mojom/frame/lifecycle.mojom-blink.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/member.h"
 
 namespace blink {
 
@@ -15,13 +16,24 @@ class LocalFrame;
 
 // This is an observer to observe changes to the in-viewport visibility of a
 // given frame.
+// TODO(crbug.com/351354996): Remove the GarbageCollectedMixin inheritance after
+// the AudioContext refactor is completed.
 class CORE_EXPORT FrameVisibilityObserver : public GarbageCollectedMixin {
  public:
-  virtual ~FrameVisibilityObserver() = default;
+  // TODO(crbug.com/351354996): Remove this after the refactor is completed.
+  virtual void FrameVisibilityChanged(mojom::blink::FrameVisibility) {}
 
-  virtual void FrameVisibilityChanged(mojom::blink::FrameVisibility) = 0;
+  // TODO(crbug.com/351354996): Make these methods pure virtual in the follow-up
+  // CL.
+  // Called when the observed frame becomes not rendered - i.e., when the
+  // frame visibility status is `blink::mojom::FrameVisibility::kNotRendered`.
+  virtual void OnFrameHidden() {}
+  virtual void OnFrameShown() {}
 
  protected:
+  // TODO(crbug.com/351354996): Remove these constructors after the AudioContext
+  // refactor is completed.
+  FrameVisibilityObserver() = default;
   explicit FrameVisibilityObserver(LocalFrame*);
 };
 

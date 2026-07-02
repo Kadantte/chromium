@@ -8,7 +8,7 @@ import {AiEnterpriseFeaturePrefName, AutofillManagerImpl, EntityDataManagerProxy
 import {CrSettingsPrefs, ModelExecutionEnterprisePolicyValue} from 'chrome://settings/settings.js';
 import type {SettingsPrefsElement, SettingsYourSavedInfoPageElement} from 'chrome://settings/settings.js';
 import {loadTimeData, MetricsBrowserProxyImpl, OpenWindowProxyImpl, PasswordManagerImpl, PasswordManagerPage, resetRouterForTesting, Router, YourSavedInfoDataCategory, YourSavedInfoDataChip, YourSavedInfoRelatedService} from 'chrome://settings/settings.js';
-import {assertDeepEquals, assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {TestOpenWindowProxy} from 'chrome://webui-test/test_open_window_proxy.js';
 import {isChildVisible} from 'chrome://webui-test/test_util.js';
@@ -56,7 +56,8 @@ suite('YourSavedInfoPage', function() {
       enableYourSavedInfoSettingsPage: true,
       showIbansSettings: true,
       shouldShowPayOverTimeSettings: true,
-      enableLoyaltyCardsFilling: true,
+      enableYourSavedInfoShoppingPage: true,
+      showSuggestionsFromGeminiSettings: true,
     });
   });
 
@@ -76,7 +77,7 @@ suite('YourSavedInfoPage', function() {
     const cards = yourSavedInfoPage.shadowRoot!.querySelectorAll(
         'category-reference-card');
     for (const card of cards) {
-      const chips = card.shadowRoot!.querySelectorAll('cr-chip');
+      const chips = card.shadowRoot!.querySelectorAll('cr-button');
       for (const chip of chips) {
         const labelSpan = chip.querySelector('span:not(.counter)');
         if (labelSpan && labelSpan.textContent === chipLabel) {
@@ -102,6 +103,17 @@ suite('YourSavedInfoPage', function() {
     assertTrue(!!yourSavedInfoPageTitleElement);
   });
 
+  test('ShoppingCategoryHiddenWhenFlagDisabled', async function() {
+    await setupPage({
+      enableYourSavedInfoShoppingPage: false,
+    });
+
+    const shoppingCard =
+        yourSavedInfoPage.shadowRoot!.querySelector<HTMLElement>(
+            '#shoppingManagerButton');
+    assertFalse(!!shoppingCard);
+  });
+
   test('CardsRenderCorrectly', function() {
     const cards = yourSavedInfoPage.shadowRoot!.querySelectorAll(
         'category-reference-card');
@@ -111,6 +123,7 @@ suite('YourSavedInfoPage', function() {
       loadTimeData.getString('contactInfoTitle'),
       loadTimeData.getString('identityDocsCardTitle'),
       loadTimeData.getString('travelCardTitle'),
+      loadTimeData.getString('shoppingCardTitle'),
     ];
 
     assertEquals(expectedCardTitles.length, cards.length);
@@ -163,6 +176,11 @@ suite('YourSavedInfoPage', function() {
      cardTitle: 'travelCardTitle',
      expectedRoute: '/travel',
      expectedCategory: YourSavedInfoDataCategory.TRAVEL,
+   },
+   {
+     cardTitle: 'shoppingCardTitle',
+     expectedRoute: '/shopping',
+     expectedCategory: YourSavedInfoDataCategory.SHOPPING,
    },
   ].forEach(({cardTitle, expectedRoute, expectedCategory}) => {
     test(`${cardTitle} card navigates to the correct route`, async function() {
@@ -224,7 +242,7 @@ suite('YourSavedInfoPage', function() {
             loadTimeData.getString('contactInfoTitle')}"]`);
     assertTrue(!!card);
     const chips: HTMLElement[] =
-        Array.from(card.shadowRoot!.querySelectorAll('cr-chip'));
+        Array.from(card.shadowRoot!.querySelectorAll('cr-button'));
     const chip: HTMLElement = chips.find(chip => {
       const labelSpan = chip.querySelector('span:not(.counter)');
       return labelSpan &&
@@ -238,6 +256,30 @@ suite('YourSavedInfoPage', function() {
     assertEquals(YourSavedInfoDataChip.ADDRESSES, metricChip);
     const action = await metricsBrowserProxy.whenCalled('recordAction');
     assertEquals('Settings.YourSavedInfo.ChipClick.ADDRESSES', action);
+  });
+
+  test('SuggestionsFromGeminiHiddenWhenFlagDisabled', async function() {
+    await setupPage({
+      showSuggestionsFromGeminiSettings: false,
+    });
+
+    const geminiCard = yourSavedInfoPage.shadowRoot!.querySelector<HTMLElement>(
+        '#suggestionsFromGeminiCard');
+    assertFalse(!!geminiCard);
+  });
+
+  test('SuggestionsFromGeminiCardNavigates', function() {
+    const geminiCard = yourSavedInfoPage.shadowRoot!.querySelector<HTMLElement>(
+        '#suggestionsFromGeminiCard');
+    assertTrue(!!geminiCard);
+
+    const button = yourSavedInfoPage.shadowRoot!.querySelector<HTMLElement>(
+        '#suggestionsFromGeminiLinkRow');
+    assertTrue(!!button);
+
+    button.click();
+    assertEquals(
+        '/suggestionsFromGemini', Router.getInstance().currentRoute.path);
   });
 });
 
@@ -260,6 +302,7 @@ suite('DataChipsVisibility', function() {
         editEntityTypeString: 'Edit passport',
         deleteEntityTypeString: 'Delete passport',
         supportsWalletStorage: false,
+        passType: chrome.autofillPrivate.EntityPassType.PRIVATE_PASS,
       },
       {
         typeName: 1,
@@ -268,6 +311,7 @@ suite('DataChipsVisibility', function() {
         editEntityTypeString: 'Edit driver\'s license',
         deleteEntityTypeString: 'Delete driver\'s license',
         supportsWalletStorage: false,
+        passType: chrome.autofillPrivate.EntityPassType.PRIVATE_PASS,
       },
       {
         typeName: 2,
@@ -276,6 +320,7 @@ suite('DataChipsVisibility', function() {
         editEntityTypeString: 'Edit vehicle',
         deleteEntityTypeString: 'Delete vehicle',
         supportsWalletStorage: false,
+        passType: chrome.autofillPrivate.EntityPassType.PUBLIC_PASS,
       },
     ]);
     EntityDataManagerProxyImpl.setInstance(entityDataManager);
@@ -307,7 +352,7 @@ suite('DataChipsVisibility', function() {
         yourSavedInfoPage.shadowRoot!.querySelector<HTMLElement>(cardSelector);
     assertTrue(!!card);
     const chips: HTMLElement[] =
-        Array.from(card.shadowRoot!.querySelectorAll('cr-chip'));
+        Array.from(card.shadowRoot!.querySelectorAll('cr-button'));
     return chips.map(chip => chip.querySelector('span')!.textContent);
   }
 
@@ -316,7 +361,6 @@ suite('DataChipsVisibility', function() {
       enableYourSavedInfoSettingsPage: true,
       showIbansSettings: true,
       shouldShowPayOverTimeSettings: true,
-      enableLoyaltyCardsFilling: true,
     });
     await entityDataManager.whenCalled('getWritableEntityTypes');
 
@@ -353,7 +397,6 @@ suite('DataChipsVisibility', function() {
     const yourSavedInfoPage = await setupPage({
       showIbansSettings: false,
       shouldShowPayOverTimeSettings: true,
-      enableLoyaltyCardsFilling: true,
     });
     assertDeepEquals(
         [
@@ -370,7 +413,6 @@ suite('DataChipsVisibility', function() {
     const yourSavedInfoPage = await setupPage({
       showIbansSettings: false,
       shouldShowPayOverTimeSettings: true,
-      enableLoyaltyCardsFilling: true,
     });
     autofillManager.lastCallback.setPersonalDataManagerListener!
         ([], [], [createIbanEntry()], []);
@@ -391,28 +433,12 @@ suite('DataChipsVisibility', function() {
     const yourSavedInfoPage = await setupPage({
       showIbansSettings: true,
       shouldShowPayOverTimeSettings: false,
-      enableLoyaltyCardsFilling: true,
     });
     assertDeepEquals(
         [
           loadTimeData.getString('creditAndDebitCardTitle'),
           loadTimeData.getString('ibanTitle'),
           loadTimeData.getString('loyaltyCardsTitle'),
-        ],
-        getChipLabels(yourSavedInfoPage, '#paymentManagerButton'));
-  });
-
-  test('DisabledLoyaltyCards', async function() {
-    const yourSavedInfoPage = await setupPage({
-      showIbansSettings: true,
-      shouldShowPayOverTimeSettings: true,
-      enableLoyaltyCardsFilling: false,
-    });
-    assertDeepEquals(
-        [
-          loadTimeData.getString('creditAndDebitCardTitle'),
-          loadTimeData.getString('ibanTitle'),
-          loadTimeData.getString('autofillPayOverTimeSettingsLabel'),
         ],
         getChipLabels(yourSavedInfoPage, '#paymentManagerButton'));
   });
@@ -441,6 +467,7 @@ suite('DataChipsVisibility', function() {
           editEntityTypeString: 'Edit ID',
           deleteEntityTypeString: 'Delete ID',
           supportsWalletStorage: false,
+          passType: chrome.autofillPrivate.EntityPassType.PRIVATE_PASS,
         },
         entityInstanceLabel: 'John Doe',
         entityInstanceSubLabel: 'ID card',

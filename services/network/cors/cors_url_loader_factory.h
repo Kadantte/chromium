@@ -96,7 +96,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoaderFactory final
 
   // If there are no active loaders and the `owner_` has no remaining external
   // references (Mojo bindings), requests the owner to destroy this factory
-  // instance.
+  // instance. Will not delete `this` if `prevent_self_deletion_` is true.
   void DeleteIfNeeded();
 
   // Exposed for use by PrefetchMatchingURLLoaderFactory.
@@ -140,13 +140,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoaderFactory final
   // guarantee that the overriding factory behaves correctly).
   net::handles::NetworkHandle GetBoundNetworkForTesting() const;
 
-  // Cancels all requests matching `nonce` associated with this factory, unless
-  // exempted by a url in `exemptions`. Used to cancel in-progress requests
-  // when network revocation is triggered.
-  void CancelRequestsIfNonceMatchesAndUrlNotExempted(
-      const base::UnguessableToken& nonce,
-      const std::set<GURL>& exemptions);
-
   // Returns whether CORS preflight request flowing through this
   // URLLoaderFactory should represent an error or not.
   bool IsCorsPreflighLoadOptionAllowed() const;
@@ -157,7 +150,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoaderFactory final
   void DestroyCorsURLLoader(CorsURLLoader* loader);
 
   bool IsValidRequest(
-      const ResourceRequest& request,
+      ResourceRequest& request,
       uint32_t options,
       const net::MutableNetworkTrafficAnnotationTag& traffic_annotation);
 
@@ -196,7 +189,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoaderFactory final
 
   // Retained from URLLoaderFactoryParams:
   const bool disable_web_security_;
-  const OriginatingProcess process_id_;
+  const OriginatingProcessId process_id_;
   const std::optional<url::Origin> request_initiator_origin_lock_;
   const bool ignore_isolated_world_origin_;
   const mojom::TrustTokenOperationPolicyVerdict trust_token_issuance_policy_;
@@ -239,7 +232,21 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoaderFactory final
 
   static bool allow_external_preflights_for_testing_;
 
-  base::MetricsSubSampler metrics_subsampler_;
+  // Prevents DeleteIfNeeded() from deleting `this`. Useful for aggregate
+  // operations that walk through all URLLoaders and may delete more than one of
+  // them.
+  //
+  // To use:
+  // * Set to true.
+  // * Walk through loaders, deleting as needed.
+  // * Set to false.
+  // * Call DeleteIfNeeded(), which may delete `this` if all loaders were
+  // deleted.
+  //
+  // If more consumers use this pattern, we could make a helper class that works
+  // like base::AutoReset which sets it to true on construction, and then sets
+  // it to false and calls DeleteIfNeeded() in its destructor.
+  bool prevent_self_deletion_ = false;
 
   std::optional<base::UnguessableToken> network_restrictions_id_;
 };

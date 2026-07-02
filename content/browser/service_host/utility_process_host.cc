@@ -22,6 +22,7 @@
 #include "build/build_config.h"
 #include "components/network_session_configurator/common/network_switches.h"
 #include "components/services/storage/public/mojom/storage_service.mojom.h"
+#include "components/vrp_flags/buildflags.h"
 #include "content/browser/browser_child_process_host_impl.h"
 #include "content/browser/child_process_host_impl.h"
 #include "content/browser/gpu/gpu_data_manager_impl.h"
@@ -76,6 +77,8 @@
 #include "media/capture/capture_switches.h"
 #include "services/audio/public/mojom/audio_service.mojom.h"
 #include "services/network/public/mojom/network_service.mojom.h"
+#include "services/webnn/public/mojom/webnn_compiler_service.mojom.h"
+#include "services/webnn/webnn_switches.h"
 #endif
 
 #if BUILDFLAG(ENABLE_GPU_CHANNEL_MEDIA_CAPTURE)
@@ -87,6 +90,10 @@
 
 #if BUILDFLAG(ENABLE_VR)
 #include "device/vr/public/cpp/switches.h"
+#endif
+
+#if BUILDFLAG(ENABLE_VRP_FLAGS)
+#include "components/vrp_flags/vrp_flags.h"  // nogncheck
 #endif
 
 namespace content {
@@ -235,8 +242,9 @@ UtilityProcessHost::Options::WithGpuClientAllowed() {
 UtilityProcessHost::Options& UtilityProcessHost::Options::WithFileToPreload(
     std::string key,
     std::variant<base::FilePath, base::ScopedFD> file) {
-  DCHECK_EQ(file_data_->files_to_preload.count(key), 0u);
-  file_data_->files_to_preload.insert({std::move(key), std::move(file)});
+  auto [it, inserted] =
+      file_data_->files_to_preload.try_emplace(std::move(key), std::move(file));
+  DCHECK(inserted);
   return *this;
 }
 #endif  // BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_MAC)
@@ -271,6 +279,12 @@ UtilityProcessHost::Options::WithBoundServiceInterfaceOnChildProcess(
   CHECK(!service_interface_to_bind_.has_value())
       << "Can only bind one service interface.";
   service_interface_to_bind_.emplace(std::move(receiver));
+  return *this;
+}
+
+UtilityProcessHost::Options& UtilityProcessHost::Options::WithPriority(
+    base::Process::Priority priority) {
+  priority_ = priority;
   return *this;
 }
 
@@ -396,6 +410,9 @@ bool UtilityProcessHost::StartProcess() {
 #if BUILDFLAG(IS_LINUX) && !BUILDFLAG(IS_CHROMEOS)
       switches::kDisableDevShmUsage,
 #endif
+#if BUILDFLAG(ENABLE_VRP_FLAGS)
+      vrp_flags::switches::kVrpFlags,
+#endif
 #if BUILDFLAG(IS_MAC)
       sandbox::policy::switches::kDisableMetalShaderCache,
       sandbox::policy::switches::kEnableSandboxLogging,
@@ -460,6 +477,16 @@ bool UtilityProcessHost::StartProcess() {
 #endif
   };
   cmd_line->CopySwitchesFrom(browser_command_line, kSwitchNames);
+#if BUILDFLAG(IS_WIN)
+  // Propagate WebNN-specific switches to the compiler process regardless of
+  // sandbox type, since sandbox may be overridden by
+  // --disable-webnn-compiler-sandbox.
+  if (options_.metrics_name_ == webnn::mojom::WebNNCompilerService::Name_) {
+    cmd_line->CopySwitchesFrom(
+        browser_command_line,
+        switches::GetWebNNSwitchesCopiedFromGpuProcessHost());
+  }
+#endif
 
   network_session_configurator::CopyNetworkSwitches(browser_command_line,
                                                     cmd_line.get());
@@ -564,6 +591,11 @@ bool UtilityProcessHost::StartProcess() {
 
 void UtilityProcessHost::OnProcessLaunched() {
   launch_state_ = LaunchState::kLaunchComplete;
+#if !BUILDFLAG(IS_ANDROID)
+  if (options_.priority_.has_value()) {
+    process_->SetProcessPriority(options_.priority_.value());
+  }
+#endif
   if (client_) {
     client_->OnProcessLaunched(process_->GetProcess());
   }

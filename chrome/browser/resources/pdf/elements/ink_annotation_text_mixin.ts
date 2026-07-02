@@ -14,8 +14,10 @@ import type {ColorOption} from './ink_color_selector.js';
 
 type Constructor<T> = new (...args: any[]) => T;
 
+// LINT.IfChange(TextSizes)
 export const TEXT_SIZES: number[] =
     [6, 8, 10, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64, 72, 100];
+// LINT.ThenChange(//pdf/pdfium/pdfium_ink_reader.cc:TextSizes)
 
 export const TEXT_COLORS: ColorOption[] = [
   // Row 1:
@@ -133,6 +135,6 @@ export interface InkAnnotationTextMixinInterface {
   isSelectedSize(size: number): boolean;
   onTypefaceSelected(e: Event): void;
   onCurrentColorChanged(e: CustomEvent<{value: Color}>): void;
-  onSizeSelected(e: CustomEvent<{value: number}>): void;
+  onSizeSelected(e: Event): void;
   onTextAttributesChanged(attributes: TextAttributes): void;
 }

@@ -12,16 +12,14 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/themes/theme_properties.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_actions.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/browser/ui/qrcode_generator/qrcode_generator_bubble_controller.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/ui/views/sharing_hub/sharing_hub_bubble_util.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/qr_code_generator/bitmap_generator.h"
@@ -110,12 +108,13 @@ void QRCodeGeneratorBubble::Show() {
   textfield_url_->SelectAll(false);
   UpdateQRContent();
   ShowForReason(USER_GESTURE);
-  Browser* browser = chrome::FindLastActive();
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser();
   if (browser) {
     qrcode_action_item_ =
         actions::ActionManager::Get()
             .FindAction(kActionQrCodeGenerator,
-                        browser->browser_actions()->root_action_item())
+                        browser->GetActions()->root_action_item())
             ->GetAsWeakPtr();
     qrcode_action_item_.get()->SetIsShowingBubble(true);
   }
@@ -440,9 +439,11 @@ void QRCodeGeneratorBubble::DownloadButtonPressed() {
 
   CHECK(web_contents_);
 
-  Browser* browser = chrome::FindBrowserWithTab(web_contents_.get());
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+          web_contents_.get());
   content::DownloadManager* download_manager =
-      browser->profile()->GetDownloadManager();
+      browser->GetProfile()->GetDownloadManager();
   net::NetworkTrafficAnnotationTag traffic_annotation =
       net::DefineNetworkTrafficAnnotation("qr_code_save", R"(
       semantics {

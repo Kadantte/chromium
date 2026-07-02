@@ -10,6 +10,11 @@
 #include "components/search_engines/template_url_starter_pack_data.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "components/omnibox/browser/actions/omnibox_action_factory_android.h"
+#endif
 
 #if defined(SUPPORT_PEDALS_VECTOR_ICONS)
 #include "build/branding_buildflags.h"                // nogncheck
@@ -85,7 +90,9 @@ const gfx::VectorIcon& ContextualSearchFulfillmentAction::GetVectorIcon()
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   return vector_icons::kGoogleLensMonochromeLogoIcon;
 #else
-  return vector_icons::kSearchChromeRefreshIcon;
+  return features::IsRoundedIconsEnabled()
+             ? vector_icons::kSearchIcon
+             : vector_icons::kSearchChromeRefreshOldIcon;
 #endif
 }
 #endif  // defined(SUPPORT_PEDALS_VECTOR_ICONS)
@@ -121,7 +128,11 @@ void ContextualSearchOpenLensAction::RecordActionShown(size_t position,
 }
 
 void ContextualSearchOpenLensAction::Execute(ExecutionContext& context) const {
-  context.client_->OpenLensOverlay(/*show=*/true);
+  if (context.client_->ShouldOpenCoBrowsePanel()) {
+    context.client_->OpenCoBrowsePanel();
+  } else {
+    context.client_->OpenLensOverlay(/*show=*/true);
+  }
 }
 
 #if defined(SUPPORT_PEDALS_VECTOR_ICONS)
@@ -132,10 +143,24 @@ const gfx::VectorIcon& ContextualSearchOpenLensAction::GetVectorIcon() const {
              ? vector_icons::kGoogleLensLogoIcon
              : vector_icons::kGoogleLensMonochromeLogoIcon;
 #else
-  return vector_icons::kSearchChromeRefreshIcon;
+  return features::IsRoundedIconsEnabled()
+             ? vector_icons::kSearchIcon
+             : vector_icons::kSearchChromeRefreshOldIcon;
 #endif
 }
 #endif  // defined(SUPPORT_PEDALS_VECTOR_ICONS)
+
+#if BUILDFLAG(IS_ANDROID)
+base::android::ScopedJavaLocalRef<jobject>
+ContextualSearchOpenLensAction::GetOrCreateJavaObject(JNIEnv* env) const {
+  if (!j_omnibox_action_) {
+    j_omnibox_action_.Reset(BuildOmniboxLensOverlayAction(
+        env, reinterpret_cast<intptr_t>(this), strings_.hint,
+        strings_.accessibility_hint));
+  }
+  return base::android::ScopedJavaLocalRef<jobject>(j_omnibox_action_);
+}
+#endif
 
 ContextualSearchOpenLensAction::~ContextualSearchOpenLensAction() = default;
 
@@ -165,7 +190,9 @@ void StarterPackBookmarksAction::Execute(ExecutionContext& context) const {
 
 #if defined(SUPPORT_PEDALS_VECTOR_ICONS)
 const gfx::VectorIcon& StarterPackBookmarksAction::GetVectorIcon() const {
-  return omnibox::kStarActiveChromeRefreshIcon;
+  return features::IsRoundedIconsEnabled()
+             ? omnibox::kStarFilledIcon
+             : omnibox::kStarActiveChromeRefreshOldIcon;
 }
 #endif  // defined(SUPPORT_PEDALS_VECTOR_ICONS)
 
@@ -197,7 +224,9 @@ void StarterPackHistoryAction::Execute(ExecutionContext& context) const {
 
 #if defined(SUPPORT_PEDALS_VECTOR_ICONS)
 const gfx::VectorIcon& StarterPackHistoryAction::GetVectorIcon() const {
-  return vector_icons::kHistoryChromeRefreshIcon;
+  return features::IsRoundedIconsEnabled()
+             ? vector_icons::kHistoryIcon
+             : vector_icons::kHistoryChromeRefreshOldIcon;
 }
 #endif  // defined(SUPPORT_PEDALS_VECTOR_ICONS)
 
@@ -229,7 +258,9 @@ void StarterPackTabsAction::Execute(ExecutionContext& context) const {
 
 #if defined(SUPPORT_PEDALS_VECTOR_ICONS)
 const gfx::VectorIcon& StarterPackTabsAction::GetVectorIcon() const {
-  return omnibox::kProductChromeRefreshIcon;
+  return features::IsRoundedIconsEnabled()
+             ? omnibox::kChromeProductIcon
+             : omnibox::kProductChromeRefreshOldIcon;
 }
 #endif  // defined(SUPPORT_PEDALS_VECTOR_ICONS)
 
@@ -261,7 +292,8 @@ void StarterPackAiModeAction::Execute(ExecutionContext& context) const {
 
 #if defined(SUPPORT_PEDALS_VECTOR_ICONS)
 const gfx::VectorIcon& StarterPackAiModeAction::GetVectorIcon() const {
-  return omnibox::kSearchSparkIcon;
+  return features::IsRoundedIconsEnabled() ? omnibox::kSearchSparkIcon
+                                           : omnibox::kSearchSparkOldIcon;
 }
 #endif  // defined(SUPPORT_PEDALS_VECTOR_ICONS)
 

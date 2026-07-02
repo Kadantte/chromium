@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.omnibox;
 import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.ThreadUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.TimingMetric;
 import org.chromium.build.annotations.NullMarked;
@@ -122,8 +123,8 @@ public class OmniboxMetrics {
     @interface FocusResultedInNavigationTypes {
         // LINT.IfChange(FocusResultedInNavigationTypes)
         int NO_NAV_NO_ATTACHMENT = 0;
-        int NO_NAV_WITH_ATTACHMENT = 1;
-        int NAV_NO_ATTACHMENT = 2;
+        int NAV_NO_ATTACHMENT = 1;
+        int NO_NAV_WITH_ATTACHMENT = 2;
         int NAV_WITH_ATTACHMENT = 3;
         int COUNT = 4;
         // LINT.ThenChange(//tools/metrics/histograms/metadata/omnibox/enums.xml:FocusResultedInNavigationTypes)
@@ -171,6 +172,88 @@ public class OmniboxMetrics {
         return TimingMetric.shortThreadTime("Android.Omnibox.SuggestionView.CreateTime3");
     }
 
+    /** Record thread time spent inflating the Suggestion dropdown on async background thread. */
+    public static @Nullable TimingMetric recordSuggestionsDropdownAsyncInflationThreadTime() {
+        if (ThreadUtils.runningOnUiThread()) return null;
+        return TimingMetric.shortThreadTime(
+                "Android.Omnibox.SuggestionsDropdown.AsyncInflationTime2");
+    }
+
+    /** Record wall time spent inflating the Suggestion dropdown on async background thread. */
+    public static @Nullable TimingMetric recordSuggestionsDropdownAsyncInflationWallTime() {
+        if (ThreadUtils.runningOnUiThread()) return null;
+        return TimingMetric.shortUptime("Android.Omnibox.SuggestionsDropdown.AsyncInflationTime3");
+    }
+
+    /** Record thread time spent inflating the suggestions container. */
+    public static TimingMetric recordSuggestionsContainerInflationThreadTime() {
+        return TimingMetric.shortThreadTime(
+                "Android.Omnibox.SuggestionsDropdown.ContainerInflationThreadTime");
+    }
+
+    /** Record wall time spent inflating the suggestions container. */
+    public static TimingMetric recordSuggestionsContainerInflationWallTime() {
+        return TimingMetric.shortUptime(
+                "Android.Omnibox.SuggestionsDropdown.ContainerInflationWallTime");
+    }
+
+    /**
+     * Record whether the background suggestion dropdown inflation completed before the UI thread
+     * required it.
+     */
+    public static void recordAsyncInflationDropdownAvailable(boolean dropdownAvailable) {
+        RecordHistogram.recordBooleanHistogram(
+                "Android.Omnibox.SuggestionsDropdown.AsyncInflationDropdownAvailable",
+                dropdownAvailable);
+    }
+
+    /** Record whether the SuggestionsDropdown inflation thread matches the expected thread. */
+    public static void recordSuggestionsDropdownInflationThreadMatchesExpectedThread(
+            boolean runsOnExpectedThread) {
+        RecordHistogram.recordBooleanHistogram(
+                "Android.Omnibox.SuggestionsDropdown.InflationThreadMatches", runsOnExpectedThread);
+    }
+
+    /** Record whether the prewarming thread matches the expected thread. */
+    public static void recordPreWarmingThreadMatchesExpectedThread(boolean runsOnExpectedThread) {
+        RecordHistogram.recordBooleanHistogram(
+                "Android.Omnibox.SuggestionsDropdown.PreWarmingThreadMatches",
+                runsOnExpectedThread);
+    }
+
+    /** Record whether forced synchronous inflation occurred for the suggestions container. */
+    public static void recordForcedSyncInflation(boolean isForced) {
+        RecordHistogram.recordBooleanHistogram(
+                "Android.Omnibox.SuggestionsDropdown.ForcedSyncInflation", isForced);
+    }
+
+    /**
+     * Record the total cumulative thread time spent creating all views in the PrewarmingRecycled
+     * View Pool when async view inflation is disabled.
+     */
+    public static void recordPreWarmingViewsThreadTime(long totalThreadTimeMs) {
+        RecordHistogram.recordMediumTimesHistogram(
+                "Android.Omnibox.SuggestionsDropdown.PreWarmingViewsThreadTime", totalThreadTimeMs);
+    }
+
+    /**
+     * Record the total cumulative wall time spent creating all views in the PrewarmingRecycled View
+     * Pool when async view inflation is disabled.
+     */
+    public static void recordPreWarmingViewsWallTime(long totalWallTimeMs) {
+        RecordHistogram.recordMediumTimesHistogram(
+                "Android.Omnibox.SuggestionsDropdown.PreWarmingViewsWallTime", totalWallTimeMs);
+    }
+
+    /**
+     * Record the number of views successfully pre-created in the PrewarmingRecycledViewPool when
+     * async view inflation is disabled.
+     */
+    public static void recordPreWarmedViewsCount(int count) {
+        RecordHistogram.recordExactLinearHistogram(
+                "Android.Omnibox.SuggestionsDropdown.PreWarmedViewsCount", count, 30);
+    }
+
     /**
      * Record whether suggestion view was successfully reused.
      *
@@ -213,7 +296,9 @@ public class OmniboxMetrics {
      * Record whether the interaction with the Omnibox resulted with a navigation (true) or user
      * leaving the omnibox and suggestions list.
      *
+     * @param requestType The request type at session end.
      * @param focusResultedInNavigation Whether the user completed interaction with navigation.
+     * @param withAttachments Whether there were any attachemnts at session end.
      */
     public static void recordOmniboxFocusResultedInNavigation(
             @AutocompleteRequestType int requestType,
@@ -223,6 +308,8 @@ public class OmniboxMetrics {
                 switch (requestType) {
                     case AutocompleteRequestType.AI_MODE -> ".AIMode";
                     case AutocompleteRequestType.IMAGE_GENERATION -> ".ImageGeneration";
+                    case AutocompleteRequestType.CANVAS -> ".Canvas";
+                    case AutocompleteRequestType.DEEP_SEARCH -> ".DeepSearch";
                     default -> ".Search";
                 };
 
@@ -499,15 +586,6 @@ public class OmniboxMetrics {
                 break;
 
             default:
-                // May trigger if nev PageClassifications were added to
-                // third_party/metrics_proto/omnibox_event.proto file,
-                // but have not been reflected here. If that's the case, file a bug for the
-                // author of the new PageClassification.
-                // Last supported value: OTHER_ON_CCT.
-                assert false
-                        : "b/40221519: Invalid page classification: "
-                                + pageClass
-                                + ". Please re-open bug, and attach captured stack trace.";
                 break;
         }
 

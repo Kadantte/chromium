@@ -23,9 +23,6 @@ namespace features {
 // https://crbug.com/394988793
 BASE_DECLARE_FEATURE(kDsePreload2);
 
-// Enable `PreloadServingMetrics`.
-extern const base::FeatureParam<bool> kDsePreload2UsePreloadServingMetrics;
-
 // The feature is disabled if device memory is smaller than the threshold.
 extern const base::FeatureParam<size_t> kDsePreload2DeviceMemoryThresholdMiB;
 // Pause triggering preloads when on-suggest prefetch failed.
@@ -55,6 +52,12 @@ BASE_DECLARE_FEATURE(kDsePreload2OnPressIncognito);
 // For more details, see
 // https://docs.google.com/document/d/1f4dcNYP3O_Ft4yMmC42ETxGC5lM7YF5FDbEgnxUua7M/edit?tab=t.38v8gca76tmi
 BASE_DECLARE_FEATURE(kDsePreload2OnSuggestNonDefalutMatch);
+
+// Initial No-Vary-Search hint if there is no No-Vary-Search hint from Prefs.
+//
+// This feature flag is for debug purpose and we'll remove it finally.
+extern const base::FeatureParam<std::string>
+    kDsePreload2InitialNoVarySearchHint;
 
 // Returns true iff we should enter DsePreload2 code path.
 bool IsDsePreload2Enabled();

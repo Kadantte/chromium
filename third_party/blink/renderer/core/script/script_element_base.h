@@ -35,7 +35,6 @@ namespace blink {
 class Document;
 class Element;
 class ExecutionContext;
-class HTMLScriptElementOrSVGScriptElement;
 class ScriptLoader;
 
 ScriptLoader* ScriptLoaderFromElement(Element*);
@@ -57,6 +56,7 @@ class CORE_EXPORT ScriptElementBase : public GarbageCollectedMixin {
   virtual String TypeAttributeValue() const = 0;
   virtual String ReferrerPolicyAttributeValue() const = 0;
   virtual String FetchPriorityAttributeValue() const = 0;
+  virtual String CacheHintAttributeValue() const = 0;
 
   // This implements https://dom.spec.whatwg.org/#concept-child-text-content
   virtual String ChildTextContent() = 0;

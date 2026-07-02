@@ -16,7 +16,6 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
@@ -316,12 +315,10 @@ void BrowsingHistoryService::QueryHistoryInternal(
       should_return_results_immediately = false;
       QueryOptions options = OptionsWithEndTime(
           state->original_options, state->remote_end_time_for_continuation);
-      if (base::FeatureList::IsEnabled(kHistoryQueryOnlyLocalFirst)) {
-        options.max_count = desired_count - state->local_results.size();
-        // If no remote results were needed, ShouldQueryRemote() should have
-        // returned false and control flow wouldn't reach here.
-        CHECK(options.max_count > 0);
-      }
+      options.max_count = desired_count - state->local_results.size();
+      // If no remote results were needed, ShouldQueryRemote() should have
+      // returned false and control flow wouldn't reach here.
+      CHECK(options.max_count > 0);
       web_history_request_ = web_history->QueryHistory(
           state->search_text, options,
           base::BindOnce(&BrowsingHistoryService::WebHistoryQueryComplete,
@@ -503,23 +500,24 @@ bool BrowsingHistoryService::ShouldQueryRemote(const QueryHistoryState& state) {
     return false;
   }
 
+#if !BUILDFLAG(IS_IOS)
+  // Actor visits are local-only and user visits should not be queried.
+  if (history::IsBrowsingHistoryActorIntegrationM3Enabled() &&
+      !state.original_options.include_user_visits) {
+    return false;
+  }
+#endif
+
   const size_t desired_count =
       static_cast<size_t>(state.original_options.EffectiveMaxCount());
-  if (base::FeatureList::IsEnabled(kHistoryQueryOnlyLocalFirst)) {
-    if (CanRetry(state.local_status)) {
-      // There is more local history to query first, so don't query remote yet.
-      return false;
-    }
-    if (state.local_results.size() + state.remote_results.size() >=
-        desired_count) {
-      // Already have sufficient results, no need to query more.
-      return false;
-    }
-  } else {
-    if (state.remote_results.size() >= desired_count) {
-      // Already have sufficient results, no need to query more.
-      return false;
-    }
+  if (CanRetry(state.local_status)) {
+    // There is more local history to query first, so don't query remote yet.
+    return false;
+  }
+  if (state.local_results.size() + state.remote_results.size() >=
+      desired_count) {
+    // Already have sufficient results, no need to query more.
+    return false;
   }
 
   // App-specific history uses the results from the local database only, since
@@ -614,9 +612,9 @@ void BrowsingHistoryService::MergeDuplicateResults(
 
   // Maps a URL to the most recent entry on a particular day for
   // non-actor-initiated visits.
-  std::map<GURL, HistoryEntry*> non_actor_current_day_entries;
+  std::map<GroupingKey, HistoryEntry*> non_actor_current_day_entries;
   // Same as above, but for actor-initiated visits.
-  std::map<GURL, HistoryEntry*> actor_current_day_entries;
+  std::map<GroupingKey, HistoryEntry*> actor_current_day_entries;
 
   // Keeps track of the day that `*_current_day_entries` is holding
   // entries for in order to handle removing per-day duplicates.
@@ -630,24 +628,22 @@ void BrowsingHistoryService::MergeDuplicateResults(
       current_day_midnight = entry.time.LocalMidnight();
     }
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
-    auto& current_day_entries =
-        history::IsBrowsingHistoryActorIntegrationM2Enabled() &&
-                entry.is_actor_visit
-            ? actor_current_day_entries
-            : non_actor_current_day_entries;
-#else   // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if !BUILDFLAG(IS_IOS)
+    auto& current_day_entries = entry.is_actor_visit
+                                    ? actor_current_day_entries
+                                    : non_actor_current_day_entries;
+#else
     auto& current_day_entries = non_actor_current_day_entries;
-#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#endif
+    GroupingKey key{.url = entry.url, .app_id = entry.app_id};
 
     // Keep this visit if it's the first visit to this URL on the current day.
-    if (current_day_entries.count(entry.url) == 0) {
-      const auto entry_url = entry.url;
+    if (current_day_entries.count(key) == 0) {
       deduped.push_back(std::move(entry));
-      current_day_entries[entry_url] = &deduped.back();
+      current_day_entries[key] = &deduped.back();
     } else {
       // Keep track of the timestamps of all visits to the URL on the same day.
-      HistoryEntry* matching_entry = current_day_entries[entry.url];
+      HistoryEntry* matching_entry = current_day_entries[key];
       // Since this de-duplication logic will only be performed if the grouping
       // is disabled, the entries will only have timestamps for the same URL.
       CHECK_EQ(1u, entry.all_timestamps.size());
@@ -703,8 +699,6 @@ BrowsingHistoryService::GroupSimilarVisits(QueryHistoryState* state) {
   // pointers to invalid locations.
   std::vector<HistoryEntry> grouped;
   grouped.reserve(sorted.size());
-  // The GroupingKey consists of a pair of hostname and title.
-  using GroupingKey = std::pair<std::string, std::u16string>;
 
   // Maps the GroupingKey to the most recent entry on a particular day for
   // non-actor-initiated visits.
@@ -725,19 +719,20 @@ BrowsingHistoryService::GroupSimilarVisits(QueryHistoryState* state) {
       current_day_midnight = entry.time.LocalMidnight();
     }
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
-    auto& current_day_entries =
-        history::IsBrowsingHistoryActorIntegrationM2Enabled() &&
-                entry.is_actor_visit
-            ? actor_current_day_entries
-            : non_actor_current_day_entries;
-#else   // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if !BUILDFLAG(IS_IOS)
+    auto& current_day_entries = entry.is_actor_visit
+                                    ? actor_current_day_entries
+                                    : non_actor_current_day_entries;
+#else
     auto& current_day_entries = non_actor_current_day_entries;
-#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#endif
 
     // TODO(b/481272035): Use the domain name that matches the displayed domain
     // name in the UI.
-    GroupingKey key(entry.url.GetHost(), entry.title);
+    GroupingKey key{.host = entry.url.GetHost(),
+                    .title = entry.title,
+                    .app_id = entry.app_id};
+
     // Keep this visit if it's the first visit of it's kind on the current day.
     if (current_day_entries.find(key) == current_day_entries.end()) {
       grouped.push_back(std::move(entry));
@@ -792,8 +787,7 @@ void BrowsingHistoryService::QueryComplete(
   state->local_status =
       results.reached_beginning() ? REACHED_BEGINNING : MORE_RESULTS;
 
-  if (base::FeatureList::IsEnabled(kHistoryQueryOnlyLocalFirst) &&
-      results.reached_beginning()) {
+  if (results.reached_beginning()) {
     // Exhausted the local results; continue querying to get remote results.
     // Start querying at the point where local history ends.
     base::Time expiry_treshold =
@@ -861,12 +855,13 @@ void BrowsingHistoryService::ReturnResultsToDriver(
     }
   }
 
-  RecordResultsMetrics(results, has_remote_results);
+  RecordResultsMetrics(results);
 
   QueryResultsInfo info;
   info.search_text = state->search_text;
-  info.reached_beginning =
-      !CanRetry(state->local_status) && !CanRetry(state->remote_status);
+  info.reached_beginning = !CanRetry(state->local_status) &&
+                           (!CanRetry(state->remote_status) ||
+                            state->original_options.app_id != kNoAppIdFilter);
   info.sync_timed_out = state->remote_status == TIMED_OUT;
   base::OnceClosure continuation =
       base::BindOnce(&BrowsingHistoryService::QueryHistoryInternal,
@@ -877,8 +872,7 @@ void BrowsingHistoryService::ReturnResultsToDriver(
 }
 
 void BrowsingHistoryService::RecordResultsMetrics(
-    const std::vector<HistoryEntry>& results,
-    bool has_remote_results) {
+    const std::vector<HistoryEntry>& results) {
   // Count the number of local, remote, and combined entries, each split by
   // entries before vs after the local expiry threshold (90 days).
   const base::Time local_expiry_threshold =
@@ -915,33 +909,26 @@ void BrowsingHistoryService::RecordResultsMetrics(
       "History.BrowsingHistoryResult.Combined.PostExpiryThreshold",
       post_expiry_counts[HistoryEntry::COMBINED_ENTRY], 0, 150, 50);
 
-  // The "WebHistoryMergeResult" histograms are only recorded if there were any
-  // remote results, i.e. an actual merge happened.
-  // TODO(crbug.com/456079210): Clean up these histograms once the
-  // "History.BrowsingHistoryResult.*" ones are established.
-  if (has_remote_results) {
-    // Note: The histogram max of 150 is chosen to match `RESULTS_PER_PAGE` from
-    // chrome/browser/resources/history/constants.ts and `kMaxQueryCount` from
-    // chrome/browser/android/history/browsing_history_bridge.cc.
-    base::UmaHistogramCustomCounts(
-        "History.WebHistoryMergeResult.LocalOnly.PreExpiryThreshold",
-        pre_expiry_counts[HistoryEntry::LOCAL_ENTRY], 0, 150, 50);
-    base::UmaHistogramCustomCounts(
-        "History.WebHistoryMergeResult.LocalOnly.PostExpiryThreshold",
-        post_expiry_counts[HistoryEntry::LOCAL_ENTRY], 0, 150, 50);
-    base::UmaHistogramCustomCounts(
-        "History.WebHistoryMergeResult.RemoteOnly.PreExpiryThreshold",
-        pre_expiry_counts[HistoryEntry::REMOTE_ENTRY], 0, 150, 50);
-    base::UmaHistogramCustomCounts(
-        "History.WebHistoryMergeResult.RemoteOnly.PostExpiryThreshold",
-        post_expiry_counts[HistoryEntry::REMOTE_ENTRY], 0, 150, 50);
-    base::UmaHistogramCustomCounts(
-        "History.WebHistoryMergeResult.Combined.PreExpiryThreshold",
-        pre_expiry_counts[HistoryEntry::COMBINED_ENTRY], 0, 150, 50);
-    base::UmaHistogramCustomCounts(
-        "History.WebHistoryMergeResult.Combined.PostExpiryThreshold",
-        post_expiry_counts[HistoryEntry::COMBINED_ENTRY], 0, 150, 50);
+  RecordDuplicateVisitsCount(results);
+}
+
+void BrowsingHistoryService::RecordDuplicateVisitsCount(
+    const std::vector<HistoryEntry>& results) {
+  int duplicate_visits_count = 0;
+  for (const HistoryEntry& entry : results) {
+    for (const auto& [url, timestamps] : entry.all_timestamps) {
+      // Omit the timestamp for the entry itself from the duplicate count.
+      url == entry.url ? duplicate_visits_count += timestamps.size() - 1
+                        : duplicate_visits_count += timestamps.size();
+    }
   }
+
+  // Note: The histogram max of 150 is chosen to match `RESULTS_PER_PAGE` from
+  // chrome/browser/resources/history/constants.ts and `kMaxQueryCount` from
+  // chrome/browser/android/history/browsing_history_bridge.cc.
+  base::UmaHistogramCustomCounts(
+      "History.BrowsingHistoryResult.DuplicateVisitsCount",
+      duplicate_visits_count, 0, 150, 50);
 }
 
 void BrowsingHistoryService::WebHistoryQueryComplete(

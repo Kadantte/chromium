@@ -59,6 +59,18 @@ bool VerifyBeginNavigationCommonParams(
     blink::mojom::CommonNavigationParams* common_params,
     std::optional<blink::LocalFrameToken>& initiator_frame_token);
 
+// Verifies that the CreateNewWindowParams are valid and can be accessed by
+// `current_rfh`'s process.
+//
+// Returns true if the CreateNewWindowParams are valid.
+//
+// Terminates `current_rfh`'s process and returns false if the
+// CreateNewWindowParams are invalid.
+//
+// This function has to be called on the UI thread.
+bool VerifyCreateNewWindowParams(const RenderFrameHostImpl& current_rfh,
+                                 const mojom::CreateNewWindowParams& params);
+
 // Verify that the initiator frame identified by `initiator_frame_token` and
 // `initiator_process_id` can navigate `current_rfh`.
 //
@@ -74,6 +86,16 @@ bool VerifyNavigationInitiator(
     RenderFrameHostImpl* current_rfh,
     const std::optional<blink::LocalFrameToken>& initiator_frame_token,
     int initiator_process_id);
+
+// Verifies that |headers| are valid for a navigation request initiated by
+// |process|. For now, this always returns true, indicating that the |headers|
+// are valid. TODO(https://crbug.com/487795397): Later, after evaluating debug
+// data, this will be converted to terminate |process| and return false if
+// |headers| are invalid.
+//
+// This function has to be called on the UI thread.
+bool VerifyNavigationHeaders(RenderProcessHost* process,
+                             const std::string& headers);
 
 }  // namespace content
 

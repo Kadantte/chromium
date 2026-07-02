@@ -33,9 +33,9 @@
 #include "net/filter/source_stream_type.h"
 #include "net/http/http_request_headers.h"
 #include "services/network/public/cpp/data_element.h"
+#include "services/network/public/cpp/request_header_to_enum.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/resource_request_body.h"
-#include "services/network/request_header_to_enum.h"
 #include "services/network/stringify_enum.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
@@ -90,6 +90,7 @@ namespace {
   DO_FIELD(do_not_prompt_for_login) __VA_ARGS__                    \
   DO_FIELD(is_outermost_main_frame) __VA_ARGS__                    \
   DO_FIELD(transition_type) __VA_ARGS__                            \
+  DO_FIELD(is_reload_navigation) __VA_ARGS__                       \
   DO_FIELD(previews_state) __VA_ARGS__                             \
   DO_FIELD(upgrade_if_insecure) __VA_ARGS__                        \
   DO_FIELD(is_revalidating) __VA_ARGS__                            \
@@ -117,7 +118,7 @@ namespace {
   DO_FIELD(prefetch_token) __VA_ARGS__                             \
   DO_FIELD(socket_tag) __VA_ARGS__                                 \
   DO_FIELD(keepalive_token) __VA_ARGS__                            \
-  DO_FIELD(allows_device_bound_session_registration) __VA_ARGS__   \
+  DO_FIELD(allows_device_bound_sessions) __VA_ARGS__   \
   DO_FIELD(permissions_policy) __VA_ARGS__   \
   DO_FIELD(fetch_retry_options)
 
@@ -219,7 +220,8 @@ enum class FieldsForUma {
   kExpectedPublicKeys = 64,
   kPermissionsPolicy = 65,
   kClientSideContentDecodingEnabled = 66,
-  kMaxValue = kClientSideContentDecodingEnabled,
+  kIsReloadNavigation = 68,
+  kMaxValue = kIsReloadNavigation,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/network/enums.xml:PrefetchMatchesResourceRequestField)
 
@@ -265,6 +267,7 @@ constexpr auto kUmaEnumMap = base::MakeFixedFlatMap<Fields, FieldsForUma>({
     {Fields::kdo_not_prompt_for_login, FieldsForUma::kDoNotPromptForLogin},
     {Fields::kis_outermost_main_frame, FieldsForUma::kIsOutermostMainFrame},
     {Fields::ktransition_type, FieldsForUma::kTransitionType},
+    {Fields::kis_reload_navigation, FieldsForUma::kIsReloadNavigation},
     {Fields::kpreviews_state, FieldsForUma::kPreviewsState},
     {Fields::kupgrade_if_insecure, FieldsForUma::kUpgradeIfInsecure},
     {Fields::kis_revalidating, FieldsForUma::kIsRevalidating},
@@ -342,7 +345,7 @@ constexpr std::array kIgnoredFields = {
 // These headers are completely ignored for the purposes of matching when they
 // appear in the `headers` field.
 constexpr auto kIgnoredHeaders = base::MakeFixedFlatSet<std::string_view>({
-    "purpose",
+    // Corresponds to `blink::kSecPurposeHeaderName` but in lower case.
     "sec-purpose",
 });
 using IgnoredHeadersType = decltype(kIgnoredHeaders);

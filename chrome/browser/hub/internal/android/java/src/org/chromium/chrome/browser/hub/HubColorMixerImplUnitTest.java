@@ -12,6 +12,7 @@ import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
@@ -34,13 +35,13 @@ import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.ui.animation.AnimationHandler;
 import org.chromium.ui.util.ColorUtils;
 
@@ -74,7 +75,7 @@ public class HubColorMixerImplUnitTest {
                         mAnimationHandler,
                         HubColorMixerImplUnitTest::getBackgroundColorForTests,
                         isTablet);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
     }
 
     @Before
@@ -94,6 +95,20 @@ public class HubColorMixerImplUnitTest {
 
         assertFalse(mHubVisibilitySupplier.hasObservers());
         assertFalse(mFocusedPaneSupplier.hasObservers());
+    }
+
+    @Test
+    public void testUnregisterBlend() {
+        when(mColorBlend.createAnimationForTransition(anyInt(), anyInt()))
+                .thenReturn(mock(android.animation.Animator.class));
+        mAnimatorSetBuilder.setPreviousColorScheme(HubColorScheme.DEFAULT);
+        mAnimatorSetBuilder.setNewColorScheme(HubColorScheme.INCOGNITO);
+
+        mHubColorMixer.registerBlend(mColorBlend);
+        assertEquals(2, mAnimatorSetBuilder.build().getChildAnimations().size());
+
+        mHubColorMixer.unregisterBlend(mColorBlend);
+        assertEquals(1, mAnimatorSetBuilder.build().getChildAnimations().size());
     }
 
     @Test
@@ -148,7 +163,7 @@ public class HubColorMixerImplUnitTest {
         doNothing().when(mAnimationHandler).startAnimation(any());
         mFocusedPaneSupplier.set(mPane1);
         reset(mColorBlend);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
 
         assertFalse(mHubColorMixer.getOverviewMode());
         mHubColorMixer.processStateChange(HUB_SHOWN);
@@ -188,14 +203,14 @@ public class HubColorMixerImplUnitTest {
     @Test
     public void testOnHubVisibilityChange_phone_visible() {
         mHubVisibilitySupplier.set(true);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         assertTrue(mHubColorMixer.getOverviewMode());
     }
 
     @Test
     public void testOnHubVisibilityChange_phone_hidden() {
         mHubVisibilitySupplier.set(false);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         assertFalse(mHubColorMixer.getOverviewMode());
     }
 
@@ -204,7 +219,7 @@ public class HubColorMixerImplUnitTest {
         initialize(/* isTablet= */ true);
 
         mHubVisibilitySupplier.set(true);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         assertFalse(mHubColorMixer.getOverviewMode());
     }
 
@@ -213,7 +228,7 @@ public class HubColorMixerImplUnitTest {
         initialize(/* isTablet= */ true);
 
         mHubVisibilitySupplier.set(false);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         assertFalse(mHubColorMixer.getOverviewMode());
     }
 
@@ -221,7 +236,7 @@ public class HubColorMixerImplUnitTest {
     public void testOnFocusedPaneChange_default() {
         enableOverviewMode();
         mFocusedPaneSupplier.set(mPane1);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         assertTrue(mHubColorMixer.getOverviewMode());
 
         NonNullObservableSupplier<Integer> overviewColorSupplier =
@@ -234,7 +249,7 @@ public class HubColorMixerImplUnitTest {
     public void testOnFocusedPaneChange_incognito() {
         enableOverviewMode();
         mFocusedPaneSupplier.set(mPane2);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         assertTrue(mHubColorMixer.getOverviewMode());
 
         NonNullObservableSupplier<Integer> overviewColorSupplier =
@@ -246,7 +261,7 @@ public class HubColorMixerImplUnitTest {
     @Test
     public void testEnableOverviewMode() {
         enableOverviewMode();
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         assertTrue(mHubColorMixer.getOverviewMode());
 
         NonNullObservableSupplier<Integer> overviewColorSupplier =
@@ -273,7 +288,7 @@ public class HubColorMixerImplUnitTest {
 
         reset(mAnimatorSetBuilder, mAnimationHandler);
         mFocusedPaneSupplier.set(mPane1);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         verify(mAnimatorSetBuilder).setNewColorScheme(HubColorScheme.DEFAULT);
         verify(mAnimatorSetBuilder).setPreviousColorScheme(HubColorScheme.DEFAULT);
         verify(mAnimatorSetBuilder).build();
@@ -281,7 +296,7 @@ public class HubColorMixerImplUnitTest {
 
         reset(mAnimatorSetBuilder, mAnimationHandler);
         mFocusedPaneSupplier.set(mPane2);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         verify(mAnimatorSetBuilder).setNewColorScheme(HubColorScheme.INCOGNITO);
         verify(mAnimatorSetBuilder).setPreviousColorScheme(HubColorScheme.DEFAULT);
         verify(mAnimatorSetBuilder).build();
@@ -297,7 +312,7 @@ public class HubColorMixerImplUnitTest {
         @ColorInt int expectedColor = overviewColorSupplier.get();
         mHubColorMixer.getOverviewModeAlphaObserver().accept(0.5f);
         expectedColor = ColorUtils.setAlphaComponentWithFloat(expectedColor, 0.5f);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
 
         assertEquals(
                 Integer.valueOf(expectedColor), mHubColorMixer.getOverviewColorSupplier().get());
@@ -311,7 +326,7 @@ public class HubColorMixerImplUnitTest {
         @ColorInt int expectedColor = overviewColorSupplier.get();
         mHubColorMixer.getOverviewModeAlphaObserver().accept(0.5f);
         expectedColor = ColorUtils.setAlphaComponentWithFloat(expectedColor, 0.5f);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
 
         assertNotEquals(Integer.valueOf(expectedColor), overviewColorSupplier.get());
     }
@@ -337,7 +352,7 @@ public class HubColorMixerImplUnitTest {
         doNothing().when(mAnimationHandler).startAnimation(any());
 
         mFocusedPaneSupplier.set(mPane2);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         verify(mColorBlend).createAnimationForTransition(anyInt(), anyInt());
         verify(mAnimationHandler).startAnimation(any());
     }

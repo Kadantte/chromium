@@ -15,6 +15,7 @@
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/environment.h"
+#include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/nix/xdg_util.h"
 #include "base/notreached.h"
@@ -407,12 +408,14 @@ void QtUi::RemoveWindowButtonOrderObserver(
   }
 }
 
-std::unique_ptr<ui::NavButtonProvider> QtUi::CreateNavButtonProvider() {
+std::unique_ptr<ui::NavButtonProvider> QtUi::CreateNavButtonProvider(
+    ui::FrameType type) {
   // QT prefers server-side decorations.
   return nullptr;
 }
 
-ui::WindowFrameProvider* QtUi::GetWindowFrameProvider(bool solid_frame,
+ui::WindowFrameProvider* QtUi::GetWindowFrameProvider(ui::FrameType type,
+                                                      bool solid_frame,
                                                       bool tiled,
                                                       bool maximized) {
   // QT prefers server-side decorations.

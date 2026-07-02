@@ -10,7 +10,6 @@
 #include <string_view>
 #include <utility>
 
-#include "base/containers/enum_set.h"
 #include "base/debug/alias.h"
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
@@ -228,6 +227,26 @@ HttpStreamPool::AttemptManager::AttemptManager(Group* group, NetLog* net_log)
         http_network_session()->params().ignore_certificate_errors;
     ssl_config.network_anonymization_key =
         stream_key().network_anonymization_key();
+
+    // Prior to HTTP/2 and SPDY, some servers used TLS renegotiation to
+    // request TLS client authentication after the HTTP request was sent.
+    // The initial TLS handshake completes without requesting a client
+    // certificate; the server then sends a HelloRequest to trigger a
+    // renegotiation that includes a CertificateRequest. Allow
+    // renegotiation for only those connections.
+    //
+    // Note that this does NOT implement the provision in
+    // https://http2.github.io/http2-spec/#rfc.section.9.2.1 which allows
+    // the server to request a renegotiation immediately before sending the
+    // connection preface as waiting for the preface would cost the round
+    // trip that False Start otherwise saves.
+    //
+    // TODO(crbug.com/502745043): AttemptManager currently only handles
+    // direct (non-proxied) connections, so renegotiation is unconditionally
+    // allowed. Once HEv3 supports proxied connections, renegotiation must
+    // be disabled for connections tunneled through a proxy.
+    ssl_config.renego_allowed_default = true;
+    ssl_config.renego_allowed_for_protos = {NextProto::kProtoHTTP11};
 
     base_ssl_config_.emplace(std::move(ssl_config));
   }
@@ -1112,27 +1131,14 @@ void HttpStreamPool::AttemptManager::ResolveServiceEndpoint(
   service_endpoint_request_ =
       http_network_session()->host_resolver()->CreateServiceEndpointRequest(
           stream_key().GetHostToResolve(),
-          stream_key().network_anonymization_key(), net_log(),
-          std::move(parameters));
+          stream_key().network_anonymization_key(),
+          stream_key().target_network(), net_log(), std::move(parameters));
 
   dns_resolution_start_time_ = base::TimeTicks::Now();
   int rv = service_endpoint_request_->Start(this);
   if (rv != ERR_IO_PENDING) {
     OnServiceEndpointRequestFinished(rv);
   }
-}
-
-void HttpStreamPool::AttemptManager::ResetServiceEndpointRequestLater() {
-  CHECK(is_shutting_down());
-  // Using IDLE since resetting ServiceEndpointRequest is not urgent.
-  TaskRunner(IDLE)->PostTask(
-      FROM_HERE, base::BindOnce(&AttemptManager::ResetServiceEndpointRequest,
-                                weak_ptr_factory_.GetWeakPtr()));
-}
-
-void HttpStreamPool::AttemptManager::ResetServiceEndpointRequest() {
-  CHECK(is_shutting_down());
-  service_endpoint_request_.reset();
 }
 
 void HttpStreamPool::AttemptManager::RestrictAllowedProtocols(
@@ -1654,7 +1660,7 @@ void HttpStreamPool::AttemptManager::HandleFinalError(int error) {
   CHECK(!final_error_to_notify_jobs_.has_value());
   final_error_to_notify_jobs_ = error;
   availability_state_ = AvailabilityState::kFailing;
-  ResetServiceEndpointRequestLater();
+  service_endpoint_request_.reset();
 
   net_log_.AddEvent(
       NetLogEventType::HTTP_STREAM_POOL_ATTEMPT_MANAGER_NOTIFY_FAILURE, [&] {
@@ -1839,7 +1845,7 @@ void HttpStreamPool::AttemptManager::MaybeStartDraining() {
   }
 
   availability_state_ = AvailabilityState::kDraining;
-  ResetServiceEndpointRequestLater();
+  service_endpoint_request_.reset();
 
   // Cancel in-flight TCP based attempts so that draining AttemptManager won't
   // have active connecting streams.

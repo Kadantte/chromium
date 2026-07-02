@@ -18,7 +18,7 @@ import static org.chromium.chrome.browser.hub.HubToolbarProperties.SEARCH_BOX_VI
 import static org.chromium.chrome.browser.hub.HubToolbarProperties.SEARCH_BOX_VISIBLE;
 import static org.chromium.chrome.browser.hub.HubToolbarProperties.SEARCH_LISTENER;
 import static org.chromium.chrome.browser.hub.HubToolbarProperties.SEARCH_LOUPE_VISIBLE;
-import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNonNativeNtpUrl;
+import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNtpUrl;
 
 import android.content.ComponentCallbacks;
 import android.content.Context;
@@ -36,10 +36,12 @@ import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.hub.HubToolbarProperties.PaneButtonLookup;
+import org.chromium.chrome.browser.ui.actions.button.DelegateButtonData;
+import org.chromium.chrome.browser.ui.actions.button.DisplayButtonData;
+import org.chromium.chrome.browser.ui.actions.button.FullButtonData;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityClient;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.ResolutionType;
 import org.chromium.components.feature_engagement.Tracker;
-import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
 
@@ -301,8 +303,8 @@ public class HubToolbarMediator {
 
     private FullButtonData wrapButtonData(
             @PaneId int paneId, DisplayButtonData referenceButtonData) {
-        Runnable onPress =
-                () -> {
+        Callback<View> onPress =
+                view -> {
                     if (mIgnoreTabLayoutSelection) {
                         // When we rebuild the tab data, the selected tab layout will change, and
                         // our Runnables will be invoked for the current tab. This isn't a real
@@ -318,7 +320,7 @@ public class HubToolbarMediator {
                     RecordHistogram.recordEnumeratedHistogram(
                             "Android.Hub.PaneFocused.PaneSwitcher", paneId, PaneId.COUNT);
                 };
-        return new DelegateButtonData(referenceButtonData, onPress);
+        return new DelegateButtonData.Builder(referenceButtonData).setOnPress(onPress).build();
     }
 
     private void onFocusedPaneChange(Pane focusedPane) {
@@ -383,7 +385,7 @@ public class HubToolbarMediator {
         mSearchActivityClient.requestOmniboxForResult(
                 mSearchActivityClient
                         .newIntentBuilder()
-                        .setPageUrl(new GURL(getOriginalNonNativeNtpUrl()))
+                        .setPageUrl(new GURL(getOriginalNtpUrl()))
                         .setIncognito(mPropertyModel.get(IS_INCOGNITO))
                         .setResolutionType(ResolutionType.OPEN_IN_CHROME)
                         .build());
@@ -432,11 +434,6 @@ public class HubToolbarMediator {
     }
 
     private boolean maybeExcludeHubSearchForTabGroupsPane(@PaneId int focusedPaneId) {
-        if (!OmniboxFeatures.sAndroidHubSearchTabGroups.isEnabled()
-                || !OmniboxFeatures.sAndroidHubSearchEnableOnTabGroupsPane.getValue()) {
-            return true;
-        }
-
         return focusedPaneId != PaneId.TAB_GROUPS;
     }
 

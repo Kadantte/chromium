@@ -38,7 +38,6 @@
 #include "third_party/blink/public/common/context_menu_data/context_menu_data.h"
 #include "third_party/blink/public/common/context_menu_data/edit_flags.h"
 #include "third_party/blink/public/common/features.h"
-#include "third_party/blink/public/common/input/web_menu_source_type.h"
 #include "third_party/blink/public/common/navigation/impression.h"
 #include "third_party/blink/public/mojom/context_menu/context_menu.mojom-blink.h"
 #include "third_party/blink/public/web/web_local_frame_client.h"
@@ -100,6 +99,7 @@
 #include "third_party/blink/renderer/platform/exported/wrapped_resource_response.h"
 #include "third_party/blink/renderer/platform/graphics/dom_node_id.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_visitor.h"
+#include "ui/base/mojom/menu_source_type.mojom-blink.h"
 
 namespace blink {
 
@@ -115,6 +115,14 @@ void SetAutofillData(Node* node, ContextMenuData& data) {
       data.form_renderer_id = form->GetDomNodeId();
     } else {
       data.form_renderer_id = 0;
+    }
+    // If a field has been a password field then it should be treated as a
+    // password field for the purposes of autofill. (If needed in the future,
+    // this state could be added to ContextMenuData as a separate boolean, but
+    // for now this will do.)
+    if (auto* input_element = DynamicTo<HTMLInputElement>(node);
+        input_element && input_element->HasBeenPasswordField()) {
+      data.form_control_type = mojom::blink::FormControlType::kInputPassword;
     }
   }
   if (auto* html_element =
@@ -162,6 +170,30 @@ bool UnvisitedNodeOrAncestorHasContextMenuListener(
 template <class enumType>
 uint32_t EnumToBitmask(enumType outcome) {
   return 1 << static_cast<uint8_t>(outcome);
+}
+
+// Populates context menu data common to all anchor element types (HTML <a>,
+// SVG <a>, etc.): suggested download filename, referrer policy suppression,
+// and link text.
+template <typename AnchorType>
+void PopulateAnchorContextMenuData(AnchorType* anchor,
+                                   const QualifiedName& download_attr,
+                                   LocalFrame* selected_frame,
+                                   ContextMenuData& data) {
+  // Extract suggested filename for same-origin URLs for saving file.
+  const SecurityOrigin* origin =
+      selected_frame->GetSecurityContext()->GetSecurityOrigin();
+  if (origin->CanReadContent(anchor->Url())) {
+    data.suggested_filename = anchor->FastGetAttribute(download_attr).Utf8();
+  }
+
+  // If the anchor wants to suppress the referrer, update the referrerPolicy
+  // accordingly.
+  if (AnchorElementUtils::HasRel(anchor->GetLinkRelations(),
+                                 kRelationNoReferrer)) {
+    data.referrer_policy = network::mojom::ReferrerPolicy::kNever;
+  }
+  data.link_text = anchor->innerText().Utf8();
 }
 
 }  // namespace
@@ -220,8 +252,9 @@ void ContextMenuController::ShowContextMenuAtPoint(
     ContextMenuProvider* menu_provider) {
   menu_provider_ = menu_provider;
   if (!ShowContextMenu(frame, PhysicalOffset(LayoutUnit(x), LayoutUnit(y)),
-                       kMenuSourceNone))
+                       ui::mojom::blink::MenuSourceType::kNone)) {
     ClearContextMenu();
+  }
 }
 
 void ContextMenuController::CustomContextMenuItemSelected(unsigned action) {
@@ -431,16 +464,18 @@ bool ContextMenuController::ShouldShowContextMenuFromTouch(
          !data.selected_text.empty();
 }
 
-bool ContextMenuController::ShowContextMenu(LocalFrame* frame,
-                                            const PhysicalOffset& point,
-                                            WebMenuSourceType source_type) {
+bool ContextMenuController::ShowContextMenu(
+    LocalFrame* frame,
+    const PhysicalOffset& point,
+    ui::mojom::blink::MenuSourceType source_type) {
   return ShowContextMenu(frame, point, source_type, nullptr);
 }
 
-bool ContextMenuController::ShowContextMenu(LocalFrame* frame,
-                                            const PhysicalOffset& point,
-                                            WebMenuSourceType source_type,
-                                            const MouseEvent* mouse_event) {
+bool ContextMenuController::ShowContextMenu(
+    LocalFrame* frame,
+    const PhysicalOffset& point,
+    ui::mojom::blink::MenuSourceType source_type,
+    const MouseEvent* mouse_event) {
   // Displaying the context menu in this function is a big hack as we don't
   // have context, i.e. whether this is being invoked via a script or in
   // response to user input (Mouse event WM_RBUTTONDOWN,
@@ -489,7 +524,8 @@ bool ContextMenuController::ShowContextMenu(LocalFrame* frame,
       To<LocalFrame>(page_->GetFocusController().FocusedOrMainFrame())
           ->GetEditor());
 
-  if (mouse_event && source_type == kMenuSourceKeyboard) {
+  if (mouse_event &&
+      source_type == ui::mojom::blink::MenuSourceType::kKeyboard) {
     Node* target_node = mouse_event->RawTarget()->ToNode();
     if (target_node && IsA<Element>(target_node)) {
       // Get the url from an explicitly set target, e.g. the focused element
@@ -512,15 +548,15 @@ bool ContextMenuController::ShowContextMenu(LocalFrame* frame,
     data.alt_text = html_element->AltText().Utf8();
   }
 
-  const bool from_touch = source_type == kMenuSourceTouch ||
-                          source_type == kMenuSourceLongPress ||
-                          source_type == kMenuSourceLongTap;
+  const bool from_touch =
+      source_type == ui::mojom::blink::MenuSourceType::kTouch ||
+      source_type == ui::mojom::blink::MenuSourceType::kLongPress ||
+      source_type == ui::mojom::blink::MenuSourceType::kLongTap;
 
   if (from_touch) {
     for (Node* node = result.InnerNode(); node; node = node->parentNode()) {
       if (HTMLElement* element = DynamicTo<HTMLElement>(node);
           element && element->InterestForElement()) {
-        CHECK(RuntimeEnabledFeatures::HTMLInterestForAttributeEnabled());
         data.opened_from_interest_for = true;
         data.interest_for_node_id = element->GetDomNodeId();
         break;
@@ -684,12 +720,12 @@ bool ContextMenuController::ShowContextMenu(LocalFrame* frame,
 
   data.selection_start_offset = 0;
   // HitTestResult::isSelected() ensures clean layout by performing a hit test.
-  // If source_type is |kMenuSourceAdjustSelection| or
-  // |kMenuSourceAdjustSelectionReset| we know the original HitTestResult in
-  // SelectionController passed the inside check already, so let it pass.
+  // If source_type is |kAdjustSelection| or |kAdjustSelectionReset| we know the
+  // original HitTestResult in SelectionController passed the inside check
+  // already, so let it pass.
   if (result.IsSelected(location) ||
-      source_type == kMenuSourceAdjustSelection ||
-      source_type == kMenuSourceAdjustSelectionReset) {
+      source_type == ui::mojom::blink::MenuSourceType::kAdjustSelection ||
+      source_type == ui::mojom::blink::MenuSourceType::kAdjustSelectionReset) {
     // Remove any unselectable content from the selected text.
     data.selected_text =
         selected_frame
@@ -753,7 +789,7 @@ bool ContextMenuController::ShowContextMenu(LocalFrame* frame,
         size_t misspelled_offset, misspelled_length;
         std::vector<WebString> suggestions;
         spell_checker.GetTextCheckerClient()->CheckSpelling(
-            WebString::FromUTF16(data.misspelled_word), misspelled_offset,
+            WebString::FromUtf16(data.misspelled_word), misspelled_offset,
             misspelled_length, &suggestions);
         data.dictionary_suggestions =
             base::ToVector(suggestions, &WebString::Utf16);
@@ -788,22 +824,11 @@ bool ContextMenuController::ShowContextMenu(LocalFrame* frame,
 
   // TODO(crbug.com/369219144): Should this be DynamicTo<HTMLAnchorElementBase>?
   if (auto* anchor = DynamicTo<HTMLAnchorElement>(result.URLElement())) {
-    // Extract suggested filename for same-origin URLS for saving file.
-    const SecurityOrigin* origin =
-        selected_frame->GetSecurityContext()->GetSecurityOrigin();
-    if (origin->CanReadContent(anchor->Url())) {
-      data.suggested_filename =
-          anchor->FastGetAttribute(html_names::kDownloadAttr).Utf8();
-    }
-
-    // If the anchor wants to suppress the referrer, update the referrerPolicy
-    // accordingly.
-    if (AnchorElementUtils::HasRel(anchor->GetLinkRelations(),
-                                   kRelationNoReferrer)) {
-      data.referrer_policy = network::mojom::ReferrerPolicy::kNever;
-    }
-
-    data.link_text = anchor->innerText().Utf8();
+    PopulateAnchorContextMenuData(anchor, html_names::kDownloadAttr,
+                                  selected_frame, data);
+  } else if (auto* svg_anchor = DynamicTo<SVGAElement>(result.URLElement())) {
+    PopulateAnchorContextMenuData(svg_anchor, svg_names::kDownloadAttr,
+                                  selected_frame, data);
   }
 
   if (auto* anchor = DynamicTo<HTMLAnchorElementBase>(result.URLElement())) {
@@ -812,30 +837,6 @@ bool ContextMenuController::ShowContextMenu(LocalFrame* frame,
       data.impression = attribution_src_loader->PrepareContextMenuNavigation(
           result.AbsoluteLinkURL(), anchor);
     }
-  }
-
-  // TODO(crbug.com/40589293): Merge with the equivalent block in
-  // HTMLAnchorElement. The logic is nearly identical aside from runtime flag
-  // checks. Consider using a templated helper once the flag is removed.
-  if (auto* anchor = DynamicTo<SVGAElement>(result.URLElement())) {
-    if (RuntimeEnabledFeatures::SvgAnchorElementDownloadAttributeEnabled()) {
-      // Extract suggested filename for same-origin URLS for saving file.
-      const SecurityOrigin* origin =
-          selected_frame->GetSecurityContext()->GetSecurityOrigin();
-      const KURL& complete_url = anchor->LegacyHrefURL(anchor->GetDocument());
-      if (origin->CanReadContent(complete_url)) {
-        data.suggested_filename =
-            anchor->FastGetAttribute(svg_names::kDownloadAttr).Utf8();
-      }
-    }
-
-    // If the anchor wants to suppress the referrer, update the referrerPolicy
-    // accordingly.
-    if (AnchorElementUtils::HasRel(anchor->GetLinkRelations(),
-                                   kRelationNoReferrer)) {
-      data.referrer_policy = network::mojom::ReferrerPolicy::kNever;
-    }
-    data.link_text = anchor->innerText().Utf8();
   }
 
   data.selection_rect = ComputeSelectionRect(selected_frame);

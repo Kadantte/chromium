@@ -7,15 +7,18 @@
 #pragma allow_unsafe_buffers
 #endif
 
+#include "skia/ext/convolver.h"
+
 #include <algorithm>
 
 #include "base/check_op.h"
+#include "base/memory/raw_ptr_exclusion.h"
 #include "base/notreached.h"
-#include "skia/ext/convolver.h"
+#include "base/numerics/checked_math.h"
+#include "skia/ext/convolver_LSX.h"
 #include "skia/ext/convolver_SSE2.h"
 #include "skia/ext/convolver_mips_dspr2.h"
 #include "skia/ext/convolver_neon.h"
-#include "skia/ext/convolver_LSX.h"
 #include "third_party/skia/include/core/SkSize.h"
 #include "third_party/skia/include/core/SkTypes.h"
 
@@ -55,13 +58,17 @@ class CircularRowBuffer {
   //
   // We use the |first_input_row| to compute the coordinates of all of the
   // following rows returned by Advance().
-  CircularRowBuffer(int dest_row_pixel_width, int max_y_filter_size,
+  CircularRowBuffer(int dest_row_pixel_width,
+                    int max_y_filter_size,
                     int first_input_row)
-      : row_byte_width_(dest_row_pixel_width * 4),
+      : row_byte_width_(
+            (base::CheckedNumeric<int>(dest_row_pixel_width) * 4).ValueOrDie()),
         num_rows_(max_y_filter_size),
         next_row_(0),
         next_row_coordinate_(first_input_row) {
-    buffer_.resize(row_byte_width_ * max_y_filter_size);
+    buffer_.resize(
+        (base::CheckedNumeric<int>(row_byte_width_) * max_y_filter_size)
+            .ValueOrDie<size_t>());
     row_addresses_.resize(num_rows_);
   }
 
@@ -128,7 +135,9 @@ class CircularRowBuffer {
   int next_row_coordinate_;
 
   // Buffer used by GetRowAddresses().
-  std::vector<unsigned char*> row_addresses_;
+  // RAW_PTR_EXCLUSION: Interfacing with SIMD functions which require arrays of
+  // raw pointers (unsigned char* const*).
+  RAW_PTR_EXCLUSION std::vector<unsigned char*> row_addresses_;
 };
 
 // Convolves horizontally along a single row. The row data is given in

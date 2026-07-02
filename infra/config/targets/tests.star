@@ -209,10 +209,6 @@ targets.tests.gtest_test(
 )
 
 targets.tests.gtest_test(
-    name = "app_shell_unittests",
-)
-
-targets.tests.gtest_test(
     name = "ash_components_unittests",
 )
 
@@ -321,23 +317,6 @@ targets.tests.isolated_script_test(
         # retry 3 times, so we explicitly specify it.
         "--num-retries=3",
     ],
-)
-
-targets.tests.isolated_script_test(
-    name = "blink_web_tests_dt_tab_target",
-    mixins = [
-        "has_native_resultdb_integration",
-        "blink_tests_write_run_histories",
-    ],
-    args = [
-        "--flag-specific=devtools-tab-target",
-        # layout test failures are retried 3 times when '--test-list' is not
-        # passed, but 0 times when '--test-list' is passed. We want to always
-        # retry 3 times, so we explicitly specify it.
-        "--num-retries=3",
-        "http/tests/devtools",
-    ],
-    binary = "blink_web_tests",
 )
 
 targets.tests.isolated_script_test(
@@ -572,6 +551,10 @@ targets.tests.gtest_test(
 )
 
 targets.tests.gtest_test(
+    name = "chrome_flaky_tast_tests",
+)
+
+targets.tests.gtest_test(
     name = "chrome_elf_unittests",
 )
 
@@ -594,6 +577,10 @@ targets.tests.isolated_script_test(
 targets.tests.gtest_test(
     name = "chrome_public_apk_profile_tests",
     binary = "chrome_public_apk_baseline_profile_generator",
+)
+
+targets.tests.gtest_test(
+    name = "chrome_public_bundle_smoke_test",
 )
 
 targets.tests.gtest_test(
@@ -693,6 +680,17 @@ targets.tests.isolated_script_test(
     name = "chrome_wpt_tests_headful",
     mixins = [
         "has_native_resultdb_integration",
+    ],
+    binary = "chrome_wpt_tests",
+)
+
+targets.tests.isolated_script_test(
+    name = "surface_embed_chrome_wpt_tests",
+    mixins = [
+        "has_native_resultdb_integration",
+    ],
+    args = [
+        "--flag-specific=surface-embed",
     ],
     binary = "chrome_wpt_tests",
 )
@@ -839,6 +837,18 @@ targets.tests.gtest_test(
     binary = "content_browsertests",
 )
 
+# WebRtc browser tests contend for the audio/video capture device; under
+# parallel load capture-start can starve and getUserMedia times out. Run them
+# serially, like content_browsertests_sequential.
+targets.tests.gtest_test(
+    name = "content_browsertests_webrtc_sequential",
+    args = [
+        "--gtest_filter=WebRtc*",
+        "--test-launcher-jobs=1",
+    ],
+    binary = "content_browsertests",
+)
+
 targets.tests.gtest_test(
     name = "content_browsertests_no_field_trial",
     args = [
@@ -866,6 +876,10 @@ targets.tests.isolated_script_test(
 
 targets.tests.isolated_script_test(
     name = "content_shell_crash_test",
+)
+
+targets.tests.isolated_script_test(
+    name = "content_shell_freeze_test",
 )
 
 targets.tests.gtest_test(
@@ -1175,18 +1189,6 @@ targets.tests.gpu_telemetry_test(
 )
 
 targets.tests.gtest_test(
-    name = "extensions_browsertests",
-)
-
-targets.tests.gtest_test(
-    name = "extensions_browsertests_network_sandbox",
-    args = [
-        "--enable-features=NetworkServiceSandbox",
-    ],
-    binary = "extensions_browsertests",
-)
-
-targets.tests.gtest_test(
     name = "extensions_unittests",
 )
 
@@ -1469,73 +1471,6 @@ targets.tests.gtest_test(
 )
 
 targets.tests.isolated_script_test(
-    # graphite_enabled_blink_web_tests provides coverage for
-    # running Layout Tests with Skia Graphite.
-    name = "graphite_enabled_blink_web_tests",
-    mixins = [
-        "has_native_resultdb_integration",
-        "blink_tests_write_run_histories",
-    ],
-    args = [
-        "--flag-specific=enable-skia-graphite",
-        "--skipped=always",
-        # Since there are random timeouts, we have to increase the timeout
-        # threshold for now.
-        # TODO(crbug.com/41490824): Remove this once we resolve the timeouts.
-        "--timeout-ms=20000",
-        # layout test failures are retried 3 times when '--test-list' is not
-        # passed, but 0 times when '--test-list' is passed. We want to always
-        # retry 3 times, so we explicitly specify it.
-        "--num-retries=3",
-    ],
-    binary = "blink_web_tests",
-)
-
-targets.tests.isolated_script_test(
-    # graphite_enabled_blink_wpt_tests provides coverage for
-    # running Layout Tests with Skia Graphite.
-    name = "graphite_enabled_blink_wpt_tests",
-    mixins = [
-        "has_native_resultdb_integration",
-        "blink_tests_write_run_histories",
-    ],
-    args = [
-        "--flag-specific=enable-skia-graphite",
-        "--skipped=always",
-        # Since there are random timeouts, we have to increase the timeout
-        # threshold for now.
-        # TODO(crbug.com/41490824): Remove this once we resolve the timeouts.
-        "--timeout-ms=20000",
-        # layout test failures are retried 3 times when '--test-list' is not
-        # passed, but 0 times when '--test-list' is passed. We want to always
-        # retry 3 times, so we explicitly specify it.
-        "--num-retries=3",
-    ],
-    binary = "blink_wpt_tests",
-)
-
-targets.tests.isolated_script_test(
-    # graphite_enabled_headless_shell_wpt_tests provides coverage for
-    # running web platform tests with Skia Graphite.
-    name = "graphite_enabled_headless_shell_wpt_tests",
-    mixins = [
-        "has_native_resultdb_integration",
-        "blink_tests_write_run_histories",
-    ],
-    args = [
-        "--flag-specific=enable-skia-graphite",
-        "--skipped=always",
-        # Since there are random timeouts, we have to increase the timeout
-        # threshold for now.
-        # TODO(crbug.com/41490824): Remove this once we resolve the timeouts.
-        "--timeout-multiplier=2",
-        "--inverted-test-launcher-filter-file=../../third_party/blink/web_tests/TestLists/chrome.filter",
-        "--inverted-test-launcher-filter-file=../../third_party/blink/web_tests/TestLists/content_shell.filter",
-    ],
-    binary = "headless_shell_wpt",
-)
-
-targets.tests.isolated_script_test(
     name = "grit_python_unittests",
 )
 
@@ -1695,10 +1630,6 @@ targets.tests.isolated_script_test(
 )
 
 targets.tests.isolated_script_test(
-    name = "ios_swift_interop_xcuitests_module",
-)
-
-targets.tests.isolated_script_test(
     name = "ios_testing_unittests",
 )
 
@@ -1795,19 +1726,7 @@ targets.tests.gtest_test(
     name = "media_unittests_skia_graphite_dawn",
     args = [
         "--test-launcher-bot-mode",
-        "--enable-features=SkiaGraphite",
-        "--skia-graphite-backend=dawn",
-        "--use-gpu-in-tests",
-    ],
-    binary = "media_unittests",
-)
-
-targets.tests.gtest_test(
-    name = "media_unittests_skia_graphite_metal",
-    args = [
-        "--test-launcher-bot-mode",
-        "--enable-features=SkiaGraphite",
-        "--skia-graphite-backend=metal",
+        "--enable-skia-graphite",
         "--use-gpu-in-tests",
     ],
     binary = "media_unittests",
@@ -2006,12 +1925,102 @@ targets.tests.isolated_script_test(
     binary = "ondevice_model_benchmark_tests",
 )
 
+# TODO(b:484388901): Enable GPU backedn testing when the issue is fixed.
+# targets.tests.isolated_script_test(
+#     name = "litert_e2e_tests_gpu",
+#     mixins = [
+#         "has_native_resultdb_integration",
+#     ],
+#     args = [
+#         "--benchmark_binary_dir=./",
+#         "--backends=gpu",
+#     ],
+#     binary = "litert_e2e_tests",
+# )
+
+targets.tests.isolated_script_test(
+    name = "litert_e2e_tests_cpu",
+    mixins = [
+        "has_native_resultdb_integration",
+    ],
+    args = [
+        "--benchmark_binary_dir=./",
+        "--backends=cpu",
+    ],
+    binary = "litert_e2e_tests",
+)
+
+targets.tests.isolated_script_test(
+    name = "litert_lm_advanced_main_legacy_tests_cpu",
+    mixins = [
+        "has_native_resultdb_integration",
+    ],
+    args = [
+        "--benchmark_binary_dir=./",
+        "--backends=cpu",
+    ],
+    binary = "litert_lm_advanced_main_legacy_tests",
+)
+
+# TODO(b:484388901): Enable GPU backedn testing when the issue is fixed.
+# targets.tests.isolated_script_test(
+#     name = "litert_lm_advanced_main_legacy_tests_gpu",
+#     mixins = [
+#         "has_native_resultdb_integration",
+#     ],
+#     args = [
+#         "--benchmark_binary_dir=./",
+#         "--backends=gpu",
+#     ],
+#     binary = "litert_lm_advanced_main_legacy_tests",
+# )
+
 targets.tests.isolated_script_test(
     name = "opt_target_coverage_test",
 )
 
 targets.tests.isolated_script_test(
-    name = "chrome_ai_wpt_tests",
+    name = "chrome_ai_wpt_tests_gpu",
+    args = [
+        "--framework=llm-inference-engine",
+        "--backend=gpu",
+        "--performance-hint=ON_DEVICE_MODEL_PERFORMANCE_HINT_FASTEST_INFERENCE",
+        "--expectations-file=AIExpectations_GPU",
+    ],
+    binary = "chrome_ai_wpt_tests",
+)
+
+targets.tests.isolated_script_test(
+    name = "chrome_ai_wpt_tests_cpu",
+    args = [
+        "--framework=llm-inference-engine",
+        "--backend=cpu",
+        "--performance-hint=ON_DEVICE_MODEL_PERFORMANCE_HINT_CPU",
+        "--expectations-file=AIExpectations_CPU",
+    ],
+    binary = "chrome_ai_wpt_tests",
+)
+
+targets.tests.isolated_script_test(
+    name = "chrome_ai_wpt_tests_litert_cpu",
+    args = [
+        "--framework=litert-lm",
+        "--backend=cpu",
+        "--performance-hint=ON_DEVICE_MODEL_PERFORMANCE_HINT_CPU",
+        "--expectations-file=AIExpectations_LiteRTCPU",
+    ],
+    binary = "chrome_ai_wpt_tests",
+)
+
+targets.tests.isolated_script_test(
+    name = "chrome_ai_wpt_tests_litert_gpu",
+    args = [
+        "--framework=litert-lm",
+        "--backend=gpu",
+        "--performance-hint=ON_DEVICE_MODEL_PERFORMANCE_HINT_FASTEST_INFERENCE",
+        "--expectations-file=AIExpectations_LiteRTGPU",
+    ],
+    binary = "chrome_ai_wpt_tests",
 )
 
 targets.tests.gtest_test(
@@ -2078,6 +2087,10 @@ targets.tests.isolated_script_test(
 
 targets.tests.gtest_test(
     name = "pdf_unittests",
+)
+
+targets.tests.isolated_script_test(
+    name = "perfetto_diff_tests",
 )
 
 targets.tests.gtest_test(
@@ -2256,6 +2269,10 @@ targets.tests.gtest_test(
 
 targets.tests.gtest_test(
     name = "pthreadpool_unittests",
+)
+
+targets.tests.gtest_test(
+    name = "puffin_unittests",
 )
 
 targets.tests.gtest_test(
@@ -2534,11 +2551,6 @@ targets.tests.isolated_script_test(
     name = "system_webview_wpt",
 )
 
-targets.tests.gtest_test(
-    name = "tab_capture_end2end_tests",
-    binary = "browser_tests",
-)
-
 targets.tests.isolated_script_test(
     name = "telemetry_chromium_minidump_unittests",
     args = [
@@ -2641,10 +2653,6 @@ targets.tests.gpu_telemetry_test(
 )
 
 targets.tests.gtest_test(
-    name = "trichrome_chrome_bundle_smoke_test",
-)
-
-targets.tests.gtest_test(
     name = "ui_android_unittests",
 )
 
@@ -2670,6 +2678,10 @@ targets.tests.gtest_test(
 
 targets.tests.gtest_test(
     name = "updater_tests",
+)
+
+targets.tests.gtest_test(
+    name = "updater_fuzztests",
 )
 
 targets.tests.gtest_test(
@@ -2747,6 +2759,10 @@ targets.tests.isolated_script_test(
 
 targets.tests.gtest_test(
     name = "views_unittests",
+)
+
+targets.tests.gtest_test(
+    name = "gtk_unittests",
 )
 
 targets.tests.gtest_test(
@@ -3072,20 +3088,6 @@ targets.tests.gpu_telemetry_test(
 )
 
 targets.tests.gpu_telemetry_test(
-    name = "webgl_conformance_d3d9_passthrough_tests",
-    telemetry_test_name = "webgl1_conformance",
-    mixins = [
-        "has_native_resultdb_integration",
-        "gpu_force_command_decoder_passthrough",
-        "gpu_force_angle_d3d9",
-        "gpu_force_high_performance_gpu",
-        "gpu_integration_test_webgl1_args",
-        "gpu_integration_test_common_args",
-    ],
-    module_scheme = "flat",
-)
-
-targets.tests.gpu_telemetry_test(
     name = "webgl_conformance_gl_passthrough_ganesh_tests",
     telemetry_test_name = "webgl1_conformance",
     mixins = [
@@ -3304,6 +3306,18 @@ targets.tests.gpu_telemetry_test(
 )
 
 targets.tests.gpu_telemetry_test(
+    name = "webgpu_cts_default_features_tests",
+    telemetry_test_name = "webgpu_cts",
+    mixins = [
+        "has_native_resultdb_integration",
+    ],
+    args = [
+        "--enable-default-webgpu-features",
+    ],
+    module_scheme = "webgpucts",
+)
+
+targets.tests.gpu_telemetry_test(
     name = "webgpu_cts_fxc_tests",
     telemetry_test_name = "webgpu_cts",
     mixins = [
@@ -3410,7 +3424,7 @@ targets.tests.gpu_telemetry_test(
 )
 
 targets.tests.script_test(
-    name = "webkit_lint",
+    name = "blink_lint",
     script = "blink_lint_expectations.py",
     module_scheme = "single",
 )

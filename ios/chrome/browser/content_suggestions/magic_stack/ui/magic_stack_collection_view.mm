@@ -21,7 +21,7 @@
 #import "ios/chrome/browser/content_suggestions/magic_stack/ui/magic_stack_module_container.h"
 #import "ios/chrome/browser/content_suggestions/magic_stack/ui/placeholder_config.h"
 #import "ios/chrome/browser/content_suggestions/public/content_suggestions_constants.h"
-#import "ios/chrome/browser/content_suggestions/shop_card/ui/shop_card_item.h"
+#import "ios/chrome/browser/content_suggestions/shop_card/ui/shop_card_config.h"
 #import "ios/chrome/browser/ntp/shared/metrics/home_metrics.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 
@@ -103,7 +103,7 @@ typedef NSDiffableDataSourceSnapshot<NSString*, MagicStackModule*>
 
 - (void)moduleWidthDidUpdate {
   if (_collectionView) {
-    [self snapToNearestMagicStackModule];
+    [self scrollToPage:_magicStackPage animated:NO];
   }
 }
 
@@ -145,7 +145,7 @@ typedef NSDiffableDataSourceSnapshot<NSString*, MagicStackModule*>
       [snapshot indexOfSectionIdentifier:kMagicStackSectionIdentifier];
 
   if ([self.diffableDataSource indexPathForItemIdentifier:item] &&
-      [item isKindOfClass:[ShopCardItem class]]) {
+      [item isKindOfClass:[ShopCardConfig class]]) {
     // TODO(crbug.com/446386562) resolve duplicate insertions of ShopCard then
     // change this to a CHECK.
     base::debug::DumpWithoutCrashing();
@@ -257,8 +257,35 @@ typedef NSDiffableDataSourceSnapshot<NSString*, MagicStackModule*>
     return;
   }
   MagicStackSnapshot* snapshot = [self.diffableDataSource snapshot];
+  // Make sure `item` is the same memory pointer as the old item since UIKit
+  // only considers them as identifiers, so it will just pass the original item
+  // "identifier" into the cellProvider block expecting the logic to fetch the
+  // latest data there.
+  // https://developer.apple.com/documentation/uikit/updating-collection-views-using-diffable-data-sources?language=objc
   [snapshot reconfigureItemsWithIdentifiers:@[ item ]];
   [self.diffableDataSource applySnapshot:snapshot animatingDifferences:NO];
+}
+
+#pragma mark - UICollectionViewDelegate
+
+- (BOOL)collectionView:(UICollectionView*)collectionView
+    shouldSelectItemAtIndexPath:(NSIndexPath*)indexPath {
+  // Only handle taps in the modules section, not the edit button section.
+  NSInteger moduleSection = [self.diffableDataSource.snapshot
+      indexOfSectionIdentifier:kMagicStackSectionIdentifier];
+  if (indexPath.section != moduleSection) {
+    return NO;
+  }
+
+  NSUInteger tappedPage = indexPath.item;
+  if (tappedPage != _magicStackPage) {
+    _magicStackPage = tappedPage;
+    [self logNavigationToPage:_magicStackPage];
+    [self scrollToPage:_magicStackPage animated:YES];
+  }
+
+  // Never actually select the cell; the tap is used only for navigation.
+  return NO;
 }
 
 #pragma mark - UIScrollViewDelegate
@@ -334,7 +361,8 @@ typedef NSDiffableDataSourceSnapshot<NSString*, MagicStackModule*>
 - (BOOL)shouldHaveWideLayout {
   return self.traitCollection.horizontalSizeClass ==
              UIUserInterfaceSizeClassRegular ||
-         IsLandscape(self.view.window);
+         self.traitCollection.verticalSizeClass ==
+             UIUserInterfaceSizeClassCompact;
 }
 
 // Cell provider helper.
@@ -462,22 +490,33 @@ typedef NSDiffableDataSourceSnapshot<NSString*, MagicStackModule*>
                                      : kMagicStackPeekInset + 1;
 }
 
-// Snaps the MagicStack ScrollView's contentOffset to the nearest module. Can
-// be used after the width of the MagicStack changes to ensure that it doesn't
-// end up scrolled to the middle of a module.
-- (void)snapToNearestMagicStackModule {
+// Logs UMA histogram and ephemeral card visibility for a page navigation.
+- (void)logNavigationToPage:(NSUInteger)page {
+  UMA_HISTOGRAM_EXACT_LINEAR(kMagicStackScrollToIndexHistogram, page,
+                             kMaxModuleHistogramIndex);
+  if (base::FeatureList::IsEnabled(
+          segmentation_platform::features::
+              kSegmentationPlatformEphemeralCardRanker)) {
+    NSArray<MagicStackModule*>* items =
+        [self.diffableDataSource.snapshot itemIdentifiers];
+    if ([items count] > page && !_hasSeenEphemeralCard &&
+        [self isCardEphemeral:items[page]]) {
+      [self.audience logEphemeralCardVisibility:items[page].type];
+    }
+  }
+}
+
+// Scrolls to the given page index, optionally animated.
+- (void)scrollToPage:(NSUInteger)page animated:(BOOL)animated {
   CGFloat moduleWidth =
       self.view.frame.size.width -
       ModuleNarrowerWidthToAllowPeekingForTraitCollection(self.traitCollection);
-  CGPoint offset = _collectionView.contentOffset;
-  offset.x = _magicStackPage * (moduleWidth + kMagicStackSpacing) -
-             [self peekOffsetForMagicStackPage:_magicStackPage];
-  // Do not allow scrolling beyond the end of content, which also ensures that
-  // the "edit menu" page doesn't end up left-aligned after a rotation.
+  CGFloat targetX = page * (moduleWidth + kMagicStackSpacing) -
+                    [self peekOffsetForMagicStackPage:page];
   CGFloat maxOffset = MAX(
       0, _collectionView.contentSize.width - _collectionView.bounds.size.width);
-  offset.x = MIN(offset.x, maxOffset);
-  _collectionView.contentOffset = offset;
+  targetX = MIN(targetX, maxOffset);
+  [_collectionView setContentOffset:CGPointMake(targetX, 0) animated:animated];
 }
 
 - (BOOL)isCardEphemeral:(MagicStackModule*)card {

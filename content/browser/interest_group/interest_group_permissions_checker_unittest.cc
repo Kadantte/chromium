@@ -6,6 +6,7 @@
 
 #include <string>
 
+#include "base/byte_size.h"
 #include "base/containers/span.h"
 #include "base/functional/callback.h"
 #include "base/run_loop.h"
@@ -15,7 +16,6 @@
 #include "content/services/auction_worklet/worklet_test_util.h"
 #include "net/base/network_isolation_key.h"
 #include "net/base/schemeful_site.h"
-#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -98,7 +98,6 @@ class InterestGroupPermissionsCheckerTestBase {
 
   base::test::TaskEnvironment task_environment_ = base::test::TaskEnvironment(
       base::test::TaskEnvironment::TimeSource::MOCK_TIME);
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
 
   BoolCallback bool_callback_;
   network::TestURLLoaderFactory url_loader_factory_;
@@ -448,7 +447,7 @@ TEST_P(InterestGroupPermissionsCheckerParamaterizedTest,
                                               std::nullopt);
 
     auto status = network::URLLoaderCompletionStatus();
-    status.decoded_body_length = response_body.size();
+    status.decoded_body_length = base::ByteSize(response_body.size());
     pending_request.client->OnComplete(status);
   }
 

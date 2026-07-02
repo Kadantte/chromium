@@ -25,8 +25,8 @@
 #include "components/bookmarks/browser/base_bookmark_model_observer.h"
 #include "components/bookmarks/browser/bookmark_node.h"
 #include "components/bookmarks/browser/bookmark_test_util.h"
+#include "components/sync/engine/cryptographer.h"
 #include "components/sync/engine/loopback_server/loopback_server_entity.h"
-#include "components/sync/engine/nigori/cryptographer.h"
 #include "components/sync/test/fake_server.h"
 #include "components/sync_bookmarks/bookmark_model_view.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -348,7 +348,8 @@ class SingleBookmarkModelStatusChangeChecker
 class SingleBookmarksModelMatcherChecker
     : public SingleBookmarkModelStatusChangeChecker {
  public:
-  using Matcher = testing::Matcher<std::vector<const bookmarks::BookmarkNode*>>;
+  using Matcher =
+      testing::Matcher<std::vector<raw_ptr<const bookmarks::BookmarkNode>>>;
 
   SingleBookmarksModelMatcherChecker(int profile_index, const Matcher& matcher);
   ~SingleBookmarksModelMatcherChecker() override;

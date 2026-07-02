@@ -18,6 +18,7 @@
 #include "third_party/blink/renderer/core/layout/logical_fragment_link.h"
 #include "third_party/blink/renderer/core/layout/oof_positioned_node.h"
 #include "third_party/blink/renderer/core/layout/physical_fragment.h"
+#include "third_party/blink/renderer/core/layout/split_axis_item.h"
 #include "third_party/blink/renderer/core/layout/style_variant.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
@@ -181,6 +182,11 @@ class CORE_EXPORT FragmentBuilder {
   void ReplaceChild(wtf_size_t index,
                     const PhysicalFragment& new_child,
                     const LogicalOffset offset);
+
+  void SetChildOffset(wtf_size_t index, const LogicalOffset offset) {
+    DCHECK_LT(index, children_.size());
+    children_[index].offset = offset;
+  }
 
   const ChildrenVector& Children() const { return children_; }
 
@@ -535,7 +541,8 @@ class CORE_EXPORT FragmentBuilder {
     layout_object_ = node.GetLayoutBox();
   }
 
-  GCedHeapVector<Member<LayoutBoxModelObject>>& EnsureStickyDescendants();
+  GCedHeapVector<SplitAxisItem<LayoutBoxModelObject>>&
+  EnsureStickyDescendants();
   GCedHeapVector<Member<Element>>& EnsureSnapAreas();
 
   void PropagateFromLayoutResultAndFragment(
@@ -546,6 +553,8 @@ class CORE_EXPORT FragmentBuilder {
 
   void PropagateFromLayoutResult(const LayoutResult&);
   void PropagateScrollInitialTarget(const PhysicalFragment& child);
+
+  PhysicalAxes GetOverflowScrollAxes() const;
 
   void PropagateFromFragment(
       const PhysicalFragment& child,
@@ -590,7 +599,8 @@ class CORE_EXPORT FragmentBuilder {
   // The break token to store in the resulting fragment.
   const BreakToken* break_token_ = nullptr;
 
-  GCedHeapVector<Member<LayoutBoxModelObject>>* sticky_descendants_ = nullptr;
+  GCedHeapVector<SplitAxisItem<LayoutBoxModelObject>>* sticky_descendants_ =
+      nullptr;
   GCedHeapVector<Member<Element>>* snap_areas_ = nullptr;
   // Animation triggers belonging to the element to which this fragment belongs,
   // or an element in its subtree.

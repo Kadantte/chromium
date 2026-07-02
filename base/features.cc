@@ -6,13 +6,14 @@
 
 #include <atomic>
 
-#include "base/containers/variant_map.h"
 #include "base/debug/stack_trace.h"
 #include "base/files/file_path.h"
+#include "base/synchronization/lock.h"
 #include "base/task/sequence_manager/sequence_manager_impl.h"
 #include "base/task/thread_pool/job_task_source.h"
 #include "base/threading/platform_thread.h"
 #include "build/blink_buildflags.h"
+#include "build/build_config.h"
 #include "build/buildflag.h"
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
@@ -78,7 +79,6 @@ BASE_FEATURE(kLowEndMemoryExperiment, FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE_PARAM(int,
                    kLowMemoryDeviceThresholdMB,
                    &kLowEndMemoryExperiment,
-                   "LowMemoryDeviceThresholdMB",
                    LOW_MEMORY_DEVICE_THRESHOLD_MB);
 
 BASE_FEATURE(kReducePPMs, FEATURE_ENABLED_BY_DEFAULT);
@@ -158,9 +158,20 @@ BASE_FEATURE(kRebindServiceBatchApi, FEATURE_DISABLED_BY_DEFAULT);
 // in the ProcessList of OomAdjuster.
 BASE_FEATURE(kUseSharedRebindServiceConnection, FEATURE_ENABLED_BY_DEFAULT);
 
+// Kill switch for Android VirtualKeyboard API geometry and inset fixes.
+BASE_FEATURE(kVirtualKeyboardGeometryAndInsetFixes, FEATURE_ENABLED_BY_DEFAULT);
+
 // Use madvise MADV_WILLNEED to prefetch the native library. This replaces the
 // default mechanism of pre-reading the memory from a forked process.
 BASE_FEATURE(kLibraryPrefetcherMadvise, FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, only the ordered text section will be prefetched.
+BASE_FEATURE(kLibraryPrefetcherOnlyOrderedText, FEATURE_DISABLED_BY_DEFAULT);
+
+// When enabled, after start up the thread pool in PostTask.java will be
+// shutdown after pre-native to stop consuming resources.
+BASE_FEATURE(kShutdownPreNativeThreadPoolAfterStartup,
+             FEATURE_DISABLED_BY_DEFAULT);
 
 // If > 0, split the madvise range into chunks of this many bytes, rounded up to
 // a page size. The default of 1 therefore rounds to a whole page.
@@ -188,7 +199,31 @@ BASE_FEATURE(kUseTerminationStatusMemoryExhaustion, FEATURE_ENABLED_BY_DEFAULT);
 // When enabled, use ABOVE_NORMAL_PRIORITY_CLASS for Priority::kUserBlocking on
 // Windows.
 BASE_FEATURE(kUserBlockingAboveNormalPriority, FEATURE_DISABLED_BY_DEFAULT);
+
+// When enabled, retries CreateFileMapping on a commit limit failure (OOM).
+// If retrying fails, the function returns failure as usual and reports the
+// last error code.
+BASE_FEATURE(kRetryCreateFileMappingOnCommitLimit, FEATURE_DISABLED_BY_DEFAULT);
+
+
+// Prevents base::DeletePathRecursively on Windows from traversing NTFS reparse
+// points (such as directory junctions). This protects against TOCTOU
+// vulnerabilities and prevents deleting files outside the target directory.
+BASE_FEATURE(kPreventReparsePointTraversal, FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_WIN)
+
+#if BUILDFLAG(IS_POSIX)
+// If enabled, threads acquiring a base::Lock will try to acquire it in user
+// space. The `kSpinCount` parameter represents the maximum number of pause
+// instructions (yields) that will be executed with an exponential backoff
+// before blocking in the kernel.
+BASE_FEATURE(kBaseLockTrySpin, FEATURE_DISABLED_BY_DEFAULT);
+#if defined(ARCH_CPU_X86_FAMILY)
+BASE_FEATURE_PARAM(int, kSpinCountX86, &kBaseLockTrySpin, "spin_count_x86", 0);
+#elif defined(ARCH_CPU_ARM_FAMILY)
+BASE_FEATURE_PARAM(int, kSpinCountArm, &kBaseLockTrySpin, "spin_count_arm", 0);
+#endif  // defined(ARCH_CPU_X86_FAMILY)
+#endif  // BUILDFLAG(IS_POSIX)
 
 bool IsReducePPMsEnabled() {
   return g_is_reduce_ppms_enabled.load(std::memory_order_relaxed);
@@ -197,6 +232,9 @@ bool IsReducePPMsEnabled() {
 void Init() {
   g_is_reduce_ppms_enabled.store(FeatureList::IsEnabled(kReducePPMs),
                                  std::memory_order_relaxed);
+#if BUILDFLAG(IS_POSIX)
+  base::Lock::InitializeFeatures();
+#endif  // BUILDFLAG(IS_POSIX)
 
   sequence_manager::internal::SequenceManagerImpl::InitializeFeatures();
   sequence_manager::internal::ThreadController::InitializeFeatures();
@@ -204,7 +242,6 @@ void Init() {
 
   debug::StackTrace::InitializeFeatures();
   FilePath::InitializeFeatures();
-  InitializeVariantMapFeatures();
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
   MessagePumpEpoll::InitializeFeatures();

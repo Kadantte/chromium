@@ -56,6 +56,7 @@
 #include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/core/layout/layout_text.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -201,7 +202,7 @@ void DeleteSelectionCommand::SetStartingSelectionOnSmartDelete(
   VisiblePosition new_base = CreateVisiblePosition(is_base_first ? start : end);
   VisiblePosition new_extent =
       CreateVisiblePosition(is_base_first ? end : start);
-  SelectionInDOMTree::Builder builder;
+  SelectionInDomTree::Builder builder;
   builder.SetAffinity(new_base.Affinity())
       .SetBaseAndExtentDeprecated(new_base.DeepEquivalent(),
                                   new_extent.DeepEquivalent());
@@ -209,6 +210,10 @@ void DeleteSelectionCommand::SetStartingSelectionOnSmartDelete(
       CreateVisibleSelection(builder.Build());
   SetStartingSelection(
       SelectionForUndoStep::From(visible_selection.AsSelection()));
+  if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+    SetStartingDomSelection(
+        SelectionForUndoStep::From(visible_selection.AsSelection()));
+  }
 }
 
 // This assumes that it starts in editable content.
@@ -437,7 +442,7 @@ void DeleteSelectionCommand::SaveTypingStyleState() {
   // of start(). We'll use this later in computeTypingStyleAfterDelete if we end
   // up outside of a Mail blockquote
   if (EnclosingNodeOfType(selection_to_delete_.Start(),
-                          IsMailHTMLBlockquoteElement)) {
+                          IsMailHtmlBlockquoteElement)) {
     delete_into_blockquote_style_ =
         MakeGarbageCollected<EditingStyle>(selection_to_delete_.End());
     return;
@@ -655,8 +660,29 @@ void DeleteSelectionCommand::RemoveCompletelySelectedNodes(
       }
     }
 
-    if (IsTableStructureNode(node_to_be_removed) ||
-        IsRootEditableElement(*node_to_be_removed)) {
+    const bool is_root_editable = IsRootEditableElement(*node_to_be_removed);
+    if (IsTableStructureNode(node_to_be_removed) || is_root_editable) {
+      // Before removing children of a root editable element, delete text
+      // content from any descendant text nodes to ensure selectionchange
+      // event fires. This handles nested contenteditable elements and
+      // deeply nested text nodes.
+      if (is_root_editable &&
+          RuntimeEnabledFeatures::
+              DeleteTextInContentEditableBeforeRemovingChildrenEnabled()) {
+        HeapVector<Member<Text>> text_nodes_to_clear;
+        for (Node& descendant :
+             NodeTraversal::DescendantsOf(*node_to_be_removed)) {
+          if (auto* text_node = DynamicTo<Text>(descendant)) {
+            if (text_node->length() > 0) {
+              text_nodes_to_clear.push_back(text_node);
+            }
+          }
+        }
+        for (Text* text_node : text_nodes_to_clear) {
+          DeleteTextFromNode(text_node, 0, text_node->length());
+        }
+      }
+
       // Do not remove an element of table structure; remove its contents.
       // Likewise for the root editable element.
       RemoveAllChildrenIfPossible(To<ContainerNode>(node_to_be_removed),
@@ -871,7 +897,7 @@ void DeleteSelectionCommand::HandleGeneralDelete(EditingState* editing_state) {
                                       GetDocument()
                                           .GetFrame()
                                           ->Selection()
-                                          .GetSelectionInDOMTree()
+                                          .GetSelectionInDomTree()
                                           .Focus()) <= 0) {
             // `downstream_end_` in FrameSelection(Use FrameSelection because
             // we need non-visual selection), the node be fully selected.
@@ -932,7 +958,7 @@ void DeleteSelectionCommand::FixupWhitespace(const Position& position) {
   if (IsRenderedCharacter(position))
     return;
   DCHECK(!text_node->GetLayoutObject() ||
-         text_node->GetLayoutObject()->Style()->ShouldCollapseWhiteSpaces())
+         text_node->GetLayoutObject()->StyleRef().ShouldCollapseWhiteSpaces())
       << text_node;
   ReplaceTextInNode(text_node, position.ComputeOffsetInContainerNode(), 1,
                     NonBreakingSpaceString(),
@@ -1173,9 +1199,10 @@ void DeleteSelectionCommand::CalculateTypingStyleAfterDelete() {
   // If we deleted into a blockquote, but are now no longer in a blockquote, use
   // the alternate typing style
   if (delete_into_blockquote_style_ &&
-      !EnclosingNodeOfType(ending_position_, IsMailHTMLBlockquoteElement,
-                           kCanCrossEditingBoundary))
+      !EnclosingNodeOfType(ending_position_, IsMailHtmlBlockquoteElement,
+                           kCanCrossEditingBoundary)) {
     typing_style_ = delete_into_blockquote_style_;
+  }
   delete_into_blockquote_style_ = nullptr;
 
   // |editing_position_| can be null. See http://crbug.com/1299189
@@ -1316,7 +1343,7 @@ void DeleteSelectionCommand::DoApply(EditingState* editing_state) {
   if (br_result) {
     CalculateTypingStyleAfterDelete();
     GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
-    SelectionInDOMTree::Builder builder;
+    SelectionInDomTree::Builder builder;
     builder.SetAffinity(affinity);
     if (ending_position_.IsNotNull())
       builder.Collapse(ending_position_);
@@ -1324,6 +1351,10 @@ void DeleteSelectionCommand::DoApply(EditingState* editing_state) {
         CreateVisibleSelection(builder.Build());
     SetEndingSelection(
         SelectionForUndoStep::From(visible_selection.AsSelection()));
+    if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+      SetEndingDomSelection(
+          SelectionForUndoStep::From(visible_selection.AsSelection()));
+    }
     ClearTransientState();
     RebalanceWhitespace();
     return;
@@ -1386,7 +1417,7 @@ void DeleteSelectionCommand::DoApply(EditingState* editing_state) {
 
   GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
 
-  SelectionInDOMTree::Builder builder;
+  SelectionInDomTree::Builder builder;
   builder.SetAffinity(affinity);
   if (ending_position_.IsNotNull())
     builder.Collapse(ending_position_);
@@ -1394,6 +1425,10 @@ void DeleteSelectionCommand::DoApply(EditingState* editing_state) {
       CreateVisibleSelection(builder.Build());
   SetEndingSelection(
       SelectionForUndoStep::From(visible_selection.AsSelection()));
+  if (RuntimeEnabledFeatures::EditingUseDomPositionApiEnabled()) {
+    SetEndingDomSelection(
+        SelectionForUndoStep::From(visible_selection.AsSelection()));
+  }
 
   if (relocatable_reference_position->GetPosition().IsNull()) {
     ClearTransientState();

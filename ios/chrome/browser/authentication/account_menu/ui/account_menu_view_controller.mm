@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/authentication/account_menu/ui/account_menu_view_controller.h"
 
+#import <cmath>
+
 #import "base/apple/foundation_util.h"
 #import "base/check.h"
 #import "base/check_op.h"
@@ -32,9 +34,14 @@
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
 #import "ios/chrome/common/ui/util/image_util.h"
 #import "ios/chrome/grit/ios_strings.h"
+#import "ui/base/device_form_factor.h"
 #import "ui/base/l10n/l10n_util.h"
 
 namespace {
+
+// This height is used only if there is an issue with
+// self.tableView.contentSize.height. See crbug.com/499988947.
+constexpr CGFloat kViewControllerDefaultPreferredHeight = 200;
 
 // The margin between the cell and the sheet.
 constexpr CGFloat kSideMargins = 16.;
@@ -196,8 +203,15 @@ NSString* const kCustomExpandedDetentIdentifier = @"customExpandedDetent";
   // before using its contentSize.
   [self.tableView setNeedsLayout];
   [self.tableView layoutIfNeeded];
+
   CGFloat height = self.tableView.contentSize.height;
-  self.preferredContentSize = CGSize(self.preferredContentSize.width, height);
+  if (!std::isfinite(height) || height <= 0) {
+    // To avoid crash with crbug.com/499988947, if the height is not valid, the
+    // preferred height is set at 200px.
+    height = kViewControllerDefaultPreferredHeight;
+  }
+  CGFloat width = self.tableView.frame.size.width;
+  self.preferredContentSize = CGSize(width, height);
 }
 
 // Creates a button for the navigation bar.
@@ -307,8 +321,7 @@ NSString* const kCustomExpandedDetentIdentifier = @"customExpandedDetent";
 
 // Decides if the Close button should be shown.
 - (BOOL)shouldShowCloseButton {
-  UIUserInterfaceIdiom idiom = [[UIDevice currentDevice] userInterfaceIdiom];
-  return idiom == UIUserInterfaceIdiomPhone ||
+  return ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_PHONE ||
          self.presentingViewController.traitCollection.horizontalSizeClass ==
              UIUserInterfaceSizeClassCompact;
 }
@@ -407,16 +420,22 @@ NSString* const kCustomExpandedDetentIdentifier = @"customExpandedDetent";
                               gaiaID:(const GaiaId&)gaiaID
                            indexPath:(NSIndexPath*)indexPath {
   NSString* email = [self.dataSource emailForGaiaID:gaiaID];
+  NSString* name = [self.dataSource nameForGaiaID:gaiaID];
+  NSString* title = name ? name : email;
+
   BOOL isGaiaIDManaged = [self.dataSource isGaiaIDManaged:gaiaID];
 
   TableViewCellContentConfiguration* configuration =
       [[TableViewCellContentConfiguration alloc] init];
-  configuration.title = [self.dataSource nameForGaiaID:gaiaID];
+  configuration.title = title;
   configuration.titleNumberOfLines = 1;
   configuration.titleLineBreakMode = NSLineBreakByTruncatingTail;
-  configuration.subtitle = email;
-  configuration.subtitleNumberOfLines = 1;
-  configuration.subtitleLineBreakMode = NSLineBreakByTruncatingTail;
+  if (name) {
+    // If name is missing, the title is the email, so no need for this subtitle.
+    configuration.subtitle = email;
+    configuration.subtitleNumberOfLines = 1;
+    configuration.subtitleLineBreakMode = NSLineBreakByTruncatingTail;
+  }
 
   ImageContentConfiguration* imageConfiguration =
       [[ImageContentConfiguration alloc] init];
@@ -439,7 +458,6 @@ NSString* const kCustomExpandedDetentIdentifier = @"customExpandedDetent";
   UITableViewCell* cell =
       [TableViewCellContentConfiguration dequeueTableViewCell:tableView];
 
-  NSString* name = [self.dataSource nameForGaiaID:gaiaID];
   if (name) {
     configuration.customAccessibilityLabel = l10n_util::GetNSStringF(
         isGaiaIDManaged

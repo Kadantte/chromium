@@ -10,11 +10,11 @@
 #include <string>
 #include <vector>
 
-#include "components/sync/engine/nigori/cross_user_sharing_public_private_key_pair.h"
-#include "components/sync/engine/nigori/cryptographer.h"
-#include "components/sync/engine/nigori/key_derivation_params.h"
-#include "components/sync/engine/nigori/nigori.h"
+#include "base/containers/span.h"
+#include "components/sync/engine/cryptographer.h"
 #include "components/sync/nigori/cross_user_sharing_keys.h"
+#include "components/sync/nigori/cross_user_sharing_public_private_key_pair.h"
+#include "components/sync/nigori/key_derivation_params.h"
 #include "components/sync/nigori/nigori_key_bag.h"
 
 namespace sync_pb {
@@ -40,16 +40,26 @@ class CryptographerImpl : public Cryptographer {
       const std::string& passphrase,
       const KeyDerivationParams& derivation_params =
           KeyDerivationParams::CreateForPbkdf2());
-  // Returns null in case of error (e.g. default key not present in keybag).
-  static std::unique_ptr<CryptographerImpl> FromProto(
+
+  // Returns null in case of error (see IsLocalProtoValid()).
+  static std::unique_ptr<CryptographerImpl> FromLocalProto(
       const sync_pb::CryptographerData& proto);
+
+  // Returns true if `proto` is a valid CryptographerData (e.g. default key not
+  // present in keybag).
+  static bool IsLocalProtoValid(const sync_pb::CryptographerData& proto);
 
   CryptographerImpl& operator=(const CryptographerImpl&) = delete;
 
   ~CryptographerImpl() override;
 
   // Serialization.
-  sync_pb::CryptographerData ToProto() const;
+  // Serializes the full cryptographer state for local persistence.
+  sync_pb::CryptographerData ToLocalProto() const;
+
+  // Exports the current keybag, encrypted with the default key, for exposure
+  // to the Sync protocol.
+  sync_pb::EncryptedData ExportEncryptedKeyBag() const;
 
   // Creates and registers a new key after deriving Nigori keys. Returns the
   // name of the key, or an empty string in case of error. Note that emplacing
@@ -69,8 +79,8 @@ class CryptographerImpl : public Cryptographer {
 
   // Adds the given Public-private key-pair associated with `version`. Replaces
   // any pre-existing key pair for the given version if exists.
-  void SetKeyPair(CrossUserSharingPublicPrivateKeyPair key_pair,
-                  uint32_t version);
+  void SetCrossUserSharingKeyPair(CrossUserSharingPublicPrivateKeyPair key_pair,
+                                  uint32_t version);
 
   // Sets or changes the default encryption key, which causes CanEncrypt() to
   // return true. `key_name` must not be empty and must represent a known key.
@@ -96,10 +106,10 @@ class CryptographerImpl : public Cryptographer {
 
   // Determines whether `key_pair_version` represents a known Public-private
   // key-pair.
-  bool HasKeyPair(uint32_t key_pair_version) const;
+  bool HasCrossUserSharingKeyPair(uint32_t key_pair_version) const;
 
   // Returns the number of generated key pairs.
-  size_t KeyPairSizeForMetrics() const;
+  size_t CrossUserSharingKeyPairSizeForMetrics() const;
 
   // Returns a key pair for a given `version`. The key pair with the given
   // `version` must exist.
@@ -134,9 +144,11 @@ class CryptographerImpl : public Cryptographer {
       const uint32_t recipient_key_version) const override;
 
  private:
-  CryptographerImpl(NigoriKeyBag key_bag,
-                    std::string default_encryption_key_name,
-                    CrossUserSharingKeys cross_user_sharing_keys);
+  CryptographerImpl(
+      NigoriKeyBag key_bag,
+      std::string default_encryption_key_name,
+      CrossUserSharingKeys cross_user_sharing_keys,
+      std::optional<uint32_t> default_cross_user_sharing_key_version);
 
   // The actual keys we know about.
   NigoriKeyBag key_bag_;

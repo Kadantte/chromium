@@ -24,6 +24,7 @@
 #include "third_party/blink/renderer/core/html/forms/select_type.h"
 #include "third_party/blink/renderer/core/html/html_div_element.h"
 #include "third_party/blink/renderer/core/html/html_hr_element.h"
+#include "third_party/blink/renderer/core/html/shadow/shadow_element_names.h"
 #include "third_party/blink/renderer/core/layout/layout_theme.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_compositor.h"
@@ -71,20 +72,17 @@ class HTMLSelectElementTest : public PageTestBase {
     return select->InnerElement().textContent();
   }
 
- private:
-  bool original_delegates_flag_;
+  bool HasDescendantsObserver(const HTMLSelectElement& select) const {
+    return select.descendants_observer_ != nullptr;
+  }
 };
 
 void HTMLSelectElementTest::SetUp() {
   PageTestBase::SetUp();
   GetDocument().SetMimeType(AtomicString("text/html"));
-  original_delegates_flag_ =
-      LayoutTheme::GetTheme().DelegatesMenuListRendering();
 }
 
 void HTMLSelectElementTest::TearDown() {
-  LayoutTheme::GetTheme().SetDelegatesMenuListRenderingForTesting(
-      original_delegates_flag_);
   PageTestBase::TearDown();
 }
 
@@ -555,7 +553,6 @@ TEST_F(HTMLSelectElementTest, SlotAssignmentRecalcDuringOptionRemoval) {
 // crbug.com/1060039
 TEST_F(HTMLSelectElementTest, SelectMultipleOptions) {
   GetDocument().GetSettings()->SetScriptEnabled(true);
-  LayoutTheme::GetTheme().SetDelegatesMenuListRenderingForTesting(true);
 
   // Select the same set of options.
   {
@@ -1094,6 +1091,188 @@ TEST_F(HTMLSelectElementTest, ListItemsNesting) {
   check_selects();
 }
 
+TEST_F(HTMLSelectElementTest, InnerElementOverflow) {
+  SetHtmlInnerHTML(R"HTML(
+    <!DOCTYPE html>
+    <select id=select>
+      <option>option</option>
+    </select>
+  )HTML");
+  HTMLSelectElement* select = To<HTMLSelectElement>(GetElementById("select"));
+  Element& inner_element = select->InnerElement();
+
+  GetDocument().UpdateStyleAndLayoutTree();
+  EXPECT_EQ(inner_element.GetComputedStyle()->OverflowX(), EOverflow::kClip);
+  EXPECT_EQ(inner_element.GetComputedStyle()->OverflowY(), EOverflow::kVisible);
+
+  select->SetInlineStyleProperty(CSSPropertyID::kTextOverflow,
+                                 CSSValueID::kEllipsis);
+  GetDocument().UpdateStyleAndLayoutTree();
+  EXPECT_EQ(inner_element.GetComputedStyle()->OverflowX(), EOverflow::kClip);
+  EXPECT_EQ(inner_element.GetComputedStyle()->OverflowY(), EOverflow::kVisible);
+
+  select->SetInlineStyleProperty(CSSPropertyID::kWritingMode,
+                                 CSSValueID::kVerticalRl);
+  GetDocument().UpdateStyleAndLayoutTree();
+  EXPECT_EQ(inner_element.GetComputedStyle()->OverflowX(), EOverflow::kVisible);
+  EXPECT_EQ(inner_element.GetComputedStyle()->OverflowY(), EOverflow::kClip);
+}
+
+TEST_F(HTMLSelectElementTest, DescendantCounters) {
+  CHECK(RuntimeEnabledFeatures::FilterableSelectEnabled());
+  CHECK(RuntimeEnabledFeatures::InputInSelectEnabled());
+  SetHtmlInnerHTML(R"HTML(
+    <select id=select>
+      <!-- <input id=c1> -->
+      <div id=c2>
+        <input>
+      </div>
+      <div id=c3>
+        <input id=c3i>
+        <option id=c3o>option</option>
+      </div>
+      <div id=c4>
+        <input>
+      </div>
+      <option id=c5>option</option>
+      <div id=c6></div>
+    </select>
+  )HTML");
+
+  HTMLSelectElement* select = To<HTMLSelectElement>(GetElementById("select"));
+  Element* c2 = GetElementById("c2");
+  Element* c3 = GetElementById("c3");
+  Element* c4 = GetElementById("c4");
+  Element* c5 = GetElementById("c5");
+  Element* c6 = GetElementById("c6");
+  HTMLInputElement* c1 = MakeGarbageCollected<HTMLInputElement>(GetDocument());
+  select->insertBefore(c1, c2);
+
+  auto input_slot = [select]() {
+    return select->GetShadowRoot()->getElementById(
+        shadow_element_names::kSelectInput);
+  };
+  auto options_slot = [select]() {
+    return select->GetShadowRoot()->getElementById(
+        shadow_element_names::kPseudoSelectOptionsSlot);
+  };
+
+  EXPECT_FALSE(select->ChildrenDescendantCounts().Contains(c1));
+  EXPECT_EQ(select->ChildrenDescendantCounts().at(c2).num_options, 0);
+  EXPECT_EQ(select->ChildrenDescendantCounts().at(c2).num_inputs, 1);
+  EXPECT_EQ(select->ChildrenDescendantCounts().at(c3).num_options, 1);
+  EXPECT_EQ(select->ChildrenDescendantCounts().at(c3).num_inputs, 1);
+  EXPECT_EQ(select->ChildrenDescendantCounts().at(c4).num_options, 0);
+  EXPECT_EQ(select->ChildrenDescendantCounts().at(c4).num_inputs, 1);
+  EXPECT_FALSE(select->ChildrenDescendantCounts().Contains(c5));
+  EXPECT_FALSE(select->ChildrenDescendantCounts().Contains(c6));
+  EXPECT_EQ(select->NumDescendantInputs(), 4);
+  EXPECT_TRUE(!!input_slot());
+
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  EXPECT_EQ(c1->AssignedSlot(), input_slot());
+  EXPECT_EQ(c2->AssignedSlot(), input_slot());
+  EXPECT_EQ(c3->AssignedSlot(), options_slot());
+  EXPECT_EQ(c4->AssignedSlot(), input_slot());
+  EXPECT_EQ(c5->AssignedSlot(), options_slot());
+  EXPECT_EQ(c6->AssignedSlot(), options_slot());
+
+  c1->remove();
+  EXPECT_FALSE(select->ChildrenDescendantCounts().Contains(c1));
+  EXPECT_EQ(select->NumDescendantInputs(), 3);
+
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  EXPECT_EQ(c2->AssignedSlot(), input_slot());
+  EXPECT_EQ(c3->AssignedSlot(), options_slot());
+  EXPECT_EQ(c4->AssignedSlot(), input_slot());
+  EXPECT_EQ(c5->AssignedSlot(), options_slot());
+  EXPECT_EQ(c6->AssignedSlot(), options_slot());
+
+  select->setAttribute(html_names::kMultipleAttr, g_empty_atom);
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  EXPECT_EQ(c2->AssignedSlot(), input_slot());
+  EXPECT_EQ(c3->AssignedSlot(), options_slot());
+  EXPECT_EQ(c4->AssignedSlot(), input_slot());
+  EXPECT_EQ(c5->AssignedSlot(), options_slot());
+  EXPECT_EQ(c6->AssignedSlot(), options_slot());
+  select->removeAttribute(html_names::kMultipleAttr);
+
+  c2->remove();
+  EXPECT_FALSE(select->ChildrenDescendantCounts().Contains(c2));
+  EXPECT_EQ(select->NumDescendantInputs(), 2);
+
+  EXPECT_TRUE(!!input_slot());
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  EXPECT_EQ(c3->AssignedSlot(), options_slot());
+  EXPECT_EQ(c4->AssignedSlot(), input_slot());
+  EXPECT_EQ(c5->AssignedSlot(), options_slot());
+  EXPECT_EQ(c6->AssignedSlot(), options_slot());
+
+  // Move input from grand-child to direct child
+  auto* c3i = GetElementById("c3i");
+  select->appendChild(c3i);
+
+  // The input is a direct child, so it shouldn't be in the map
+  EXPECT_FALSE(select->ChildrenDescendantCounts().Contains(c3i));
+  // The wrapper c3 should no longer have any inputs tracked
+  EXPECT_EQ(select->ChildrenDescendantCounts().at(c3).num_inputs, 0);
+  // The wrapper c3 still has its option
+  EXPECT_EQ(select->ChildrenDescendantCounts().at(c3).num_options, 1);
+  // The total number of descendant inputs should remain unchanged
+  EXPECT_EQ(select->NumDescendantInputs(), 2);
+
+  // Ensure the DOM and slots are still correct
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  EXPECT_EQ(c3i->AssignedSlot(), input_slot());
+
+  // Restore state to not break the rest of the test
+  c3->appendChild(c3i);
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  EXPECT_EQ(c3i->AssignedSlot(), nullptr);
+  EXPECT_FALSE(select->ChildrenDescendantCounts().Contains(c3i));
+  EXPECT_EQ(select->ChildrenDescendantCounts().at(c3).num_inputs, 1);
+  EXPECT_EQ(select->ChildrenDescendantCounts().at(c3).num_options, 1);
+  EXPECT_EQ(select->NumDescendantInputs(), 2);
+
+  GetElementById("c3o")->remove();
+  EXPECT_EQ(select->ChildrenDescendantCounts().at(c3).num_options, 0);
+  EXPECT_EQ(select->ChildrenDescendantCounts().at(c3).num_inputs, 1);
+  EXPECT_EQ(select->NumDescendantInputs(), 2);
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  EXPECT_EQ(c3->AssignedSlot(), input_slot());
+  EXPECT_EQ(c4->AssignedSlot(), input_slot());
+  EXPECT_EQ(c5->AssignedSlot(), options_slot());
+  EXPECT_EQ(c6->AssignedSlot(), options_slot());
+
+  GetElementById("c3i")->remove();
+  EXPECT_FALSE(select->ChildrenDescendantCounts().Contains(c3));
+  EXPECT_EQ(select->NumDescendantInputs(), 1);
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  EXPECT_EQ(c3->AssignedSlot(), options_slot());
+  EXPECT_EQ(c4->AssignedSlot(), input_slot());
+  EXPECT_EQ(c5->AssignedSlot(), options_slot());
+  EXPECT_EQ(c6->AssignedSlot(), options_slot());
+
+  c4->remove();
+  EXPECT_EQ(select->NumDescendantInputs(), 0);
+
+  EXPECT_FALSE(!!input_slot());
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  EXPECT_EQ(c3->AssignedSlot(), options_slot());
+  EXPECT_EQ(c4->AssignedSlot(), input_slot());
+  EXPECT_EQ(c5->AssignedSlot(), options_slot());
+  EXPECT_EQ(c6->AssignedSlot(), options_slot());
+
+  c5->remove();
+  EXPECT_FALSE(select->ChildrenDescendantCounts().Contains(c5));
+  EXPECT_EQ(select->NumDescendantInputs(), 0);
+
+  EXPECT_FALSE(!!input_slot());
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  EXPECT_EQ(c3->AssignedSlot(), options_slot());
+  EXPECT_EQ(c6->AssignedSlot(), options_slot());
+}
+
 class HTMLSelectElementSimTest : public SimTest {};
 
 TEST_F(HTMLSelectElementSimTest, DialogModeBaseSelectAddAllowedButton) {
@@ -1214,6 +1393,29 @@ TEST_F(HTMLSelectElementSimTest, DialogModeBaseSelectNestedButton) {
   Compositor().BeginFrame();
 
   ASSERT_FALSE(select->IsInDialogMode());
+}
+
+TEST_F(HTMLSelectElementTest,
+       RemovedFromDocumentDisconnectsDescendantsObserver) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      select, ::picker(select) { appearance: base-select; }
+    </style>
+    <select id=select>
+      <option>one</option>
+    </select>
+  )HTML");
+  auto* select = To<HTMLSelectElement>(
+      GetDocument().getElementById(AtomicString("select")));
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  ASSERT_TRUE(HasDescendantsObserver(*select));
+
+  select->appendChild(MakeGarbageCollected<HTMLInputElement>(GetDocument()));
+
+  select->remove();
+  EXPECT_FALSE(HasDescendantsObserver(*select));
+
+  test::RunPendingTasks();
 }
 
 }  // namespace blink

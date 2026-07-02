@@ -13,7 +13,6 @@
 #include "base/functional/callback.h"
 #include "base/supports_user_data.h"
 #include "build/build_config.h"
-#include "chrome/browser/ui/webui/signin/history_sync_optin_helper.h"
 #include "components/policy/core/browser/signin/profile_separation_policies.h"
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/identity_manager/primary_account_mutator.h"
@@ -24,7 +23,7 @@
 
 class GaiaId;
 class Profile;
-class Browser;
+class BrowserWindowInterface;
 
 namespace signin {
 class IdentityManager;
@@ -248,7 +247,8 @@ bool ShouldShowAvatarSyncPromo(Profile* profile);
 
 // Show a simple error message with an "OK" button to the user, displaying
 // `error_message_id`.
-void ShowErrorDialogWithMessage(Browser* browser, int error_message_id);
+void ShowErrorDialogWithMessage(BrowserWindowInterface* browser,
+                                int error_message_id);
 
 #endif  // BUILDFLAG(IS_LINUX) ||  BUILDFLAG(IS_MAC) ||  BUILDFLAG(IS_WIN)
 

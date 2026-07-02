@@ -5,9 +5,13 @@
 #include "chrome/browser/default_browser/default_browser_features.h"
 
 #include <array>
+#include <string>
 
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
+#include "build/build_config.h"
+#include "chrome/common/webui_url_constants.h"
+#include "url/gurl.h"
 
 namespace default_browser {
 
@@ -19,21 +23,54 @@ bool IsDefaultBrowserChangedOsNotificationEnabled() {
   return base::FeatureList::IsEnabled(kDefaultBrowserChangedOsNotification);
 }
 
+bool IsDefaultBrowserPromptSurfacesEnabled() {
+  return base::FeatureList::IsEnabled(kDefaultBrowserPromptSurfaces);
+}
+
 DefaultBrowserPromptSurface GetDefaultBrowserPromptSurface() {
-  if (!IsDefaultBrowserFrameworkEnabled()) {
+  if (!IsDefaultBrowserPromptSurfacesEnabled()) {
     return DefaultBrowserPromptSurface::kInfobar;
   }
 
   return kDefaultBrowserPromptSurfaceParam.Get();
 }
 
+DefaultBrowserSetterType GetDefaultBrowserSetterType() {
+  if (!base::FeatureList::IsEnabled(kDefaultBrowserSetterSelection)) {
+    return DefaultBrowserSetterType::kShellIntegration;
+  }
+
+  return kDefaultBrowserSetterParam.Get();
+}
+
+GURL GetDefaultBrowserVisualGuideURL() {
+#if BUILDFLAG(IS_WIN)
+  return GURL(kDefaultBrowserVisualGuideUrlParam.Get());
+#else
+  return GURL();
+#endif
+}
+
+BASE_FEATURE(kDefaultBrowserFramework, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kDefaultBrowserPromptSurfaces, base::FEATURE_DISABLED_BY_DEFAULT);
+
 constexpr inline auto kDefaultBrowserPromptSurfaceOptions =
     std::to_array<base::FeatureParam<DefaultBrowserPromptSurface>::Option>({
         {DefaultBrowserPromptSurface::kInfobar, "infobar"},
         {DefaultBrowserPromptSurface::kBubbleDialog, "bubble_dialog"},
+        {DefaultBrowserPromptSurface::kModalDialogWithSettingsIllustration,
+         "modal_dialog_with_settings_illustration"},
+        {DefaultBrowserPromptSurface::kModalDialogWithoutSettingsIllustration,
+         "modal_dialog_without_settings_illustration"},
     });
 
-BASE_FEATURE(kDefaultBrowserFramework, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE_ENUM_PARAM(DefaultBrowserPromptSurface,
+                        kDefaultBrowserPromptSurfaceParam,
+                        &kDefaultBrowserPromptSurfaces,
+                        "prompt_surface",
+                        DefaultBrowserPromptSurface::kInfobar,
+                        kDefaultBrowserPromptSurfaceOptions);
 
 BASE_FEATURE(kPerformDefaultBrowserCheckValidations,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -41,11 +78,30 @@ BASE_FEATURE(kPerformDefaultBrowserCheckValidations,
 BASE_FEATURE(kDefaultBrowserChangedOsNotification,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE_ENUM_PARAM(DefaultBrowserPromptSurface,
-                        kDefaultBrowserPromptSurfaceParam,
-                        &kDefaultBrowserFramework,
-                        "prompt_surface",
-                        DefaultBrowserPromptSurface::kInfobar,
-                        kDefaultBrowserPromptSurfaceOptions);
+BASE_FEATURE(kDefaultBrowserSetterSelection, base::FEATURE_DISABLED_BY_DEFAULT);
+
+constexpr inline auto kDefaultBrowserSetterSelectionOption =
+    std::to_array<base::FeatureParam<DefaultBrowserSetterType>::Option>(
+        {{DefaultBrowserSetterType::kShellIntegration, "shell_integration"},
+         {DefaultBrowserSetterType::kVisualGuide, "visual_guide"}});
+
+BASE_FEATURE_ENUM_PARAM(DefaultBrowserSetterType,
+                        kDefaultBrowserSetterParam,
+                        &kDefaultBrowserSetterSelection,
+                        "setter_option",
+                        DefaultBrowserSetterType::kShellIntegration,
+                        kDefaultBrowserSetterSelectionOption);
+
+#if BUILDFLAG(IS_WIN)
+BASE_FEATURE_PARAM(std::string,
+                   kDefaultBrowserVisualGuideUrlParam,
+                   &kDefaultBrowserSetterSelection,
+                   chrome::kChromeUIDefaultBrowserVisualGuidedSetterURL);
+
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kFindSettingsTimeout,
+                   &kDefaultBrowserSetterSelection,
+                   base::Seconds(5));
+#endif
 
 }  // namespace default_browser

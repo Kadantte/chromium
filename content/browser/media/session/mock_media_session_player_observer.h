@@ -16,6 +16,7 @@
 #include "media/audio/audio_device_description.h"
 #include "media/base/picture_in_picture_events_info.h"
 #include "services/media_session/public/cpp/media_position.h"
+#include "ui/gfx/geometry/size.h"
 
 namespace content {
 
@@ -30,13 +31,15 @@ class MockMediaSessionPlayerObserver : public MediaSessionPlayerObserver {
   ~MockMediaSessionPlayerObserver() override;
 
   // Implements MediaSessionPlayerObserver.
-  void OnSuspend(int player_id) override;
-  void OnResume(int player_id) override;
+  void OnSuspend(int player_id, bool triggered_by_user) override;
+  void OnResume(int player_id, bool triggered_by_user) override;
   void OnSeekForward(int player_id, base::TimeDelta seek_time) override;
   void OnSeekBackward(int player_id, base::TimeDelta seek_time) override;
   void OnSeekTo(int player_id, base::TimeDelta seek_time) override;
   void OnSetVolumeMultiplier(int player_id, double volume_multiplier) override;
-  void OnEnterPictureInPicture(int player_id) override;
+  void OnEnterPictureInPicture(
+      int player_id,
+      const std::optional<gfx::Size>& min_size) override;
   void OnSetAudioSinkId(int player_id,
                         const std::string& raw_device_id) override;
   void OnSetMute(int player_id, bool mute) override;
@@ -138,6 +141,7 @@ class MockMediaSessionPlayerObserver : public MediaSessionPlayerObserver {
   int received_set_audio_sink_id_calls_ = 0;
   int received_request_visibility_calls_ = 0;
   int received_auto_picture_in_picture_info_changed_calls_ = 0;
+  std::optional<gfx::Size> last_enter_pip_min_size_;
 
   media::MediaContentType media_content_type_;
 };

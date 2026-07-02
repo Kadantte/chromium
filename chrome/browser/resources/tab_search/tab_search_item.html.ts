@@ -29,7 +29,9 @@ export function getHtml(this: TabSearchItemElement) {
       <div id="groupTitle"></div>
       <div class="separator">•</div>
     ` : ''}
-    <div id="secondaryText" ?hidden="${this.hideUrl}"></div>
+    <div id="secondaryText" ?hidden="${this.hideUrl}">
+      <bdi id="secondaryTextInner"></bdi>
+    </div>
     ${!this.hideTimestamp ? html`
       <div class="separator" ?hidden="${!this.data.hostname || this.hideUrl}">•
       </div>
@@ -42,7 +44,7 @@ ${this.isCloseable_() ? html`
     <cr-icon-button id="closeButton" role="${this.getCloseButtonRole_()}"
         aria-label="${this.ariaLabelForButton_()}"
         iron-icon="${this.closeButtonIcon}" ?noink="${!this.buttonRipples_}"
-        no-ripple-on-focus @click="${this.onItemClose_}"
+        no-ripple-on-focus @click="${this.onCloseButtonClick_}"
         title="${this.tooltipForButton_()}"
         @focus="${this.onCloseButtonFocus_}" @blur="${this.onCloseButtonBlur_}">
     </cr-icon-button>

@@ -9,7 +9,6 @@
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/scoped_observation.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -36,6 +35,7 @@
 #include "extensions/common/icons/extension_icon_set.h"
 #include "extensions/common/permissions/permission_message.h"
 #include "extensions/common/permissions/permissions_data.h"
+#include "extensions/strings/grit/extensions_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/gfx/geometry/size.h"
 
@@ -218,7 +218,7 @@ void ExtensionDisabledGlobalError::BubbleViewAcceptButtonPressed(
 void ExtensionDisabledGlobalError::BubbleViewCancelButtonPressed(
     Browser* browser) {
   uninstall_dialog_ = ExtensionUninstallDialog::Create(
-      profile_, browser->window()->GetNativeWindow(), this);
+      profile_, browser->GetWindow()->GetNativeWindow(), this);
   // Delay showing the uninstall dialog, so that this function returns
   // immediately, to close the bubble properly. See crbug.com/40184398.
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(

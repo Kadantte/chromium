@@ -18,10 +18,10 @@ import org.chromium.base.ApkInfo;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.permissions.PermissionTestRule.PermissionUpdateWaiter;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.test.R;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.browser.LocationSettingsTestUtil;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
@@ -50,7 +50,7 @@ public class RuntimePermissionTestUtils {
         ALREADY_GRANTED, // Also implies "ASSERT_NEVER_ASKED"
     }
 
-    /** Utility delegate for to provide the permissions to be requested and the runtime response. */
+    /** Utility delegate to provide the permissions to be requested and the runtime response. */
     public static class TestAndroidPermissionDelegate implements AndroidPermissionDelegate {
         private RuntimePromptResponse mResponse;
         private final Set<String> mRequestablePermissions;
@@ -58,8 +58,8 @@ public class RuntimePermissionTestUtils {
 
         public TestAndroidPermissionDelegate(
                 final String[] requestablePermissions, final RuntimePromptResponse response) {
-            mRequestablePermissions = new TreeSet(Arrays.asList(requestablePermissions));
-            mGrantedPermissions = new TreeSet();
+            mRequestablePermissions = new TreeSet<>(Arrays.asList(requestablePermissions));
+            mGrantedPermissions = new TreeSet<>();
             mResponse = response;
             if (mResponse == RuntimePromptResponse.ALREADY_GRANTED) {
                 mGrantedPermissions.addAll(mRequestablePermissions);
@@ -124,6 +124,8 @@ public class RuntimePermissionTestUtils {
     public static void setupGeolocationSystemMock(boolean enabled) {
         LocationSettingsTestUtil.setSystemLocationSettingEnabled(enabled);
         LocationProviderOverrider.setLocationProviderImpl(new MockLocationProvider());
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> LocationProviderOverrider.clearCachedGeopositionsForTesting());
     }
 
     public static void setupGeolocationSystemMock() {

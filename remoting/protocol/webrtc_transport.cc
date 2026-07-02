@@ -25,6 +25,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "components/webrtc/net_address_utils.h"
 #include "components/webrtc/thread_wrapper.h"
 #include "remoting/base/constants.h"
@@ -45,6 +46,7 @@
 #include "third_party/webrtc/api/enable_media.h"
 #include "third_party/webrtc/api/peer_connection_interface.h"
 #include "third_party/webrtc/api/rtc_event_log/rtc_event_log_factory.h"
+#include "third_party/webrtc/api/scoped_refptr.h"
 #include "third_party/webrtc/api/video_codecs/builtin_video_decoder_factory.h"
 #include "third_party/webrtc_overrides/environment.h"
 
@@ -1196,7 +1198,11 @@ void WebrtcTransport::SendOffer() {
 
   webrtc::PeerConnectionInterface::RTCOfferAnswerOptions options;
   options.offer_to_receive_video = false;
-  options.offer_to_receive_audio = false;
+  // The host always offers `sendrecv` but the client will downgrade it to
+  // `recvonly` if microphone remoting is not enabled. Only Linux hosts support
+  // audio injection (microphone remoting).
+  // TODO: crbug.com/513327818 - Hook this up with AudioInjector::IsSupported().
+  options.offer_to_receive_audio = BUILDFLAG(IS_LINUX);
   options.ice_restart = want_ice_restart_;
   peer_connection()->CreateOffer(
       CreateSessionDescriptionObserver::Create(

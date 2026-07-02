@@ -45,6 +45,10 @@ struct RootCompositorFrameSinkParams {
   [EnableIf=is_android]
   bool create_input_receiver = false;
 
+  // Whether to enable the heuristic for detecting video conferencing in the
+  // frame interval decider.
+  bool enable_video_conference_matcher = false;
+
   [EnableIf=is_android]
   float refresh_rate;
 
@@ -76,7 +80,6 @@ struct RootCompositorFrameSinkParams {
 // Thus, a client will typically simply request a CompositorFrameSink from the
 // frame sink manager host which will forward the request to the frame sink
 // manager.
-[DirectReceiver]
 interface FrameSinkManager {
   // Starts the scope of temporary references tied to this |frame_sink_id|.
   // Temporary references tied to this |frame_sink_id| will be dropped on
@@ -309,7 +312,6 @@ interface FrameSinkManagerClient {
 // RenderInputRouterDelegate[Client] interface to use the same mojo pipe to
 // send/receive information for input handling between the CrBrowserMain and the
 // VizCompositorThread.
-[DirectReceiver]
 interface RendererInputRouterDelegateRegistry {
   // Setup the connection between the Browser (at RenderWidgetHost level) and
   // the VizCompositor thread (at InputManager level) in both directions to

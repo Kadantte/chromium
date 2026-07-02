@@ -11,6 +11,7 @@
 #include "base/functional/callback.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
+#include "chrome/browser/metrics/profile_metrics_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/dice_tab_helper.h"
 #include "chrome/browser/signin/dice_web_signin_interceptor.h"
@@ -96,7 +97,7 @@ std::unique_ptr<ProcessDiceHeaderDelegateImpl>
 ProcessDiceHeaderDelegateImpl::Create(content::WebContents* web_contents) {
   bool is_sync_signin_tab = false;
   signin_metrics::AccessPoint access_point =
-      signin_metrics::AccessPoint::kUnknown;
+      signin_metrics::AccessPoint::kWebSignin;
   signin_metrics::PromoAction promo_action =
       signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO;
   GURL redirect_url;
@@ -121,9 +122,6 @@ ProcessDiceHeaderDelegateImpl::Create(content::WebContents* web_contents) {
     }
 
     on_signin_header_received = tab_helper->GetOnSigninHeaderReceived();
-
-  } else {
-    access_point = signin_metrics::AccessPoint::kWebSignin;
   }
 
   // If there is no active `DiceTabHelper`, default to the in-browser error
@@ -191,8 +189,7 @@ bool ProcessDiceHeaderDelegateImpl::ShouldEnableSync() {
 }
 
 bool ProcessDiceHeaderDelegateImpl::ShouldEnableHistorySync() {
-  if (!base::FeatureList::IsEnabled(
-          syncer::kReplaceSyncPromosWithSignInPromos)) {
+  if (!syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
     return false;
   }
   if (!is_sync_signin_tab_) {
@@ -221,8 +218,7 @@ bool ProcessDiceHeaderDelegateImpl::AttemptSettingPrimaryAccount(
   const SigninUIError error = CanOfferSignin(
       &profile_.get(), account_info.gaia, account_info.email,
       /*allow_account_from_other_profile=*/allow_account_from_other_profile);
-  if (error.IsOk() || !base::FeatureList::IsEnabled(
-                          syncer::kReplaceSyncPromosWithSignInPromos)) {
+  if (error.IsOk() || !syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
     signin::IdentityManager* identity_manager =
         IdentityManagerFactory::GetForProfile(&profile_.get());
     identity_manager->GetPrimaryAccountMutator()->SetPrimaryAccount(
@@ -247,18 +243,15 @@ bool ProcessDiceHeaderDelegateImpl::AttemptSettingPrimaryAccount(
 // signin to browser is cleaned-up.
 void ProcessDiceHeaderDelegateImpl::AttemptChromeSignin(
     CoreAccountId account_id) {
- CHECK(!account_id.empty());
-
-  // Do not sign in if the access point is unknown.
-  if (access_point_ == signin_metrics::AccessPoint::kUnknown) {
-    return;
-  }
+  CHECK(!account_id.empty());
 
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(&profile_.get());
   bool should_auto_sign_in = false;
   AccountInfo account_info =
       identity_manager->FindExtendedAccountInfoByAccountId(account_id);
+  const bool has_primary_account =
+      identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin);
   if (access_point_ == signin_metrics::AccessPoint::kWebSignin) {
     // When automation is enabled, automatically promote web sign in to Chrome
     // sign in.
@@ -279,13 +272,18 @@ void ProcessDiceHeaderDelegateImpl::AttemptChromeSignin(
 
     // Proceed with the access point as the choice remembered.
     access_point_ = signin_metrics::AccessPoint::kSigninChoiceRemembered;
+    if (!has_primary_account) {
+      signin_metrics::LogSignInOffered(
+          access_point_,
+          signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO);
+      signin_metrics::LogSignInStarted(
+          access_point_,
+          *ProfileMetricsServiceFactory::GetForProfile(&profile_.get()));
+    }
   }
 
   // This access point should only be used as a result of a non Uno flow.
   CHECK_NE(signin_metrics::AccessPoint::kDesktopSigninManager, access_point_);
-
-  const bool has_primary_account =
-      identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin);
   if (should_auto_sign_in && !has_primary_account) {
     // Sign-in the user in the browser if user can sign. If not, we fail
     // silently as the signin attempt was not an explicit user action.
@@ -301,6 +299,7 @@ void ProcessDiceHeaderDelegateImpl::AttemptChromeSignin(
 void ProcessDiceHeaderDelegateImpl::HandleTokenExchangeSuccess(
     CoreAccountId account_id,
     bool is_new_account) {
+  initiator_account_id_ = account_id;
   AttemptChromeSignin(account_id);
 
   // is_sync_signin_tab_ tells whether the current signin is happening in a tab
@@ -321,6 +320,16 @@ void ProcessDiceHeaderDelegateImpl::HandleTokenExchangeSuccess(
                                  is_sync_signin_tab_});
     tab_helper->OnTokenExchangeSuccess(
         std::move(retry_interception_bubble_callback));
+  }
+}
+
+void ProcessDiceHeaderDelegateImpl::OnDiceSigninSessionComplete(
+    std::vector<CoreAccountId> secondary_accounts) {
+  auto* interceptor =
+      DiceWebSigninInterceptorFactory::GetForProfile(&profile_.get());
+  if (interceptor) {
+    interceptor->OnDiceSigninSessionComplete(initiator_account_id_,
+                                             std::move(secondary_accounts));
   }
 }
 
@@ -346,8 +355,7 @@ void ProcessDiceHeaderDelegateImpl::CompleteChromeSignInAfterGaiaSignin(
     tab_helper->OnSyncSigninFlowComplete();
   }
 
-  if (base::FeatureList::IsEnabled(
-          syncer::kReplaceSyncPromosWithSignInPromos)) {
+  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
     if (!ShouldEnableHistorySync()) {
       return;
     }

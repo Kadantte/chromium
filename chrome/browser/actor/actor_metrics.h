@@ -11,12 +11,19 @@
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/execution_engine.h"
 #include "chrome/common/actor.mojom.h"
+#include "components/actor/public/mojom/actor_types.mojom-forward.h"
 
 namespace optimization_guide::proto {
 class ActionsResult;
 }  // namespace optimization_guide::proto
 
 namespace actor {
+
+// The source or feature that triggered an Annotated Page Content (APC) fetch.
+enum class ApcSource {
+  kActor,
+  kGlic,
+};
 
 // Records the number of actions taken in `from_state` before transitioning to
 // `to_state`.
@@ -75,10 +82,15 @@ void RecordDirectDownloadTriggered(bool success);
 // Recorded when a 'save as' download dialog is triggered by an ActorTask.
 void RecordDownloadSaveAsDialogTriggered(bool success);
 
-// Records the the size of the allow list and confirmed list (blocklist) of
-// origins for navigation gating.
-void RecordActorNavigationGatingListSize(size_t allow_list_size,
-                                         size_t confirmed_list_size);
+// Records whether the APC is identical to the one from the previous fetch
+// from ANY source.
+void RecordApcComparisonIdentical(ApcSource source, bool identical);
+
+// Records script tool specific metrics.
+void RecordScriptToolActionResultCode(
+    actor::mojom::ActionResultCode action_result_code);
+void RecordScriptToolInputSizeBytes(size_t size_bytes);
+void RecordScriptToolOutputSizeBytes(size_t size_bytes);
 
 // Records the outcome of navigation gating decisions.
 void RecordNavigationGatingDecision(ExecutionEngine::GatingDecision decision);
@@ -123,6 +135,23 @@ enum class ActorTabObservationResult {
   kApcAndScreenshotNotOk,
   kMaxValue = kApcAndScreenshotNotOk,
 };
+
+// LINT.IfChange(SplitModeTimeOfUseFrameStatus)
+enum class SplitModeTimeOfUseFrameStatus {
+  kMatch = 0,
+  kInitializedFrameDestroyed = 1,
+  kFrameMismatch = 2,
+  kMaxValue = kFrameMismatch,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/actor/enums.xml:SplitModeTimeOfUseFrameStatus)
+
+// Records whether the target frame changed or was destroyed between the
+// Validate and Invoke steps when the renderer resolved target feature is
+// enabled.
+void RecordSplitModeTimeOfUseFrameStatus(SplitModeTimeOfUseFrameStatus status);
+
+// Records whether target observation succeeded during TimeOfUseValidation.
+void RecordTimeOfUseObservationSuccess(bool success);
 
 }  // namespace actor
 #endif  // CHROME_BROWSER_ACTOR_ACTOR_METRICS_H_

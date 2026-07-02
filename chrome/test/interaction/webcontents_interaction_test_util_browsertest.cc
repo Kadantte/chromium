@@ -15,10 +15,10 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/interaction/interaction_test_util_browser.h"
@@ -75,7 +75,7 @@ class WebContentsInteractionTestUtilTest : public InProcessBrowserTest {
   }
 
   ui::InteractionSequence::Builder DefaultBuilder(
-      Browser* context_browser = nullptr) {
+      BrowserWindowInterface* context_browser = nullptr) {
     if (!context_browser) {
       context_browser = browser();
     }
@@ -409,7 +409,7 @@ IN_PROC_BROWSER_TEST_F(WebContentsInteractionTestUtilTest,
   // Open a new browser, and immediately navigate to a new page. Even though the
   // original chrome://new-tab-page might not have finished loading, the
   // element should not be created until the new URL is loaded.
-  Browser* browser2 = chrome::OpenEmptyWindow(
+  BrowserWindowInterface* browser2 = chrome::OpenEmptyWindow(
       browser()->profile(), /*should_trigger_session_restore=*/false);
   auto util = WebContentsInteractionTestUtil::ForExistingTabInBrowser(
       browser2, kWebContentsElementId);
@@ -2631,7 +2631,7 @@ IN_PROC_BROWSER_TEST_F(WebContentsInteractionTestUtilInteractiveTest,
       WaitForHide(kWebContentsElementId),
       // This has to be done on a fresh message loop.
       // For some reason, this does not reliably trigger page
-      // reload on Mac (see crbug.com/1447298).
+      // reload on Mac (see crbug.com/40268930).
       SelectTab(kTabStripElementId, 0), WaitForShow(kWebContentsElementId));
 }
 

@@ -11,7 +11,6 @@
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/local_or_syncable_bookmark_sync_service_factory.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/webui/feedback/feedback_dialog.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/chrome_test_utils.h"
@@ -40,7 +39,7 @@ class ShoppingUiHandlerDelegateBrowserTest : public InProcessBrowserTest {
 
     profile_ = Profile::FromBrowserContext(web_contents()->GetBrowserContext());
     signin::ConsentLevel consent_level =
-        base::FeatureList::IsEnabled(syncer::kReplaceSyncPromosWithSignInPromos)
+        syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
             ? signin::ConsentLevel::kSignin
             : signin::ConsentLevel::kSync;
     signin::MakePrimaryAccountAvailable(
@@ -110,7 +109,7 @@ IN_PROC_BROWSER_TEST_F(ShoppingUiHandlerDelegateBrowserTest,
   NavigateToURL(url);
 
   const bookmarks::BookmarkNode* parent =
-      base::FeatureList::IsEnabled(syncer::kReplaceSyncPromosWithSignInPromos)
+      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
           ? bookmark_model_->account_other_node()
           : bookmark_model_->other_node();
   auto* existing_node = bookmark_model_->AddNewURL(
@@ -130,7 +129,7 @@ IN_PROC_BROWSER_TEST_F(ShoppingUiHandlerDelegateBrowserTest,
   NavigateToURL(url);
 
   const bookmarks::BookmarkNode* parent =
-      base::FeatureList::IsEnabled(syncer::kReplaceSyncPromosWithSignInPromos)
+      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
           ? bookmark_model_->account_other_node()
           : bookmark_model_->other_node();
   size_t bookmark_count = parent->children().size();

@@ -7,6 +7,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -58,6 +59,9 @@ class VisitedLinkWriter;
 namespace android_webview {
 
 class AwBrowserContextIoThreadHandle;
+class AwContentRestrictionManagerClient;
+class AwContentRestrictionBlockedNavigationTracker;
+class AwHttpCacheManager;
 class AwQuotaManagerBridge;
 class CookieManager;
 
@@ -107,6 +111,10 @@ class AwBrowserContext : public content::BrowserContext,
   AwQuotaManagerBridge* GetQuotaManagerBridge();
   int64_t GetQuotaManagerBridge(JNIEnv* env);
 
+  AwContentRestrictionManagerClient* GetContentRestrictionManagerClient();
+  AwContentRestrictionBlockedNavigationTracker*
+  GetContentRestrictionBlockedNavigationTracker();
+
   CookieManager* GetCookieManager();
 
   bool IsDefaultBrowserContext() const;
@@ -120,8 +128,9 @@ class AwBrowserContext : public content::BrowserContext,
       const base::android::JavaRef<jobject>& io_thread_client);
 
   int AllowedPrerenderingCount() const;
-  void SetAllowedPrerenderingCount(JNIEnv* const env,
-                                   std::optional<int> allowed_count);
+  void SetAllowedPrerenderingCount(JNIEnv* const env, int allowed_count);
+  void ClearAllowedPrerenderingCount(JNIEnv* const env);
+
   void WarmUpSpareRenderer(JNIEnv* const env);
 
   // content::BrowserContext implementation.
@@ -199,8 +208,8 @@ class AwBrowserContext : public content::BrowserContext,
   // in Java by the WebView code.
   std::vector<std::string> SetOriginMatchedHeader(
       JNIEnv* env,
-      std::string& header_name,
-      std::string& header_value,
+      const std::string& header_name,
+      const std::string& header_value,
       const std::vector<std::string>& origin_rules);
 
   // Set a static header name-value pair to be sent to origins that match the
@@ -215,8 +224,8 @@ class AwBrowserContext : public content::BrowserContext,
   // in Java by the WebView code.
   std::vector<std::string> AddOriginMatchedHeader(
       JNIEnv* env,
-      std::string& header_name,
-      std::string& header_value,
+      const std::string& header_name,
+      const std::string& header_value,
       const std::vector<std::string>& origin_rules);
 
   bool HasOriginMatchedHeader(JNIEnv* env, const std::string& header_name);
@@ -247,6 +256,11 @@ class AwBrowserContext : public content::BrowserContext,
 
   // Adds a QUIC hints for the given origins.
   void AddQuicHints(JNIEnv* env, const std::vector<GURL>& origins);
+
+  AwHttpCacheManager* GetHttpCacheManager() {
+    return http_cache_manager_.get();
+  }
+  AwPrefetchManager& GetPrefetchManager() { return *prefetch_manager_.get(); }
 
  private:
   friend class AwBrowserContextIoThreadHandle;
@@ -297,8 +311,14 @@ class AwBrowserContext : public content::BrowserContext,
   // In generally, use GetCookieManager() rather than using this directly.
   std::unique_ptr<CookieManager> cookie_manager_;
 
+  std::unique_ptr<AwHttpCacheManager> http_cache_manager_;
+
   std::unique_ptr<AwPrefetchManager> prefetch_manager_;
   std::unique_ptr<AwPreconnector> preconnector_;
+  std::unique_ptr<AwContentRestrictionManagerClient>
+      content_restriction_manager_client_;
+  std::unique_ptr<AwContentRestrictionBlockedNavigationTracker>
+      content_restriction_blocked_navigation_tracker_;
 
   // The IO thread client that should be used by service workers.
   base::android::ScopedJavaGlobalRef<jobject> sw_io_thread_client_;

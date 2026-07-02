@@ -71,6 +71,8 @@ content::WebUIDataSource* HistoryUtil::PopulateCommonSourceForHistory(
       {"searchResults", IDS_HISTORY_SEARCH_RESULTS},
       {"searchResultExactMatch", IDS_HISTORY_SEARCH_EXACT_MATCH_RESULT},
       {"searchResultExactMatches", IDS_HISTORY_SEARCH_EXACT_MATCH_RESULTS},
+      {"sourceFilterChipsAriaLabel",
+       IDS_HISTORY_SOURCE_FILTER_CHIPS_ARIA_LABEL},
       {"sourceFilterChipActor", IDS_HISTORY_SOURCE_FILTER_CHIP_ACTOR},
       {"sourceFilterChipUser", IDS_HISTORY_SOURCE_FILTER_CHIP_USER},
       {"title", IDS_HISTORY_TITLE},
@@ -85,9 +87,6 @@ content::WebUIDataSource* HistoryUtil::PopulateCommonSourceForHistory(
   source->AddBoolean("isGuestSession", profile->IsGuestSession());
   source->AddBoolean("isSignInAllowed",
                      prefs->GetBoolean(prefs::kSigninAllowed));
-
-  source->AddBoolean("enableBrowsingHistoryActorIntegrationM1",
-                     history::IsBrowsingHistoryActorIntegrationM1Enabled());
 
   source->AddInteger(
       "lastSelectedTab",

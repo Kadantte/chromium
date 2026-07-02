@@ -434,15 +434,15 @@ void MockNetworkTransaction::StopCaching() {
     transaction_factory_->TransactionStopCaching();
 }
 
-int64_t MockNetworkTransaction::GetTotalReceivedBytes() const {
+base::ByteSize MockNetworkTransaction::GetTotalReceivedBytes() const {
   return received_bytes_;
 }
 
-int64_t MockNetworkTransaction::GetTotalSentBytes() const {
+base::ByteSize MockNetworkTransaction::GetTotalSentBytes() const {
   return sent_bytes_;
 }
 
-int64_t MockNetworkTransaction::GetReceivedBodyBytes() const {
+base::ByteSize MockNetworkTransaction::GetReceivedBodyBytes() const {
   return received_body_bytes_;
 }
 
@@ -505,13 +505,13 @@ void MockNetworkTransaction::SetWebSocketHandshakeStreamCreateHelper(
 }
 
 // static
-const int64_t MockNetworkTransaction::kTotalReceivedBytes = 1000;
+const auto MockNetworkTransaction::kTotalReceivedBytes = base::ByteSize(1000);
 
 // static
-const int64_t MockNetworkTransaction::kTotalSentBytes = 100;
+const auto MockNetworkTransaction::kTotalSentBytes = base::ByteSize(100);
 
 // static
-const int64_t MockNetworkTransaction::kReceivedBodyBytes = 500;
+const auto MockNetworkTransaction::kReceivedBodyBytes = base::ByteSize(500);
 
 int MockNetworkTransaction::StartInternal(HttpRequestInfo request,
                                           CompletionOnceCallback callback) {
@@ -523,11 +523,17 @@ int MockNetworkTransaction::StartInternal(HttpRequestInfo request,
   test_mode_ = t->test_mode;
 
   // Return immediately if we're returning an error.
-  if (OK != t->start_return_code) {
+  Error start_return_code = t->start_return_code;
+  if (t->start_handler) {
+    DCHECK_EQ(start_return_code, OK)
+        << "set either start_return_code or start_handler, not both";
+    start_return_code = t->start_handler.Run(&current_request_);
+  }
+  if (OK != start_return_code) {
     if (test_mode_ & TEST_MODE_SYNC_NET_START) {
-      return t->start_return_code;
+      return start_return_code;
     }
-    CallbackLater(std::move(callback), t->start_return_code);
+    CallbackLater(std::move(callback), start_return_code);
     return ERR_IO_PENDING;
   }
 
@@ -657,6 +663,9 @@ int MockNetworkTransaction::DoSendRequest() {
     DCHECK(response_.unused_since_prefetch);
     response_.restricted_prefetch = true;
   }
+
+  response_.did_use_shared_dictionary = t->did_use_shared_dictionary;
+
   return OK;
 }
 

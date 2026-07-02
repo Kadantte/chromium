@@ -5,7 +5,6 @@
 package org.chromium.chrome.browser.touch_to_fill.payments;
 
 import android.graphics.drawable.Drawable;
-import android.view.View;
 
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.Nullable;
@@ -31,7 +30,7 @@ class TouchToFillPaymentMethodProperties {
     static final PropertyModel.WritableIntPropertyKey FOCUSED_VIEW_ID_FOR_ACCESSIBILITY =
             new PropertyModel.WritableIntPropertyKey("focused_view_id_for_accessibility");
     public static final PropertyModel.WritableObjectPropertyKey<ModelList> SHEET_ITEMS =
-            new PropertyModel.WritableObjectPropertyKey("sheet_items");
+            new PropertyModel.WritableObjectPropertyKey<>("sheet_items");
     static final PropertyModel.ReadableObjectPropertyKey<Runnable> BACK_PRESS_HANDLER =
             new PropertyModel.ReadableObjectPropertyKey<>("back_press_handler");
     static final PropertyModel.ReadableObjectPropertyKey<Callback<Integer>> DISMISS_HANDLER =
@@ -159,10 +158,12 @@ class TouchToFillPaymentMethodProperties {
 
     /** Properties for a credit card suggestion entry in the TouchToFill sheet for payments. */
     static class CreditCardSuggestionProperties {
-        static final PropertyModel.ReadableTransformingObjectPropertyKey<
-                        CardImageMetaData, Drawable>
-                CARD_IMAGE =
-                        new PropertyModel.ReadableTransformingObjectPropertyKey<>("card_image");
+        static final PropertyModel.WritableObjectPropertyKey<Drawable> CARD_IMAGE =
+                new PropertyModel.WritableObjectPropertyKey<>("card_image");
+        static final PropertyModel.ReadableObjectPropertyKey<GURL> CARD_ART_URL =
+                new PropertyModel.ReadableObjectPropertyKey<>("card_art_url");
+        static final PropertyModel.ReadableIntPropertyKey CARD_ICON_ID =
+                new PropertyModel.ReadableIntPropertyKey("card_icon_id");
         static final PropertyModel.ReadableObjectPropertyKey<String> MAIN_TEXT =
                 new PropertyModel.ReadableObjectPropertyKey<>("main_text");
         static final PropertyModel.ReadableObjectPropertyKey<String> MAIN_TEXT_CONTENT_DESCRIPTION =
@@ -182,6 +183,9 @@ class TouchToFillPaymentMethodProperties {
                         new PropertyModel.ReadableObjectPropertyKey<>("item_collection_info");
 
         static final PropertyKey[] NON_TRANSFORMING_CREDIT_CARD_SUGGESTION_KEYS = {
+            CARD_IMAGE,
+            CARD_ART_URL,
+            CARD_ICON_ID,
             MAIN_TEXT,
             MAIN_TEXT_CONTENT_DESCRIPTION,
             MINOR_TEXT,
@@ -213,21 +217,17 @@ class TouchToFillPaymentMethodProperties {
 
     /** Properties for a loyalty card entry in the TouchToFill sheet for payments. */
     static class LoyaltyCardProperties {
-        static final PropertyModel.ReadableObjectPropertyKey<String> LOYALTY_CARD_NUMBER =
-                new PropertyModel.ReadableObjectPropertyKey<>("loyalty_card_number");
-        static final PropertyModel.ReadableObjectPropertyKey<String> MERCHANT_NAME =
-                new PropertyModel.ReadableObjectPropertyKey<>("merchant_name");
-        static final PropertyModel.ReadableTransformingObjectPropertyKey<LoyaltyCard, Drawable>
-                LOYALTY_CARD_ICON =
-                        new PropertyModel.ReadableTransformingObjectPropertyKey<>(
-                                "loyalty_card_icon");
+        static final PropertyModel.ReadableObjectPropertyKey<LoyaltyCard> LOYALTY_CARD =
+                new PropertyModel.ReadableObjectPropertyKey<>("loyalty_card");
+        static final PropertyModel.WritableObjectPropertyKey<Drawable> LOYALTY_CARD_ICON =
+                new PropertyModel.WritableObjectPropertyKey<>("loyalty_card_icon");
         static final PropertyModel.ReadableObjectPropertyKey<Runnable>
                 ON_LOYALTY_CARD_CLICK_ACTION =
                         new PropertyModel.ReadableObjectPropertyKey<>(
                                 "on_loyalty_card_click_action");
 
         static final PropertyKey[] NON_TRANSFORMING_LOYALTY_CARD_KEYS = {
-            LOYALTY_CARD_NUMBER, MERCHANT_NAME, ON_LOYALTY_CARD_CLICK_ACTION
+            LOYALTY_CARD, LOYALTY_CARD_ICON, ON_LOYALTY_CARD_CLICK_ACTION
         };
 
         private LoyaltyCardProperties() {}
@@ -444,25 +444,18 @@ class TouchToFillPaymentMethodProperties {
      * progress screen in the TouchToFill sheet for payments.
      */
     static class BnplSelectionProgressTermsProperties {
-        static final PropertyModel.ReadableIntPropertyKey TERMS_TEXT_ID =
-                new PropertyModel.ReadableIntPropertyKey("terms_text_id");
-        static final PropertyModel.ReadableObjectPropertyKey<String> HIDE_OPTIONS_LINK_TEXT =
-                new PropertyModel.ReadableObjectPropertyKey<>("hide_options_link_text");
-        static final PropertyModel.ReadableObjectPropertyKey<Callback<View>>
-                ON_LINK_CLICK_CALLBACK = new ReadableObjectPropertyKey<>("on_link_click_callback");
-        static final PropertyModel.ReadableBooleanPropertyKey APPLY_LINK_DEACTIVATED_STYLE =
-                new PropertyModel.ReadableBooleanPropertyKey("apply_link_deactivated_style");
-        static final PropertyKey[] ALL_KEYS = {
-            TERMS_TEXT_ID,
-            HIDE_OPTIONS_LINK_TEXT,
-            ON_LINK_CLICK_CALLBACK,
-            APPLY_LINK_DEACTIVATED_STYLE
-        };
+        static final PropertyModel.ReadableObjectPropertyKey<CharSequence> TERMS_TEXT =
+                new PropertyModel.ReadableObjectPropertyKey<>("terms_text");
+        static final PropertyModel.ReadableBooleanPropertyKey TERMS_LINK_ENABLED =
+                new PropertyModel.ReadableBooleanPropertyKey("terms_link_enabled");
+        static final PropertyKey[] ALL_KEYS = {TERMS_TEXT, TERMS_LINK_ENABLED};
 
         private BnplSelectionProgressTermsProperties() {}
     }
 
     /** Properties defined here reflect the visible state of the footer showing legal messages. */
+    // TODO(crbug.com/486199794): Change TosFooterProperties to only contain a CharSequence
+    // PropertyModel.
     static class TosFooterProperties {
         static final PropertyModel.ReadableObjectPropertyKey<List<LegalMessageLine>>
                 LEGAL_MESSAGE_LINES =

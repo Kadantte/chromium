@@ -6,6 +6,8 @@
 #define SERVICES_DEVICE_USB_MOJO_DEVICE_IMPL_H_
 
 #include <stdint.h>
+
+#include <optional>
 #include <vector>
 
 #include "base/containers/flat_set.h"
@@ -22,6 +24,19 @@
 #include "services/device/usb/usb_device_handle.h"
 
 namespace device::usb {
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(WebUsbControlTransferPermissionOutcome)
+enum class WebUsbControlTransferPermissionOutcome {
+  kAllowed = 0,
+  kBlocked = 1,
+  kError_InterfaceNotFound = 2,
+  // Failed because the device is not in a configured state
+  kError_NoConfiguration = 3,
+  kMaxValue = kError_NoConfiguration,
+};
+// LINT.ThenChange(//tools/metrics/histograms/enums.xml)
 
 // Implementation of the public Device interface. Instances of this class are
 // constructed by DeviceManagerImpl and are strongly bound to their MessagePipe
@@ -51,8 +66,20 @@ class DeviceImpl : public mojom::UsbDevice, public device::UsbDevice::Observer {
 
   // Checks interface permissions for control transfers.
   bool HasControlTransferPermission(
+      mojom::UsbTransferDirection direction,
+      mojom::UsbControlTransferType type,
       mojom::UsbControlTransferRecipient recipient,
+      uint8_t request,
       uint16_t index);
+
+  const mojom::UsbInterfaceInfo* FindInterface(
+      const mojom::UsbConfigurationInfo* config,
+      uint8_t interface_number) const;
+  std::optional<uint8_t> FindBlockedClass(
+      const mojom::UsbInterfaceInfo* interface) const;
+  bool HasProtectedInterface(const mojom::UsbConfigurationInfo* config) const;
+  bool AllowAndLog(WebUsbControlTransferPermissionOutcome outcome);
+  bool BlockAndLog(WebUsbControlTransferPermissionOutcome outcome);
 
   // Handles completion of an open request.
   static void OnOpen(base::WeakPtr<DeviceImpl> device,
@@ -107,6 +134,12 @@ class DeviceImpl : public mojom::UsbDevice, public device::UsbDevice::Observer {
   void OnDeviceRemoved(scoped_refptr<device::UsbDevice> device) override;
 
   void OnInterfaceClaimed(ClaimInterfaceCallback callback, bool success);
+  void OnSetInterfaceAlternateSettingComplete(
+      SetInterfaceAlternateSettingCallback callback,
+      bool success);
+  void OnSetConfigurationComplete(SetConfigurationCallback callback,
+                                  bool success);
+  void OnResetComplete(ResetCallback callback, bool success);
   void OnClientConnectionError();
 
   // Reject and report bad mojo messaage if `length` exceeds limit.

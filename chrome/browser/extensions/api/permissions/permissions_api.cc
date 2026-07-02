@@ -65,6 +65,10 @@ constexpr char kExtensionHasNoHostPermissionsForPatternError[] =
     "any of its host permissions.";
 constexpr char kExtensionRequestCannotBeRemovedError[] =
     "Extension cannot remove a host access request that doesn't exist.";
+constexpr char kExtensionRequestRateLimitError[] =
+    "Extension cannot remove a host access request due to rate limiting.";
+constexpr char kExtensionAddRequestRateLimitError[] =
+    "Extension cannot add a host access request due to rate limiting.";
 constexpr char kAddRequestInvalidPatternError[] =
     "Extension cannot add a request with an invalid value for 'pattern'.";
 constexpr char kRemoveRequestInvalidPatternError[] =
@@ -158,8 +162,9 @@ ExtensionFunction::ResponseAction PermissionsContainsFunction::Run() {
               ->AllowFileAccess(extension()->id()),
           &error);
 
-  if (!unpack_result)
+  if (!unpack_result) {
     return RespondNow(Error(std::move(error)));
+  }
 
   const PermissionSet& active_permissions =
       extension()->permissions_data()->active_permissions();
@@ -217,8 +222,9 @@ ExtensionFunction::ResponseAction PermissionsRemoveFunction::Run() {
               ->AllowFileAccess(extension_->id()),
           &error);
 
-  if (!unpack_result)
+  if (!unpack_result) {
     return RespondNow(Error(std::move(error)));
+  }
 
   // We can't remove any permissions that weren't specified in the manifest.
   if (!unpack_result->unlisted_apis.empty() ||
@@ -337,8 +343,9 @@ ExtensionFunction::ResponseAction PermissionsRequestFunction::Run() {
               ->AllowFileAccess(extension_->id()),
           &error);
 
-  if (!unpack_result)
+  if (!unpack_result) {
     return RespondNow(Error(std::move(error)));
+  }
 
   // Don't allow the extension to request any permissions that weren't specified
   // in the manifest.
@@ -469,8 +476,8 @@ ExtensionFunction::ResponseAction PermissionsRequestFunction::Run() {
   install_ui_->ShowDialog(
       base::BindOnce(&PermissionsRequestFunction::OnInstallPromptDone, this),
       extension(), nullptr,
-      std::make_unique<ExtensionInstallPrompt::Prompt>(
-          ExtensionInstallPrompt::PERMISSIONS_PROMPT),
+      std::make_unique<InstallPromptData>(
+          InstallPromptData::PERMISSIONS_PROMPT),
       std::move(total_new_permissions),
       ExtensionInstallPrompt::GetDefaultShowDialogCallback());
 
@@ -511,8 +518,9 @@ void PermissionsRequestFunction::OnInstallPromptDone(
   }
 
   // Grant{Runtime|Optional}Permissions calls above can finish synchronously.
-  if (!did_respond())
+  if (!did_respond()) {
     RespondIfRequestsFinished();
+  }
 }
 
 void PermissionsRequestFunction::OnRuntimePermissionsGranted() {
@@ -526,8 +534,9 @@ void PermissionsRequestFunction::OnOptionalPermissionsGranted() {
 }
 
 void PermissionsRequestFunction::RespondIfRequestsFinished() {
-  if (requesting_withheld_permissions_ || requesting_optional_permissions_)
+  if (requesting_withheld_permissions_ || requesting_optional_permissions_) {
     return;
+  }
 
   Respond(ArgumentList(api::permissions::Request::Results::Create(true)));
 }
@@ -626,8 +635,12 @@ PermissionsAddHostAccessRequestFunction::Run() {
     }
   }
 
-  permissions_manager->AddHostAccessRequest(web_contents, tab_id, *extension(),
-                                            pattern);
+  PermissionsManager::AddRequestResult result =
+      permissions_manager->AddHostAccessRequest(web_contents, tab_id,
+                                                *extension(), pattern);
+  if (result == PermissionsManager::AddRequestResult::kThrottled) {
+    return RespondNow(Error(kExtensionAddRequestRateLimitError));
+  }
   return RespondNow(NoArguments());
 }
 
@@ -688,14 +701,17 @@ PermissionsRemoveHostAccessRequestFunction::Run() {
   DCHECK(web_contents);
   DCHECK_NE(tab_id, -1);
 
-  bool is_removed =
+  PermissionsManager::RemoveRequestResult result =
       PermissionsManager::Get(browser_context())
           ->RemoveHostAccessRequest(tab_id, extension()->id(), pattern);
-  if (!is_removed) {
-    return RespondNow(Error(kExtensionRequestCannotBeRemovedError));
+  switch (result) {
+    case PermissionsManager::RemoveRequestResult::kSuccess:
+      return RespondNow(NoArguments());
+    case PermissionsManager::RemoveRequestResult::kNotFound:
+      return RespondNow(Error(kExtensionRequestCannotBeRemovedError));
+    case PermissionsManager::RemoveRequestResult::kThrottled:
+      return RespondNow(Error(kExtensionRequestRateLimitError));
   }
-
-  return RespondNow(NoArguments());
 }
 
 }  // namespace extensions

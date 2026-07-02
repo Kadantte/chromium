@@ -35,11 +35,6 @@ const CGFloat kSymbolToolbarPointSize = 24;
 // the white space on top.
 const CGFloat kShareIconBalancingHeightPadding = 1;
 
-/// The size for the close button.
-const CGFloat kCloseButtonSize = 30.0f;
-/// The alpha for the close button.
-const CGFloat kCloseButtonAlpha = 0.6f;
-
 }  // namespace
 
 @implementation LegacyToolbarButtonFactory
@@ -117,6 +112,9 @@ const CGFloat kCloseButtonAlpha = 0.6f;
 
   tabGridButton.accessibilityHint =
       l10n_util::GetNSString(IDS_IOS_TOOLBAR_ACCESSIBILITY_HINT_TAB_GRID);
+  tabGridButton.blueDotAccessibilityLabel =
+      l10n_util::GetNSString(IDS_IOS_TAB_GROUP_NEW_ACTIVITY_LABEL_TEXT);
+
   [self configureButton:tabGridButton width:kAdaptiveToolbarButtonWidth];
   [tabGridButton addTarget:self.actionHandler
                     action:@selector(tabGridTouchDown)
@@ -148,7 +146,8 @@ const CGFloat kCloseButtonAlpha = 0.6f;
 
   SetA11yLabelAndUiAutomationName(toolsMenuButton, IDS_IOS_TOOLBAR_SETTINGS,
                                   kLegacyToolbarToolsMenuButtonIdentifier);
-
+  toolsMenuButton.blueDotAccessibilityLabel =
+      l10n_util::GetNSString(IDS_IOS_NEW_ITEM_ACCESSIBILITY_HINT);
   [self configureButton:toolsMenuButton width:kAdaptiveToolbarButtonWidth];
   [toolsMenuButton.heightAnchor
       constraintEqualToConstant:kAdaptiveToolbarButtonWidth]
@@ -285,10 +284,6 @@ const CGFloat kCloseButtonAlpha = 0.6f;
 }
 
 - (UIButton*)cancelButton {
-  return [self cancelButtonWithStyle:ToolbarCancelButtonStyle::kCancelLabel];
-}
-
-- (UIButton*)cancelButtonWithStyle:(ToolbarCancelButtonStyle)style {
   UIButton* cancelButton = [UIButton buttonWithType:UIButtonTypeSystem];
   cancelButton.tintColor = [UIColor colorNamed:kBlueColor];
   [cancelButton setContentHuggingPriority:UILayoutPriorityRequired
@@ -297,35 +292,18 @@ const CGFloat kCloseButtonAlpha = 0.6f;
       setContentCompressionResistancePriority:UILayoutPriorityRequired
                                       forAxis:UILayoutConstraintAxisHorizontal];
 
-  if (style == ToolbarCancelButtonStyle::kXCircle) {
-    UIImageSymbolConfiguration* symbolConfiguration =
-        [UIImageSymbolConfiguration
-            configurationWithPointSize:kCloseButtonSize
-                                weight:UIImageSymbolWeightRegular
-                                 scale:UIImageSymbolScaleMedium];
-    UIImage* buttonImage =
-        SymbolWithPalette(DefaultSymbolWithConfiguration(kXMarkCircleFillSymbol,
-                                                         symbolConfiguration),
-                          @[
-                            [[UIColor tertiaryLabelColor]
-                                colorWithAlphaComponent:kCloseButtonAlpha],
-                            [UIColor tertiarySystemFillColor]
-                          ]);
-    [cancelButton setImage:buttonImage forState:UIControlStateNormal];
-  } else {
-    UIButtonConfiguration* buttonConfiguration =
-        [UIButtonConfiguration plainButtonConfiguration];
-    buttonConfiguration.contentInsets = NSDirectionalEdgeInsetsMake(
-        0, kCancelButtonHorizontalInset, 0, kCancelButtonHorizontalInset);
-    UIFont* font = [UIFont systemFontOfSize:kLocationBarFontSize];
-    NSDictionary* attributes = @{NSFontAttributeName : font};
-    NSMutableAttributedString* attributedString =
-        [[NSMutableAttributedString alloc]
-            initWithString:l10n_util::GetNSString(IDS_CANCEL)
-                attributes:attributes];
-    buttonConfiguration.attributedTitle = attributedString;
-    cancelButton.configuration = buttonConfiguration;
-  }
+  UIButtonConfiguration* buttonConfiguration =
+      [UIButtonConfiguration plainButtonConfiguration];
+  buttonConfiguration.contentInsets = NSDirectionalEdgeInsetsMake(
+      0, kCancelButtonHorizontalInset, 0, kCancelButtonHorizontalInset);
+  UIFont* font = [UIFont systemFontOfSize:kLocationBarFontSize];
+  NSDictionary* attributes = @{NSFontAttributeName : font};
+  NSMutableAttributedString* attributedString =
+      [[NSMutableAttributedString alloc]
+          initWithString:l10n_util::GetNSString(IDS_CANCEL)
+              attributes:attributes];
+  buttonConfiguration.attributedTitle = attributedString;
+  cancelButton.configuration = buttonConfiguration;
 
   cancelButton.hidden = YES;
   [cancelButton addTarget:self.actionHandler
@@ -351,9 +329,7 @@ const CGFloat kCloseButtonAlpha = 0.6f;
   button.toolbarConfiguration = self.toolbarConfiguration;
   button.exclusiveTouch = YES;
   button.pointerInteractionEnabled = YES;
-  if (IsGeminiCopresenceEnabled()) {
-    button.geminiHandler = self.geminiHandler;
-  }
+  button.geminiHandler = self.geminiHandler;
   if (ios::provider::IsRaccoonEnabled()) {
     button.hoverStyle = [UIHoverStyle
         styleWithShape:[UIShape rectShapeWithCornerRadius:width / 4]];

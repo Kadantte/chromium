@@ -11,6 +11,7 @@
 #include "components/contextual_search/contextual_search_session_entry.h"
 #include "components/contextual_search/internal/composebox_query_controller.h"
 #include "components/contextual_search/pref_names.h"
+#include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
@@ -40,8 +41,10 @@ ContextualSearchService::ContextualSearchService(
     TemplateURLService* template_url_service,
     variations::VariationsClient* variations_client,
     version_info::Channel channel,
-    const std::string& locale)
-    : identity_manager_(identity_manager),
+    const std::string& locale,
+    std::unique_ptr<ContextualSearchSessionHandle::TabValidator> tab_validator)
+    : tab_validator_(std::move(tab_validator)),
+      identity_manager_(identity_manager),
       url_loader_factory_(std::move(url_loader_factory)),
       template_url_service_(template_url_service),
       variations_client_(variations_client),
@@ -54,6 +57,9 @@ void ContextualSearchService::Shutdown() {
   // The IdentityManager may be destroyed before this service, so clear the
   // pointer to avoid dangling pointer issues.
   identity_manager_ = nullptr;
+  // Destroy sessions now to invalidate the WeakPtrs held by pending
+  // callbacks (e.g. the cluster-info reset timer in ComposeboxQueryController).
+  sessions_.clear();
 }
 
 // static
@@ -62,6 +68,8 @@ void ContextualSearchService::RegisterProfilePrefs(
   registry->RegisterIntegerPref(
       kSearchContentSharingSettings,
       static_cast<int>(kSearchContentSharingAllowedDefault));
+  registry->RegisterIntegerPref(
+      kDriveConsentState, 0, user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
 }
 
 // static
@@ -142,6 +150,11 @@ ContextualSearchService::GetSessionMetricsRecorder(
     return it->second.metrics_recorder_.get();
   }
   return nullptr;
+}
+
+ContextualSearchSessionHandle::TabValidator*
+ContextualSearchService::GetTabValidator() const {
+  return tab_validator_.get();
 }
 
 void ContextualSearchService::ReleaseSession(

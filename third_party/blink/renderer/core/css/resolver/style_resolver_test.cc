@@ -42,6 +42,7 @@
 #include "third_party/blink/renderer/core/html/html_style_element.h"
 #include "third_party/blink/renderer/core/layout/anchor_evaluator_impl.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
+#include "third_party/blink/renderer/core/page/focus_controller.h"
 #include "third_party/blink/renderer/core/style/anchor_specifier_value.h"
 #include "third_party/blink/renderer/core/style/computed_style_constants.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
@@ -366,6 +367,36 @@ TEST_F(StyleResolverTest, AnimationMaskedByImportant) {
   EXPECT_FALSE(StyleResolver::CanReuseBaseComputedStyle(state));
 }
 
+TEST_F(StyleResolverTest, AnimationWithRevertRuleVoidsBase) {
+  GetDocument().documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      div {
+        height: 10px;
+      }
+    </style>
+    <div id=div></div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+  Element* div = GetDocument().getElementById(AtomicString("div"));
+
+  auto* effect = CreateSimpleKeyframeEffectForTest(div, CSSPropertyID::kHeight,
+                                                   "revert-rule", "100px");
+  GetDocument().Timeline().Play(effect);
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_EQ("10px", ComputedValue("height", *StyleForId("div")));
+
+  div->SetNeedsAnimationStyleRecalc();
+  GetDocument().Lifecycle().AdvanceTo(DocumentLifecycle::kInStyleRecalc);
+  const ComputedStyle* style = StyleForId("div");
+  ASSERT_TRUE(style);
+  EXPECT_TRUE(style->GetBaseComputedStyle());
+
+  StyleResolverState state(GetDocument(), *div);
+  // We cannot use the base style due to a revert-rule-dependent animation.
+  EXPECT_FALSE(StyleResolver::CanReuseBaseComputedStyle(state));
+}
+
 TEST_F(StyleResolverTest,
        TransitionRetargetRelativeFontSizeOnParentlessElement) {
   GetDocument().documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
@@ -642,8 +673,13 @@ TEST_F(StyleResolverTest, BackgroundImageFetch) {
       << "Fetch for display:contents";
   EXPECT_FALSE(GetBackgroundImageValue(inside_contents).IsCachePending())
       << "Fetch for image inherited from display:contents";
-  EXPECT_TRUE(GetBackgroundImageValue(non_slotted).IsCachePending())
-      << "No fetch for element outside the flat tree";
+
+  if (RuntimeEnabledFeatures::GetComputedStyleOutsideFlatTreeEnabled()) {
+    EXPECT_TRUE(GetBackgroundImageValue(non_slotted).IsCachePending())
+        << "No fetch for element outside the flat tree";
+  } else {
+    ASSERT_EQ(non_slotted->GetComputedStyle(), nullptr);
+  }
 
   // Added two frameset elements to hit the MatchedPropertiesCache for the
   // second one. Frameset adjusts style to display:block in StyleAdjuster, but
@@ -698,10 +734,13 @@ TEST_F(StyleResolverTest, SingleAxisAdjustOverflow) {
     run_test("visible", EOverflow::kAuto, EOverflow::kScroll);
   }
 
+  // The MPC is not automatically reset when we manually flip a feature flag.
+  GetDocument().GetStyleResolver().InvalidateMatchedPropertiesCache();
+
   {
     ScopedSingleAxisScrollContainersForTest single_axis_feature(true);
     run_test("clip", EOverflow::kClip, EOverflow::kScroll);
-    run_test("visible", EOverflow::kVisible, EOverflow::kScroll);
+    run_test("visible", EOverflow::kAuto, EOverflow::kScroll);
   }
 }
 
@@ -1141,6 +1180,8 @@ TEST_F(StyleResolverTestCQ, CascadedValuesForPseudoElementInContainer) {
 }
 
 TEST_F(StyleResolverTest, EnsureComputedStyleSlotFallback) {
+  ScopedGetComputedStyleOutsideFlatTreeForTest scoped_feature(true);
+
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <div id="host"><span></span></div>
   )HTML");
@@ -1173,6 +1214,8 @@ TEST_F(StyleResolverTest, EnsureComputedStyleSlotFallback) {
 }
 
 TEST_F(StyleResolverTest, EnsureComputedStyleOutsideFlatTree) {
+  ScopedGetComputedStyleOutsideFlatTreeForTest scoped_feature(true);
+
   GetDocument().documentElement()->SetHTMLUnsafeWithoutTrustedTypes(R"HTML(
     <div id=host>
       <template shadowrootmode=open>
@@ -2301,17 +2344,29 @@ TEST_F(StyleResolverTest, AnchorQueriesMPC) {
         width: 100px;
         height: 100px;
       }
-      #anchor1 { left: 100px; }
-      #anchor2 { left: 150px; }
+      #anchor1 {
+        anchor-name: --anchor1;
+        left: 100px;
+      }
+      #anchor2 {
+        anchor-name: --anchor2;
+        left: 150px;
+      }
       .anchored {
         position: absolute;
         left: anchor(left);
       }
+      #a {
+        position-anchor: --anchor1;
+      }
+      #b {
+        position-anchor: --anchor2;
+      }
     </style>
     <div class=anchor id=anchor1>X</div>
     <div class=anchor id=anchor2>Y</div>
-    <div class=anchored id=a anchor=anchor1>A</div>
-    <div class=anchored id=b anchor=anchor2>B</div>
+    <div class=anchored id=a>A</div>
+    <div class=anchored id=b>B</div>
   )HTML");
 
   UpdateAllLifecyclePhasesForTest();
@@ -3220,8 +3275,6 @@ TEST_F(StyleResolverTestCQ, StyleRulesForElementContainerQuery) {
 }
 
 TEST_F(StyleResolverTest, StyleRulesForSVGUseInstanceElement) {
-  ScopedSvg2CascadeForTest enabled(true);
-
   SetBodyInnerHTML(R"HTML(
       <style>
         rect { fill: green; }
@@ -4132,6 +4185,30 @@ TEST_F(StyleResolverTest,
   // "target" ancestor node requires re-computing the base style for the
   // pseudo-element and skip the optimization for animation style change.
   UpdateAllLifecyclePhasesForTest();
+}
+
+TEST_F(StyleResolverTest, CustomScrollbarStyleAfterInitialStyleInvalidation) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      ::-webkit-scrollbar { width: 12px; }
+      ::-webkit-scrollbar-thumb { background: #888; }
+      ::-webkit-scrollbar-thumb:window-inactive { background: #ccc; }
+      body { height: 200vh; overflow: scroll; }
+    </style>
+    <div>content</div>
+  )HTML");
+
+  UpdateAllLifecyclePhasesForTest();
+
+  // Invalidate the initial style (simulates what happens during a zoom or
+  // settings change).
+  GetDocument().GetStyleEngine().InvalidateInitialStyle();
+
+  // Trigger a window active state change, which forces custom scrollbars
+  // to be invalidated and then re-resolved.
+  // This should not crash.
+  GetPage().GetFocusController().SetActive(false);
+  GetPage().GetFocusController().SetActive(true);
 }
 
 TEST_F(StyleResolverTestCQ, ContainerUnitContext) {

@@ -25,6 +25,7 @@ class AccountSelectionViewAndroid : public AccountSelectionView {
   ~AccountSelectionViewAndroid() override;
 
   // AccountSelectionView:
+  void OnPageActionClicked() override;
   bool Show(
       const content::RelyingPartyData& rp_data,
       const std::vector<IdentityProviderDataPtr>& idp_list,
@@ -56,10 +57,14 @@ class AccountSelectionViewAndroid : public AccountSelectionView {
   std::string GetTitle() const override;
   std::optional<std::string> GetSubtitle() const override;
   void ShowUrl(LinkType link_type, const GURL& url) override;
-  content::WebContents* ShowModalDialog(const GURL& url,
-                                        blink::mojom::RpMode rp_mode) override;
+  content::WebContents* ShowModalDialog(
+      const GURL& url,
+      blink::mojom::RpMode rp_mode,
+      content::IdentityRequestDialogController::ShownModalAsyncCallback
+          on_shown_async) override;
   void CloseModalDialog() override;
   content::WebContents* GetRpWebContents() override;
+  void SetCanShowUi(bool can_show_ui) override;
 
   void OnAccountSelected(JNIEnv* env,
                          const GURL& idp_config_url,
@@ -77,6 +82,8 @@ class AccountSelectionViewAndroid : public AccountSelectionView {
   // successfully or false if the creation failed.
   bool MaybeCreateJavaObject(std::optional<blink::mojom::RpMode> rp_mode);
 
+  // Applies to both active mode (modal) and passive mode (widget/bottom sheet).
+  bool can_show_ui_ = true;
   base::android::ScopedJavaGlobalRef<jobject> java_object_internal_;
 };
 

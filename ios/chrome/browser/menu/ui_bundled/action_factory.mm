@@ -10,13 +10,12 @@
 #import "base/strings/sys_string_conversions.h"
 #import "ios/chrome/browser/menu/ui_bundled/menu_action_type.h"
 #import "ios/chrome/browser/net/model/crurl.h"
-#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
-#import "ios/chrome/browser/saved_tab_groups/ui/tab_group_utils.h"
 #import "ios/chrome/browser/shared/model/web_state_list/tab_group.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
+#import "ios/chrome/browser/shared/ui/util/color_palette/tab_group_color_palette.h"
 #import "ios/chrome/browser/shared/ui/util/pasteboard_util.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
@@ -165,14 +164,12 @@ constexpr CGFloat kEmojiCanvasPaddingRatio = 1.3;
 - (UIAction*)actionToRemoveWithBlock:(ProceduralBlock)block {
   UIImage* image =
       DefaultSymbolWithPointSize(kHideActionSymbol, kSymbolActionPointSize);
-  UIAction* action = [self
-      actionWithTitle:l10n_util::GetNSString(
-                          IsContentSuggestionsCustomizable()
-                              ? IDS_IOS_CONTENT_SUGGESTIONS_NEVER_SHOW_SITE
-                              : IDS_IOS_REMOVE_ACTION_TITLE)
-                image:image
-                 type:MenuActionType::Remove
-                block:block];
+  UIAction* action =
+      [self actionWithTitle:l10n_util::GetNSString(
+                                IDS_IOS_CONTENT_SUGGESTIONS_NEVER_SHOW_SITE)
+                      image:image
+                       type:MenuActionType::Remove
+                      block:block];
   action.attributes = UIMenuElementAttributesDestructive;
   return action;
 }
@@ -347,16 +344,12 @@ constexpr CGFloat kEmojiCanvasPaddingRatio = 1.3;
 - (UIAction*)actionToCloseAllTabsWithBlock:(ProceduralBlock)block {
   UIImage* image =
       DefaultSymbolWithPointSize(kXMarkSymbol, kSymbolActionPointSize);
-  int titleID;
-  if (base::FeatureList::IsEnabled(kTabSwitcherOverflowMenu)) {
-    titleID = IDS_IOS_TAB_SWITCHER_CLOSE_ALL_ACTION_BUTTON;
-  } else {
-    titleID = IDS_IOS_CONTENT_CONTEXT_CLOSEALLTABSANDGROUPS;
-  }
-  UIAction* action = [self actionWithTitle:l10n_util::GetNSString(titleID)
-                                     image:image
-                                      type:MenuActionType::CloseAllTabs
-                                     block:block];
+  UIAction* action =
+      [self actionWithTitle:l10n_util::GetNSString(
+                                IDS_IOS_CONTENT_CONTEXT_CLOSEALLTABSANDGROUPS)
+                      image:image
+                       type:MenuActionType::CloseAllTabs
+                      block:block];
   action.attributes = UIMenuElementAttributesDestructive;
   return action;
 }
@@ -562,12 +555,11 @@ constexpr CGFloat kEmojiCanvasPaddingRatio = 1.3;
 - (UIAction*)actionToRenameTabGroupWithBlock:(ProceduralBlock)block {
   UIImage* image =
       DefaultSymbolWithPointSize(kEditActionSymbol, kSymbolActionPointSize);
-  UIAction* action =
-      [self actionWithTitle:l10n_util::GetNSString(
-                                IDS_IOS_CONTENT_CONTEXT_RENAMEGROUP)
-                      image:image
-                       type:MenuActionType::RenameTabGroup
-                      block:block];
+  UIAction* action = [self
+      actionWithTitle:l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_EDITGROUP)
+                image:image
+                 type:MenuActionType::RenameTabGroup
+                block:block];
   return action;
 }
 
@@ -728,13 +720,13 @@ constexpr CGFloat kEmojiCanvasPaddingRatio = 1.3;
       }
     };
 
-    UIAction* groupAction = [self
-        actionWithTitle:title
-                  image:[circleImage imageWithTintColor:
-                                         tab_groups::ColorForTabGroupColorId(
-                                             group->GetColor())]
-                   type:MenuActionType::MoveTabToExistingGroup
-                  block:actionBlock];
+    UIColor* imageColor = [TabGroupColorPalette commonColor:group->GetColor()];
+
+    UIAction* groupAction =
+        [self actionWithTitle:title
+                        image:[circleImage imageWithTintColor:imageColor]
+                         type:MenuActionType::MoveTabToExistingGroup
+                        block:actionBlock];
 
     if (group == currentGroup) {
       groupAction.state = UIMenuElementStateOn;
@@ -808,17 +800,6 @@ constexpr CGFloat kEmojiCanvasPaddingRatio = 1.3;
   return [self actionWithTitle:l10n_util::GetNSString(IDS_IOS_DRIVE_ADD_ACCOUNT)
                          image:nil
                           type:MenuActionType::AddDriveAccount
-                         block:block];
-}
-
-- (UIAction*)actionToManageLinkInNewTabWithBlock:(ProceduralBlock)block {
-  UIImage* image =
-      DefaultSymbolWithPointSize(kExternalLinkSymbol, kSymbolActionPointSize);
-
-  return [self actionWithTitle:l10n_util::GetNSString(
-                                   IDS_IOS_CONTENT_CONTEXT_OPENMANAGEINNEWTAB)
-                         image:image
-                          type:MenuActionType::ManageInNewTab
                          block:block];
 }
 
@@ -899,6 +880,17 @@ constexpr CGFloat kEmojiCanvasPaddingRatio = 1.3;
                          image:image
                           type:MenuActionType::EditPinnedSite
                          block:block];
+}
+
+- (UIAction*)actionToSendTabToSelfWithBlock:(ProceduralBlock)block {
+  UIImage* image =
+      CustomSymbolWithPointSize(kRecentTabsSymbol, kSymbolActionPointSize);
+  return
+      [self actionWithTitle:l10n_util::GetNSString(
+                                IDS_IOS_SEND_TAB_TO_SELF_TARGET_DEVICE_ACTION)
+                      image:image
+                       type:MenuActionType::SendTabToSelf
+                      block:block];
 }
 
 @end

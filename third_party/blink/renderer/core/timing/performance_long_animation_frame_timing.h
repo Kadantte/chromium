@@ -28,7 +28,7 @@ class PerformanceLongAnimationFrameTiming final : public PerformanceEntry {
       bool cross_origin_isolated_capability,
       DOMWindow*,
       const std::optional<DOMPaintTimingInfo>&,
-      uint32_t navigation_id);
+      uint64_t navigation_id);
   ~PerformanceLongAnimationFrameTiming() override;
 
   PerformanceLongAnimationFrameTiming(double duration,
@@ -37,7 +37,7 @@ class PerformanceLongAnimationFrameTiming final : public PerformanceEntry {
                                       base::TimeTicks time_origin,
                                       bool cross_origin_isolated_capability,
                                       DOMWindow*,
-                                      uint32_t navigation_id);
+                                      uint64_t navigation_id);
 
   const AtomicString& entryType() const override;
   PerformanceEntryType EntryTypeEnum() const override;
@@ -51,6 +51,7 @@ class PerformanceLongAnimationFrameTiming final : public PerformanceEntry {
   }
   DOMHighResTimeStamp blockingDuration() const { return blocking_duration_; }
   DOMHighResTimeStamp styleDuration() const { return style_duration_; }
+  DOMHighResTimeStamp layoutDuration() const { return layout_duration_; }
 
   const PerformanceScriptVector& scripts() const { return scripts_; }
 
@@ -60,8 +61,9 @@ class PerformanceLongAnimationFrameTiming final : public PerformanceEntry {
   DOMHighResTimeStamp render_start_;
   DOMHighResTimeStamp style_and_layout_start_;
   DOMHighResTimeStamp first_ui_event_timestamp_;
-  double blocking_duration_;
-  double style_duration_;
+  DOMHighResTimeStamp blocking_duration_;
+  DOMHighResTimeStamp style_duration_;
+  DOMHighResTimeStamp layout_duration_;
   PerformanceScriptVector scripts_;
 };
 

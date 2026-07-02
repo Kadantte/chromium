@@ -175,16 +175,17 @@ cr-most-visited {
   }
 }
 
-:host([show-composebox_]) #content {
+:host([show-composebox_]) #content,
+:host([show-voice-search-scrim_]) #content {
   z-index: unset;
 }
 
 #logo {
-  margin-bottom: 38px;
-  z-index: 1; /* Needed so it layers on top of OneGoogleBar. */
+  margin-bottom: var(--ntp-logo-margin-bottom, 38px);
 }
 
 :host([show-composebox_]) #logo,
+:host([show-voice-search-scrim_]) #logo,
 :host([ntp-realbox-next-enabled_][show-scrim_]) #logo {
   z-index: 2;
 }
@@ -203,10 +204,6 @@ cr-most-visited {
   animation: 300ms ease-in-out fade-in-animation;
 }
 
-:host([reduced-motion-preferred_]) #modules {
-  animation: none;
-}
-
 @keyframes fade-in-animation {
   0% {
     opacity: 0;
@@ -220,11 +217,11 @@ ntp-middle-slot-promo {
   max-width: var(--ntp-search-box-width);
 }
 
-cr-searchbox {
+ntp-searchbox {
   visibility: hidden;
 }
 
-cr-searchbox[shown] {
+ntp-searchbox[shown] {
   visibility: visible;
 }
 
@@ -321,13 +318,36 @@ svg {
   position: fixed;
 }
 
-cr-composebox {
-  --cr-composebox-width: var(--ntp-search-box-width);
+:host([energy-effect-enabled_]) #composebox {
+  --cr-composebox-expanded-border-radius: 28px;
+}
+
+#composebox {
+  --color-composebox-submit-button-background: var(
+    --color-new-tab-page-composebox-submit-button-background);
+
   --cr-composebox-background-color: var(--color-composebox-background);
+  --cr-composebox-submit-border-radius: 100px;
+  --cr-composebox-submit-height: 36px;
+  --cr-composebox-submit-icon-size: 24px;
+  --cr-composebox-submit-icon-offset: 0;
+  --cr-composebox-submit-width: 48px;
+  --cr-composebox-width: var(--ntp-search-box-width);
+
   --text-input-inline-end-spacing: 90px;
 }
 
-cr-composebox,
+#composebox::part(cancel-icon) {
+  inset-inline-end: 16px;
+}
+
+/* Adjust voice-icon to maintain 12px gap from cancel-icon (which is 24px wide
+   with inset-inline-end of 16px). 16px + 24px + 12px = 52px). */
+#composebox::part(voice-icon) {
+  inset-inline-end: 52px;
+}
+
+#composebox,
 ntp-lens-upload-dialog {
   left: 0;
   position: absolute;
@@ -343,10 +363,6 @@ ntp-lens-upload-dialog {
   position: fixed;
   transition: all 250ms ease;
   z-index: 1;
-}
-
-:host([reduced-motion-preferred_]) #scrim {
-  transition: none;
 }
 
 #webstoreToast {
@@ -385,4 +401,76 @@ ntp-lens-upload-dialog {
 
 #undoToast {
   flex-grow: 1;
+}
+
+@container style(--cr-animations-disabled: 1) {
+  #modules:not([hidden]) {
+    animation: none;
+  }
+  #scrim {
+    transition: none;
+  }
+}
+
+#voiceSearchDialog {
+  --color-composebox-submit-button-background: var(
+      --color-new-tab-page-composebox-submit-button-background);
+  --color-composebox-submit-button-icon: white;
+  --cr-composebox-submit-border-radius: 100px;
+  --cr-composebox-submit-height: 36px;
+  --cr-composebox-submit-icon-offset: 0;
+  --cr-composebox-submit-icon-size: 24px;
+  --cr-composebox-submit-width: 48px;
+  background: var(--color-composebox-background);
+  border: none;
+  border-radius: 28px;
+  box-shadow: 2px 10px 18px -5px rgb(0, 0, 0, 0.1);
+  height: 128px;
+  inset-inline-start: anchor(start);
+  margin: 0;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  position-anchor: --dialog-anchor;
+  top: anchor(top);
+  width: var(--ntp-search-box-width);
+}
+
+/* Disable default scrim and use custom scrim instead. */
+#voiceSearchDialog::backdrop {
+  display: none;
+}
+
+#voiceSearchCardContainer {
+  height: 100%;
+  position: relative;
+  width: 100%;
+}
+
+#voiceSearch {
+  height: 100%;
+  width: 100%;
+  --composebox-voice-search-top-padding: 9px;
+  --composebox-cancel-button-top: 10px;
+  --voice-bottom-actions-bottom: 12px;
+  --voice-bottom-actions-inset-inline-end: 12px;
+  /* Minimum height used for error modes, etc., where 'composebox_voice_search'
+   * determines the composebox height. In normal voice search mode, 'search-animated-glow'
+   * determines the composebox height and min-height is ignored.
+   */
+  --voice-search-minimum-height: 121px;
+}
+
+#voiceSearch::part(voice-stop-button) {
+  position: relative;
+}
+
+#voiceSearch::part(submit) {
+  position: relative;
+}
+
+#voiceSearchGlow {
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
 }

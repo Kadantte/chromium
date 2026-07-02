@@ -6,9 +6,13 @@
 
 #include "base/check_deref.h"
 #include "base/no_destructor.h"
+#include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/test_future.h"
+#include "chrome/browser/glic/host/glic_cookie_synchronizer.h"
+#include "chrome/browser/glic/public/features.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/account_reconcilor_factory.h"
 #include "chrome/browser/signin/bound_session_credentials/bound_session_cookie_refresh_service.h"
 #include "chrome/browser/signin/bound_session_credentials/bound_session_cookie_refresh_service_factory.h"
@@ -23,10 +27,14 @@
 #include "components/signin/core/browser/test_account_reconcilor_observer.h"
 #include "components/signin/public/base/session_binding_test_utils.h"
 #include "components/signin/public/base/signin_switches.h"
+#include "components/signin/public/identity_manager/accounts_cookie_mutator.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "components/signin/public/identity_manager/set_accounts_in_cookie_result.h"
 #include "components/signin/public/identity_manager/test_identity_manager_observer.h"
 #include "components/unexportable_keys/unexportable_key_service.h"
+#include "content/public/browser/storage_partition.h"
+#include "content/public/browser/storage_partition_config.h"
 #include "content/public/test/browser_test.h"
 #include "crypto/scoped_fake_unexportable_key_provider.h"
 #include "google_apis/gaia/bound_oauth_token.pb.h"
@@ -51,6 +59,7 @@ using ::testing::Pointee;
 using ::testing::SizeIs;
 using ::testing::UnorderedElementsAre;
 using ::testing::Values;
+using ::unexportable_keys::UnexportableSigningKeyId;
 
 constexpr crypto::SignatureVerifier::SignatureAlgorithm
     kAcceptableAlgorithms[] = {crypto::SignatureVerifier::ECDSA_SHA256};
@@ -84,20 +93,22 @@ const std::vector<base::test::FeatureRef>& GetStandardFeatures() {
 
 net::device_bound_sessions::SessionParams CreateTestSessionParams() {
   GURL url("https://google.com/");
-  net::device_bound_sessions::SessionParams::Scope scope;
-  scope.include_site = true;
-  scope.origin = url::Origin::Create(url).Serialize();
-  net::device_bound_sessions::SessionParams params(
-      /*id=*/"sidts_session", url,
-      /*refresh_url=*/"/RotateBoundCookies", std::move(scope),
-      /*creds=*/
-      {net::device_bound_sessions::SessionParams::Credential{
+  return {
+      .session_id = "sidts_session",
+      .fetcher_url = url,
+      .refresh_url = "/RotateBoundCookies",
+      .scope =
+          {
+              .include_site = true,
+              .origin = url::Origin::Create(url).Serialize(),
+          },
+      .credentials = {{
           .name = "__Secure-1PSIDTS",
           .attributes = "Secure; HttpOnly; Domain=.google.com; "
-                        "Path=/; SameSite=None"}},
-      unexportable_keys::UnexportableKeyId(),
-      /*allowed_refresh_initiators=*/{"*"});
-  return params;
+                        "Path=/; SameSite=None",
+      }},
+      .allowed_refresh_initiators = {"*"},
+  };
 }
 
 class DeviceBoundSessionAccessObserver
@@ -172,7 +183,12 @@ class BoundSessionOAuthMultiloginBaseTest
       const std::vector<base::test::FeatureRef>& disabled_features) {
     std::vector<base::test::FeatureRef> all_enabled_features = enabled_features;
     all_enabled_features.push_back(switches::kEnableChromeRefreshTokenBinding);
-    feature_list_.InitWithFeatures(all_enabled_features, disabled_features);
+    std::vector<base::test::FeatureRef> all_disabled_features =
+        disabled_features;
+    // Disable automatic syncing of cookies to the glic partition, which breaks
+    // some assertions in this test suite.
+    all_disabled_features.push_back(features::kGlicCookieSyncOnTokenChange);
+    feature_list_.InitWithFeatures(all_enabled_features, all_disabled_features);
   }
 
   ~BoundSessionOAuthMultiloginBaseTest() override = default;
@@ -228,15 +244,13 @@ class BoundSessionOAuthMultiloginBaseTest
         .SetBoundSessionParamsUpdatedCallbackForTesting(std::move(callback));
   }
 
-  unexportable_keys::UnexportableKeyId GenerateNewKey() {
+  UnexportableSigningKeyId GenerateNewSigningKey() {
     base::test::TestFuture<
-        unexportable_keys::ServiceErrorOr<unexportable_keys::UnexportableKeyId>>
+        unexportable_keys::ServiceErrorOr<UnexportableSigningKeyId>>
         future;
     unexportable_key_service().GenerateSigningKeySlowlyAsync(
         kAcceptableAlgorithms, kTaskPriority, future.GetCallback());
-    const unexportable_keys::ServiceErrorOr<
-        unexportable_keys::UnexportableKeyId>
-        key_id = future.Get();
+    const auto key_id = future.Get();
     CHECK(key_id.has_value());
     return *key_id;
   }
@@ -245,7 +259,7 @@ class BoundSessionOAuthMultiloginBaseTest
       std::optional<unexportable_keys::UnexportableKeyId> key_id =
           std::nullopt) {
     if (!key_id.has_value()) {
-      key_id = GenerateNewKey();
+      key_id = GenerateNewSigningKey();
     }
     const unexportable_keys::ServiceErrorOr<std::vector<uint8_t>> wrapped_key =
         unexportable_key_service().GetWrappedKey(*key_id);
@@ -292,19 +306,21 @@ IN_PROC_BROWSER_TEST_F(BoundSessionOAuthMultiloginPrototypeTest,
                        ReuseExistingSession) {
   base::HistogramTester histogram_tester;
 
-  const unexportable_keys::UnexportableKeyId key_id = GenerateNewKey();
+  const UnexportableSigningKeyId key_id = GenerateNewSigningKey();
   const std::vector<uint8_t> wrapped_key = GetWrappedKey(key_id);
 
   const std::string email_1 = "user1@gmail.com";
   const GaiaId::Literal fake_gaia_id_1("fake-gaia-id-1");
   const std::string refresh_token_1 = "refresh-token-1";
   const CoreAccountInfo account_info_1 = signin::MakeAccountAvailable(
-      &identity_manager(), signin::AccountAvailabilityOptionsBuilder()
-                               .AsPrimary(signin::ConsentLevel::kSignin)
-                               .WithGaiaId(fake_gaia_id_1)
-                               .WithRefreshToken(refresh_token_1)
-                               .WithRefreshTokenBindingKey(wrapped_key)
-                               .Build(email_1));
+      &identity_manager(),
+      signin::AccountAvailabilityOptionsBuilder()
+          .AsPrimary(signin::ConsentLevel::kSignin)
+          .WithGaiaId(fake_gaia_id_1)
+          .WithRefreshToken(refresh_token_1)
+          .WithRefreshTokenBindingInfo(signin::TokenBindingInfo(
+              wrapped_key, /*mtls_token_binding=*/false))
+          .Build(email_1));
   ASSERT_EQ(
       identity_manager().GetPrimaryAccountInfo(signin::ConsentLevel::kSignin),
       account_info_1);
@@ -315,11 +331,13 @@ IN_PROC_BROWSER_TEST_F(BoundSessionOAuthMultiloginPrototypeTest,
   const GaiaId::Literal fake_gaia_id_2("fake-gaia-id-2");
   const std::string refresh_token_2 = "refresh-token-2";
   const CoreAccountInfo account_info_2 = signin::MakeAccountAvailable(
-      &identity_manager(), signin::AccountAvailabilityOptionsBuilder()
-                               .WithGaiaId(fake_gaia_id_2)
-                               .WithRefreshToken(refresh_token_2)
-                               .WithRefreshTokenBindingKey(wrapped_key)
-                               .Build(email_2));
+      &identity_manager(),
+      signin::AccountAvailabilityOptionsBuilder()
+          .WithGaiaId(fake_gaia_id_2)
+          .WithRefreshToken(refresh_token_2)
+          .WithRefreshTokenBindingInfo(signin::TokenBindingInfo(
+              wrapped_key, /*mtls_token_binding=*/false))
+          .Build(email_2));
   ASSERT_TRUE(identity_manager().HasAccountWithBoundRefreshToken(
       account_info_2.account_id));
 
@@ -399,7 +417,7 @@ class BoundSessionOAuthMultiloginPrototypeNewSessionTest
 
 IN_PROC_BROWSER_TEST_P(BoundSessionOAuthMultiloginPrototypeNewSessionTest,
                        StartsNewBoundSession) {
-  const unexportable_keys::UnexportableKeyId key_id = GenerateNewKey();
+  const UnexportableSigningKeyId key_id = GenerateNewSigningKey();
   const std::vector<uint8_t> wrapped_key = GetWrappedKey(key_id);
   signin::MakeAccountAvailable(
       &identity_manager(),
@@ -407,7 +425,8 @@ IN_PROC_BROWSER_TEST_P(BoundSessionOAuthMultiloginPrototypeNewSessionTest,
           .AsPrimary(signin::ConsentLevel::kSignin)
           .WithGaiaId(FakeGaiaMixin::kFakeUserGaiaId)
           .WithRefreshToken(FakeGaiaMixin::kFakeRefreshToken)
-          .WithRefreshTokenBindingKey(wrapped_key)
+          .WithRefreshTokenBindingInfo(signin::TokenBindingInfo(
+              wrapped_key, /*mtls_token_binding=*/false))
           .Build(FakeGaiaMixin::kFakeUserEmail));
 
   ASSERT_TRUE(
@@ -476,7 +495,7 @@ IN_PROC_BROWSER_TEST_P(BoundSessionOAuthMultiloginPrototypeNewSessionTest,
 
 IN_PROC_BROWSER_TEST_P(BoundSessionOAuthMultiloginPrototypeNewSessionTest,
                        DoesNotStartYoutubeSession) {
-  const unexportable_keys::UnexportableKeyId key_id = GenerateNewKey();
+  const UnexportableSigningKeyId key_id = GenerateNewSigningKey();
   const std::vector<uint8_t> wrapped_key = GetWrappedKey(key_id);
   signin::MakeAccountAvailable(
       &identity_manager(),
@@ -484,7 +503,8 @@ IN_PROC_BROWSER_TEST_P(BoundSessionOAuthMultiloginPrototypeNewSessionTest,
           .AsPrimary(signin::ConsentLevel::kSignin)
           .WithGaiaId(FakeGaiaMixin::kFakeUserGaiaId)
           .WithRefreshToken(FakeGaiaMixin::kFakeRefreshToken)
-          .WithRefreshTokenBindingKey(wrapped_key)
+          .WithRefreshTokenBindingInfo(signin::TokenBindingInfo(
+              wrapped_key, /*mtls_token_binding=*/false))
           .Build(FakeGaiaMixin::kFakeUserEmail));
 
   ASSERT_TRUE(
@@ -558,19 +578,21 @@ IN_PROC_BROWSER_TEST_P(BoundSessionOAuthMultiloginPrototypeNewSessionTest,
                        OverrideExistingSession) {
   base::HistogramTester histogram_tester;
 
-  const unexportable_keys::UnexportableKeyId key_id = GenerateNewKey();
+  const UnexportableSigningKeyId key_id = GenerateNewSigningKey();
   const std::vector<uint8_t> wrapped_key = GetWrappedKey(key_id);
 
   const std::string email = "user1@gmail.com";
   const GaiaId::Literal fake_gaia_id("fake-gaia-id-1");
   const std::string refresh_token = "refresh-token-1";
   const CoreAccountInfo account_info = signin::MakeAccountAvailable(
-      &identity_manager(), signin::AccountAvailabilityOptionsBuilder()
-                               .AsPrimary(signin::ConsentLevel::kSignin)
-                               .WithGaiaId(fake_gaia_id)
-                               .WithRefreshToken(refresh_token)
-                               .WithRefreshTokenBindingKey(wrapped_key)
-                               .Build(email));
+      &identity_manager(),
+      signin::AccountAvailabilityOptionsBuilder()
+          .AsPrimary(signin::ConsentLevel::kSignin)
+          .WithGaiaId(fake_gaia_id)
+          .WithRefreshToken(refresh_token)
+          .WithRefreshTokenBindingInfo(signin::TokenBindingInfo(
+              wrapped_key, /*mtls_token_binding=*/false))
+          .Build(email));
   ASSERT_EQ(
       identity_manager().GetPrimaryAccountInfo(signin::ConsentLevel::kSignin),
       account_info);
@@ -653,6 +675,139 @@ INSTANTIATE_TEST_SUITE_P(,
                                              : "PrototypeServerResponse";
                          });
 
+class BoundSessionOAuthMultiloginSecondaryPartitionTest
+    : public BoundSessionOAuthMultiloginBaseTest {
+ public:
+  BoundSessionOAuthMultiloginSecondaryPartitionTest()
+      : BoundSessionOAuthMultiloginBaseTest(
+            {switches::
+                 kEnableOAuthMultiloginStandardCookiesBindingForSecondaryPartitions,
+             net::features::kDeviceBoundSessions,
+             network::features::kUseUnexportableKeyServiceInBrowserProcess},
+            {switches::kEnableOAuthMultiloginStandardCookiesBinding}) {}
+};
+
+IN_PROC_BROWSER_TEST_F(BoundSessionOAuthMultiloginSecondaryPartitionTest,
+                       StartsNewBoundSessionSecondaryPartition) {
+  const UnexportableSigningKeyId key_id = GenerateNewSigningKey();
+  const std::vector<uint8_t> wrapped_key = GetWrappedKey(key_id);
+
+  // Setup FakeGaia to return the account in /ListAccounts.
+  // This prevents the AccountReconcilor (which runs automatically for the
+  // default partition) from seeing a cookie mismatch and triggering its own
+  // background multilogin calls. This allows us to strictly assert that only
+  // 2 multilogin calls happen for our manual flow on the secondary partition.
+  fake_gaia_mixin().SetupFakeGaiaForLoginWithDefaults();
+  FakeGaia::Configuration config;
+  config.emails = {FakeGaiaMixin::kFakeUserEmail};
+  config.spec_compliant_device_bound_session = true;
+  config.session_sid_cookie = "fake_sid";
+  config.session_lsid_cookie = "fake_lsid";
+  config.session_1p_sidts_cookie = "fake_1p_sidts";
+  config.session_3p_sidts_cookie = "fake_3p_sidts";
+  fake_gaia().SetConfiguration(config);
+
+  // Create observer to wait for reconcilor to settle.
+  TestAccountReconcilorObserver reconcilor_observer(
+      AccountReconcilorFactory::GetForProfile(browser()->profile()),
+      signin_metrics::AccountReconcilorState::kOk);
+
+  signin::MakeAccountAvailable(
+      &identity_manager(),
+      signin::AccountAvailabilityOptionsBuilder()
+          .AsPrimary(signin::ConsentLevel::kSignin)
+          .WithGaiaId(FakeGaiaMixin::kFakeUserGaiaId)
+          .WithRefreshToken(FakeGaiaMixin::kFakeRefreshToken)
+          .WithRefreshTokenBindingInfo(signin::TokenBindingInfo(
+              wrapped_key, /*mtls_token_binding=*/false))
+          .Build(FakeGaiaMixin::kFakeUserEmail));
+
+  reconcilor_observer.WaitForStateChange();
+
+  ASSERT_TRUE(
+      identity_manager().HasPrimaryAccount(signin::ConsentLevel::kSignin));
+  ASSERT_EQ(identity_manager().GetWrappedBindingKey(), wrapped_key);
+
+  content::StoragePartitionConfig glic_config =
+      content::StoragePartitionConfig::Create(
+          browser()->profile(), /*partition_domain=*/"glic",
+          /*partition_name=*/"glicpart", /*in_memory=*/false);
+  content::StoragePartition* glic_partition =
+      browser()->profile()->GetStoragePartition(glic_config);
+  ASSERT_TRUE(glic_partition);
+
+  {
+    // Verify that there are no bound sessions before OAML.
+    base::test::TestFuture<
+        const std::vector<net::device_bound_sessions::SessionKey>&>
+        sessions_future;
+    glic_partition->GetDeviceBoundSessionManager()->GetAllSessions(
+        sessions_future.GetCallback());
+    ASSERT_THAT(sessions_future.Get(), IsEmpty());
+  }
+
+  base::RunLoop run_loop;
+  DeviceBoundSessionAccessObserver observer(
+      *glic_partition->GetDeviceBoundSessionManager(),
+      base::IgnoreArgs<const net::device_bound_sessions::SessionAccess&>(
+          run_loop.QuitClosure()));
+
+  glic::GlicCookieSynchronizer synchronizer(browser()->profile(),
+                                            &identity_manager());
+  base::test::TestFuture<bool> copy_future;
+  synchronizer.CopyCookiesToWebviewStoragePartition(copy_future.GetCallback());
+
+  run_loop.Run();
+
+  ASSERT_TRUE(copy_future.Get());
+
+  base::test::TestFuture<
+      const std::vector<net::device_bound_sessions::SessionKey>&>
+      sessions_future;
+  glic_partition->GetDeviceBoundSessionManager()->GetAllSessions(
+      sessions_future.GetCallback());
+  EXPECT_THAT(
+      sessions_future.Get(),
+      UnorderedElementsAre(AllOf(
+          Field(&net::device_bound_sessions::SessionKey::id,
+                net::device_bound_sessions::SessionKey::Id("sidts_session")),
+          Field(&net::device_bound_sessions::SessionKey::site,
+                net::SchemefulSite::Deserialize("https://google.com")))));
+
+  // Verify no sessions in the default partition.
+  content::StoragePartition* default_partition =
+      browser()->profile()->GetDefaultStoragePartition();
+  ASSERT_TRUE(default_partition);
+  base::test::TestFuture<
+      const std::vector<net::device_bound_sessions::SessionKey>&>
+      default_sessions_future;
+  default_partition->GetDeviceBoundSessionManager()->GetAllSessions(
+      default_sessions_future.GetCallback());
+  EXPECT_THAT(default_sessions_future.Get(), IsEmpty());
+
+  base::queue<FakeGaia::MultiloginCall> multilogin_calls =
+      fake_gaia().GetAndResetMultiloginCalls();
+
+  ASSERT_THAT(multilogin_calls, SizeIs(2));
+
+  const auto& first_call = multilogin_calls.front();
+  ASSERT_EQ(first_call.action,
+            FakeGaia::MultiloginCall::Action::kReturnBindingChallenge);
+  multilogin_calls.pop();
+
+  const auto& second_call = multilogin_calls.front();
+  ASSERT_EQ(second_call.action,
+            FakeGaia::MultiloginCall::Action::kReturnBoundCookies);
+
+  const std::optional<gaia::MultiOAuthHeader> header = second_call.header;
+  ASSERT_TRUE(header.has_value());
+  ASSERT_THAT(header->account_requests(), SizeIs(1));
+  EXPECT_TRUE(signin::VerifyJwtSignature(
+      header->account_requests().at(0).token_binding_assertion(),
+      *unexportable_key_service().GetAlgorithm(key_id),
+      *unexportable_key_service().GetSubjectPublicKeyInfo(key_id)));
+}
+
 struct PersistentErrorTestParam {
   OAuthMultiloginResponseStatus oauth_multilogin_response_status =
       OAuthMultiloginResponseStatus::kUnknownStatus;
@@ -676,12 +831,14 @@ IN_PROC_BROWSER_TEST_P(BoundSessionOAuthMultiloginPersistentErrorTest,
   const GaiaId::Literal fake_gaia_id_1("fake-gaia-id-1");
   const std::string refresh_token_1 = "refresh-token-1";
   const CoreAccountInfo account_info_1 = signin::MakeAccountAvailable(
-      &identity_manager(), signin::AccountAvailabilityOptionsBuilder()
-                               .AsPrimary(signin::ConsentLevel::kSignin)
-                               .WithGaiaId(fake_gaia_id_1)
-                               .WithRefreshToken(refresh_token_1)
-                               .WithRefreshTokenBindingKey(GetWrappedKey())
-                               .Build(email_1));
+      &identity_manager(),
+      signin::AccountAvailabilityOptionsBuilder()
+          .AsPrimary(signin::ConsentLevel::kSignin)
+          .WithGaiaId(fake_gaia_id_1)
+          .WithRefreshToken(refresh_token_1)
+          .WithRefreshTokenBindingInfo(signin::TokenBindingInfo(
+              GetWrappedKey(), /*mtls_token_binding=*/false))
+          .Build(email_1));
   ASSERT_EQ(
       identity_manager().GetPrimaryAccountInfo(signin::ConsentLevel::kSignin),
       account_info_1);
@@ -692,11 +849,13 @@ IN_PROC_BROWSER_TEST_P(BoundSessionOAuthMultiloginPersistentErrorTest,
   const GaiaId::Literal fake_gaia_id_2("fake-gaia-id-2");
   const std::string refresh_token_2 = "refresh-token-2";
   const CoreAccountInfo account_info_2 = signin::MakeAccountAvailable(
-      &identity_manager(), signin::AccountAvailabilityOptionsBuilder()
-                               .WithGaiaId(fake_gaia_id_2)
-                               .WithRefreshToken(refresh_token_2)
-                               .WithRefreshTokenBindingKey(GetWrappedKey())
-                               .Build(email_2));
+      &identity_manager(),
+      signin::AccountAvailabilityOptionsBuilder()
+          .WithGaiaId(fake_gaia_id_2)
+          .WithRefreshToken(refresh_token_2)
+          .WithRefreshTokenBindingInfo(signin::TokenBindingInfo(
+              GetWrappedKey(), /*mtls_token_binding=*/false))
+          .Build(email_2));
   ASSERT_TRUE(identity_manager().HasAccountWithBoundRefreshToken(
       account_info_2.account_id));
 
@@ -757,12 +916,14 @@ IN_PROC_BROWSER_TEST_P(BoundSessionOAuthMultiloginPersistentErrorTest,
   const GaiaId::Literal fake_gaia_id_1("fake-gaia-id-1");
   const std::string refresh_token_1 = "refresh-token-1";
   const CoreAccountInfo account_info_1 = signin::MakeAccountAvailable(
-      &identity_manager(), signin::AccountAvailabilityOptionsBuilder()
-                               .AsPrimary(signin::ConsentLevel::kSignin)
-                               .WithGaiaId(fake_gaia_id_1)
-                               .WithRefreshToken(refresh_token_1)
-                               .WithRefreshTokenBindingKey(wrapped_key)
-                               .Build(email_1));
+      &identity_manager(),
+      signin::AccountAvailabilityOptionsBuilder()
+          .AsPrimary(signin::ConsentLevel::kSignin)
+          .WithGaiaId(fake_gaia_id_1)
+          .WithRefreshToken(refresh_token_1)
+          .WithRefreshTokenBindingInfo(signin::TokenBindingInfo(
+              wrapped_key, /*mtls_token_binding=*/false))
+          .Build(email_1));
   ASSERT_EQ(
       identity_manager().GetPrimaryAccountInfo(signin::ConsentLevel::kSignin),
       account_info_1);
@@ -773,11 +934,13 @@ IN_PROC_BROWSER_TEST_P(BoundSessionOAuthMultiloginPersistentErrorTest,
   const GaiaId::Literal fake_gaia_id_2("fake-gaia-id-2");
   const std::string refresh_token_2 = "refresh-token-2";
   const CoreAccountInfo account_info_2 = signin::MakeAccountAvailable(
-      &identity_manager(), signin::AccountAvailabilityOptionsBuilder()
-                               .WithGaiaId(fake_gaia_id_2)
-                               .WithRefreshToken(refresh_token_2)
-                               .WithRefreshTokenBindingKey(wrapped_key)
-                               .Build(email_2));
+      &identity_manager(),
+      signin::AccountAvailabilityOptionsBuilder()
+          .WithGaiaId(fake_gaia_id_2)
+          .WithRefreshToken(refresh_token_2)
+          .WithRefreshTokenBindingInfo(signin::TokenBindingInfo(
+              wrapped_key, /*mtls_token_binding=*/false))
+          .Build(email_2));
   ASSERT_TRUE(identity_manager().HasAccountWithBoundRefreshToken(
       account_info_2.account_id));
 
@@ -865,7 +1028,7 @@ class BoundSessionOAuthMultiloginStandardTest
 
 IN_PROC_BROWSER_TEST_F(BoundSessionOAuthMultiloginStandardTest,
                        StartsNewBoundSession) {
-  const unexportable_keys::UnexportableKeyId key_id = GenerateNewKey();
+  const UnexportableSigningKeyId key_id = GenerateNewSigningKey();
   const std::vector<uint8_t> wrapped_key = GetWrappedKey(key_id);
   signin::MakeAccountAvailable(
       &identity_manager(),
@@ -873,7 +1036,8 @@ IN_PROC_BROWSER_TEST_F(BoundSessionOAuthMultiloginStandardTest,
           .AsPrimary(signin::ConsentLevel::kSignin)
           .WithGaiaId(FakeGaiaMixin::kFakeUserGaiaId)
           .WithRefreshToken(FakeGaiaMixin::kFakeRefreshToken)
-          .WithRefreshTokenBindingKey(wrapped_key)
+          .WithRefreshTokenBindingInfo(signin::TokenBindingInfo(
+              wrapped_key, /*mtls_token_binding=*/false))
           .Build(FakeGaiaMixin::kFakeUserEmail));
 
   ASSERT_TRUE(
@@ -960,7 +1124,7 @@ IN_PROC_BROWSER_TEST_F(BoundSessionOAuthMultiloginStandardTest,
 
 IN_PROC_BROWSER_TEST_F(BoundSessionOAuthMultiloginStandardTest,
                        StartsMultipleSessions) {
-  const unexportable_keys::UnexportableKeyId key_id = GenerateNewKey();
+  const UnexportableSigningKeyId key_id = GenerateNewSigningKey();
   const std::vector<uint8_t> wrapped_key = GetWrappedKey(key_id);
   signin::MakeAccountAvailable(
       &identity_manager(),
@@ -968,7 +1132,8 @@ IN_PROC_BROWSER_TEST_F(BoundSessionOAuthMultiloginStandardTest,
           .AsPrimary(signin::ConsentLevel::kSignin)
           .WithGaiaId(FakeGaiaMixin::kFakeUserGaiaId)
           .WithRefreshToken(FakeGaiaMixin::kFakeRefreshToken)
-          .WithRefreshTokenBindingKey(wrapped_key)
+          .WithRefreshTokenBindingInfo(signin::TokenBindingInfo(
+              wrapped_key, /*mtls_token_binding=*/false))
           .Build(FakeGaiaMixin::kFakeUserEmail));
 
   ASSERT_TRUE(
@@ -1063,19 +1228,21 @@ IN_PROC_BROWSER_TEST_F(BoundSessionOAuthMultiloginStandardTest,
 
 IN_PROC_BROWSER_TEST_F(BoundSessionOAuthMultiloginStandardTest,
                        ReuseExistingSession) {
-  const unexportable_keys::UnexportableKeyId key_id = GenerateNewKey();
+  const UnexportableSigningKeyId key_id = GenerateNewSigningKey();
   const std::vector<uint8_t> wrapped_key = GetWrappedKey(key_id);
 
   const std::string email_1 = "user1@gmail.com";
   const GaiaId::Literal fake_gaia_id_1("fake-gaia-id-1");
   const std::string refresh_token_1 = "refresh-token-1";
   const CoreAccountInfo account_info_1 = signin::MakeAccountAvailable(
-      &identity_manager(), signin::AccountAvailabilityOptionsBuilder()
-                               .AsPrimary(signin::ConsentLevel::kSignin)
-                               .WithGaiaId(fake_gaia_id_1)
-                               .WithRefreshToken(refresh_token_1)
-                               .WithRefreshTokenBindingKey(wrapped_key)
-                               .Build(email_1));
+      &identity_manager(),
+      signin::AccountAvailabilityOptionsBuilder()
+          .AsPrimary(signin::ConsentLevel::kSignin)
+          .WithGaiaId(fake_gaia_id_1)
+          .WithRefreshToken(refresh_token_1)
+          .WithRefreshTokenBindingInfo(signin::TokenBindingInfo(
+              wrapped_key, /*mtls_token_binding=*/false))
+          .Build(email_1));
   ASSERT_EQ(
       identity_manager().GetPrimaryAccountInfo(signin::ConsentLevel::kSignin),
       account_info_1);
@@ -1086,11 +1253,13 @@ IN_PROC_BROWSER_TEST_F(BoundSessionOAuthMultiloginStandardTest,
   const GaiaId::Literal fake_gaia_id_2("fake-gaia-id-2");
   const std::string refresh_token_2 = "refresh-token-2";
   const CoreAccountInfo account_info_2 = signin::MakeAccountAvailable(
-      &identity_manager(), signin::AccountAvailabilityOptionsBuilder()
-                               .WithGaiaId(fake_gaia_id_2)
-                               .WithRefreshToken(refresh_token_2)
-                               .WithRefreshTokenBindingKey(wrapped_key)
-                               .Build(email_2));
+      &identity_manager(),
+      signin::AccountAvailabilityOptionsBuilder()
+          .WithGaiaId(fake_gaia_id_2)
+          .WithRefreshToken(refresh_token_2)
+          .WithRefreshTokenBindingInfo(signin::TokenBindingInfo(
+              wrapped_key, /*mtls_token_binding=*/false))
+          .Build(email_2));
   ASSERT_TRUE(identity_manager().HasAccountWithBoundRefreshToken(
       account_info_2.account_id));
 
@@ -1194,7 +1363,7 @@ IN_PROC_BROWSER_TEST_F(BoundSessionOAuthMultiloginStandardTest,
 
 IN_PROC_BROWSER_TEST_F(BoundSessionOAuthMultiloginStandardTest,
                        OverrideExistingSession) {
-  const unexportable_keys::UnexportableKeyId key_id = GenerateNewKey();
+  const UnexportableSigningKeyId key_id = GenerateNewSigningKey();
   const std::vector<uint8_t> wrapped_key = GetWrappedKey(key_id);
   signin::MakeAccountAvailable(
       &identity_manager(),
@@ -1202,7 +1371,8 @@ IN_PROC_BROWSER_TEST_F(BoundSessionOAuthMultiloginStandardTest,
           .AsPrimary(signin::ConsentLevel::kSignin)
           .WithGaiaId(FakeGaiaMixin::kFakeUserGaiaId)
           .WithRefreshToken(FakeGaiaMixin::kFakeRefreshToken)
-          .WithRefreshTokenBindingKey(wrapped_key)
+          .WithRefreshTokenBindingInfo(signin::TokenBindingInfo(
+              wrapped_key, /*mtls_token_binding=*/false))
           .Build(FakeGaiaMixin::kFakeUserEmail));
 
   ASSERT_TRUE(
@@ -1320,7 +1490,7 @@ class BoundSessionOAuthMultiloginStandardWithPrototypeFallbackTest
 IN_PROC_BROWSER_TEST_F(
     BoundSessionOAuthMultiloginStandardWithPrototypeFallbackTest,
     StartsNewBoundSession) {
-  const unexportable_keys::UnexportableKeyId key_id = GenerateNewKey();
+  const UnexportableSigningKeyId key_id = GenerateNewSigningKey();
   const std::vector<uint8_t> wrapped_key = GetWrappedKey(key_id);
   signin::MakeAccountAvailable(
       &identity_manager(),
@@ -1328,7 +1498,8 @@ IN_PROC_BROWSER_TEST_F(
           .AsPrimary(signin::ConsentLevel::kSignin)
           .WithGaiaId(FakeGaiaMixin::kFakeUserGaiaId)
           .WithRefreshToken(FakeGaiaMixin::kFakeRefreshToken)
-          .WithRefreshTokenBindingKey(wrapped_key)
+          .WithRefreshTokenBindingInfo(signin::TokenBindingInfo(
+              wrapped_key, /*mtls_token_binding=*/false))
           .Build(FakeGaiaMixin::kFakeUserEmail));
 
   ASSERT_TRUE(

@@ -27,6 +27,7 @@
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/devtools/devtools_window_testing.h"
 #include "chrome/browser/extensions/api/permissions/permissions_api.h"
+#include "chrome/browser/extensions/chrome_app_deprecation.h"
 #include "chrome/browser/extensions/component_loader.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/extensions/extension_service.h"
@@ -36,7 +37,6 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/zoom/chrome_zoom_level_prefs.h"
-#include "chrome/browser/web_applications/extension_status_utils.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/test_switches.h"
@@ -45,6 +45,7 @@
 #include "components/prefs/pref_service.h"
 #include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
+#include "components/user_manager/test_helper.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/host_zoom_map.h"
@@ -74,7 +75,6 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/apps/app_service/chrome_app_deprecation/chrome_app_deprecation.h"
-#include "chrome/browser/ash/login/test/local_state_mixin.h"
 #include "chrome/browser/ash/test/kiosk_app_logged_in_browser_test_mixin.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "components/user_manager/user_manager.h"
@@ -107,7 +107,10 @@ class PlatformAppContextMenu : public RenderViewContextMenu {
  public:
   PlatformAppContextMenu(content::RenderFrameHost& render_frame_host,
                          const content::ContextMenuParams& params)
-      : RenderViewContextMenu(render_frame_host, params) {}
+      : RenderViewContextMenu(render_frame_host,
+                              params,
+                              /*is_paste_enabled=*/false,
+                              /*is_paste_and_match_style_enabled=*/false) {}
 
   bool HasCommandWithId(int command_id) {
     return menu_model_.GetIndexOfCommandId(command_id).has_value();
@@ -376,7 +379,7 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, InstalledAppWithContextMenu) {
   ASSERT_FALSE(menu->HasCommandWithId(IDC_CONTENT_CONTEXT_UNDO));
 }
 
-// Flaky on Mac10.13 Tests (dbg). See https://crbug.com/1155013
+// Flaky on Mac10.13 Tests (dbg). See https://crbug.com/40735184
 #if BUILDFLAG(IS_MAC)
 #define MAYBE_AppWithContextMenuTextField DISABLED_AppWithContextMenuTextField
 #else
@@ -455,7 +458,7 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, AppWithContextMenuClicked) {
   ASSERT_TRUE(onclicked_listener.WaitUntilSatisfied());
 }
 
-// https://crbug.com/1155013
+// https://crbug.com/40735184
 IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, DISABLED_DisallowNavigation) {
   TabsAddedObserver observer(browser(), 1);
 
@@ -507,10 +510,6 @@ IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, MAYBE_Iframes) {
 
 // Tests that platform apps can perform filesystem: URL navigations.
 IN_PROC_BROWSER_TEST_F(PlatformAppBrowserTest, AllowFileSystemURLNavigation) {
-  if (!base::FeatureList::IsEnabled(
-          blink::features::kFileSystemUrlNavigationForChromeAppsOnly)) {
-    GTEST_SKIP();
-  }
   ASSERT_TRUE(RunExtensionTest("platform_apps/filesystem_url",
                                {.launch_as_platform_app = true}))
       << message_;
@@ -969,7 +968,7 @@ IN_PROC_BROWSER_TEST_F(MAYBE_PlatformAppDevToolsBrowserTest, ReOpenedWithURL) {
 #if BUILDFLAG(IS_MAC)
 #define MAYBE_ConstrainedWindowRequest DISABLED_ConstrainedWindowRequest
 #else
-// TODO(sail): Enable this on other platforms once http://crbug.com/95455 is
+// TODO(sail): Enable this on other platforms once http://crbug.com/41453867 is
 // fixed.
 #define MAYBE_ConstrainedWindowRequest DISABLED_ConstrainedWindowRequest
 #endif
@@ -1336,17 +1335,18 @@ IN_PROC_BROWSER_TEST_F(PlatformAppIncognitoBrowserTest,
   }
 }
 
-class RestartKioskDeviceTest : public PlatformAppBrowserTest,
-                               public ash::LocalStateMixin::Delegate {
+class RestartKioskDeviceTest : public PlatformAppBrowserTest {
  public:
   RestartKioskDeviceTest() { set_chromeos_user_ = false; }
 
-  void SetUpLocalState() override {
+  void SetUpLocalStatePrefService(PrefService* local_state) override {
+    PlatformAppBrowserTest::SetUpLocalStatePrefService(local_state);
+
     // Until EnterKioskSession is called, the setup and the test run in a
     // regular user session. Marking another user as the owner prevents the
     // current user from taking ownership and overriding the kiosk mode.
-    user_manager::UserManager::Get()->RecordOwner(
-        AccountId::FromUserEmail("not_current_user@example.com"));
+    user_manager::TestHelper::RegisterOwner(*local_state,
+                                            "not_current_user@example.com");
   }
 
   void SetUpOnMainThread() override {
@@ -1365,7 +1365,6 @@ class RestartKioskDeviceTest : public PlatformAppBrowserTest,
   }
 
  private:
-  ash::LocalStateMixin local_state_mixin_{&mixin_host_, this};
   ash::KioskAppLoggedInBrowserTestMixin login_mixin_{&mixin_host_,
                                                      "kiosk-app-account"};
 };

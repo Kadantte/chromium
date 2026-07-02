@@ -11,6 +11,9 @@
 extern NSString* const kPopupMenuToolsMenuTableViewId;
 extern NSString* const kPopupMenuToolsMenuActionListId;
 
+// Name for the identity group.
+extern NSString* const kIdentityGroupName;
+
 // Accessibility IDs for the Tools Menu items.
 // Downloads item accessibility Identifier.
 extern NSString* const kToolsMenuDownloadsId;
@@ -78,12 +81,16 @@ extern NSString* const kTextMenuEnterpriseInfo;
 extern NSString* const kTextMenuFamilyLinkInfo;
 // Clear Browsing Data item accessibility identifier.
 extern NSString* const kToolsMenuClearBrowsingData;
+// Customize Home Page item accessibility identifier.
+extern NSString* const kToolsMenuCustomizeHomePageId;
 // Set Tab Reminder item accessibility Identifier.
 extern NSString* const kToolsMenuSetTabReminder;
 // Share Chrome accessibility Identifier.
 extern NSString* const kToolsMenuShareChromeId;
 // WhatsNew item accessibility Identifier.
 extern NSString* const kToolsMenuWhatsNewId;
+// Level Up item accessibility Identifier.
+extern NSString* const kToolsMenuLevelUpId;
 // Open Price Notifications accessibility Identifier.
 extern NSString* const kToolsMenuPriceNotifications;
 // Edit Actions item accessibility Identifier.
@@ -96,6 +103,8 @@ extern NSString* const kToolsMenuMoveTabToGroupId;
 extern NSString* const kToolsMenuAddTabToGroupId;
 // Share This Page a11y identifier.
 extern NSString* const kToolsMenuShareId;
+// Identity item accessibility Identifier.
+extern NSString* const kToolsMenuIdentityId;
 
 // Alpha for the background color of the highlighted items.
 extern const CGFloat kSelectedItemBackgroundAlpha;

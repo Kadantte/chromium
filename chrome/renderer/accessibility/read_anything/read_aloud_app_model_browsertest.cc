@@ -363,11 +363,10 @@ class ReadAnythingReadAloudAppModelV8SegmentationTest
     : public ReadAnythingReadAloudAppModelTest {
  public:
   void SetUp() override {
-    // Phrase highlighting currently doesn't work with the TS text segmentation
-    // implementation, so we need to disable it to test phrase highlighting.
+    // V8 based text segmentation is currently only used when phrase
+    // highlighting is enabled.
     scoped_feature_list_.InitWithFeatures(
-        {features::kReadAnythingReadAloudPhraseHighlighting},
-        {features::kReadAnythingReadAloudTSTextSegmentation});
+        {features::kReadAnythingReadAloudPhraseHighlighting}, {});
     ReadAnythingReadAloudAppModelTest::SetUp();
   }
 };
@@ -1166,4 +1165,99 @@ TEST_F(
   EXPECT_EQ(kId2, segments.at(1).id);
   EXPECT_EQ(0, segments.at(1).text_start);
   EXPECT_EQ(node2_text.size(), segments.at(1).text_end);
+}
+
+TEST_F(ReadAnythingReadAloudAppModelTest, ResetAndLogSingleSampleMetrics) {
+  const std::vector<std::string> metrics = {
+      "Accessibility.ReadAnything.ReadAloudPlaySessionCount",
+      "Accessibility.ReadAnything.ReadAloudPauseSessionCount",
+      "Accessibility.ReadAnything.ReadAloudNextButtonSessionCount",
+      "Accessibility.ReadAnything.ReadAloudPreviousButtonSessionCount",
+  };
+
+  const std::string& playCountName = metrics[0];
+  const std::string& pauseCountName = metrics[1];
+  const std::string& nextButtonCountName = metrics[2];
+  const std::string& previousButtonCountName = metrics[3];
+
+  // Play - pause - play
+  model().IncrementMetric(playCountName);
+  model().IncrementMetric(pauseCountName);
+  model().IncrementMetric(playCountName);
+
+  base::HistogramTester histogram_tester;
+  model().ResetAndLogSingleSampleMetrics();
+
+  // Each metric has been logged once.
+  for (const auto& metric : metrics) {
+    histogram_tester.ExpectTotalCount(metric, /*expected_count=*/1);
+  }
+
+  // ReadAloudPlaySessionCount has a single sample of 2.
+  // ReadAloudPauseSessionCount has a single sample of 1.
+  // ReadAloudNextButtonSessionCount and ReadAloudPreviousButtonSessionCount
+  // each have a single sample of 0.
+  histogram_tester.ExpectUniqueSample(playCountName, /*sample=*/2,
+                                      /*expected_bucket_count=*/1);
+  histogram_tester.ExpectUniqueSample(pauseCountName, /*sample=*/1,
+                                      /*expected_bucket_count=*/1);
+  histogram_tester.ExpectUniqueSample(nextButtonCountName, /*sample=*/0,
+                                      /*expected_bucket_count=*/1);
+  histogram_tester.ExpectUniqueSample(previousButtonCountName, /*sample=*/0,
+                                      /*expected_bucket_count=*/1);
+
+  // Increment in the new session
+  model().IncrementMetric(playCountName);
+  model().ResetAndLogSingleSampleMetrics();
+
+  // Each metric has two total samples.
+  for (const auto& metric : metrics) {
+    histogram_tester.ExpectTotalCount(metric, /*expected_count=*/2);
+  }
+
+  // ReadAloudPlaySessionCount should now have one sample of 1 and one sample
+  // of 2.
+  histogram_tester.ExpectBucketCount(playCountName, /*sample=*/1,
+                                     /*expected_count=*/1);
+  histogram_tester.ExpectBucketCount(playCountName, /*sample=*/2,
+                                     /*expected_count=*/1);
+
+  // ReadAloudPauseSessionCount should now have one sample of 1 and one sample
+  // of 0.
+  histogram_tester.ExpectBucketCount(pauseCountName, /*sample=*/0,
+                                     /*expected_count=*/1);
+  histogram_tester.ExpectBucketCount(pauseCountName, /*sample=*/1,
+                                     /*expected_count=*/1);
+
+  // ReadAloudNextButtonSessionCount and ReadAloudPreviousButtonSessionCount
+  // each have two samples of 0.
+  histogram_tester.ExpectBucketCount(previousButtonCountName, /*sample=*/0,
+                                     /*expected_count=*/2);
+  histogram_tester.ExpectBucketCount(nextButtonCountName, /*sample=*/0,
+                                     /*expected_count=*/2);
+}
+
+TEST_F(ReadAnythingReadAloudAppModelTest, LogPlaybackContext) {
+  base::HistogramTester histograms;
+  const char* histogram_name =
+      "Accessibility.ReadAnything.ReadAloud.PlaybackContext";
+
+  // Test Side Panel
+  model_->LogPlaybackContext(
+      ReadAloudAppModel::ReadAnythingPlaybackContext::kSidePanel);
+  EXPECT_EQ(model_->current_session_context_for_testing(),
+            ReadAloudAppModel::ReadAnythingPlaybackContext::kSidePanel);
+  histograms.ExpectUniqueSample(
+      histogram_name,
+      ReadAloudAppModel::ReadAnythingPlaybackContext::kSidePanel, 1);
+
+  // Test Immersive
+  model_->LogPlaybackContext(
+      ReadAloudAppModel::ReadAnythingPlaybackContext::kImmersive);
+  EXPECT_EQ(model_->current_session_context_for_testing(),
+            ReadAloudAppModel::ReadAnythingPlaybackContext::kImmersive);
+  histograms.ExpectBucketCount(
+      histogram_name,
+      ReadAloudAppModel::ReadAnythingPlaybackContext::kImmersive, 1);
+  histograms.ExpectTotalCount(histogram_name, 2);
 }

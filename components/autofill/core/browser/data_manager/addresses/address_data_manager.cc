@@ -8,42 +8,58 @@
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
+#include "base/check.h"
 #include "base/check_deref.h"
 #include "base/check_is_test.h"
 #include "base/check_op.h"
 #include "base/containers/to_vector.h"
 #include "base/feature_list.h"
-#include "base/functional/callback.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/notreached.h"
-#include "base/strings/utf_string_conversions.h"
+#include "build/buildflag.h"
 #include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_manager/addresses/account_name_email_store.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_cleaner.h"
 #include "components/autofill/core/browser/data_manager/addresses/home_and_work_metadata_store.h"
-#include "components/autofill/core/browser/data_quality/addresses/profile_requirement_utils.h"
 #include "components/autofill/core/browser/geo/alternative_state_name_map_updater.h"
 #include "components/autofill/core/browser/geo/autofill_country.h"
-#include "components/autofill/core/browser/geo/country_data.h"
 #include "components/autofill/core/browser/metrics/autofill_settings_metrics.h"
 #include "components/autofill/core/browser/metrics/profile_token_quality_metrics.h"
 #include "components/autofill/core/browser/metrics/stored_profile_metrics.h"
 #include "components/autofill/core/browser/strike_databases/addresses/address_on_typing_suggestion_strike_database.h"
+#include "components/autofill/core/browser/strike_databases/addresses/address_suggestion_strike_database.h"
+#include "components/autofill/core/browser/strike_databases/addresses/autofill_profile_migration_strike_database.h"
+#include "components/autofill/core/browser/strike_databases/addresses/autofill_profile_save_strike_database.h"
+#include "components/autofill/core/browser/strike_databases/addresses/autofill_profile_update_strike_database.h"
 #include "components/autofill/core/browser/webdata/addresses/contact_info_precondition_checker.h"
+#include "components/autofill/core/browser/webdata/autofill_change.h"
+#include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
 #include "components/autofill/core/common/autofill_clock.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/autofill/core/common/dense_set.h"
+#include "components/autofill/core/common/signatures.h"
+#include "components/history/core/browser/history_types.h"
+#include "components/prefs/pref_member.h"
 #include "components/prefs/pref_service.h"
-#include "components/signin/public/base/signin_pref_names.h"
+#include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/base/signin_switches.h"
+#include "components/signin/public/identity_manager/account_managed_status_finder_outcome.h"
+#include "components/strike_database/strike_database_base.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/base/features.h"
 #include "components/sync/base/user_selectable_type.h"
+#include "components/sync/service/data_type_controller.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
 #include "components/webdata/common/web_data_results.h"
+#include "components/webdata/common/web_data_service_base.h"
 
 namespace autofill {
 
@@ -63,11 +79,11 @@ void OrderProfiles(std::vector<const AutofillProfile*>& profiles,
           });
       break;
     case AddressDataManager::ProfileOrder::kMostRecentlyModifiedDesc:
-      std::ranges::sort(
-          profiles, [](const AutofillProfile* a, const AutofillProfile* b) {
-            return a->usage_history().modification_date() >
-                   b->usage_history().modification_date();
-          });
+      std::ranges::sort(profiles,
+                        [](const AutofillProfile* a, const AutofillProfile* b) {
+                          return a->usage_history().modification_date() >
+                                 b->usage_history().modification_date();
+                        });
       break;
     case AddressDataManager::ProfileOrder::kMostRecentlyUsedFirstDesc:
       std::ranges::sort(profiles, [](const AutofillProfile* a,
@@ -124,13 +140,15 @@ AddressDataManager::AddressDataManager(
         *this, sync_service, *pref_service_,
         alternative_state_name_map_updater_.get());
 
-    if (identity_manager && sync_service &&
-        base::FeatureList::IsEnabled(
-            features::kAutofillEnableSupportForNameAndEmail)) {
+    if (identity_manager && sync_service) {
       account_name_email_store_ = std::make_unique<AccountNameEmailStore>(
           *this, *identity_manager, *sync_service, *pref_service_);
     }
   }
+}
+
+base::WeakPtr<AddressDataManager> AddressDataManager::GetWeakPtr() {
+  return weak_ptr_factory_.GetWeakPtr();
 }
 
 AddressDataManager::~AddressDataManager() {
@@ -190,15 +208,6 @@ void AddressDataManager::OnWebDataServiceRequestDone(
     // call here is necessary to apply these updates.
     if (account_name_email_store_) {
       account_name_email_store_->MaybeUpdateOrCreateAccountNameEmail();
-    } else {
-      // In case the feature got disabled the profile should be cleaned up.
-      if (!GetProfilesByRecordType(
-               AutofillProfile::RecordType::kAccountNameEmail)
-               .empty()) {
-        RemoveProfile(GetProfilesByRecordType(
-                          AutofillProfile::RecordType::kAccountNameEmail)[0]
-                          ->guid());
-      }
     }
     LogStoredDataMetrics();
   }
@@ -242,11 +251,6 @@ std::vector<const AutofillProfile*> AddressDataManager::GetProfilesToSuggest()
   // prefs shouldn't run.
   if (!pref_service_) {
     CHECK_IS_TEST();
-    return profiles;
-  }
-
-  if (!base::FeatureList::IsEnabled(
-          features::kAutofillEnableSupportForNameAndEmail)) {
     return profiles;
   }
 
@@ -527,13 +531,10 @@ void AddressDataManager::SetPrefService(PrefService* pref_service) {
         prefs::kAutofillProfileEnabled, pref_service_,
         base::BindRepeating(&AddressDataManager::OnAutofillProfilePrefChanged,
                             base::Unretained(this)));
-    if (base::FeatureList::IsEnabled(
-            features::kAutofillEnableSupportForHomeAndWork)) {
-      home_and_work_metadata_ = std::make_unique<HomeAndWorkMetadataStore>(
-          pref_service_, sync_service_,
-          base::BindRepeating(&AddressDataManager::LoadProfiles,
-                              base::Unretained(this)));
-    }
+    home_and_work_metadata_ = std::make_unique<HomeAndWorkMetadataStore>(
+        pref_service_, sync_service_,
+        base::BindRepeating(&AddressDataManager::LoadProfiles,
+                            base::Unretained(this)));
   }
 }
 
@@ -641,12 +642,7 @@ bool AddressDataManager::IsAutofillUserSelectableTypeEnabled() const {
 }
 
 bool AddressDataManager::IsAutofillSyncToggleAvailable() const {
-  if (base::FeatureList::IsEnabled(
-          syncer::kReplaceSyncPromosWithSignInPromos)) {
-    return false;
-  }
-
-  if (!pref_service_->GetBoolean(::prefs::kExplicitBrowserSignin)) {
+  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
     return false;
   }
 
@@ -672,8 +668,13 @@ bool AddressDataManager::IsAutofillSyncToggleAvailable() const {
     return false;
   }
 
+  // TODO(crbug.com/40897778): Provide the correct
+  // AccountManagedStatusFinderOutcome here. Currently it is not used, so
+  // `kPending` is a safe placeholder.
   return contact_info_precondition_checker_ &&
-         contact_info_precondition_checker_->GetPreconditionState() ==
+         contact_info_precondition_checker_->GetPreconditionState(
+             syncer::DataTypeController::PreconditionContext(
+                 signin::AccountManagedStatusFinderOutcome::kPending)) ==
              syncer::DataTypeController::PreconditionState::kPreconditionsMet;
 }
 
@@ -698,9 +699,7 @@ std::optional<CoreAccountInfo> AddressDataManager::GetPrimaryAccountInfo()
 void AddressDataManager::MaybeCreateAccountNameEmailProfile(
     std::string account_name,
     std::string email) {
-  if (account_name_email_store_ &&
-      base::FeatureList::IsEnabled(
-          features::kAutofillEnableSupportForNameAndEmail)) {
+  if (account_name_email_store_) {
     account_name_email_store_->MaybeUpdateOrCreateAccountNameEmail(account_name,
                                                                    email);
   }

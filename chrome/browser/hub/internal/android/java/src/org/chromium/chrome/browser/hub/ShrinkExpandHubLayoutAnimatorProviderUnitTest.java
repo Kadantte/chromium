@@ -48,16 +48,16 @@ import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.Callback;
 import org.chromium.base.supplier.SyncOneshotSupplierImpl;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.hub.ShrinkExpandHubLayoutAnimatorProvider.ImageViewWeakRefBitmapCallback;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.TestActivity;
 
 import java.lang.ref.WeakReference;
@@ -89,7 +89,7 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
     @Before
     public void setUp() {
         mActivityScenarioRule.getScenario().onActivity(this::onActivityCreated);
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         mAnimationDataSupplier = new SyncOneshotSupplierImpl<>();
     }
 
@@ -127,7 +127,8 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
                         mAnimationDataSupplier,
                         Color.BLUE,
                         HUB_LAYOUT_SHRINK_EXPAND_DURATION_MS,
-                        mOnAlphaChange);
+                        mOnAlphaChange,
+                        /* isIncognito= */ false);
         assertEquals(HubLayoutAnimationType.SHRINK_TAB, animatorProvider.getPlannedAnimationType());
         Callback<Bitmap> thumbnailCallback = animatorProvider.getThumbnailCallback();
         assertNotNull(thumbnailCallback);
@@ -168,7 +169,7 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
         mAnimationDataSupplier.set(data);
         thumbnailCallback.onResult(mBitmap);
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         verify(imageView, atLeastOnce())
                 .setRoundedCorners(
@@ -206,7 +207,8 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
                         mAnimationDataSupplier,
                         Color.RED,
                         HUB_LAYOUT_SHRINK_EXPAND_DURATION_MS,
-                        mOnAlphaChange);
+                        mOnAlphaChange,
+                        /* isIncognito= */ false);
         assertEquals(HubLayoutAnimationType.EXPAND_TAB, animatorProvider.getPlannedAnimationType());
         Callback<Bitmap> thumbnailCallback = animatorProvider.getThumbnailCallback();
         assertNotNull(thumbnailCallback);
@@ -246,7 +248,7 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
         mAnimationDataSupplier.set(data);
         thumbnailCallback.onResult(mBitmap);
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         verify(imageView, atLeastOnce())
                 .setRoundedCorners(
@@ -262,8 +264,7 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
     }
 
     @Test
-    @DisableFeatures({ChromeFeatureList.SHOW_NEW_TAB_ANIMATIONS})
-    public void testNewTab_FeatureDisabled() {
+    public void testNewTab() {
         ShrinkExpandImageView imageView = spy(new ShrinkExpandImageView(mActivity));
         HubLayoutAnimatorProvider animatorProvider =
                 new ShrinkExpandHubLayoutAnimatorProvider(
@@ -274,61 +275,8 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
                         mAnimationDataSupplier,
                         Color.RED,
                         HUB_LAYOUT_EXPAND_NEW_TAB_DURATION_MS,
-                        mOnAlphaChange);
-        assertEquals(
-                HubLayoutAnimationType.EXPAND_NEW_TAB, animatorProvider.getPlannedAnimationType());
-        assertNull(animatorProvider.getThumbnailCallback());
-
-        Rect initialRect = new Rect(100, 0, 101, 1);
-        Rect finalRect = new Rect(10, 15, WIDTH - 10, HEIGHT - 15);
-        ShrinkExpandAnimationData data =
-                ShrinkExpandAnimationData.createHubNewTabAnimationData(
-                        initialRect,
-                        finalRect,
-                        /* cornerRadius= */ 0,
-                        /* useFallbackAnimation= */ false);
-        mAnimationDataSupplier.set(data);
-
-        int[] cornerRadii = new int[] {0, 0, 0, 0};
-        assertArrayEquals(cornerRadii, data.getInitialCornerRadii());
-        assertArrayEquals(cornerRadii, data.getFinalCornerRadii());
-
-        HubLayoutAnimationRunner runner =
-                HubLayoutAnimationRunnerFactory.createHubLayoutAnimationRunner(animatorProvider);
-
-        setUpShrinkExpandListener(
-                /* isShrink= */ false,
-                imageView,
-                initialRect,
-                finalRect,
-                /* hasBitmap= */ false,
-                /* toolbarFades= */ true);
-        runner.addListener(mListener);
-        runner.runWithWaitForAnimatorTimeout(HUB_LAYOUT_TIMEOUT_MS);
-
-        // No bitmap is required.
-
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
-
-        verify(imageView, atLeastOnce()).setRoundedCorners(0, 0, 0, 0);
-
-        verifyFinalState(animatorProvider, /* wasForcedToFinish= */ false);
-    }
-
-    @Test
-    @EnableFeatures({ChromeFeatureList.SHOW_NEW_TAB_ANIMATIONS})
-    public void testNewTab_FeatureEnabled() {
-        ShrinkExpandImageView imageView = spy(new ShrinkExpandImageView(mActivity));
-        HubLayoutAnimatorProvider animatorProvider =
-                new ShrinkExpandHubLayoutAnimatorProvider(
-                        HubLayoutAnimationType.EXPAND_NEW_TAB,
-                        /* needsBitmap= */ false,
-                        mHubContainerView,
-                        imageView,
-                        mAnimationDataSupplier,
-                        Color.RED,
-                        HUB_LAYOUT_EXPAND_NEW_TAB_DURATION_MS,
-                        mOnAlphaChange);
+                        mOnAlphaChange,
+                        /* isIncognito= */ false);
         assertEquals(
                 HubLayoutAnimationType.EXPAND_NEW_TAB, animatorProvider.getPlannedAnimationType());
         assertNull(animatorProvider.getThumbnailCallback());
@@ -367,7 +315,7 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
 
         // No bitmap is required.
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         verify(imageView, atLeastOnce())
                 .setRoundedCorners(0, startCornerRadius, startCornerRadius, startCornerRadius);
@@ -386,7 +334,8 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
                         mAnimationDataSupplier,
                         Color.BLUE,
                         HUB_LAYOUT_SHRINK_EXPAND_DURATION_MS,
-                        mOnAlphaChange);
+                        mOnAlphaChange,
+                        /* isIncognito= */ false);
 
         HubLayoutAnimationRunner runner =
                 HubLayoutAnimationRunnerFactory.createHubLayoutAnimationRunner(animatorProvider);
@@ -399,7 +348,7 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
 
         // Intentionally supply no data.
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         verifyFinalState(animatorProvider, /* wasForcedToFinish= */ false);
     }
@@ -412,7 +361,8 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
                         mAnimationDataSupplier,
                         Color.BLUE,
                         HUB_LAYOUT_SHRINK_EXPAND_DURATION_MS,
-                        mOnAlphaChange);
+                        mOnAlphaChange,
+                        /* isIncognito= */ false);
 
         Size thumbnailSize = new Size(20, 85);
         Rect initialRect = new Rect(0, 0, WIDTH, HEIGHT);
@@ -438,7 +388,7 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
         // Intentionally supply no bitmap.
         mAnimationDataSupplier.set(data);
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         verifyFinalState(animatorProvider, /* wasForcedToFinish= */ false);
     }
@@ -451,7 +401,8 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
                         mAnimationDataSupplier,
                         Color.BLUE,
                         HUB_LAYOUT_SHRINK_EXPAND_DURATION_MS,
-                        mOnAlphaChange);
+                        mOnAlphaChange,
+                        /* isIncognito= */ false);
 
         Size thumbnailSize = new Size(20, 85);
         Rect initialRect = new Rect(0, 0, WIDTH, HEIGHT);
@@ -477,7 +428,7 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
         animatorProvider.getThumbnailCallback().onResult(mBitmap);
         mAnimationDataSupplier.set(data);
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         verifyFinalState(animatorProvider, /* wasForcedToFinish= */ false);
     }
@@ -490,7 +441,8 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
                         mAnimationDataSupplier,
                         Color.BLUE,
                         HUB_LAYOUT_SHRINK_EXPAND_DURATION_MS,
-                        mOnAlphaChange);
+                        mOnAlphaChange,
+                        /* isIncognito= */ false);
 
         HubLayoutAnimationRunner runner =
                 HubLayoutAnimationRunnerFactory.createHubLayoutAnimationRunner(animatorProvider);
@@ -514,7 +466,8 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
                         mAnimationDataSupplier,
                         Color.RED,
                         HUB_LAYOUT_EXPAND_NEW_TAB_DURATION_MS,
-                        mOnAlphaChange);
+                        mOnAlphaChange,
+                        /* isIncognito= */ false);
 
         HubLayoutAnimationRunner runner =
                 HubLayoutAnimationRunnerFactory.createHubLayoutAnimationRunner(animatorProvider);
@@ -541,7 +494,7 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
 
         mAnimationDataSupplier.set(data);
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         verifyFinalState(animatorProvider, /* wasForcedToFinish= */ false);
     }
@@ -610,14 +563,15 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
                         mAnimationDataSupplier,
                         Color.RED,
                         HUB_LAYOUT_EXPAND_NEW_TAB_DURATION_MS,
-                        mOnAlphaChange);
+                        mOnAlphaChange,
+                        /* isIncognito= */ false);
 
         // Remove all views like a tear down/destroy would.
         mHubContainerView.removeAllViews();
 
         ShrinkExpandAnimationData data =
                 ShrinkExpandAnimationData.createHubNewTabAnimationData(
-                        /* initialRect */ new Rect(100, 0, 101, 1),
+                        /* initialRect= */ new Rect(100, 0, 101, 1),
                         /* finalRect= */ new Rect(10, 15, WIDTH - 10, HEIGHT - 15),
                         /* cornerRadius= */ 0,
                         /* useFallbackAnimation= */ false);
@@ -630,7 +584,7 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
         runner.addListener(mListener);
         runner.runWithWaitForAnimatorTimeout(HUB_LAYOUT_TIMEOUT_MS);
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         verify(mListener).beforeStart();
         verify(mListener).onEnd(anyBoolean());
@@ -657,7 +611,8 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
                         mAnimationDataSupplier,
                         Color.BLUE,
                         HUB_LAYOUT_SHRINK_EXPAND_DURATION_MS,
-                        mOnAlphaChange);
+                        mOnAlphaChange,
+                        /* isIncognito= */ false);
         assertEquals(HubLayoutAnimationType.SHRINK_TAB, animatorProvider.getPlannedAnimationType());
         Callback<Bitmap> thumbnailCallback = animatorProvider.getThumbnailCallback();
         assertNotNull(thumbnailCallback);
@@ -698,7 +653,7 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
         mAnimationDataSupplier.set(data);
         thumbnailCallback.onResult(mBitmap);
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         verify(imageView, atLeastOnce())
                 .setRoundedCorners(
@@ -715,6 +670,8 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
         verifyFinalState(animatorProvider, /* wasForcedToFinish= */ false);
         watcher.assertExpected();
     }
+
+
 
     private void setUpShrinkExpandListener(
             boolean isShrink,
@@ -859,6 +816,88 @@ public class ShrinkExpandHubLayoutAnimatorProviderUnitTest {
                                         EPSILON);
                             }
                         });
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.ANDROID_BOTTOM_BAR})
+    public void testFakeBottomControlsViewAnimation() {
+        DeviceFormFactor.setIsTabletForTesting(false);
+        ShrinkExpandImageView imageView = spy(new ShrinkExpandImageView(mActivity));
+        ShrinkExpandHubLayoutAnimatorProvider animatorProvider =
+                new ShrinkExpandHubLayoutAnimatorProvider(
+                        HubLayoutAnimationType.SHRINK_TAB,
+                        /* needsBitmap= */ true,
+                        mHubContainerView,
+                        imageView,
+                        mAnimationDataSupplier,
+                        Color.BLUE,
+                        HUB_LAYOUT_SHRINK_EXPAND_DURATION_MS,
+                        mOnAlphaChange,
+                        /* isIncognito= */ false);
+        assertEquals(HubLayoutAnimationType.SHRINK_TAB, animatorProvider.getPlannedAnimationType());
+        Callback<Bitmap> thumbnailCallback = animatorProvider.getThumbnailCallback();
+        assertNotNull(thumbnailCallback);
+
+        Size thumbnailSize = new Size(20, 85);
+        Rect initialRect = new Rect(0, 0, WIDTH, 370);
+        Rect finalRect = new Rect(50, 10, 70, 95);
+        ShrinkExpandAnimationData data =
+                ShrinkExpandAnimationData.createHubShrinkExpandAnimationData(
+                        initialRect,
+                        finalRect,
+                        /* initialTopCornerRadius= */ 0,
+                        /* initialBottomCornerRadius= */ 0,
+                        /* finalTopCornerRadius= */ 30,
+                        /* finalBottomCornerRadius= */ 40,
+                        thumbnailSize,
+                        /* isTopToolbar= */ true,
+                        /* useFallbackAnimation= */ false);
+
+        HubLayoutAnimationRunner runner =
+                HubLayoutAnimationRunnerFactory.createHubLayoutAnimationRunner(animatorProvider);
+
+        mListener =
+                spy(
+                        new HubLayoutAnimationListener() {
+                            @Override
+                            public void onStart() {
+                                assertNotNull(
+                                        animatorProvider.getFakeBottomControlsViewForTesting());
+                                assertEquals(3, mHubContainerView.getChildCount());
+                                assertEquals(
+                                        0.0f,
+                                        animatorProvider
+                                                .getFakeBottomControlsViewForTesting()
+                                                .getTranslationY(),
+                                        EPSILON);
+                            }
+
+                            @Override
+                            public void onEnd(boolean wasForcedToFinish) {
+                                assertNotNull(
+                                        animatorProvider.getFakeBottomControlsViewForTesting());
+                                assertEquals(
+                                        100.0f,
+                                        animatorProvider
+                                                .getFakeBottomControlsViewForTesting()
+                                                .getTranslationY(),
+                                        EPSILON);
+                            }
+
+                            @Override
+                            public void afterEnd() {
+                                assertNull(animatorProvider.getFakeBottomControlsViewForTesting());
+                            }
+                        });
+        runner.addListener(mListener);
+        runner.runWithWaitForAnimatorTimeout(HUB_LAYOUT_TIMEOUT_MS);
+
+        mAnimationDataSupplier.set(data);
+        thumbnailCallback.onResult(mBitmap);
+
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
+
+        verifyFinalState(animatorProvider, /* wasForcedToFinish= */ false);
     }
 
     private ShrinkExpandImageView getImageView(

@@ -18,11 +18,11 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/run_until.h"
-#include "chrome/browser/password_manager/account_password_store_factory.h"
 #include "chrome/browser/password_manager/chrome_password_manager_client.h"
+#include "chrome/browser/password_manager/factories/account_password_store_factory.h"
+#include "chrome/browser/password_manager/factories/profile_password_store_factory.h"
 #include "chrome/browser/password_manager/password_manager_test_util.h"
 #include "chrome/browser/password_manager/passwords_navigation_observer.h"
-#include "chrome/browser/password_manager/profile_password_store_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/browser.h"
@@ -468,7 +468,7 @@ void PasswordManagerBrowserTestBase::CheckThatCredentialsStored(
   SCOPED_TRACE(::testing::Message() << username << ", " << password);
   scoped_refptr<password_manager::TestPasswordStore> password_store =
       GetDefaultPasswordStore(browser()->profile());
-  auto& passwords_map = password_store->stored_passwords();
+  auto passwords_map = GetAllLoginsSync(password_store.get());
   ASSERT_EQ(1u, passwords_map.size());
   auto& passwords_vector = passwords_map.begin()->second;
   ASSERT_EQ(1u, passwords_vector.size());

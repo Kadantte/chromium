@@ -6,6 +6,7 @@
 
 #import <Foundation/Foundation.h>
 
+#import "components/sync/test/test_sync_service.h"
 #import "ios/chrome/app/application_delegate/fake_startup_information.h"
 #import "ios/chrome/app/profile/profile_init_stage.h"
 #import "ios/chrome/app/profile/profile_state.h"
@@ -14,17 +15,23 @@
 #import "ios/chrome/browser/promos_manager/coordinator/standard_promo_action_handler.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/test/fake_scene_state.h"
+#import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/prefs/browser_prefs.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/credential_provider_promo_commands.h"
 #import "ios/chrome/browser/shared/public/commands/docking_promo_commands.h"
+#import "ios/chrome/browser/shared/public/commands/picture_in_picture_commands.h"
+#import "ios/chrome/browser/shared/public/commands/promos_manager_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/common/ui/confirmation_alert/confirmation_alert_action_handler.h"
 #import "ios/chrome/common/ui/confirmation_alert/confirmation_alert_view_controller.h"
 #import "ios/chrome/common/ui/promo_style/promo_style_view_controller.h"
@@ -49,6 +56,8 @@ class PromosManagerCoordinatorTest : public PlatformTest {
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetFactoryWithDelegate(
             std::make_unique<FakeAuthenticationServiceDelegate>()));
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
     profile_ = std::move(builder).Build();
 
     view_controller_ = [[UIViewController alloc] init];
@@ -72,6 +81,9 @@ class PromosManagerCoordinatorTest : public PlatformTest {
   void TearDown() override {
     [coordinator_ stop];
     [scene_state_ shutdown];
+    coordinator_ = nil;
+    mock_pip_handler_ = nil;
+    mock_promos_manager_handler_ = nil;
     scene_state_ = nil;
     PlatformTest::TearDown();
   }
@@ -80,6 +92,16 @@ class PromosManagerCoordinatorTest : public PlatformTest {
   void CreatePromosManagerCoordinator() {
     Browser* browser =
         scene_state_.browserProviderInterface.mainBrowserProvider.browser;
+    mock_pip_handler_ = OCMProtocolMock(@protocol(PictureInPictureCommands));
+    [browser->GetCommandDispatcher()
+        startDispatchingToTarget:mock_pip_handler_
+                     forProtocol:@protocol(PictureInPictureCommands)];
+    mock_promos_manager_handler_ =
+        OCMProtocolMock(@protocol(PromosManagerCommands));
+    [browser->GetCommandDispatcher()
+        startDispatchingToTarget:mock_promos_manager_handler_
+                     forProtocol:@protocol(PromosManagerCommands)];
+
     coordinator_ = [[PromosManagerCoordinator alloc]
             initWithBaseViewController:view_controller_
                                browser:browser
@@ -111,6 +133,8 @@ class PromosManagerCoordinatorTest : public PlatformTest {
   FakeStartupInformation* startup_information_;
   ProfileState* profile_state_;
   FakeSceneState* scene_state_;
+  id mock_pip_handler_;
+  id mock_promos_manager_handler_;
 };
 
 }  // namespace
@@ -217,6 +241,62 @@ TEST_F(PromosManagerCoordinatorTest, DisplayPromoCallbackUINotAvailableTest) {
   // Set UI not available for promo display before calling
   // ```displayPromoCallback```
   scene_state_.activationLevel = SceneActivationLevelBackground;
+  [mockCoordinator displayPromoCallback];
+
+  EXPECT_OCMOCK_VERIFY(mockCoordinator);
+}
+
+// Tests that promo will not be displayed if the base view controller is
+// already presenting another view controller.
+TEST_F(PromosManagerCoordinatorTest, DisplayPromoCallbackBaseVCPresentingTest) {
+  // Prepare UI for promo display.
+  SetupUIForPromoDisplay();
+  CreatePromosManagerCoordinator();
+
+  id mockCoordinator = OCMPartialMock(coordinator_);
+
+  // Force test promos so there at least one promo to display.
+  ForceTestPromo();
+
+  // Check that test promo will not be displayed.
+  PromoDisplayData promoDisplayData = PromoDisplayData{
+      .promo = promos_manager::Promo::Test, .was_forced = true};
+  OCMReject([mockCoordinator displayPromo:promoDisplayData]);
+
+  // Simulate that the base view controller is already presenting another view
+  // controller.
+  id mockViewController = OCMPartialMock(view_controller_);
+  UIViewController* dummyPresentedVC = [[UIViewController alloc] init];
+  OCMStub([mockViewController presentedViewController])
+      .andReturn(dummyPresentedVC);
+
+  [mockCoordinator displayPromoCallback];
+
+  EXPECT_OCMOCK_VERIFY(mockCoordinator);
+}
+
+// Tests that promo will not be displayed if the base view controller is
+// not in the view hierarchy.
+TEST_F(PromosManagerCoordinatorTest,
+       DisplayPromoCallbackBaseVCNotInHierarchyTest) {
+  // Prepare UI for promo display.
+  SetupUIForPromoDisplay();
+  CreatePromosManagerCoordinator();
+
+  id mockCoordinator = OCMPartialMock(coordinator_);
+
+  // Force test promos so there at least one promo to display.
+  ForceTestPromo();
+
+  // Check that test promo will not be displayed.
+  PromoDisplayData promoDisplayData = PromoDisplayData{
+      .promo = promos_manager::Promo::Test, .was_forced = true};
+  OCMReject([mockCoordinator displayPromo:promoDisplayData]);
+
+  // Simulate that the view controller is not in the view hierarchy.
+  id mockView = OCMPartialMock(view_controller_.view);
+  OCMStub([mockView window]).andReturn(nil);
+
   [mockCoordinator displayPromoCallback];
 
   EXPECT_OCMOCK_VERIFY(mockCoordinator);

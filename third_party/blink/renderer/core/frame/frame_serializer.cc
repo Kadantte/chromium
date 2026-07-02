@@ -120,23 +120,22 @@ String ReplaceAllCaseInsensitive(
     String source,
     const String& from,
     base::FunctionRef<String(const String&)> transform) {
-  size_t offset = 0;
-  size_t pos;
+  wtf_size_t offset = 0;
+  wtf_size_t pos;
   StringBuilder builder;
   for (;;) {
-    pos = source.Find(from, offset,
-                      TextCaseSensitivity::kTextCaseASCIIInsensitive);
+    pos = source.FindIgnoringAsciiCase(from, offset);
     if (pos == kNotFound) {
       break;
     }
-    builder.Append(source.Substring(offset, pos - offset));
-    builder.Append(transform(source.Substring(pos, from.length())));
+    builder.Append(source.subview(offset, pos - offset));
+    builder.Append(transform(source.substr(pos, from.length())));
     offset = pos + from.length();
   }
   if (builder.empty()) {
     return source;
   }
-  builder.Append(source.Substring(offset));
+  builder.Append(source.subview(offset));
   return builder.ToString();
 }
 }  // namespace internal
@@ -154,7 +153,7 @@ using mojom::blink::FormControlType;
 
 KURL MakePseudoUrl(StringView type) {
   return KURL(
-      StrCat({"cid:", type, "-", CreateCanonicalUUIDString(), "@mhtml.blink"}));
+      StrCat({"cid:", type, "-", CreateCanonicalUuidString(), "@mhtml.blink"}));
 }
 
 KURL MakePseudoCSSUrl() {
@@ -426,9 +425,9 @@ class SerializerMarkupAccumulator : public MarkupAccumulator {
       MultiResourcePacker* resource_serializer,
       WebFrameSerializer::MHTMLPartsGenerationDelegate* web_delegate,
       Document& document)
-      : MarkupAccumulator(kResolveAllURLs,
-                          IsA<HTMLDocument>(document) ? SerializationType::kHTML
-                                                      : SerializationType::kXML,
+      : MarkupAccumulator(ResolveUrls::kAll,
+                          IsA<HTMLDocument>(document) ? SerializationType::kHtml
+                                                      : SerializationType::kXml,
                           ShadowRootInclusion()),
         resource_serializer_(resource_serializer),
         web_delegate_(web_delegate),
@@ -500,7 +499,7 @@ class SerializerMarkupAccumulator : public MarkupAccumulator {
     }
 
     // The z-index should be greater than the threshold.
-    if (box->Style()->EffectiveZIndex() < kPopupOverlayZIndexThreshold) {
+    if (box->StyleRef().EffectiveZIndex() < kPopupOverlayZIndexThreshold) {
       return false;
     }
 
@@ -533,6 +532,8 @@ class SerializerMarkupAccumulator : public MarkupAccumulator {
     // The special attribute in a template element to denote the shadow DOM
     // should only be generated from MHTML serialization. If it is found in the
     // original page, it should be ignored.
+    // TODO(crbug.com/503865896): These checks are case-sensitive and might be
+    // bypassed by mixed-case attributes created via setAttributeNS.
     if (IsA<HTMLTemplateElement>(element) &&
         (attribute.LocalName() == kShadowModeAttributeName ||
          attribute.LocalName() == kShadowDelegatesFocusAttributeName) &&
@@ -543,6 +544,8 @@ class SerializerMarkupAccumulator : public MarkupAccumulator {
     // If srcdoc attribute for frame elements will be rewritten as src attribute
     // containing link instead of html contents, don't ignore the attribute.
     // Bail out now to avoid the check in Element::isScriptingAttribute.
+    // TODO(crbug.com/503865896): This check is case-sensitive and might be
+    // bypassed by mixed-case attributes created via setAttributeNS.
     bool is_src_doc_attribute = IsA<HTMLFrameElementBase>(element) &&
                                 attribute.GetName() == html_names::kSrcdocAttr;
     String new_link_for_the_element;
@@ -552,6 +555,8 @@ class SerializerMarkupAccumulator : public MarkupAccumulator {
     }
 
     //  Drop integrity attribute for those links with subresource loaded.
+    // TODO(crbug.com/503865896): This check is case-sensitive and might be
+    // bypassed by mixed-case attributes created via setAttributeNS.
     auto* html_link_element = DynamicTo<HTMLLinkElement>(element);
     if (attribute.LocalName() == html_names::kIntegrityAttr &&
         html_link_element && html_link_element->sheet()) {
@@ -563,6 +568,35 @@ class SerializerMarkupAccumulator : public MarkupAccumulator {
     if (element.IsScriptingAttribute(attribute)) {
       return EmitAttributeChoice::kIgnore;
     }
+
+    // Check if the attribute is a scripting attribute in a case-insensitive
+    // way. While attributes are usually lowercased by the HTML parser, they
+    // can be created with mixed-case via DOM APIs like setAttributeNS.
+    // When saved to MHTML and later reopened, the HTML parser will lowercase
+    // them, potentially activating an event handler that was bypassed during
+    // serialization.
+    //
+    // We perform this check for all attributes, regardless of namespace,
+    // because the HTML parser is namespace-unaware and will lowercase any
+    // attribute name it encounters. Attributes with non-null namespaces
+    // (that aren't well-known to the HTML serializer) are emitted as regular
+    // attributes that the parser will then treat as potential event handlers.
+    // See crbug.com/503865896.
+    AtomicString lower_name = attribute.LocalName().ToAsciiLower();
+    if (lower_name != attribute.LocalName()) {
+      // We use g_null_atom for the prefix and namespace to simulate how the
+      // attribute will be treated by a namespace-unaware HTML parser upon
+      // re-parsing. This ensures that IsScriptingAttribute correctly identifies
+      // event handlers (which must be in the null namespace) and URL
+      // attributes (which are compared against null-namespaced QualifiedNames).
+      Attribute lower_attribute(
+          QualifiedName(g_null_atom, lower_name, g_null_atom),
+          attribute.Value());
+      if (element.IsScriptingAttribute(lower_attribute)) {
+        return EmitAttributeChoice::kIgnore;
+      }
+    }
+
     return EmitAttributeChoice::kEmit;
   }
 
@@ -667,10 +701,7 @@ class SerializerMarkupAccumulator : public MarkupAccumulator {
   }
 
   EmitElementChoice WillProcessElement(const Element& element) override {
-    if (IsA<HTMLScriptElement>(element)) {
-      return EmitElementChoice::kIgnore;
-    }
-    if (IsA<HTMLNoScriptElement>(element)) {
+    if (element.IsScriptElement() || IsA<HTMLNoScriptElement>(element)) {
       return EmitElementChoice::kIgnore;
     }
     auto* meta = DynamicTo<HTMLMetaElement>(element);
@@ -882,7 +913,7 @@ function main(metadata) {
     builder.Append("})();");
     resource_serializer_->AddToResources(SerializedResource(
         script_url, "text/javascript",
-        SharedBuffer::Create(builder.ToString().RawByteSpan())));
+        SharedBuffer::Create(StringView(builder).RawByteSpan())));
   }
 
   // Add `sheet` as a new resource and emit a <link> element to load it.
@@ -893,8 +924,7 @@ function main(metadata) {
 
     KURL pseudo_sheet_url = MakePseudoCSSUrl();
     AppendLinkElement(markup_, pseudo_sheet_url);
-    SerializeCSSStyleSheet(static_cast<CSSStyleSheet&>(sheet),
-                           pseudo_sheet_url);
+    SerializeCSSStyleSheet(To<CSSStyleSheet>(sheet), pseudo_sheet_url);
   }
 
   void AppendStylesheets(StyleSheetList& sheets, bool style_element_only) {
@@ -923,8 +953,7 @@ function main(metadata) {
         pseudo_sheet_url = iter->value;
       } else {
         pseudo_sheet_url = MakePseudoCSSUrl();
-        SerializeCSSStyleSheet(static_cast<CSSStyleSheet&>(*sheet),
-                               pseudo_sheet_url);
+        SerializeCSSStyleSheet(*sheet, pseudo_sheet_url);
         stylesheet_pseudo_urls_.insert(sheet, pseudo_sheet_url);
       }
 
@@ -945,8 +974,7 @@ function main(metadata) {
 
       KURL pseudo_sheet_url = MakePseudoCSSUrl();
       AppendLinkElement(markup_, pseudo_sheet_url);
-      SerializeCSSStyleSheet(static_cast<CSSStyleSheet&>(*sheet),
-                             pseudo_sheet_url);
+      SerializeCSSStyleSheet(To<CSSStyleSheet>(*sheet), pseudo_sheet_url);
     }
   }
 
@@ -1058,7 +1086,7 @@ function main(metadata) {
       }
     } else if (const auto* style = DynamicTo<HTMLStyleElement>(element)) {
       if (CSSStyleSheet* sheet = style->sheet()) {
-        SerializeCSSStyleSheet(*sheet, NullURL());
+        SerializeCSSStyleSheet(*sheet, NullUrl());
       }
     } else if (const auto* plugin = DynamicTo<HTMLPlugInElement>(&element)) {
       if (plugin->IsImageType() && plugin->ImageLoader()) {
@@ -1096,12 +1124,12 @@ function main(metadata) {
     return blink::internal::ReplaceAllCaseInsensitive(
         css_text.ToString(), "</style", [](const String& text) {
           // \3C = '<'.
-          return StrCat({"\\3C/", text.Substring(2)});
+          return StrCat({"\\3C/", text.subview(2)});
         });
   }
 
   void SerializeCSSFile(Document& document, const KURL& url) {
-    if (!url.IsValid() || !url.ProtocolIsInHTTPFamily()) {
+    if (!url.IsValid() || !url.ProtocolIsInHttpFamily()) {
       return;
     }
 
@@ -1144,7 +1172,7 @@ function main(metadata) {
       // that case.
       css_text.Append("@charset \"");
       css_text.Append(charset.IsValid()
-                          ? charset.GetName().GetString().DeprecatedLower()
+                          ? charset.GetName().GetString().ToAsciiLower()
                           : "utf-8");
       css_text.Append("\";\n\n");
 
@@ -1163,13 +1191,11 @@ function main(metadata) {
       std::string text;
       if (charset.IsValid()) {
         TextEncoding text_encoding(charset);
-        text = text_encoding.Encode(
-            text_string,
-            UnencodableHandling::kCSSEncodedEntitiesForUnencodables);
+        text =
+            text_encoding.Encode(text_string, UnencodableHandling::kCssEscape);
       } else {
-        text = Utf8Encoding().Encode(
-            text_string,
-            UnencodableHandling::kCSSEncodedEntitiesForUnencodables);
+        text =
+            Utf8Encoding().Encode(text_string, UnencodableHandling::kCssEscape);
       }
 
       resource_serializer_->AddToResources(String("text/css"),
@@ -1401,8 +1427,8 @@ void FrameSerializer::SerializeFrame(
     String text =
         accumulator.SerializeNodes<EditingStrategy>(document, kIncludeNode);
 
-    std::string frame_html = document.Encoding().Encode(
-        text, UnencodableHandling::kEntitiesForUnencodables);
+    std::string frame_html =
+        document.Encoding().Encode(text, UnencodableHandling::kXmlCharRef);
     resource_serializer->AddMainResource(document.SuggestedMIMEType(),
                                          SharedBuffer::Create(frame_html), url);
     resource_serializer->Finish(std::move(callback));

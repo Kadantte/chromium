@@ -194,7 +194,7 @@ class CORE_EXPORT StyleResolverState {
   void SetTextSizeAdjust(TextSizeAdjust);
   void SetTextOrientation(ETextOrientation);
   void SetPositionAnchor(const StylePositionAnchor&);
-  void SetPositionAreaOffsets(const std::optional<PositionAreaOffsets>&);
+  void SetPositionArea(PositionArea);
 
   // Return the writing-direction of the abs-pos container for an anchored
   // element.
@@ -205,10 +205,10 @@ class CORE_EXPORT StyleResolverState {
   // If the input CSSValue is a CSSLightDarkValuePair, return the light or dark
   // CSSValue based on the UsedColorScheme. For all other values, just return a
   // reference to the passed value.
-  const CSSValue& ResolveLightDarkPair(const CSSValue&);
+  const CSSValue& ResolveLightDarkPair(const CSSValue&) const;
 
-  // If the input CSSValue is a CSSGradientValue, or a value that nests
-  // CSSGradientValues, resolve its "calc" functions.
+  // Resolve image values that depend on style state, including light-dark()
+  // selection and calc() inside nested gradients.
   const CSSValue& ResolveGradients(const CSSValue&) const;
   CSSValue& ResolveGradients(CSSValue&) const;
 
@@ -267,15 +267,6 @@ class CORE_EXPORT StyleResolverState {
 
   void InvalidateLengthConversionData() {
     css_to_length_conversion_data_dirty_ = true;
-  }
-
-  float TextAutosizingMultiplier() const {
-    const ComputedStyle* old_style = GetElement().GetComputedStyle();
-    if (!IsForPseudoElement() && old_style) {
-      return old_style->TextAutosizingMultiplier();
-    } else {
-      return 1.0f;
-    }
   }
 
   void SetHasTreeScopedReference() { has_tree_scoped_reference_ = true; }

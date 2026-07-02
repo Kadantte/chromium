@@ -4,6 +4,7 @@
 
 #include "chrome/browser/supervised_user/classify_url_navigation_throttle.h"
 
+#include <array>
 #include <map>
 #include <memory>
 #include <string>
@@ -15,10 +16,14 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/with_feature_override.h"
 #include "build/build_config.h"
+#include "chrome/browser/profiles/profile_key.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/supervised_user/android/supervised_user_service_platform_delegate.h"
 #include "chrome/browser/supervised_user/family_link_settings_service_factory.h"
 #include "chrome/browser/supervised_user/supervised_user_service_factory.h"
 #include "chrome/browser/supervised_user/supervised_user_test_util.h"
 #include "chrome/browser/supervised_user/supervised_user_url_filtering_service_factory.h"
+#include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
@@ -35,6 +40,7 @@
 #include "components/supervised_user/test_support/kids_management_api_server_mock.h"
 #include "components/supervised_user/test_support/supervised_user_url_filter_test_utils.h"
 #include "content/public/browser/navigation_throttle.h"
+#include "content/public/browser/storage_partition.h"
 #include "content/public/test/mock_navigation_handle.h"
 #include "content/public/test/mock_navigation_throttle_registry.h"
 #include "content/public/test/navigation_simulator.h"
@@ -278,7 +284,7 @@ enum class SupervisionMode {
 };
 
 struct AsyncCheckerTestCase {
-  std::string name;
+  const char* name;
   SupervisionMode mode;
 };
 
@@ -499,14 +505,14 @@ INSTANTIATE_TEST_SUITE_P(
                      testing::ValuesIn(kAsyncCheckerTestCases)),
     [](const auto& info) {
       bool is_feature_enabled = std::get<0>(info.param);
-      return std::get<1>(info.param).name + "_With" +
+      return std::string(std::get<1>(info.param).name) + "_With" +
              kSupervisedUserUseUrlFilteringService.name +
              (is_feature_enabled ? "Enabled" : "Disabled");
     });
 
 struct ParallelizationTestCase {
-  std::string name;
-  std::vector<std::string> redirect_chain;
+  const char* name;
+  std::array<const char*, 3> redirect_chain;
 };
 
 class ClassifyUrlNavigationThrottleParallelizationTest
@@ -526,7 +532,7 @@ class ClassifyUrlNavigationThrottleParallelizationTest
     CHECK_EQ(GetTestCase().redirect_chain.size(), 3U)
         << "Tests assume one request and two redirects";
     std::vector<GURL> urls;
-    for (const std::string& redirect : GetTestCase().redirect_chain) {
+    for (const char* redirect : GetTestCase().redirect_chain) {
       urls.emplace_back(redirect);
     }
     return urls;
@@ -848,7 +854,8 @@ INSTANTIATE_TEST_SUITE_P(,
                                           testing::ValuesIn(kTestCases)),
                          [](const auto& info) {
                            bool is_feature_enabled = std::get<0>(info.param);
-                           return std::get<1>(info.param).name + "_With" +
+                           return std::string(std::get<1>(info.param).name) +
+                                  "_With" +
                                   kSupervisedUserUseUrlFilteringService.name +
                                   (is_feature_enabled ? "Enabled" : "Disabled");
                          });

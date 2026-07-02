@@ -5,14 +5,16 @@
 #include "chrome/browser/ui/tabs/tab_list_bridge.h"
 
 #include <deque>
+#include <optional>
 
 #include "base/check_op.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/scoped_feature_list.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/resource_coordinator/tab_lifecycle_unit_external.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_sync_service_initialized_observer.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
@@ -23,6 +25,7 @@
 #include "components/tab_groups/tab_group_visual_data.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -38,6 +41,7 @@ struct Event {
     ACTIVE_TAB_CHANGED,
     TAB_REMOVED,
     TAB_MOVED,
+    TAB_REPLACED,
   };
 
   Event(Type type, raw_ptr<tabs::TabInterface> tab)
@@ -55,6 +59,10 @@ struct Event {
   // Used for TAB_MOVED events.
   int from_index = -1;
   int to_index = -1;
+
+  // Used for TAB_REPLACED events.
+  raw_ptr<content::WebContents> old_contents = nullptr;
+  raw_ptr<content::WebContents> new_contents = nullptr;
 };
 
 // A fake implementation of TabListInterfaceObserver that records callback
@@ -79,15 +87,19 @@ class FakeObserver : public TabListInterfaceObserver {
   }
 
   // TabListInterfaceObserver:
-  void OnTabAdded(tabs::TabInterface* tab, int index) override {
+  void OnTabAdded(TabListInterface& tab_list,
+                  tabs::TabInterface* tab,
+                  int index) override {
     events_.emplace_back(Event::Type::TAB_ADDED, tab);
   }
 
-  void OnActiveTabChanged(tabs::TabInterface* tab) override {
+  void OnActiveTabChanged(TabListInterface& tab_list,
+                          tabs::TabInterface* tab) override {
     events_.emplace_back(Event::Type::ACTIVE_TAB_CHANGED, tab);
   }
 
-  void OnTabRemoved(tabs::TabInterface* tab,
+  void OnTabRemoved(TabListInterface& tab_list,
+                    tabs::TabInterface* tab,
                     TabRemovedReason removed_reason) override {
     Event event(Event::Type::TAB_REMOVED, tab);
 
@@ -96,12 +108,23 @@ class FakeObserver : public TabListInterfaceObserver {
     events_.push_back(std::move(event));
   }
 
-  void OnTabMoved(tabs::TabInterface* tab,
+  void OnTabMoved(TabListInterface& tab_list,
+                  tabs::TabInterface* tab,
                   int from_index,
                   int to_index) override {
     Event event(Event::Type::TAB_MOVED, tab);
     event.from_index = from_index;
     event.to_index = to_index;
+    events_.push_back(std::move(event));
+  }
+
+  void OnWebContentsReplaced(TabListInterface& tab_list,
+                             tabs::TabInterface* tab,
+                             content::WebContents* old_contents,
+                             content::WebContents* new_contents) override {
+    Event event(Event::Type::TAB_REPLACED, tab);
+    event.old_contents = old_contents;
+    event.new_contents = new_contents;
     events_.push_back(std::move(event));
   }
 
@@ -420,6 +443,30 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, CloseTab) {
   EXPECT_EQ(1, tab_list_interface->GetTabCount());
 }
 
+IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, DetachWebContents) {
+  TabListInterface* tab_list_interface = TabListBridge::From(browser());
+  ASSERT_TRUE(tab_list_interface);
+
+  EXPECT_EQ(1, tab_list_interface->GetTabCount());
+
+  const GURL url("http://one.example");
+  ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
+      browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
+  EXPECT_EQ(2, tab_list_interface->GetTabCount());
+
+  tabs::TabInterface* tab_to_detach = tab_list_interface->GetActiveTab();
+  ASSERT_TRUE(tab_to_detach);
+  content::WebContents* expected_contents = tab_to_detach->GetContents();
+
+  std::unique_ptr<content::WebContents> detached_contents =
+      tab_list_interface->DetachWebContents(tab_to_detach->GetHandle());
+
+  EXPECT_EQ(1, tab_list_interface->GetTabCount());
+  EXPECT_TRUE(detached_contents);
+  EXPECT_EQ(expected_contents, detached_contents.get());
+}
+
 IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, MoveTab) {
   const GURL url1("http://one.example");
   const GURL url2("http://two.example");
@@ -616,7 +663,7 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest,
       /*user_gesture=*/true);
   // params.window = window2.release();
   Browser* browser2 = Browser::Create(params);
-  BrowserList::SetLastActive(browser2);
+  ui_test_utils::DeprecatedFakeActivateBrowser(browser2);
 
   ASSERT_FALSE(browser2->tab_strip_model()->SupportsTabGroups());
 
@@ -950,6 +997,7 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, OpenTab) {
   const GURL url1("about:blank?q=1");
   const GURL url2("about:blank?q=2");
   const GURL url3("about:blank?q=3");
+  const GURL url4("about:blank?q=4");
 
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
       browser(), url1, WindowOpenDisposition::CURRENT_TAB,
@@ -975,6 +1023,38 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, OpenTab) {
   EXPECT_THAT(tab_list_interface->GetAllTabs(),
               testing::ElementsAre(MatchesTab(url2), MatchesTab(url1),
                                    MatchesTab(url3)));
+
+  // Open a tab at the end of the tab strip by specifying the tab strip size
+  // as the index.
+  tab_list_interface->OpenTab(url4, tab_list_interface->GetTabCount());
+  EXPECT_EQ(3, tab_list_interface->GetActiveIndex());
+  EXPECT_TRUE(content::WaitForLoadStop(tab_strip_model->GetWebContentsAt(3)));
+  EXPECT_THAT(tab_list_interface->GetAllTabs(),
+              testing::ElementsAre(MatchesTab(url2), MatchesTab(url1),
+                                   MatchesTab(url3), MatchesTab(url4)));
+}
+
+IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, InsertWebContentsAt) {
+  SetupTabs(browser(), 3);
+
+  TabListInterface* tab_list_interface = TabListInterface::From(browser());
+  ASSERT_TRUE(tab_list_interface);
+  EXPECT_EQ(3, tab_list_interface->GetTabCount());
+
+  // Insert WebContents to a new tab.
+  auto web_contents =
+      content::WebContents::Create(content::WebContents::CreateParams(
+          browser()->profile(),
+          content::SiteInstance::Create(browser()->profile())));
+  auto* web_contents_ptr = web_contents.get();
+  tabs::TabInterface* new_tab = tab_list_interface->InsertWebContentsAt(
+      2, std::move(web_contents), false, std::nullopt);
+
+  // Now we should have 4 tabs.
+  EXPECT_EQ(4, tab_list_interface->GetTabCount());
+  ASSERT_TRUE(new_tab);
+  EXPECT_EQ(new_tab, tab_list_interface->GetTab(2));
+  EXPECT_EQ(web_contents_ptr, new_tab->GetContents());
 }
 
 IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, DiscardTab) {
@@ -1040,8 +1120,8 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, MoveTabGroupToWindow) {
   EXPECT_EQ("0g0 1g0 2",
             GetTabStripStateString(source_model, /*annotate_groups=*/true));
 
-  source_list_interface->MoveTabGroupToWindow(*group_id,
-                                              second_browser->session_id(), 1);
+  EXPECT_TRUE(source_list_interface->MoveTabGroupToWindow(
+      *group_id, second_browser->session_id(), 1));
 
   // Verify that the group has been moved to the destination window.
   EXPECT_EQ("2",
@@ -1089,8 +1169,8 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest,
   // Now move the group to the second window. The group should be moved to the
   // end since the closest valid index that isn't in the middle of another tab
   // group is 3.
-  source_list_interface->MoveTabGroupToWindow(*group_id,
-                                              second_browser->session_id(), 2);
+  EXPECT_TRUE(source_list_interface->MoveTabGroupToWindow(
+      *group_id, second_browser->session_id(), 2));
 
   EXPECT_EQ("2",
             GetTabStripStateString(source_model, /*annotate_groups=*/true));
@@ -1181,11 +1261,55 @@ IN_PROC_BROWSER_TEST_F(TabListBridgeBrowserTest, IsTabListEditable) {
   EXPECT_TRUE(TabListInterface::CanEditTabList(*profile));
 
   // Change the first tab list to be un-editable.
-  browser1->window()->DisableTabStripEditingForTesting();
+  BrowserWindow::FromBrowser(browser1)->DisableTabStripEditingForTesting();
 
   EXPECT_FALSE(tab_list1->IsThisTabListEditable());
   EXPECT_TRUE(tab_list2->IsThisTabListEditable());
   // Since one tab list is ineditable, the global check should not allow
   // editing.
   EXPECT_FALSE(TabListInterface::CanEditTabList(*profile));
+}
+
+class TabListBridgeWebContentsDiscardDisabledBrowserTest
+    : public TabListBridgeBrowserTest {
+ public:
+  TabListBridgeWebContentsDiscardDisabledBrowserTest() {
+    scoped_feature_list_.InitAndDisableFeature(features::kWebContentsDiscard);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(TabListBridgeWebContentsDiscardDisabledBrowserTest,
+                       WebContentsReplaced) {
+  const GURL url1("http://one.example");
+  ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
+      browser(), url1, WindowOpenDisposition::CURRENT_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
+
+  TabListInterface* tab_list_interface = TabListInterface::From(browser());
+  ASSERT_TRUE(tab_list_interface);
+
+  FakeObserver observer(tab_list_interface);
+
+  TabStripModel* tab_strip_model = browser()->tab_strip_model();
+  ASSERT_TRUE(tab_strip_model);
+
+  content::WebContents* old_contents = tab_strip_model->GetWebContentsAt(0);
+
+  auto new_contents =
+      content::WebContents::Create(content::WebContents::CreateParams(
+          browser()->profile(),
+          content::SiteInstance::Create(browser()->profile())));
+  content::WebContents* new_contents_ptr = new_contents.get();
+
+  // Replace the WebContents.
+  auto discarded_contents =
+      tab_strip_model->DiscardWebContentsAt(0, std::move(new_contents));
+
+  // We should have received one TAB_REPLACED event.
+  auto event = observer.ReadEvent(Event::Type::TAB_REPLACED);
+  EXPECT_EQ(old_contents, event.old_contents);
+  EXPECT_EQ(new_contents_ptr, event.new_contents);
 }

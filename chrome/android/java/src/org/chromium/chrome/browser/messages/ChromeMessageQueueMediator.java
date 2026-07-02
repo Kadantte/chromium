@@ -9,7 +9,7 @@ import android.os.Handler;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.CallbackController;
-import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -144,13 +144,14 @@ public class ChromeMessageQueueMediator implements MessageQueueDelegate, UrlFocu
 
     /**
      * @param browserControlsManager The browser controls manager able to toggle the visibility of
-     *                               browser controls.
+     *     browser controls.
      * @param messageContainerCoordinator The coordinator able to show and hide message container.
      * @param activityTabProvider The {@link ActivityTabProvider} to get current tab of activity.
      * @param layoutStateProviderOneShotSupplier Supplier of the {@link LayoutStateProvider}.
-     * @param modalDialogManagerSupplier Supplier of the {@link ModalDialogManager}.
+     * @param modalDialogManagerSupplier The {@link NonNullObservableSupplier} of the {@link
+     *     ModalDialogManager}.
      * @param bottomSheetController The {@link BottomSheetController} able to observe the
-     *                              open/closed state of bottom sheets.
+     *     open/closed state of bottom sheets.
      * @param activityLifecycleDispatcher The dispatcher of activity life cycles.
      * @param messageDispatcher The {@link ManagedMessageDispatcher} able to suspend/resume queue.
      */
@@ -159,7 +160,7 @@ public class ChromeMessageQueueMediator implements MessageQueueDelegate, UrlFocu
             MessageContainerCoordinator messageContainerCoordinator,
             ActivityTabProvider activityTabProvider,
             OneshotSupplier<LayoutStateProvider> layoutStateProviderOneShotSupplier,
-            MonotonicObservableSupplier<ModalDialogManager> modalDialogManagerSupplier,
+            NonNullObservableSupplier<ModalDialogManager> modalDialogManagerSupplier,
             BottomSheetController bottomSheetController,
             ActivityLifecycleDispatcher activityLifecycleDispatcher,
             ManagedMessageDispatcher messageDispatcher) {
@@ -296,6 +297,7 @@ public class ChromeMessageQueueMediator implements MessageQueueDelegate, UrlFocu
 
     /**
      * Suspend queue so that the queue will not show a new message until it is resumed.
+     *
      * @return A token of {@link TokenHolder} required when resuming the queue.
      */
     int suspendQueue() {
@@ -317,7 +319,7 @@ public class ChromeMessageQueueMediator implements MessageQueueDelegate, UrlFocu
         if (tab == null || tab.isDestroyed()) return false;
         return TabBrowserControlsConstraintsHelper.getConstraints(tab)
                         == BrowserControlsState.HIDDEN
-                || BrowserControlsUtils.areBrowserControlsFullyVisible(mBrowserControlsManager);
+                || BrowserControlsUtils.areTopControlsFullyVisible(mBrowserControlsManager);
     }
 
     /**
@@ -378,8 +380,7 @@ public class ChromeMessageQueueMediator implements MessageQueueDelegate, UrlFocu
                 boolean requestNewFrame,
                 boolean isVisibilityForced) {
             if (mRunOnControlsFullyVisible != null
-                    && BrowserControlsUtils.areBrowserControlsFullyVisible(
-                            mBrowserControlsManager)) {
+                    && BrowserControlsUtils.areTopControlsFullyVisible(mBrowserControlsManager)) {
                 mRunOnControlsFullyVisible.run();
                 mRunOnControlsFullyVisible = null;
             }

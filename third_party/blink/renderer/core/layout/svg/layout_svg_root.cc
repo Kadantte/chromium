@@ -59,6 +59,7 @@ namespace blink {
 LayoutSVGRoot::LayoutSVGRoot(SVGElement* node)
     : LayoutReplaced(node),
       needs_transform_update_(true),
+      container_scale_changed_(false),
       has_non_isolated_blending_descendants_(false),
       has_non_isolated_blending_descendants_dirty_(false) {}
 
@@ -192,8 +193,10 @@ void LayoutSVGRoot::LayoutRoot(const PhysicalRect& content_rect) {
       SelfNeedsFullLayout() || old_content_size != content_rect.size;
 
   SVGLayoutInfo layout_info;
-  layout_info.scale_factor_changed = screen_scale_factor_changed;
+  layout_info.scale_factor_changed =
+      screen_scale_factor_changed || container_scale_changed_;
   layout_info.viewport_changed = viewport_may_have_changed;
+  container_scale_changed_ = false;
 
   const SVGLayoutResult content_result = content_.Layout(layout_info);
 
@@ -234,6 +237,17 @@ PhysicalRect LayoutSVGRoot::ComputeContentsVisualOverflow() const {
   // consider to be "infinity".
   return Intersection(PhysicalRect::EnclosingRect(content_visual_rect),
                       PhysicalRect(InfiniteIntRect()));
+}
+
+PhysicalRect LayoutSVGRoot::VisualOverflowRectIncludingFilters() const {
+  NOT_DESTROYED();
+  gfx::RectF content_visual_rect =
+      content_.ComputeVisualOverflowRectIncludingFilters();
+  content_visual_rect =
+      local_to_border_box_transform_.MapRect(content_visual_rect);
+  PhysicalRect rect = PhysicalRect::EnclosingRect(content_visual_rect);
+  rect = ApplyFiltersToRect(rect);
+  return Intersection(rect, PhysicalRect(InfiniteIntRect()));
 }
 
 void LayoutSVGRoot::PaintReplaced(const PaintInfo& paint_info,

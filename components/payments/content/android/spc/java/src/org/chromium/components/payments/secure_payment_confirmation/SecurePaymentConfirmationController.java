@@ -21,7 +21,6 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
 import org.chromium.components.payments.PaymentApp.PaymentEntityLogo;
-import org.chromium.components.payments.R;
 import org.chromium.components.payments.SPCTransactionMode;
 import org.chromium.components.payments.secure_payment_confirmation.SecurePaymentConfirmationBottomSheetObserver.ControllerDelegate;
 import org.chromium.components.payments.secure_payment_confirmation.SecurePaymentConfirmationProperties.ItemProperties;
@@ -59,6 +58,7 @@ public class SecurePaymentConfirmationController implements ControllerDelegate {
     /** There is only a single model/view for SPC items so only a single item type is needed. */
     private static final int SPC_ITEM_TYPE = 0;
 
+    // LINT.IfChange(SecurePaymentRequestOutcome)
     @IntDef({
         SpcResponseStatus.UNKNOWN,
         SpcResponseStatus.ACCEPT,
@@ -75,6 +75,8 @@ public class SecurePaymentConfirmationController implements ControllerDelegate {
         int OPT_OUT = 4;
         int COUNT = 5;
     }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/payment/enums.xml:SecurePaymentRequestOutcome)
 
     private final SecurePaymentConfirmationBottomSheetContent mContent;
     private final SecurePaymentConfirmationView mView;

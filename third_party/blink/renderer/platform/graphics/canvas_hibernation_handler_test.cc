@@ -20,7 +20,7 @@
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_resource_provider.h"
+#include "third_party/blink/renderer/platform/graphics/canvas_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
 #include "third_party/blink/renderer/platform/graphics/skia/skia_utils.h"
 #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
@@ -52,17 +52,26 @@ class TestHibernationHandlerDelegate
     is_hibernating_ = is_hibernating;
   }
 
-  CanvasResourceProvider* GetResourceProvider() const override {
+  Canvas2DResourceProvider* GetSharedImageProvider() const override {
     return resource_provider_.get();
+  }
+  bool HasResourceProvider() const override {
+    return resource_provider_ != nullptr;
   }
   void ResetResourceProvider() override { resource_provider_.reset(); }
 
+  std::optional<cc::PaintRecord> FlushCanvas(FlushReason reason) override {
+    if (resource_provider_) {
+      return resource_provider_->Flush(reason);
+    }
+    return std::nullopt;
+  }
+
   void CreateResourceProvider() {
-    CHECK(!GetResourceProvider());
-    resource_provider_ = Canvas2DResourceProviderSharedImage::Create(
+    CHECK(!GetSharedImageProvider());
+    resource_provider_ = Canvas2DResourceProvider::CreateWithClear(
         size_, GetN32FormatForCanvas(), kPremul_SkAlphaType,
-        gfx::ColorSpace::CreateSRGB(),
-        CanvasResourceProvider::ShouldInitialize::kCallClear,
+        gfx::ColorSpace::CreateSRGB(), gfx::HDRMetadata(),
         SharedGpuContext::ContextProviderWrapper(), RasterMode::kGPU,
         gpu::SHARED_IMAGE_USAGE_DISPLAY_READ | gpu::SHARED_IMAGE_USAGE_SCANOUT);
   }
@@ -74,7 +83,7 @@ class TestHibernationHandlerDelegate
   }
 
  private:
-  std::unique_ptr<CanvasResourceProvider> resource_provider_;
+  std::unique_ptr<Canvas2DResourceProvider> resource_provider_;
   bool page_visible_ = true;
   bool is_hibernating_ = false;
   gfx::Size size_;
@@ -170,7 +179,7 @@ void SetPageVisible(
   } else {
     // End hibernation.
     if (hibernation_handler->IsHibernating()) {
-      if (!delegate->GetResourceProvider()) {
+      if (!delegate->GetSharedImageProvider()) {
         delegate->CreateResourceProvider();
       }
       hibernation_handler->Clear();
@@ -190,12 +199,12 @@ std::map<std::string, uint64_t> GetEntries(
 }
 
 void Draw(TestHibernationHandlerDelegate& delegate) {
-  if (!delegate.GetResourceProvider()) {
+  if (!delegate.GetSharedImageProvider()) {
     delegate.CreateResourceProvider();
   }
-  CanvasResourceProvider* provider = delegate.GetResourceProvider();
-  provider->Canvas().drawLine(0, 0, 2, 2, cc::PaintFlags());
-  provider->FlushCanvas(FlushReason::kOther);
+  auto* provider = delegate.GetSharedImageProvider();
+  provider->GetCanvasForTesting().drawLine(0, 0, 2, 2, cc::PaintFlags());
+  provider->Flush(FlushReason::kOther);
 }
 
 class TestSingleThreadTaskRunner : public base::SingleThreadTaskRunner {
@@ -296,7 +305,7 @@ TEST_P(CanvasHibernationHandlerTest, SimpleTest) {
   EXPECT_FALSE(handler.is_encoded());
 
   EXPECT_FALSE(handler.IsHibernating());
-  EXPECT_TRUE(delegate.GetResourceProvider()->IsValid());
+  EXPECT_TRUE(delegate.GetSharedImageProvider()->IsValid());
 }
 
 TEST_P(CanvasHibernationHandlerTest, ForegroundBeforeHibernation) {

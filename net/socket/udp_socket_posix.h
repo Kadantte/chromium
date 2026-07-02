@@ -10,7 +10,9 @@
 #include <sys/types.h>
 
 #include <memory>
+#include <utility>
 
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
@@ -23,6 +25,7 @@
 #include "net/base/net_export.h"
 #include "net/base/network_handle.h"
 #include "net/log/net_log_with_source.h"
+#include "net/socket/datagram_client_socket.h"
 #include "net/socket/datagram_socket.h"
 #include "net/socket/diff_serv_code_point.h"
 #include "net/socket/socket_descriptor.h"
@@ -90,6 +93,20 @@ class NET_EXPORT UDPSocketPosix {
   // Only usable from the client-side of a UDP socket, after the socket
   // has been connected.
   int Read(IOBuffer* buf, int buf_len, CompletionOnceCallback callback);
+
+  // Reads multiple datagrams from a connected socket.
+  // Only usable after the socket has been connected.
+  // The number of packets read is determined by the ratio of |buf_len| to
+  // |maximum_packet_size|.
+  // On platforms supporting recvmmsg (Linux, ChromeOS, Android), it uses it
+  // to read multiple datagrams. On other POSIX platforms (e.g., macOS,
+  // Fuchsia), it falls back to reading a single datagram using recvmsg.
+  base::expected<DatagramsMetadata, Error> ReadMultiple(
+      IOBuffer* buffer,
+      size_t buf_len,
+      size_t maximum_packet_size,
+      base::OnceCallback<void(base::expected<DatagramsMetadata, Error>)>
+          callback);
 
   // Writes to the socket.
   // Only usable from the client-side of a UDP socket, after the socket
@@ -181,13 +198,13 @@ class NET_EXPORT UDPSocketPosix {
   int AllowAddressSharingForMulticast();
 
   // Joins the multicast group.
-  // |group_address| is the group address to join, could be either
+  // `group_address` is the group address to join, could be either
   // an IPv4 or IPv6 address.
   // Returns a net error code.
   int JoinGroup(const IPAddress& group_address) const;
 
   // Leaves the multicast group.
-  // |group_address| is the group address to leave, could be either
+  // `group_address` is the group address to leave, could be either
   // an IPv4 or IPv6 address. If the socket hasn't joined the group,
   // it will be ignored.
   // It's optional to leave the multicast group before destroying
@@ -195,7 +212,24 @@ class NET_EXPORT UDPSocketPosix {
   // Returns a net error code.
   int LeaveGroup(const IPAddress& group_address) const;
 
-  // Sets interface to use for multicast. If |interface_index| set to 0,
+  // Joins a source-specific multicast (SSM) group as defined in RFC 4607.
+  // `group_address` must be in the SSM range (232.0.0.0/8 for IPv4 or
+  // ff3x::/32 for IPv6).
+  // `source_address` specifies the unicast source to receive traffic from.
+  // Both addresses must be the same IP version.
+  // Uses IGMPv3 (IPv4) or MLDv2 (IPv6) protocol operations.
+  // Returns a net error code.
+  int JoinSourceGroup(const IPAddress& group_address,
+                      const IPAddress& source_address) const;
+
+  // Leaves a source-specific multicast (SSM) group.
+  // `group_address` and `source_address` must match a previous JoinSourceGroup
+  // call. Both addresses must be the same IP version.
+  // Returns a net error code.
+  int LeaveSourceGroup(const IPAddress& group_address,
+                       const IPAddress& source_address) const;
+
+  // Sets interface to use for multicast. If `interface_index` set to 0,
   // default interface is used.
   // Should be called before Bind().
   // Returns a net error code.
@@ -326,8 +360,14 @@ class NET_EXPORT UDPSocketPosix {
   };
 
   void DoReadCallback(int rv);
+  void DoReadMultipleCallback(base::expected<DatagramsMetadata, Error> rv);
   void DoWriteCallback(int rv);
   void DidCompleteRead();
+  void DidCompleteMultipleRead();
+  void OnFallbackReadComplete(
+      base::OnceCallback<void(base::expected<DatagramsMetadata, Error>)>
+          callback,
+      int rv);
   void DidCompleteWrite();
 
   // Handles stats and logging. |result| is the number of bytes transferred, on
@@ -338,6 +378,7 @@ class NET_EXPORT UDPSocketPosix {
                const char* bytes,
                socklen_t addr_len,
                const sockaddr* addr);
+  void LogRead(int result, const char* bytes, const IPEndPoint* address);
   void LogWrite(int result, const char* bytes, const IPEndPoint* address);
 
   // Same as SendTo(), except that address is passed by pointer
@@ -363,6 +404,20 @@ class NET_EXPORT UDPSocketPosix {
   int InternalRecvFromConnectedSocket(IOBuffer* buf,
                                       int buf_len,
                                       IPEndPoint* address);
+  base::expected<DatagramsMetadata, Error> InternalReadMultiple(
+      IOBuffer* buffer,
+      size_t buf_len,
+      size_t maximum_packet_size);
+  // recvmmsg() is only available on Linux, ChromeOS, and Android.
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
+  base::expected<DatagramsMetadata, Error> InternalRecvMmsg(
+      IOBuffer* buffer,
+      size_t num_messages,
+      size_t maximum_packet_size);
+  static base::expected<DatagramsMetadata, Error> ProcessRecvMmsgResults(
+      base::span<struct mmsghdr> mmsg,
+      size_t maximum_packet_size);
+#endif
 
   // An implementation of the InternalRecvFrom() method for reading data
   // from non-connected sockets. Internally the method uses the recvmsg()
@@ -375,6 +430,14 @@ class NET_EXPORT UDPSocketPosix {
   // Applies |socket_options_| to |socket_|. Should be called before
   // Bind().
   int SetMulticastOptions();
+
+  // Helper for JoinSourceGroup/LeaveSourceGroup. Performs the setsockopt call
+  // with the specified `option` (MCAST_JOIN_SOURCE_GROUP or
+  // MCAST_LEAVE_SOURCE_GROUP).
+  int SetSourceGroupMembership(const IPAddress& group_address,
+                               const IPAddress& source_address,
+                               int option) const;
+
   int DoBind(const IPEndPoint& address);
   // Binds to a random port on |address|.
   int RandomBind(const IPAddress& address);
@@ -428,6 +491,10 @@ class NET_EXPORT UDPSocketPosix {
   int read_buf_len_ = 0;
   raw_ptr<IPEndPoint> recv_from_address_ = nullptr;
 
+  // The maximum packet size passed to ReadMultiple(), used to retrieve the
+  // packet size when completing an asynchronous ReadMultiple() operation.
+  size_t read_multiple_maximum_packet_size_ = 0;
+
   // The buffer used by InternalWrite() to retry Write requests
   scoped_refptr<IOBuffer> write_buf_;
   int write_buf_len_ = 0;
@@ -435,6 +502,8 @@ class NET_EXPORT UDPSocketPosix {
 
   // External callback; called when read is complete.
   CompletionOnceCallback read_callback_;
+  base::OnceCallback<void(base::expected<DatagramsMetadata, Error>)>
+      read_multiple_callback_;
 
   // External callback; called when write is complete.
   CompletionOnceCallback write_callback_;

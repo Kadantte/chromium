@@ -17,6 +17,7 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/custom_floating_corner.h"
 #include "chrome/browser/ui/views/frame/multi_contents_drop_target_view.h"
+#include "chrome/browser/ui/views/frame/multi_contents_view_delegate.h"
 #include "chrome/browser/ui/views/frame/multi_contents_view_drop_target_controller.h"
 #include "chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h"
 #include "chrome/browser/ui/views/test/split_view_browser_test_mixin.h"
@@ -364,7 +365,7 @@ IN_PROC_BROWSER_TEST_F(MultiContentsViewBrowserTest,
 
   // Drag and drop should be enabled for chrome://newtab.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),
-                                           GURL(chrome::kChromeUINewTabURL)));
+                                           chrome::ChromeUINewTabURLAsGURL()));
   EXPECT_TRUE(multi_contents_view()->IsDragAndDropEnabled());
 }
 
@@ -404,7 +405,7 @@ class MultiContentsViewWebContentsReLayoutBrowserTest
     const int active_index = tab_strip_model->active_index();
 
     RunScheduledLayouts();
-    chrome::NewSplitTab(browser(),
+    chrome::NewSplitTab(browser(), split_tabs::SplitTabLayout::kSideBySide,
                         split_tabs::SplitTabCreatedSource::kToolbarButton);
     EXPECT_TRUE(content::WaitForLoadStop(
         tab_strip_model->GetWebContentsAt(active_index + 1)));
@@ -576,11 +577,50 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_EQ(GetResizeCount(split_tab), 3);
 }
 
+IN_PROC_BROWSER_TEST_F(MultiContentsViewBrowserTest, OnlyFocusTabsInSplitView) {
+  // Set up tab strip with a regular tab and two split views with the last split
+  // view being active.
+  auto* tab_strip_model = browser()->tab_strip_model();
+
+  EXPECT_TRUE(
+      AddTabAtIndex(1, GURL(url::kAboutBlankURL), ui::PAGE_TRANSITION_TYPED));
+  chrome::NewSplitTab(browser(), split_tabs::SplitTabLayout::kSideBySide,
+                      split_tabs::SplitTabCreatedSource::kToolbarButton);
+  EXPECT_TRUE(
+      AddTabAtIndex(3, GURL(url::kAboutBlankURL), ui::PAGE_TRANSITION_TYPED));
+  chrome::NewSplitTab(browser(), split_tabs::SplitTabLayout::kSideBySide,
+                      split_tabs::SplitTabCreatedSource::kToolbarButton);
+
+  ASSERT_EQ(5, browser()->tab_strip_model()->count());
+  const int active_index = tab_strip_model->active_index();
+  ASSERT_EQ(4, active_index);
+  EXPECT_TRUE(tab_strip_model->GetActiveTab()->IsSplit());
+  EXPECT_FALSE(tab_strip_model->GetTabAtIndex(0)->IsSplit());
+  EXPECT_TRUE(tab_strip_model->GetTabAtIndex(1)->IsSplit());
+
+  auto* delegate = multi_contents_view()->delegate_for_testing();
+  // Focusing a tab outside the active split doesn't change the active index.
+  delegate->WebContentsFocused(tab_strip_model->GetWebContentsAt(0));
+  EXPECT_EQ(tab_strip_model->active_index(), active_index);
+
+  // Focusing a split tab outside the active split doesn't change the active
+  // index.
+  delegate->WebContentsFocused(tab_strip_model->GetWebContentsAt(1));
+  EXPECT_EQ(tab_strip_model->active_index(), active_index);
+
+  // Focusing a tab inside the active split changes the active index.
+  delegate->WebContentsFocused(tab_strip_model->GetWebContentsAt(3));
+  EXPECT_EQ(tab_strip_model->active_index(), 3);
+}
+
 IN_PROC_BROWSER_TEST_F(MultiContentsViewBrowserTest, LeadingSeparatorLayout) {
   MultiContentsView* view = multi_contents_view();
-  view->SetShouldShowTrailingSeparator(false);
-  view->SetShouldShowLeadingSeparator(true);
   view->SetShouldShowTopSeparator(true);
+  view->drop_target_view_->Show(
+      MultiContentsDropTargetView::DropSide::START,
+      MultiContentsDropTargetView::DropTargetState::kFull,
+      MultiContentsDropTargetView::DragType::kLink);
+  view->drop_target_view_->animation_for_testing().End();
 
   gfx::Rect initial_bounds(10, 20, 100, 80);
   std::vector<views::ChildLayout> actual_child_layouts;
@@ -615,15 +655,18 @@ IN_PROC_BROWSER_TEST_F(MultiContentsViewBrowserTest, LeadingSeparatorLayout) {
 
   CompareLayouts(expected_separator_layouts, actual_child_layouts);
   EXPECT_EQ(
-      CustomFloatingCorner::CornerOrientation::kTopLeading,
+      CornerOrientation::kTopLeading,
       view->contents_separators_.corner_separator->orientation_for_testing());
 }
 
 IN_PROC_BROWSER_TEST_F(MultiContentsViewBrowserTest, TrailingSeparatorLayout) {
   MultiContentsView* view = multi_contents_view();
-  view->SetShouldShowTrailingSeparator(true);
-  view->SetShouldShowLeadingSeparator(false);
   view->SetShouldShowTopSeparator(true);
+  view->drop_target_view_->Show(
+      MultiContentsDropTargetView::DropSide::END,
+      MultiContentsDropTargetView::DropTargetState::kFull,
+      MultiContentsDropTargetView::DragType::kLink);
+  view->drop_target_view_->animation_for_testing().End();
 
   gfx::Rect initial_bounds(10, 20, 100, 80);
   std::vector<views::ChildLayout> actual_child_layouts;
@@ -661,13 +704,13 @@ IN_PROC_BROWSER_TEST_F(MultiContentsViewBrowserTest, TrailingSeparatorLayout) {
 
   CompareLayouts(expected_separator_layouts, actual_child_layouts);
   EXPECT_EQ(
-      CustomFloatingCorner::CornerOrientation::kTopTrailing,
+      CornerOrientation::kTopTrailing,
       view->contents_separators_.corner_separator->orientation_for_testing());
 }
 
 IN_PROC_BROWSER_TEST_F(MultiContentsViewBrowserTest, DropTargetLayout) {
   MultiContentsView* view = multi_contents_view();
-  gfx::Rect initial_bounds(10, 20, 100, 80);
+  gfx::Rect initial_bounds(10, 20, 1000, 800);
 
   // Drop target hidden.
   {
@@ -696,7 +739,8 @@ IN_PROC_BROWSER_TEST_F(MultiContentsViewBrowserTest, DropTargetLayout) {
         view->CalculateDropTargetLayout(initial_bounds, actual_child_layouts);
 
     const int drop_target_width =
-        view->drop_target_view_->GetPreferredWidth(initial_bounds.width());
+        view->drop_target_view_->GetSizeForAvailableSpace(
+            initial_bounds.width());
     gfx::Rect expected_remaining_space(
         initial_bounds.x() + drop_target_width, initial_bounds.y(),
         initial_bounds.width() - drop_target_width, initial_bounds.height());
@@ -722,7 +766,8 @@ IN_PROC_BROWSER_TEST_F(MultiContentsViewBrowserTest, DropTargetLayout) {
         view->CalculateDropTargetLayout(initial_bounds, actual_child_layouts);
 
     const int drop_target_width =
-        view->drop_target_view_->GetPreferredWidth(initial_bounds.width());
+        view->drop_target_view_->GetSizeForAvailableSpace(
+            initial_bounds.width());
     gfx::Rect expected_remaining_space(
         initial_bounds.x(), initial_bounds.y(),
         initial_bounds.width() - drop_target_width, initial_bounds.height());
@@ -734,6 +779,34 @@ IN_PROC_BROWSER_TEST_F(MultiContentsViewBrowserTest, DropTargetLayout) {
         gfx::Rect(initial_bounds.right() - drop_target_width,
                   initial_bounds.y(), drop_target_width,
                   initial_bounds.height()));
+    CompareLayouts(expected_child_layouts, actual_child_layouts);
+  }
+
+  // Drop target is on the BOTTOM side.
+  {
+    std::vector<views::ChildLayout> actual_child_layouts;
+    view->drop_target_view_->Show(
+        MultiContentsDropTargetView::DropSide::BOTTOM,
+        MultiContentsDropTargetView::DropTargetState::kFull,
+        MultiContentsDropTargetView::DragType::kLink);
+    view->drop_target_view_->animation_for_testing().End();
+    gfx::Rect remaining_space =
+        view->CalculateDropTargetLayout(initial_bounds, actual_child_layouts);
+
+    const int drop_target_height =
+        view->drop_target_view_->GetSizeForAvailableSpace(
+            initial_bounds.height());
+    gfx::Rect expected_remaining_space(
+        initial_bounds.x(), initial_bounds.y(), initial_bounds.width(),
+        initial_bounds.height() - drop_target_height);
+    EXPECT_EQ(expected_remaining_space, remaining_space);
+
+    std::vector<views::ChildLayout> expected_child_layouts;
+    expected_child_layouts.emplace_back(
+        view->drop_target_view_.get(), true,
+        gfx::Rect(initial_bounds.x(),
+                  initial_bounds.bottom() - drop_target_height,
+                  initial_bounds.width(), drop_target_height));
     CompareLayouts(expected_child_layouts, actual_child_layouts);
   }
 }

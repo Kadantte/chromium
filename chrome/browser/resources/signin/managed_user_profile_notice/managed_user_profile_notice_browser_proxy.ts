@@ -24,6 +24,25 @@ export enum State {
   USER_DATA_HANDLING = 6,
 }
 
+// LINT.IfChange(ScreenType)
+export enum ScreenType {
+  ENTERPRISE_ACCOUNT_SYNC_ENABLED = 0,
+  ENTERPRISE_ACCOUNT_SYNC_DISABLED = 1,
+  CONSUMER_ACCOUNT_SYNC_DISABLED = 2,
+  ENTERPRISE_ACCOUNT_CREATION = 3,
+  ENTERPRISE_OIDC = 4,
+  PROFILE_PICKER = 5,
+  FIRST_RUN = 6,
+  DEVICE_SIGNALS_DISCLAIMER = 7,
+  MAX_VALUE = DEVICE_SIGNALS_DISCLAIMER,
+}
+// LINT.ThenChange(//chrome/browser/ui/webui/signin/managed_user_profile_notice_ui.h:ScreenType)
+
+export enum AppMode {
+  FIRST_RUN = 'first-run',
+  PROFILE_PICKER = 'profile-picker',
+}
+
 // Managed user profile info sent from C++.
 export interface ManagedUserProfileInfo {
   accountName: string;
@@ -52,12 +71,14 @@ export interface ManagedUserProfileNoticeBrowserProxy {
    * Called when the user clicks the cancel button.
    */
   cancel(): void;
+
+  matchMedia(query: string): MediaQueryList;
 }
 
 export class ManagedUserProfileNoticeBrowserProxyImpl implements
   ManagedUserProfileNoticeBrowserProxy {
   initialized() {
-    return sendWithPromise('initialized');
+    return sendWithPromise<ManagedUserProfileInfo>('initialized');
   }
 
   initializedWithSize(height: number) {
@@ -79,6 +100,10 @@ export class ManagedUserProfileNoticeBrowserProxyImpl implements
 
   static setInstance(obj: ManagedUserProfileNoticeBrowserProxy) {
     instance = obj;
+  }
+
+  matchMedia(query: string): MediaQueryList {
+    return window.matchMedia(query);
   }
 }
 

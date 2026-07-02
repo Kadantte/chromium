@@ -54,8 +54,6 @@ const base::FeatureParam<bool> kPrivacySandboxSettings4ShowSampleDataForTesting{
     &kPrivacySandboxSettings4,
     kPrivacySandboxSettings4ShowSampleDataForTestingName, false};
 
-BASE_FEATURE(kOverridePrivacySandboxSettingsLocalTesting,
-             base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kDisablePrivacySandboxPrompts, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -76,53 +74,15 @@ BASE_FEATURE(kPrivacySandboxAttestationsLoadFromAPKAsset,
 BASE_FEATURE(kPrivateAggregationDebugReportingIgnoreSiteExceptions,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kPrivacySandboxInternalsDevUI, base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kRelatedWebsiteSetsDevUI, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kRelatedWebsiteSetsUi, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kPsDualWritePrefsToNoticeStorage,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kPrivateStateTokensDevUI, base::FEATURE_DISABLED_BY_DEFAULT);
-
-
-BASE_FEATURE(kPrivacySandboxActivityTypeStorage,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-const char kPrivacySandboxActivityTypeStorageLastNLaunchesName[] =
-    "last-n-launches";
-
-const base::FeatureParam<int> kPrivacySandboxActivityTypeStorageLastNLaunches{
-    &kPrivacySandboxActivityTypeStorage,
-    kPrivacySandboxActivityTypeStorageLastNLaunchesName, 100};
-
-const char kPrivacySandboxActivityTypeStorageWithinXDaysName[] =
-    "within-x-days";
-
-const base::FeatureParam<int> kPrivacySandboxActivityTypeStorageWithinXDays{
-    &kPrivacySandboxActivityTypeStorage,
-    kPrivacySandboxActivityTypeStorageWithinXDaysName, 60};
-
-const char kPrivacySandboxActivityTypeStorageSkipPreFirstTabName[] =
-    "skip-pre-first-tab";
-
-const base::FeatureParam<bool>
-    kPrivacySandboxActivityTypeStorageSkipPreFirstTab{
-        &kPrivacySandboxActivityTypeStorage,
-        kPrivacySandboxActivityTypeStorageSkipPreFirstTabName, false};
-
-BASE_FEATURE(kPrivacySandboxAdTopicsContentParity,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kPrivacySandboxSentimentSurvey, base::FEATURE_DISABLED_BY_DEFAULT);
-
-const base::FeatureParam<std::string> kPrivacySandboxSentimentSurveyTriggerId{
-    &kPrivacySandboxSentimentSurvey, "sentiment-survey-trigger-id", ""};
-
-BASE_FEATURE(kPrivacySandboxAdsApiUxEnhancements,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kPrivacySandboxNoticeFramework, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPrivacySandboxAdPrivacyUxDeprecation,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 }  // namespace privacy_sandbox

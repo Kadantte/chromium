@@ -25,12 +25,16 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
       'recordNewPageWithSpeech',
       'recordSpeechError',
       'recordSpeechPlaybackLength',
+      'recordSpeechPlaybackLengthLegacy',
       'recordSpeechSettingsChange',
       'recordSpeechStopSource',
       'recordTextSettingsChange',
       'recordTime',
       'recordVoiceSpeed',
       'recordVoiceType',
+      'recordVoiceLanguageChange',
+      'recordCount',
+      'recordBoolean',
     ]);
   }
 
@@ -74,6 +78,10 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
     this.methodCalled('recordVoiceType', voiceType);
   }
 
+  recordVoiceLanguageChange() {
+    this.methodCalled('recordVoiceLanguageChange');
+  }
+
   recordLanguage(lang: string) {
     this.methodCalled('recordLanguage', lang);
   }
@@ -102,11 +110,23 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
     this.methodCalled('recordTime', umaName, time);
   }
 
-  recordSpeechPlaybackLength(time: number) {
-    this.methodCalled('recordSpeechPlaybackLength', time);
+  recordSpeechPlaybackLength(umaName: string, time: number) {
+    this.methodCalled('recordSpeechPlaybackLength', umaName, time);
+  }
+
+  recordSpeechPlaybackLengthLegacy(time: number) {
+    this.methodCalled('recordSpeechPlaybackLengthLegacy', time);
   }
 
   recordExtensionState() {
     this.methodCalled('recordExtensionState');
+  }
+
+  recordCount(umaName: string, count: number) {
+    this.methodCalled('recordCount', umaName, count);
+  }
+
+  recordBoolean(umaName: string, value: boolean) {
+    this.methodCalled('recordBoolean', umaName, value);
   }
 }

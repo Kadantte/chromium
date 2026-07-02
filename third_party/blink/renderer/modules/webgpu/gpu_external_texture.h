@@ -16,10 +16,6 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/wtf/ref_counted.h"
 
-namespace media {
-class PaintCanvasVideoRenderer;
-}  // namespace media
-
 namespace blink {
 
 class ExceptionState;
@@ -64,9 +60,6 @@ class ExternalTextureCache : public GarbageCollected<ExternalTextureCache> {
 
   void Add(VideoFrame* frame, GPUExternalTexture* external_texture);
   void Remove(VideoFrame* frame);
-
-  void ReferenceUntilGPUIsFinished(
-      scoped_refptr<WebGPUMailboxTexture> mailbox_texture);
 
   void Trace(Visitor* visitor) const;
   GPUDevice* device() const;
@@ -162,7 +155,6 @@ class GPUExternalTexture : public DawnObject<wgpu::ExternalTexture> {
       ExternalTextureCache* cache,
       const GPUExternalTextureDescriptor* webgpu_desc,
       scoped_refptr<media::VideoFrame> media_video_frame,
-      media::PaintCanvasVideoRenderer* video_renderer,
       std::optional<media::VideoFrame::ID> media_video_frame_unique_id,
       ExceptionState& exception_state);
 

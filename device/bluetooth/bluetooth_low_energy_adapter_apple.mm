@@ -35,6 +35,7 @@
 #include "base/task/task_traits.h"
 #include "base/time/time.h"
 #include "components/device_event_log/device_event_log.h"
+#include "device/bluetooth/bluetooth_adapter_factory.h"
 #include "device/bluetooth/bluetooth_advertisement_mac.h"
 #include "device/bluetooth/bluetooth_common.h"
 #include "device/bluetooth/bluetooth_discovery_session_outcome.h"
@@ -121,15 +122,7 @@ bool BluetoothLowEnergyAdapterApple::IsPresent() const {
 
 BluetoothAdapter::PermissionStatus
 BluetoothLowEnergyAdapterApple::GetOsPermissionStatus() const {
-  switch (CBCentralManager.authorization) {
-    case CBManagerAuthorizationNotDetermined:
-      return PermissionStatus::kUndetermined;
-    case CBManagerAuthorizationRestricted:
-    case CBManagerAuthorizationDenied:
-      return PermissionStatus::kDenied;
-    case CBManagerAuthorizationAllowedAlways:
-      return PermissionStatus::kAllowed;
-  }
+  return BluetoothAdapterFactory::GetOsPermissionStatus();
 }
 
 void BluetoothLowEnergyAdapterApple::RequestSystemPermission(
@@ -354,7 +347,7 @@ CBPeripheralManager* BluetoothLowEnergyAdapterApple::GetPeripheralManager() {
 }
 
 void BluetoothLowEnergyAdapterApple::SetLowEnergyDeviceWatcherForTesting(
-    scoped_refptr<BluetoothLowEnergyDeviceWatcherMac>
+    std::unique_ptr<BluetoothLowEnergyDeviceWatcherMac>
         bluetooth_low_energy_device_watcher) {
   bluetooth_low_energy_device_watcher_ =
       std::move(bluetooth_low_energy_device_watcher);
@@ -493,7 +486,8 @@ void BluetoothLowEnergyAdapterApple::LowEnergyDeviceUpdated(
         device_mac->GetAddress(), device_name_opt,
         local_name == nil ? std::nullopt : local_name_opt, rssi,
         tx_power == nil ? std::nullopt : std::make_optional(clamped_tx_power),
-        std::nullopt, /* TODO(crbug.com/41240161) Implement appearance */
+        std::nullopt,  // macOS does not provide device appearance. See
+                       // crbug.com/41240161.
         advertised_uuids, service_data_map, manufacturer_data_map);
   }
 

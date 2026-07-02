@@ -762,7 +762,7 @@ TEST_F(NetExportFileWriterTest, StartWithNetworkContextActive) {
   auto url_loader_factory_params =
       network::mojom::URLLoaderFactoryParams::New();
   url_loader_factory_params->process_id =
-      network::OriginatingProcess::browser();
+      network::OriginatingProcessId::browser();
   url_loader_factory_params->is_orb_enabled = false;
   network_context()->CreateURLLoaderFactory(
       url_loader_factory.BindNewPipeAndPassReceiver(),
@@ -885,6 +885,22 @@ TEST_F(NetExportFileWriterTest, HandleCrash) {
 
   base::DictValue state = test_state_observer()->WaitForNewState();
   ASSERT_TRUE(VerifyState(std::move(state), kStateNotLoggingString));
+}
+
+TEST_F(NetExportFileWriterTest, IsLogging) {
+  EXPECT_FALSE(file_writer()->IsLogging());
+
+  ASSERT_TRUE(InitializeThenVerifyNewState(true, false));
+  EXPECT_FALSE(file_writer()->IsLogging());
+
+  ASSERT_TRUE(StartThenVerifyNewState(
+      base::FilePath(), net::NetLogCaptureMode::kDefault,
+      kCaptureModeDefaultString, network_context()));
+  EXPECT_TRUE(file_writer()->IsLogging());
+
+  ASSERT_TRUE(StopThenVerifyNewStateAndFile(base::FilePath(), base::DictValue(),
+                                            kCaptureModeDefaultString));
+  EXPECT_FALSE(file_writer()->IsLogging());
 }
 
 }  // namespace net_log

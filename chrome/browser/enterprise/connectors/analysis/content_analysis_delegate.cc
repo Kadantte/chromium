@@ -13,6 +13,7 @@
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -48,6 +49,7 @@
 #include "components/enterprise/common/proto/connectors.pb.h"
 #include "components/enterprise/connectors/core/analysis_settings.h"
 #include "components/enterprise/connectors/core/cloud_content_scanning/binary_upload_service.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/deep_scanning_utils.h"
 #include "components/enterprise/connectors/core/common.h"
 #include "components/enterprise/connectors/core/features.h"
 #include "components/enterprise/connectors/core/reporting_constants.h"
@@ -62,6 +64,7 @@
 #include "components/sessions/content/session_tab_helper.h"
 #include "components/url_matcher/url_matcher.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_delegate.h"
 #include "crypto/secure_hash.h"
 #include "crypto/sha2.h"
 #include "net/base/mime_util.h"
@@ -220,20 +223,26 @@ void ContentAnalysisDelegate::Cancel(bool warning) {
   // Don't report this upload as cancelled if the user didn't bypass the
   // warning.
   if (!warning) {
-    safe_browsing::RecordDeepScanMetrics(
+    RecordDeepScanMetrics(
         data_.settings.cloud_or_local_settings.is_cloud_analysis(),
         access_point_, base::TimeTicks::Now() - upload_start_time_, 0,
         "CancelledByUser", false);
   }
 
-  // Ask the binary upload service to cancel requests if it can.
-  auto cancel = std::make_unique<BinaryUploadCancelRequests>(
-      data_.settings.cloud_or_local_settings);
-  cancel->set_user_action_id(user_action_id_);
-
   BinaryUploadService* upload_service = GetBinaryUploadService();
+
+  // This will cancel requests if there are any, on the closure, and ensure that
+  // callbacks are not called twice.
+  base::ScopedClosureRunner cancel_requests;
   if (upload_service) {
-    upload_service->MaybeCancelRequests(std::move(cancel));
+    // Ask the binary upload service to cancel requests if it can.
+    auto cancel = std::make_unique<BinaryUploadCancelRequests>(
+        data_.settings.cloud_or_local_settings);
+    cancel->set_user_action_id(user_action_id_);
+
+    cancel_requests.ReplaceClosure(
+        base::BindOnce(&BinaryUploadService::MaybeCancelRequests,
+                       upload_service->AsWeakPtr(), std::move(cancel)));
   }
 
   // Make sure to reject everything.
@@ -309,10 +318,15 @@ std::u16string ContentAnalysisDelegate::GetBypassJustificationLabel() const {
       id = IDS_DEEP_SCANNING_DIALOG_DOWNLOAD_BYPASS_JUSTIFICATION_LABEL;
       break;
     case DeepScanAccessPoint::PASTE:
+    case DeepScanAccessPoint::ACTOR:
       id = IDS_DEEP_SCANNING_DIALOG_PASTE_BYPASS_JUSTIFICATION_LABEL;
       break;
     case DeepScanAccessPoint::PRINT:
       id = IDS_DEEP_SCANNING_DIALOG_PRINT_BYPASS_JUSTIFICATION_LABEL;
+      break;
+    // TODO(b/325455508): Add specific copy bypass justification label.
+    case DeepScanAccessPoint::COPY:
+      id = IDS_DEEP_SCANNING_DIALOG_PASTE_BYPASS_JUSTIFICATION_LABEL;
       break;
   }
   return l10n_util::GetStringUTF16(id);
@@ -373,7 +387,7 @@ void ContentAnalysisDelegate::CreateForWebContents(
                             web_contents, std::move(data), std::move(callback),
                             access_point))
                       : testing_factory->Run(web_contents, std::move(data),
-                                             std::move(callback));
+                                             std::move(callback), access_point);
 
   delegate->creation_time_ = base::TimeTicks::Now();
   UploadDataStatus upload_data_status = delegate->UploadData();
@@ -382,12 +396,16 @@ void ContentAnalysisDelegate::CreateForWebContents(
   // 1. work is ongoing in the background and that the user must wait for a
   // verdict.
   // 2. work is done and fail-closed conditions are met.
+  // For COPY trigger operations, we don't show a dialog. Instead, we communicate
+  // with the user via the content of the clipboard and using toasts. UI toast
+  // elements are handled separately since the copy trigger is the only DLP rule
+  // showing toasts in the context of Chrome Enterprise Premium (CEP).
   bool show_in_progress_ui =
       upload_data_status == UploadDataStatus::kInProgress && wait_for_verdict &&
-      (*UIEnabledStorage());
+      (*UIEnabledStorage()) && access_point != DeepScanAccessPoint::COPY;
   bool show_fail_closed_ui =
       delegate->IsFailClosed(upload_data_status, should_allow_by_default) &&
-      (*UIEnabledStorage());
+      (*UIEnabledStorage()) && access_point != DeepScanAccessPoint::COPY;
 
   DVLOG(1) << __func__ << ": show_fail_closed_ui=" << show_fail_closed_ui;
 
@@ -589,7 +607,7 @@ void ContentAnalysisDelegate::FilesRequestCallback(
   MaybeCompleteScanRequest();
 }
 
-FilesRequestHandler*
+FilesRequestHandlerBase*
 ContentAnalysisDelegate::GetFilesRequestHandlerForTesting() {
   return files_request_handler_.get();
 }
@@ -597,6 +615,14 @@ ContentAnalysisDelegate::GetFilesRequestHandlerForTesting() {
 bool ContentAnalysisDelegate::ShowFinalResultInDialog() {
   if (!dialog_) {
     return false;
+  }
+
+  if (access_point_ == DeepScanAccessPoint::ACTOR && web_contents_ &&
+      final_result_ != FinalContentAnalysisResult::SUCCESS) {
+    // TODO(crbug.com/473047343): Add browsertests to validate surfacing works.
+    if (web_contents_->GetDelegate()) {
+      web_contents_->GetDelegate()->ActivateContents(web_contents_.get());
+    }
   }
 
   dialog_->ShowResult(final_result_);
@@ -720,6 +746,13 @@ void ContentAnalysisDelegate::PrepareTextRequest() {
                                    /*min=*/1,
                                    /*max=*/51 * 1024 * 1024,
                                    /*buckets=*/50);
+    if (access_point_ == DeepScanAccessPoint::ACTOR) {
+      base::UmaHistogramCustomCounts(
+          "Enterprise.OnBulkDataEntry.Actor.DataSize", full_text.size(),
+          /*min=*/1,
+          /*max=*/51 * 1024 * 1024,
+          /*buckets=*/50);
+    }
   }
 
   if (text_request_complete_) {
@@ -756,6 +789,13 @@ void ContentAnalysisDelegate::PrepareImageRequest() {
                                    /*min=*/1,
                                    /*max=*/51 * 1024 * 1024,
                                    /*buckets=*/50);
+    if (access_point_ == DeepScanAccessPoint::ACTOR) {
+      base::UmaHistogramCustomCounts(
+          "Enterprise.OnBulkDataEntry.Actor.DataSize", data_.image.size(),
+          /*min=*/1,
+          /*max=*/51 * 1024 * 1024,
+          /*buckets=*/50);
+    }
   }
 
   if (image_request_complete_) {
@@ -880,12 +920,13 @@ void ContentAnalysisDelegate::RunCallback() {
   // Since `result_` might have been tweaked by `callback_`, `final_actions_`
   // need to be updated before Acks are sent.
   for (size_t i = 0; i < result_.paths_results.size(); ++i) {
-    if (!result_.paths_results[i] && files_request_results_.size() > i &&
-        final_actions_.count(files_request_results_[i].request_token) &&
-        final_actions_[files_request_results_[i].request_token] ==
-            ContentAnalysisAcknowledgement::ALLOW) {
-      final_actions_[files_request_results_[i].request_token] =
-          ContentAnalysisAcknowledgement::BLOCK;
+    if (!result_.paths_results[i] && files_request_results_.size() > i) {
+      if (auto it =
+              final_actions_.find(files_request_results_[i].request_token);
+          it != final_actions_.end() &&
+          it->second == ContentAnalysisAcknowledgement::ALLOW) {
+        it->second = ContentAnalysisAcknowledgement::BLOCK;
+      }
     }
   }
 
@@ -952,6 +993,8 @@ std::string ContentAnalysisDelegate::GetContentTransferMethod() const {
     case enterprise_connectors::ContentAnalysisRequest::SAVE_AS_DOWNLOAD:
       return "";
 
+    case enterprise_connectors::ContentAnalysisRequest::CLIPBOARD_COPY:
+      return kContentTransferMethodClipboardCopy;
     case enterprise_connectors::ContentAnalysisRequest::CLIPBOARD_PASTE:
       if (!data_.paths.empty()) {
         return kContentTransferMethodFilePaste;

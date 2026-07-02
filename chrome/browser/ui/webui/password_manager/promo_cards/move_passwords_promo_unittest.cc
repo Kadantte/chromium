@@ -6,13 +6,17 @@
 
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
+#include "chrome/browser/extensions/api/passwords_private/passwords_private_delegate.h"
 #include "chrome/browser/extensions/api/passwords_private/passwords_private_delegate_factory.h"
 #include "chrome/browser/password_manager/password_manager_test_util.h"
 #include "chrome/browser/sync/sync_service_factory.h"
+#include "chrome/browser/webauthn/enclave_manager_factory.h"
+#include "chrome/browser/webauthn/mock_enclave_manager.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/features/password_manager_features_util.h"
 #include "components/password_manager/core/browser/password_form.h"
+#include "components/password_manager/core/browser/password_store/stored_credential.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/prefs/pref_service.h"
@@ -38,6 +42,12 @@ class PromoCardMovePasswordsTest : public ChromeRenderViewHostTestHarness {
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
     profile_store_ = CreateAndUseTestPasswordStore(profile());
+    EnclaveManagerFactory::GetInstance()->SetTestingFactory(
+        profile(),
+        base::BindRepeating(
+            [](content::BrowserContext*) -> std::unique_ptr<KeyedService> {
+              return std::make_unique<MockEnclaveManager>();
+            }));
     delegate_ =
         extensions::PasswordsPrivateDelegateFactory::GetForBrowserContext(
             profile(), true);
@@ -62,12 +72,12 @@ class PromoCardMovePasswordsTest : public ChromeRenderViewHostTestHarness {
 
   void SavePassword(password_manager::PasswordForm::Store store_type =
                         password_manager::PasswordForm::Store::kProfileStore) {
-    password_manager::PasswordForm form;
-    form.signon_realm = "https://example.com/";
-    form.username_value = u"username";
-    form.password_value = u"password";
-    form.in_store = store_type;
-    profile_store_->AddLogin(form);
+    password_manager::StoredCredential cred;
+    cred.signon_realm = "https://example.com/";
+    cred.username_value = u"username";
+    cred.password_value = u"password";
+    cred.in_store = store_type;
+    profile_store_->AddLogin(std::move(cred));
     task_environment()->RunUntilIdle();
   }
 

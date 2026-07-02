@@ -142,6 +142,13 @@ class BASE_EXPORT MessagePumpCFRunLoopBase : public MessagePump {
   int GetModeMask() const;
 
  protected:
+  // Observer callback called when the run loop starts and stops, at the
+  // beginning and end of calls to CFRunLoopRun.  This is used to maintain
+  // |nesting_level_|.  Associated with |enter_exit_observer_|.
+  static void EnterExitObserver(CFRunLoopObserverRef observer,
+                                CFRunLoopActivity activity,
+                                void* info);
+
   raw_ptr<Delegate> delegate() { return delegate_; }
 
  private:
@@ -200,13 +207,6 @@ class BASE_EXPORT MessagePumpCFRunLoopBase : public MessagePump {
   // Observer callback called before the run loop processes any sources.
   // Associated with |pre_source_observer_|.
   static void PreSourceObserver(CFRunLoopObserverRef observer,
-                                CFRunLoopActivity activity,
-                                void* info);
-
-  // Observer callback called when the run loop starts and stops, at the
-  // beginning and end of calls to CFRunLoopRun.  This is used to maintain
-  // |nesting_level_|.  Associated with |enter_exit_observer_|.
-  static void EnterExitObserver(CFRunLoopObserverRef observer,
                                 CFRunLoopActivity activity,
                                 void* info);
 
@@ -327,7 +327,7 @@ class BASE_EXPORT MessagePumpNSRunLoop : public MessagePumpCFRunLoopBase {
 // This is a fake message pump.  It attaches sources to the main thread's
 // CFRunLoop, so PostTask() will work, but it is unable to drive the loop
 // directly, so calling Run() or Quit() are errors.
-class MessagePumpUIApplication : public MessagePumpCFRunLoopBase {
+class BASE_EXPORT MessagePumpUIApplication : public MessagePumpCFRunLoopBase {
  public:
   MessagePumpUIApplication();
 
@@ -337,6 +337,15 @@ class MessagePumpUIApplication : public MessagePumpCFRunLoopBase {
   ~MessagePumpUIApplication() override;
   void DoRun(Delegate* delegate) override;
   bool DoQuit() override;
+
+  // Sets the initial run loop nesting `depth` for the current thread.
+  // This is a thread_local and one-shot configuration; it applies only to the
+  // next message pump initialized on this thread and is automatically reset to
+  // default immediately after being read.
+  static void SetNextInitialNestingLevelForCurrentThread(int depth);
+
+  // Resets the initial nesting level for the current thread. For testing only.
+  static void ResetNextInitialNestingLevelForTesting();
 
   // MessagePumpCFRunLoopBase.
   // MessagePumpUIApplication can not spin the main message loop directly.
@@ -349,7 +358,7 @@ class MessagePumpUIApplication : public MessagePumpCFRunLoopBase {
   std::optional<RunLoop> run_loop_;
 };
 
-#else
+#else  // !BUILDFLAG(IS_IOS)
 
 // While in scope, permits posted tasks to be run in private AppKit run loop
 // modes that would otherwise make the UI unresponsive. E.g., menu fade out.
@@ -409,7 +418,8 @@ class MessagePumpCrApplication : public MessagePumpNSApplication {
   // Requires NSApp implementing CrAppProtocol.
   bool ShouldCreateAutoreleasePool() override;
 };
-#endif  // BUILDFLAG(IS_IOS)
+
+#endif  // !BUILDFLAG(IS_IOS)
 
 namespace message_pump_apple {
 

@@ -34,18 +34,15 @@
 #include "cc/paint/paint_flags.h"
 #include "cc/paint/paint_image.h"
 #include "cc/paint/record_paint_canvas.h"
-#include "cc/paint/refcounted_buffer.h"
 #include "components/viz/common/resources/shared_image_format_utils.h"
 #include "media/base/video_frame.h"
 #include "media/base/video_frame_metadata.h"
 #include "media/base/video_transformation.h"
 #include "third_party/blink/public/common/features.h"
-#include "third_party/blink/public/mojom/frame/color_scheme.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_object_objectarray_string.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_begin_layer_options.h"
-#include "third_party/blink/renderer/bindings/modules/v8/v8_canvas_2d_gpu_transfer_option.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_canvas_fill_rule.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_texture_format.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_typedefs.h"
@@ -105,7 +102,7 @@
 #include "third_party/blink/renderer/platform/geometry/stroke_data.h"
 #include "third_party/blink/renderer/platform/graphics/bitmap_image.h"
 #include "third_party/blink/renderer/platform/graphics/blend_mode.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_resource_provider.h"
+#include "third_party/blink/renderer/platform/graphics/canvas_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/color.h"
 #include "third_party/blink/renderer/platform/graphics/filters/paint_filter_builder.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/webgpu_mailbox_texture.h"
@@ -144,7 +141,6 @@
 #include "third_party/skia/include/core/SkRefCnt.h"
 #include "third_party/skia/include/core/SkSamplingOptions.h"
 #include "third_party/skia/include/core/SkScalar.h"
-#include "third_party/skia/include/private/base/SkTo.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/quad_f.h"
 #include "ui/gfx/geometry/rect.h"
@@ -455,18 +451,6 @@ void Canvas2DRecorderContext::beginLayerImpl(ScriptState* script_state,
     return;
   }
 
-  // Make sure we have a recorder and paint canvas.
-  if (!GetOrCreatePaintCanvas()) {
-    return;
-  }
-
-  MemoryManagedPaintRecorder* recorder = Recorder();
-  if (!recorder) {
-    return;
-  }
-
-  ValidateStateStack();
-
   sk_sp<PaintFilter> filter;
   if (options != nullptr) {
     CHECK(exception_state != nullptr);
@@ -494,6 +478,20 @@ void Canvas2DRecorderContext::beginLayerImpl(ScriptState* script_state,
           kInterpolationSpaceSRGB);
     }
   }
+
+  // Create the `PaintCanvas` AFTER parsing the filter. It's possible for
+  // filters to reset the canvas, using a custom object property getter for
+  // instance.
+  if (!GetOrCreatePaintCanvas()) {
+    return;
+  }
+
+  MemoryManagedPaintRecorder* recorder = Recorder();
+  if (!recorder) {
+    return;
+  }
+
+  ValidateStateStack();
 
   if (layer_count_ == 0) {
     recorder->BeginSideRecording();
@@ -721,7 +719,8 @@ void Canvas2DRecorderContext::endLayer(ExceptionState& exception_state) {
   cc::PaintCanvas& parent_canvas = recorder->getRecordingCanvas();
   SkIRect clip_bounds;
   if (parent_canvas.getDeviceClipBounds(&clip_bounds)) {
-    WillDraw(clip_bounds, CanvasPerformanceMonitor::DrawType::kOther);
+    WillDraw(gfx::SkIRectToRect(clip_bounds),
+             CanvasPerformanceMonitor::DrawType::kOther);
   }
 
   ValidateStateStack();
@@ -838,7 +837,7 @@ void Canvas2DRecorderContext::ResetInternal() {
   if (cc::PaintCanvas* c = GetPaintCanvas()) {
     int width = Width();  // Keeping results to avoid repetitive virtual calls.
     int height = Height();
-    WillDraw(SkIRect::MakeXYWH(0, 0, width, height),
+    WillDraw(gfx::Rect(width, height),
              CanvasPerformanceMonitor::DrawType::kOther);
     c->drawRect(SkRect::MakeXYWH(0.0f, 0.0f, width, height), GetClearFlags());
   }
@@ -1003,11 +1002,11 @@ ColorParseResult Canvas2DRecorderContext::ParseColorOrCurrentColor(
                : kDefaultTextLinkColors;
     // TODO(40946458): Don't use default length resolver here!
     const ResolveColorValueContext context{
-        .conversion_data = CSSToLengthConversionData(/*element=*/nullptr),
+        .length_resolver = CSSToLengthConversionData(/*element=*/nullptr),
         .text_link_colors = text_link_colors,
         .used_color_scheme = color_scheme_,
         .color_provider = GetColorProvider(),
-        .is_in_web_app_scope = IsInWebAppScope()};
+        .can_expose_accent_color = IsInWebAppScope()};
     const StyleColor style_color = ResolveColorValue(*color_value, context);
     color = style_color.Resolve(GetCurrentColor(), color_scheme_);
     return ColorParseResult::kColor;
@@ -1957,15 +1956,31 @@ void Canvas2DRecorderContext::clearRect(double x,
   float fheight = ClampTo<float>(height);
 
   gfx::RectF rect(fx, fy, fwidth, fheight);
+  if (CanvasRenderingContextHost* host = GetCanvasRenderingContextHost();
+      host && host->ShouldCaptureRenderedText()) {
+    // Map the cleared rect from context coordinates to canvas element
+    // coordinates.
+    gfx::RectF canvas_clear_rect = GetTransform().MapRect(rect);
+    gfx::RectF canvas_rect(0, 0, host->width(), host->height());
+    // If the cleared area covers the entire canvas, clear all recorded text.
+    // Otherwise, clear only the text that intersects with the cleared area.
+    if (canvas_clear_rect.Contains(canvas_rect)) {
+      host->ClearRenderedText();
+    } else {
+      host->ClearRenderedText(canvas_clear_rect);
+    }
+  }
   if (RectContainsTransformedRect(rect, clip_bounds)) {
     CheckOverdraw(&clear_flags, CanvasRenderingContext2DState::kNoImage,
                   OverdrawOp::kClearRect);
-    WillDraw(clip_bounds, CanvasPerformanceMonitor::DrawType::kOther);
+    WillDraw(gfx::SkIRectToRect(clip_bounds),
+             CanvasPerformanceMonitor::DrawType::kOther);
     c->drawRect(gfx::RectFToSkRect(rect), clear_flags);
   } else {
     SkIRect dirty_rect;
     if (ComputeDirtyRect(rect, clip_bounds, &dirty_rect)) {
-      WillDraw(clip_bounds, CanvasPerformanceMonitor::DrawType::kOther);
+      WillDraw(gfx::SkIRectToRect(clip_bounds),
+               CanvasPerformanceMonitor::DrawType::kOther);
       c->drawRect(gfx::RectFToSkRect(rect), clear_flags);
     }
   }
@@ -2163,7 +2178,8 @@ void Canvas2DRecorderContext::DrawImageInternal(
     c->translate(-src_rect.x(), -src_rect.y());
     HTMLVideoElement* video = static_cast<HTMLVideoElement*>(image_source);
     video->PaintCurrentFrame(
-        c, gfx::Rect(video->videoWidth(), video->videoHeight()), image_flags);
+        c, gfx::Rect(video->videoWidth(), video->videoHeight()), image_flags,
+        /*acquire_texture_backing*/ false);
   } else if (image_source->IsVideoFrame()) {
     VideoFrame* frame = static_cast<VideoFrame*>(image_source);
     auto media_frame = frame->frame();
@@ -2440,7 +2456,7 @@ CanvasPattern* Canvas2DRecorderContext::createPattern(
     return nullptr;
   }
 
-  SourceImageStatus status;
+  SourceImageStatus status = kInvalidSourceImageStatus;
 
   gfx::SizeF default_object_size(Width(), Height());
   scoped_refptr<Image> image_for_rendering =

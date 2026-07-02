@@ -37,6 +37,8 @@ _ENUMVAL_ATTRIBUTES = _COMMON_ATTRIBUTES | {
 _INTERFACE_ATTRIBUTES = _COMMON_ATTRIBUTES | {
     'DispatchDebugAlias',
     'DirectReceiver',
+    # Experimental, do not use without mojo owner approval.
+    'GenerateDirectReturnStub',
     'RenamedFrom',
     'RequireContext',
     'RuntimeFeature',
@@ -55,6 +57,11 @@ _METHOD_ATTRIBUTES = _COMMON_ATTRIBUTES | {
     'SupportsUrgent',
     'Sync',
     'UnlimitedSize',
+    # Experimental, do not use without mojo owner approval.
+    # Used in conjunction with GenerateDirectReturnStub. This turns the return
+    # back into a cb pattern. This is necessary if, for whatever reason, the
+    # implementer needs to return by callback.
+    'UseCbReturn',
 }
 
 _MODULE_ATTRIBUTES = _COMMON_ATTRIBUTES | {
@@ -95,9 +102,6 @@ _STABLE_ONLY_ALLOWLISTED_ENUMS = {
 
 # TODO(crbug.com/393179188): Remove this allowlist. Do not add new entries here.
 _NATIVE_ALLOWLIST = {
-    'cc.mojom.BrowserControlsState',
-    'cc.mojom.OverscrollBehavior',
-    'cc.mojom.TouchAction',
     'chrome.mojom.FaviconUsageDataList',
     'chrome.mojom.ImportedBookmarkEntry',
     'chrome.mojom.ImporterAutofillFormDataEntry',
@@ -114,12 +118,10 @@ _NATIVE_ALLOWLIST = {
     'media.mojom.AudioCodec',
     'media.mojom.AudioCodecProfile',
     'media.mojom.AudioDecoderType',
-    'media.mojom.AudioParameters',
     'media.mojom.BufferingState',
     'media.mojom.BufferingStateChangeReason',
     'media.mojom.CdmMessageType',
     'media.mojom.CdmSessionType',
-    'media.mojom.ChannelLayout',
     'media.mojom.EmeInitDataType',
     'media.mojom.EncryptionScheme',
     'media.mojom.Exception',
@@ -132,7 +134,6 @@ _NATIVE_ALLOWLIST = {
     'media.mojom.MediaLogRecord',
     'media.mojom.MediaStatusState',
     'media.mojom.OutputDeviceStatus',
-    'media.mojom.OverlayInfo',
     'media.mojom.PrimaryID',
     'media.mojom.RangeID',
     'media.mojom.SampleFormat',
@@ -154,21 +155,15 @@ _NATIVE_ALLOWLIST = {
     'mojo.test.TestNativeStructMojom',
     'mojo.test.TestNativeStructWithAttachmentsMojom',
     'mojo.test.UnmappedNativeStruct',
-    'network.mojom.AuthCredentials',
-    'network.mojom.CertVerifyResult',
     'network.mojom.ConnectionInfo',
-    'network.mojom.CTPolicyCompliance',
     'network.mojom.EffectiveConnectionType',
-    'network.mojom.HttpResponseHeaders',
     'network.mojom.P2PHostAndIPEndPoint',
     'network.mojom.P2PPacketInfo',
     'network.mojom.P2PPortRange',
     'network.mojom.P2PSendPacketMetrics',
     'network.mojom.P2PSocketOption',
     'network.mojom.P2PSocketType',
-    'network.mojom.SSLInfo',
     'network.mojom.URLRequestRedirectInfo',
-    'network.mojom.X509Certificate',
     'search.mojom.InstantMostVisitedInfo',
     'search.mojom.NTPLoggingEventType',
     'search.mojom.NtpTheme',

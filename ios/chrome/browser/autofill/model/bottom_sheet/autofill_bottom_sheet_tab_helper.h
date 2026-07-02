@@ -14,7 +14,6 @@
 #import "components/autofill/core/browser/foundations/autofill_manager.h"
 #import "components/autofill/core/common/unique_ids.h"
 #import "components/password_manager/ios/password_generation_provider.h"
-#import "components/plus_addresses/core/browser/plus_address_types.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/save_card_bottom_sheet_model.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/virtual_card_enrollment_callbacks.h"
 #import "ios/web/public/js_messaging/web_frames_manager.h"
@@ -78,12 +77,6 @@ class AutofillBottomSheetTabHelper
       std::unique_ptr<
           autofill::CardUnmaskAuthenticationSelectionDialogControllerImpl>
           model_controller);
-
-  // Shows the plus address bottom sheet, taken in response to choosing a
-  // `kCreateNewPlusAddress` autofill suggestion. Also stores `callback` for
-  // if/when the UI completes successfully.
-  void ShowPlusAddressesBottomSheet(
-      plus_addresses::PlusAddressCallback callback);
 
   // Send a command to show save card bottomsheet.
   void ShowSaveCardBottomSheet(
@@ -176,9 +169,6 @@ class AutofillBottomSheetTabHelper
       autofill::CardUnmaskAuthenticationSelectionDialogControllerImpl>
   GetCardUnmaskAuthenticationSelectionDialogController();
 
-  // Used to get the callback to be run on completion of the plus_address UI.
-  plus_addresses::PlusAddressCallback GetPendingPlusAddressFillCallback();
-
   // Returns the model for save card bottomsheet. The caller takes ownership and
   // subsequent calls will return nullptr until another instance of the
   // bottomsheet is shown again by calling ShowSaveCardBottomSheet().
@@ -189,10 +179,12 @@ class AutofillBottomSheetTabHelper
   // This value is moved and should only be retrieved once per bottom sheet.
   autofill::VirtualCardEnrollmentCallbacks GetVirtualCardEnrollmentCallbacks();
 
-  // Attaches the listeners for the payments form corresponding to `form_id`.
-  // Only attaches the listeners on newly discovered renderer ids if `only_new`
-  // is true.
-  void AttachListenersForPaymentsForm(autofill::AutofillManager& manager,
+  // Updates the listeners for the payments form corresponding to `form_id`.
+  // Only attaches the listeners on newly discovered payment fields when
+  // `only_new` is true, or attaches the listeners on all payment fields
+  // otherwise. In V3, it also detaches the listeners for the fields that are no
+  // longer related to payments (from later discovery).
+  void UpdateListenersForPaymentsForm(autofill::AutofillManager& manager,
                                       autofill::FormGlobalId form_id,
                                       bool only_new);
 
@@ -226,6 +218,11 @@ class AutofillBottomSheetTabHelper
   // Send command to show the Credential Bottom Sheet.
   void ShowCredentialBottomSheet(const autofill::FormActivityParams& params);
 
+  // Conditionally show the payments bottom sheet based on the Autofill
+  // suggestions that can be retrieved for the form that corresponds to
+  // `params`.
+  void MaybeShowPaymentsBottomSheet(const autofill::FormActivityParams params);
+
   // Send command to show the Payments Bottom Sheet. Detach all listeners if
   // `detach`.
   void ShowPaymentsBottomSheet(const autofill::FormActivityParams& params,
@@ -234,9 +231,6 @@ class AutofillBottomSheetTabHelper
   // Send command to show the scan save and fill Bottom Sheet.
   void ShowScanCardSaveAndFillBottomSheet(
       const autofill::FormActivityParams& params);
-
-  // Maybe shows the Payments Bottom Sheet if the conditions are met.
-  void MaybeShowPaymentsBottomSheet(autofill::FormActivityParams params);
 
   // Called when the suggestions are retrieved for the payments bottom sheet.
   void OnSuggestionsRetrievedForPaymentsBottomSheet(
@@ -252,7 +246,7 @@ class AutofillBottomSheetTabHelper
   // Password generation provider used to trigger proactive password generation
   id<PasswordGenerationProvider> generation_provider_;
 
-  // Handler used to request showing the credential bottom sheet.
+  // Handler used to request showing the Autofill bottom sheet.
   __weak id<AutofillCommands> commands_handler_;
 
   // The WebState with which this object is associated.
@@ -291,10 +285,6 @@ class AutofillBottomSheetTabHelper
   std::unique_ptr<
       autofill::CardUnmaskAuthenticationSelectionDialogControllerImpl>
       card_unmask_authentication_selection_controller_;
-
-  // A callback to be run on completion of the plus address bottom sheet UI
-  // flow.
-  plus_addresses::PlusAddressCallback pending_plus_address_callback_;
 
   // Model providing resources and callbacks for save card bottomsheet. This
   // will be reset once GetSaveCardBottomSheetModel() is called.

@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
@@ -504,6 +505,7 @@ void FakeCameraDevice::OnNextFrame() {
     info->pixel_format = media::PIXEL_FORMAT_ARGB;
     info->coded_size = current_settings_->requested_format.frame_size;
     info->visible_rect = gfx::Rect(info->coded_size);
+    info->natural_size = info->coded_size;
     info->is_premapped = false;
 
     subscription->OnFrameReadyInBuffer(

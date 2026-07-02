@@ -17,7 +17,7 @@
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
-#import "ios/chrome/test/earl_grey/web_http_server_chrome_test_case.h"
+#import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 
 using chrome_test_util::BookmarksHomeDoneButton;
@@ -28,7 +28,7 @@ using chrome_test_util::ContextBarLeadingButtonWithLabel;
 using chrome_test_util::ContextBarTrailingButtonWithLabel;
 using chrome_test_util::TappableBookmarkNodeWithLabel;
 
-@interface BookmarksTestCase : WebHttpServerChromeTestCase
+@interface BookmarksTestCase : ChromeTestCase
 
 @end
 
@@ -58,6 +58,8 @@ using chrome_test_util::TappableBookmarkNodeWithLabel;
   [ChromeCoordinatorAppInterface stopCoordinator];
   [ChromeEarlGreyUI waitForAppToIdle];
   [ChromeCoordinatorAppInterface startBookmarksCoordinator];
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
+                      grey_accessibilityID(kBookmarksHomeTableViewIdentifier)];
 }
 
 // Test deleting grand parent is reflected in the bookmarks list UI. Regression
@@ -667,8 +669,7 @@ using chrome_test_util::TappableBookmarkNodeWithLabel;
       assertWithMatcher:grey_nil()];
 }
 
-// TODO(crbug.com/483351045): Re-enable this flaky test.
-- (void)FLAKY_testCachePositionIsRecreatedWhenNodeIsMoved {
+- (void)testCachePositionIsRecreatedWhenNodeIsMoved {
   [BookmarkEarlGrey
       setupStandardBookmarksInStorage:BookmarkStorageType::kLocalOrSyncable];
   [ChromeCoordinatorAppInterface startBookmarksCoordinator];

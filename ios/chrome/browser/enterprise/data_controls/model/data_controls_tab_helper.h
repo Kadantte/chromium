@@ -10,9 +10,9 @@
 #import "base/memory/weak_ptr.h"
 #import "components/enterprise/data_controls/core/browser/verdict.h"
 #import "ios/chrome/browser/enterprise/data_controls/utils/clipboard_utils.h"
-#import "ios/chrome/browser/enterprise/data_controls/utils/data_controls_utils.h"
-#import "ios/chrome/browser/shared/public/commands/data_controls_commands.h"
-#import "ios/web/public/lazy_web_state_user_data.h"
+#import "ios/chrome/browser/enterprise/enterprise_dialog/model/warning_dialog.h"
+#import "ios/chrome/browser/shared/public/commands/enterprise_commands.h"
+#import "ios/web/public/web_state_user_data.h"
 #import "url/gurl.h"
 
 @protocol SnackbarCommands;
@@ -28,7 +28,7 @@ namespace data_controls {
 // (copying, pasting), are permitted. Such restrictions only apply to managed
 // profiles; for all other profiles, these actions are unrestricted.
 class DataControlsTabHelper
-    : public web::LazyWebStateUserData<DataControlsTabHelper> {
+    : public web::WebStateUserData<DataControlsTabHelper> {
  public:
   DataControlsTabHelper(const DataControlsTabHelper&) = delete;
   DataControlsTabHelper& operator=(const DataControlsTabHelper&) = delete;
@@ -46,8 +46,25 @@ class DataControlsTabHelper
   // Determines if sharing should be allowed.
   bool ShouldAllowShare();
 
-  // Sets the command handler for Data Controls.
-  void SetDataControlsCommandsHandler(id<DataControlsCommands> handler);
+  // Returns true if the Search With data controls feature is enabled.
+  static bool IsSearchWithFeatureEnabled();
+
+  // Determines if the "Search With [Default Search Engine]" action is allowed
+  // for the current tab (source URL) by enterprise policies. This is a
+  // synchronous check used during context menu construction to decide if the
+  // context menu should include this item.
+  bool IsSearchWithAllowed();
+
+  // Determines if the "Search With [Default Search Engine]" action should be
+  // executed for the current tab (source URL) by enterprise policies. Checks
+  // the policy's verdict and manages the action: allows, reports, or shows a
+  // warning dialog and executes the search asynchronously only if the user
+  // explicitly proceeds.
+  void ShouldAllowSearchWith(size_t text_length,
+                             base::OnceCallback<void(bool)> callback);
+
+  // Sets the command handler for Enterprise.
+  void SetEnterpriseCommandsHandler(id<EnterpriseCommands> handler);
 
   // Sets the snackbar handler.
   void SetSnackbarHandler(id<SnackbarCommands> snackbar_handler);
@@ -56,7 +73,7 @@ class DataControlsTabHelper
   void DidFinishClipboardRead();
 
  private:
-  friend class web::LazyWebStateUserData<DataControlsTabHelper>;
+  friend class web::WebStateUserData<DataControlsTabHelper>;
   explicit DataControlsTabHelper(web::WebState* web_state);
 
   // Returns true if clipboard data controls are enabled.
@@ -86,9 +103,17 @@ class DataControlsTabHelper
                    base::OnceCallback<void(bool)> callback,
                    bool bypassed);
 
+  // Finalizes the search with action invoking the callback.
+  void FinishSearchWith(const GURL& source_url,
+                        base::WeakPtr<ProfileIOS> source_profile,
+                        const ui::ClipboardMetadata& metadata,
+                        Verdict verdict,
+                        base::OnceCallback<void(bool)> callback,
+                        bool bypassed);
+
   // Displays a warning dialog associated with a user's action (e.g., copy,
   // paste, share).
-  void ShowWarningDialog(DataControlsDialog::Type dialog_type,
+  void ShowWarningDialog(enterprise::DialogType dialog_type,
                          std::string_view org_domain,
                          base::OnceCallback<void(bool)> on_bypassed_callback);
 
@@ -102,8 +127,8 @@ class DataControlsTabHelper
   // outlive `this`.
   raw_ptr<web::WebState> web_state_;
 
-  // The data controller command handler.
-  __weak id<DataControlsCommands> commands_handler_ = nil;
+  // The enterprise command handler.
+  __weak id<EnterpriseCommands> commands_handler_ = nil;
 
   // The snackbar command handler.
   __weak id<SnackbarCommands> snackbar_handler_ = nil;

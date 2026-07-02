@@ -29,7 +29,7 @@ IOSPasswordManagerDriver::IOSPasswordManagerDriver(
     id<PasswordManagerDriverBridge> bridge,
     password_manager::PasswordManagerInterface* password_manager,
     web::WebFrame* web_frame,
-    int driver_id)
+    password_manager::DriverId driver_id)
     : web_state_(web_state->GetWeakPtr()),
       bridge_(bridge),
       password_manager_(password_manager),
@@ -49,7 +49,7 @@ IOSPasswordManagerDriver::IOSPasswordManagerDriver(
 
 IOSPasswordManagerDriver::~IOSPasswordManagerDriver() = default;
 
-int IOSPasswordManagerDriver::GetId() const {
+password_manager::DriverId IOSPasswordManagerDriver::GetId() const {
   return id_;
 }
 
@@ -173,6 +173,11 @@ IOSPasswordManagerDriver::GetPasswordAutofillManager() {
   return nullptr;
 }
 
+autofill::PasswordManagerDelegate*
+IOSPasswordManagerDriver::GetPasswordManagerDelegate() {
+  return nullptr;
+}
+
 bool IOSPasswordManagerDriver::IsDirectChildOfPrimaryMainFrame() const {
   NOTREACHED();
 }
@@ -198,6 +203,10 @@ const GURL& IOSPasswordManagerDriver::GetLastCommittedURL() const {
 }
 
 const url::Origin& IOSPasswordManagerDriver::GetLastCommittedOrigin() const {
+  return security_origin_;
+}
+
+bool IOSPasswordManagerDriver::HasCrossOriginAncestor() const {
   NOTREACHED();
 }
 
@@ -210,6 +219,14 @@ gfx::RectF IOSPasswordManagerDriver::TransformToRootCoordinates(
 void IOSPasswordManagerDriver::CheckViewAreaVisible(
     autofill::FieldRendererId field_id,
     base::OnceCallback<void(bool)>) {
+  NOTREACHED();
+}
+
+bool IOSPasswordManagerDriver::HasValidURL(bool may_kill_renderer) {
+  NOTREACHED();
+}
+
+bool IOSPasswordManagerDriver::IsRenderFrameHostSupported() {
   NOTREACHED();
 }
 

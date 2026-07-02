@@ -29,8 +29,8 @@ import android.widget.ListAdapter;
 import android.widget.ListView;
 
 import androidx.annotation.VisibleForTesting;
-import androidx.appcompat.content.res.AppCompatResources;
 
+import org.chromium.base.MathUtils;
 import org.chromium.base.Token;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.Initializer;
@@ -44,7 +44,7 @@ import org.chromium.chrome.browser.data_sharing.DataSharingTabManager;
 import org.chromium.chrome.browser.multiwindow.InstanceInfo;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager.NewWindowAppSource;
-import org.chromium.chrome.browser.multiwindow.MultiInstanceManager.PersistedInstanceType;
+import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestratorFactory;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
@@ -52,21 +52,20 @@ import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
 import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabClosureParamsUtils;
-import org.chromium.chrome.browser.tabmodel.TabGroupColorUtils;
 import org.chromium.chrome.browser.tabmodel.TabGroupMetadata;
 import org.chromium.chrome.browser.tabmodel.TabGroupMetadataExtractor;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilter;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilterObserver;
+import org.chromium.chrome.browser.tabmodel.TabGroupObserver;
 import org.chromium.chrome.browser.tabmodel.TabGroupTitleUtils;
 import org.chromium.chrome.browser.tabmodel.TabGroupUtils;
 import org.chromium.chrome.browser.tabmodel.TabList;
 import org.chromium.chrome.browser.tabmodel.TabModel;
-import org.chromium.chrome.browser.tasks.tab_management.ColorPickerCoordinator;
-import org.chromium.chrome.browser.tasks.tab_management.ColorPickerCoordinator.ColorPickerLayoutType;
-import org.chromium.chrome.browser.tasks.tab_management.ColorPickerType;
 import org.chromium.chrome.browser.tasks.tab_management.TabShareUtils;
 import org.chromium.chrome.browser.tasks.tab_management.TabStripReorderingHelper;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiUtils;
+import org.chromium.chrome.browser.tasks.tab_management.color_picker.ColorPickerContainer;
+import org.chromium.chrome.browser.tasks.tab_management.color_picker.ColorPickerCoordinator;
+import org.chromium.chrome.browser.tasks.tab_management.color_picker.ColorPickerCoordinator.ColorPickerLayoutType;
+import org.chromium.chrome.browser.tasks.tab_management.color_picker.ColorPickerType;
 import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
 import org.chromium.chrome.browser.url_constants.UrlConstantResolverFactory;
 import org.chromium.chrome.tab_ui.R;
@@ -79,6 +78,7 @@ import org.chromium.components.tab_group_sync.EitherId.EitherGroupId;
 import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
 import org.chromium.components.tab_groups.TabGroupColorId;
+import org.chromium.components.tab_groups.TabGroupColorPickerUtils;
 import org.chromium.ui.KeyboardVisibilityDelegate;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.listmenu.ListMenuItemProperties;
@@ -103,7 +103,6 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
     private @MonotonicNonNull View mContentView;
     private @MonotonicNonNull EditText mGroupTitleEditText;
     private @MonotonicNonNull ColorPickerCoordinator mColorPickerCoordinator;
-    private TabGroupModelFilter mTabGroupModelFilter;
     private Token mTabGroupId;
 
     // Title currently modified by the user through the edit box. This does not include previously
@@ -116,8 +115,8 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
     @SuppressWarnings("HidingField")
     protected CollaborationService mCollaborationService;
 
-    private final TabGroupModelFilterObserver mTabGroupModelFilterObserver =
-            new TabGroupModelFilterObserver() {
+    private final TabGroupObserver mTabGroupObserver =
+            new TabGroupObserver() {
                 @Override
                 public void didChangeTabGroupTitle(Token tabGroupId, String newTitle) {
                     if (isMenuShowing() && mTabGroupId.equals(tabGroupId)) {
@@ -136,57 +135,57 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
 
     private TabGroupContextMenuCoordinator(
             Supplier<TabModel> tabModelSupplier,
-            TabGroupModelFilter tabGroupModelFilter,
             MultiInstanceManager multiInstanceManager,
             WindowAndroid windowAndroid,
             @Nullable TabGroupSyncService tabGroupSyncService,
             DataSharingTabManager dataSharingTabManager,
             CollaborationService collaborationService,
-            BiConsumer<Token, Boolean> reorderFunction) {
+            BiConsumer<Token, Boolean> reorderFunction,
+            @TabClosingSource int tabClosingSource) {
         super(
                 R.layout.tab_strip_group_menu_layout,
                 R.layout.tab_switcher_action_menu_layout,
                 getMenuItemClickedCallback(
                         assumeNonNull(windowAndroid.getActivity().get()),
                         tabModelSupplier,
-                        tabGroupModelFilter,
                         multiInstanceManager,
-                        dataSharingTabManager),
+                        dataSharingTabManager,
+                        tabClosingSource),
                 tabModelSupplier,
                 multiInstanceManager,
                 tabGroupSyncService,
                 collaborationService,
                 assumeNonNull(windowAndroid.getActivity().get()),
                 reorderFunction);
-        mTabGroupModelFilter = tabGroupModelFilter;
         mWindowAndroid = windowAndroid;
         mContext = windowAndroid.getActivity().get();
         mKeyboardVisibilityListener =
                 isShowing -> {
                     if (!isShowing) updateTabGroupTitle();
                 };
-        mTabGroupModelFilter.addTabGroupObserver(mTabGroupModelFilterObserver);
+        getTabModel().addTabGroupObserver(mTabGroupObserver);
         mCollaborationService = collaborationService;
     }
 
     /**
      * Creates the TabGroupContextMenuCoordinator object.
      *
-     * @param tabModel The tab model. Should have a {@link Profile}.
-     * @param tabGroupModelFilter The {@link TabGroupModelFilter} to act on.
+     * @param tabModel The {@link TabModel} to act on. Should have a {@link Profile}.
      * @param multiInstanceManager The {@link MultiInstanceManager} that may be used to move the
      *     group to another window.
      * @param windowAndroid The {@link WindowAndroid} current window.
-     * @param dataSharingTabManager The {@link} DataSharingTabManager managing communication between
+     * @param dataSharingTabManager The {@link DataSharingTabManager} managing communication between
      *     UI and DataSharing services.
+     * @param reorderFunction Callback to run when reordering tabs.
+     * @param tabClosingSource The {@link TabClosingSource} indicating where the tab is closed from.
      */
     public static TabGroupContextMenuCoordinator createContextMenuCoordinator(
             TabModel tabModel,
-            TabGroupModelFilter tabGroupModelFilter,
             MultiInstanceManager multiInstanceManager,
             WindowAndroid windowAndroid,
             DataSharingTabManager dataSharingTabManager,
-            BiConsumer<Token, Boolean> reorderFunction) {
+            BiConsumer<Token, Boolean> reorderFunction,
+            @TabClosingSource int tabClosingSource) {
         Profile profile = assumeNonNull(tabModel.getProfile());
 
         @Nullable TabGroupSyncService tabGroupSyncService =
@@ -197,37 +196,38 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
 
         return new TabGroupContextMenuCoordinator(
                 () -> tabModel,
-                tabGroupModelFilter,
                 multiInstanceManager,
                 windowAndroid,
                 tabGroupSyncService,
                 dataSharingTabManager,
                 collaborationService,
-                reorderFunction);
+                reorderFunction,
+                tabClosingSource);
     }
 
     @VisibleForTesting
     static OnItemClickedCallback<Token> getMenuItemClickedCallback(
             Activity activity,
             Supplier<TabModel> tabModelSupplier,
-            TabGroupModelFilter tabGroupModelFilter,
             MultiInstanceManager multiInstanceManager,
-            DataSharingTabManager dataSharingTabManager) {
+            DataSharingTabManager dataSharingTabManager,
+            @TabClosingSource int tabClosingSource) {
         return (menuId, tabGroupId, collaborationId, listViewTouchTracker) -> {
-            int tabId = tabGroupModelFilter.getGroupLastShownTabId(tabGroupId);
+            TabModel tabModel = tabModelSupplier.get();
+            int tabId = tabModel.getGroupLastShownTabId(tabGroupId);
             EitherGroupId eitherId = EitherGroupId.createLocalId(new LocalTabGroupId(tabGroupId));
 
             if (tabId == Tab.INVALID_TAB_ID) return;
 
             if (menuId == R.id.ungroup_tab) {
-                TabUiUtils.ungroupTabGroup(tabGroupModelFilter, tabGroupId);
+                TabUiUtils.ungroupTabGroup(tabModel, tabGroupId);
                 RecordUserAction.record("MobileToolbarTabGroupMenu.Ungroup");
             } else if (menuId == R.id.close_tab_group) {
                 boolean allowUndo = TabClosureParamsUtils.shouldAllowUndo(listViewTouchTracker);
                 TabUiUtils.closeTabGroup(
-                        tabGroupModelFilter,
+                        tabModelSupplier.get(),
                         tabId,
-                        TabClosingSource.TABLET_TAB_STRIP,
+                        tabClosingSource,
                         allowUndo,
                         /* hideTabGroups= */ true,
                         /* didCloseCallback= */ null);
@@ -235,9 +235,9 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
             } else if (menuId == R.id.delete_tab_group) {
                 boolean allowUndo = TabClosureParamsUtils.shouldAllowUndo(listViewTouchTracker);
                 TabUiUtils.closeTabGroup(
-                        tabGroupModelFilter,
+                        tabModelSupplier.get(),
                         tabId,
-                        TabClosingSource.TABLET_TAB_STRIP,
+                        tabClosingSource,
                         allowUndo,
                         /* hideTabGroups= */ false,
                         /* didCloseCallback= */ null);
@@ -245,31 +245,38 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
             } else if (menuId == R.id.open_new_tab_in_group) {
                 UrlConstantResolver resolver =
                         UrlConstantResolverFactory.getForProfile(
-                                tabGroupModelFilter.getTabModel().getProfile());
+                                tabModelSupplier.get().getProfile());
                 TabGroupUtils.openUrlInGroup(
-                        tabGroupModelFilter,
+                        tabModelSupplier.get(),
                         resolver.getNtpUrl(),
                         tabId,
                         TabLaunchType.FROM_TAB_GROUP_UI);
                 RecordUserAction.record("MobileToolbarTabGroupMenu.NewTabInGroup");
             } else if (menuId == R.id.move_to_other_window_menu_id) {
-                if (MultiWindowUtils.getInstanceCountWithFallback(PersistedInstanceType.ACTIVE)
+                boolean isIncognito = tabModelSupplier.get().isIncognitoBranded();
+                if (MultiWindowUtils.getInstanceCount(
+                                getActiveInstanceTypeForProfileType(isIncognito))
                         == 1) {
                     RecordUserAction.record("MobileToolbarTabGroupMenu.MoveGroupToNewWindow");
                 } else {
                     RecordUserAction.record("MobileToolbarTabGroupMenu.MoveGroupToAnotherWindow");
                 }
-                TabModel tabModel = tabModelSupplier.get();
+                TabModel currentTabModel = tabModelSupplier.get();
                 @Nullable TabGroupMetadata tabGroupMetadata =
                         TabGroupMetadataExtractor.extractTabGroupMetadata(
-                                tabGroupModelFilter,
-                                tabGroupModelFilter.getTabsInGroup(tabGroupId),
+                                currentTabModel,
+                                currentTabModel.getTabsInGroup(tabGroupId),
                                 TabWindowManagerSingleton.getInstance().getIdForWindow(activity),
-                                assumeNonNull(tabModel.getTabAt(tabModel.index())).getId(),
+                                assumeNonNull(currentTabModel.getTabAt(currentTabModel.index()))
+                                        .getId(),
                                 TabShareUtils.isCollaborationIdValid(collaborationId));
                 if (tabGroupMetadata != null) {
-                    multiInstanceManager.moveTabGroupToOtherWindow(
-                            tabGroupMetadata, NewWindowAppSource.MENU);
+                    moveAndCleanupSource(
+                            multiInstanceManager,
+                            () ->
+                                    MultiInstanceOrchestratorFactory.getInstance()
+                                            .moveTabGroupToOtherWindow(
+                                                    tabGroupMetadata, NewWindowAppSource.MENU));
                 }
             } else if (menuId == R.id.share_group) {
                 // Create the group share flow and display the share bottom sheet.
@@ -380,18 +387,31 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
                         .build());
 
         if (MultiWindowUtils.isMultiInstanceApi31Enabled() && mMultiInstanceManager != null) {
-            itemList.add(
-                    createMoveToWindowItem(
-                            id,
-                            isIncognito,
-                            R.plurals.move_group_to_another_window_context_menu_item,
-                            R.id.move_to_other_window_menu_id));
+            int totalTabCount = getTabModel().getTabCountSupplier().get();
+            TabGroupMetadata tabGroupMetadata = assertNonNull(getTabGroupMetadata(id));
+            int groupTabCount = tabGroupMetadata.tabIdsToUrls.size();
+            int activeInstanceCount =
+                    MultiWindowUtils.getInstanceCount(
+                            getActiveInstanceTypeForProfileType(isIncognito));
+            boolean currentWindowHasOtherTabs = totalTabCount > groupTabCount;
+            // Support moving the tab group to another window only if there are tabs other than the
+            // group tabs, or if there are other active instances to move the tab group to.
+            if (currentWindowHasOtherTabs || activeInstanceCount > 1) {
+                itemList.add(
+                        createMoveToWindowItem(
+                                id,
+                                isIncognito,
+                                R.plurals.move_group_to_another_window_context_menu_item,
+                                R.id.move_to_other_window_menu_id,
+                                currentWindowHasOtherTabs));
+            }
         }
         List<MVCListAdapter.ListItem> reorderItems =
                 createReorderItems(
                         id,
                         assumeNonNull(mContext).getString(R.string.move_tab_group_left),
-                        mContext.getString(R.string.move_tab_group_right));
+                        mContext.getString(R.string.move_tab_group_right),
+                        isIncognito);
         // Need to check list is non-empty before calling addAll; otherwise we get assertion error.
         if (!reorderItems.isEmpty()) itemList.addAll(reorderItems);
 
@@ -489,15 +509,58 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
         boolean isInSubmenu = (listAdapter.getItemViewType(0) == SUBMENU_HEADER);
         listView.setScrollContainer(isInSubmenu);
 
+        int minWidth = getDimensionPixelSize(R.dimen.list_menu_width);
+        int absoluteMaxWidth =
+                getDimensionPixelSize(R.dimen.tab_strip_group_context_menu_max_width);
+
         int totalHeight = 0;
+        int maxItemWidth = 0;
+
+        // When not in a submenu, the menu also includes a title editor and a color picker.
+        // We need to ensure that the menu width is large enough to accommodate these
+        // components as well. The color picker is the one we care about, since the other is an
+        // text editing box that will match its parent's width.
+        View container = ((ViewGroup) assumeNonNull(mContentView)).getChildAt(0);
+        if (!isInSubmenu && mColorPickerCoordinator != null) {
+            ColorPickerContainer colorPicker = mColorPickerCoordinator.getContainerView();
+            if (colorPicker.getColorPickerLayoutType() == ColorPickerLayoutType.DYNAMIC) {
+                if (colorPicker.getVisibility() == VISIBLE) {
+                    int singleRowWidth = colorPicker.getSingleRowWidth();
+                    if (singleRowWidth < absoluteMaxWidth) {
+                        maxItemWidth = Math.max(maxItemWidth, singleRowWidth);
+                    } else {
+                        maxItemWidth = Math.max(maxItemWidth, colorPicker.getDoubleRowWidth());
+                    }
+                }
+            }
+        }
+
         for (int i = 0; i < listAdapter.getCount(); i++) {
             View listItem = listAdapter.getView(i, null, listView);
             listItem.measure(MeasureSpec.UNSPECIFIED, MeasureSpec.UNSPECIFIED);
             totalHeight += listItem.getMeasuredHeight();
+            maxItemWidth = Math.max(maxItemWidth, listItem.getMeasuredWidth());
         }
+
+        int width =
+                MathUtils.clamp(
+                        maxItemWidth + listView.getPaddingLeft() + listView.getPaddingRight(),
+                        minWidth,
+                        absoluteMaxWidth);
+
+        // Set the width on the ScrollView's child (the LinearLayout) to ensure all components
+        // (title editor, color picker, and list items) share the same width and dividers
+        // extend to the full width of the menu.
+        ViewGroup.LayoutParams containerParams = container.getLayoutParams();
+        containerParams.width = width;
+        container.setLayoutParams(containerParams);
+
         ViewGroup.LayoutParams params = listView.getLayoutParams();
         params.height = totalHeight + listView.getPaddingTop() + listView.getPaddingBottom();
+        params.width = ViewGroup.LayoutParams.MATCH_PARENT;
         listView.setLayoutParams(params);
+
+        resizeMenu();
     }
 
     private int getMenuItemIndex(ModelList itemList, int menuItemId) {
@@ -535,7 +598,11 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
         @Nullable TabGroupMetadata tabGroupMetadata = getTabGroupMetadata(groupId);
         if (tabGroupMetadata == null) return;
         RecordUserAction.record("MobileToolbarTabGroupMenu.MoveGroupToNewWindow");
-        mMultiInstanceManager.moveTabGroupToNewWindow(tabGroupMetadata, NewWindowAppSource.MENU);
+        moveAndCleanupSource(
+                mMultiInstanceManager,
+                () ->
+                        mMultiInstanceOrchestrator.moveTabGroupToNewWindow(
+                                tabGroupMetadata, NewWindowAppSource.MENU));
     }
 
     @Override
@@ -544,14 +611,20 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
         @Nullable TabGroupMetadata tabGroupMetadata = getTabGroupMetadata(groupId);
         if (tabGroupMetadata == null) return;
         RecordUserAction.record("MobileToolbarTabGroupMenu.MoveGroupToAnotherWindow");
-        mMultiInstanceManager.moveTabGroupToWindow(
-                instanceInfo, tabGroupMetadata, TabList.INVALID_TAB_INDEX, NewWindowAppSource.MENU);
+        moveAndCleanupSource(
+                mMultiInstanceManager,
+                () ->
+                        mMultiInstanceOrchestrator.moveTabGroupToWindowByIdChecked(
+                                instanceInfo.instanceId,
+                                tabGroupMetadata,
+                                TabList.INVALID_TAB_INDEX,
+                                /* bringToFront= */ true));
     }
 
     @Override
     protected boolean canItemMoveTowardStart(Token groupId) {
         TabModel tabModel = mTabModelSupplier.get();
-        Tab firstTab = mTabGroupModelFilter.getTabsInGroup(groupId).get(0);
+        Tab firstTab = tabModel.getTabsInGroup(groupId).get(0);
         int idx = tabModel.indexOf(firstTab);
         return idx > tabModel.findFirstNonPinnedTabIndex();
     }
@@ -559,7 +632,7 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
     @Override
     protected boolean canItemMoveTowardEnd(Token groupId) {
         TabModel tabModel = mTabModelSupplier.get();
-        List<Tab> tabs = mTabGroupModelFilter.getTabsInGroup(groupId);
+        List<Tab> tabs = tabModel.getTabsInGroup(groupId);
         for (Tab tab : tabs) {
             if (tab.getIsPinned()) return false;
         }
@@ -572,8 +645,8 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
         TabModel tabModel = mTabModelSupplier.get();
         @Nullable String collaborationId = getCollaborationIdOrNull(groupId);
         return TabGroupMetadataExtractor.extractTabGroupMetadata(
-                mTabGroupModelFilter,
-                mTabGroupModelFilter.getTabsInGroup(groupId),
+                tabModel,
+                tabModel.getTabsInGroup(groupId),
                 TabWindowManagerSingleton.getInstance()
                         .getIdForWindow(assumeNonNull(mWindowAndroid.getActivity().get())),
                 assumeNonNull(tabModel.getTabAt(tabModel.index())).getId(),
@@ -584,7 +657,7 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
         if (mColorPickerCoordinator == null) return;
         @TabGroupColorId
         int newColor = assertNonNull(mColorPickerCoordinator.getSelectedColorSupplier().get());
-        if (TabUiUtils.updateTabGroupColor(mTabGroupModelFilter, mTabGroupId, newColor)) {
+        if (TabUiUtils.updateTabGroupColor(getTabModel(), mTabGroupId, newColor)) {
             RecordUserAction.record("MobileToolbarTabGroupMenu.ColorChanged");
         }
     }
@@ -600,10 +673,10 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
         if (newTitle == null) {
             return;
         } else if (isTitleUnset(newTitle) || newTitle.equals(getDefaultTitle())) {
-            mTabGroupModelFilter.deleteTabGroupTitle(mTabGroupId);
+            getTabModel().deleteTabGroupTitle(mTabGroupId);
             RecordUserAction.record("MobileToolbarTabGroupMenu.TitleReset");
             setExistingOrDefaultTitle(getDefaultTitle());
-        } else if (TabUiUtils.updateTabGroupTitle(mTabGroupModelFilter, mTabGroupId, newTitle)) {
+        } else if (TabUiUtils.updateTabGroupTitle(getTabModel(), mTabGroupId, newTitle)) {
             RecordUserAction.record("MobileToolbarTabGroupMenu.TitleChanged");
         }
         mCurrentModifiedTitle = null;
@@ -618,7 +691,7 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
 
     private String getDefaultTitle() {
         return TabGroupTitleUtils.getDefaultTitle(
-                assumeNonNull(mContext), mTabGroupModelFilter.getTabCountForGroup(mTabGroupId));
+                assumeNonNull(mContext), getTabModel().getTabCountForGroup(mTabGroupId));
     }
 
     // TODO(crbug.com/358689769): Enable live editing and updating of the group title.
@@ -628,8 +701,7 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
         // Set incognito style.
         if (isIncognito) {
             mGroupTitleEditText.setBackgroundTintList(
-                    AppCompatResources.getColorStateList(
-                            context, R.color.menu_edit_text_bg_tint_list_baseline));
+                    context.getColorStateList(R.color.menu_edit_text_bg_tint_list_baseline));
             mGroupTitleEditText.setTextAppearance(
                     R.style.TextAppearance_TextLarge_Primary_Baseline_Light);
         }
@@ -662,7 +734,7 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
                 });
 
         setExistingOrDefaultTitle(
-                TabGroupTitleUtils.getDisplayableTitle(context, mTabGroupModelFilter, mTabGroupId));
+                TabGroupTitleUtils.getDisplayableTitle(context, getTabModel(), mTabGroupId));
 
         // Add listener to group title EditText to update group title when keyboard starts hiding.
         mWindowAndroid
@@ -678,11 +750,13 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
 
         // TODO(crbug.com/357104424): Consider create ColorPickerCoordinator once during the first
         // call, and reuse it for subsequent calls.
+        View inflatedRoot = ((ViewStub) contentView.findViewById(R.id.color_picker_stub)).inflate();
+        ColorPickerContainer container = inflatedRoot.findViewById(R.id.color_picker_container);
         mColorPickerCoordinator =
                 new ColorPickerCoordinator(
                         context,
-                        TabGroupColorUtils.getTabGroupColorIdList(),
-                        ((ViewStub) contentView.findViewById(R.id.color_picker_stub)).inflate(),
+                        TabGroupColorPickerUtils.getTabGroupColorIdList(),
+                        container,
                         ColorPickerType.TAB_GROUP,
                         isIncognito,
                         ColorPickerLayoutType.DYNAMIC,
@@ -693,16 +767,12 @@ public class TabGroupContextMenuCoordinator extends TabStripReorderingHelper<Tok
 
         // The color picker should select the current color of the tab group when it is displayed.
         @TabGroupColorId
-        int curGroupColor = mTabGroupModelFilter.getTabGroupColorWithFallback(mTabGroupId);
+        int curGroupColor = getTabModel().getTabGroupColorWithFallback(mTabGroupId);
         mColorPickerCoordinator.setSelectedColorItem(curGroupColor);
     }
 
-    @SuppressWarnings("NullAway")
     public void destroy() {
-        if (mTabGroupModelFilter != null) {
-            mTabGroupModelFilter.removeTabGroupObserver(mTabGroupModelFilterObserver);
-            mTabGroupModelFilter = null;
-        }
+        getTabModel().removeTabGroupObserver(mTabGroupObserver);
     }
 
     @Nullable EditText getGroupTitleEditTextForTesting() {

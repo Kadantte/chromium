@@ -24,10 +24,6 @@
 #import "ios/chrome/browser/shared/model/url/url_util.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list_observer_bridge.h"
-#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
-#import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
-#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
-#import "ios/chrome/browser/shared/public/commands/tab_groups_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/features/system_flags.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
@@ -540,7 +536,6 @@ std::optional<tab_groups::LocalTabGroupID> LocalTabGroupID(
   UIAction* newIncognitoSearch =
       [self.actionFactory actionToStartNewIncognitoSearch];
   UIAction* cameraSearch;
-  UIMenuElement* tabGroupMenu;
 
   NSMutableArray* staticActions = [[NSMutableArray alloc] init];
 
@@ -556,44 +551,13 @@ std::optional<tab_groups::LocalTabGroupID> LocalTabGroupID(
   }
 
   [staticActions addObjectsFromArray:@[
-    cameraSearch, voiceSearch, newIncognitoSearch, newSearch
+    newSearch, newIncognitoSearch, voiceSearch, cameraSearch
   ]];
 
   if (experimental_flags::EnableAIPrototypingMenu()) {
     UIAction* openAIMenu = [self.actionFactory actionToOpenAIMenu];
     [staticActions addObject:openAIMenu];
   }
-
-  if (base::FeatureList::IsEnabled(kTabGroupInTabIconContextMenu)) {
-    std::set<const TabGroup*> groups = self.webStateList->GetGroups();
-    const TabGroup* currentGroup = self.webStateList->GetGroupOfWebStateAt(
-        self.webStateList->GetIndexOfWebState(self.webState));
-
-    __weak __typeof(self) weakSelf = self;
-    /// If the current tab is in a group, display the "Move Tab to Group" menu.
-    /// Otherwise, display the "Add Tab to Group" menu. If a user doesn't have
-    /// any Tab Groups, the "Add Tab to Group" menu will just be a "Add Tab to
-    /// New Group" button.
-    if (currentGroup) {
-      tabGroupMenu = [self.actionFactory menuToMoveTabToGroupWithGroups:groups
-          currentGroup:currentGroup
-          moveBlock:^(const TabGroup* group) {
-            [weakSelf moveTabToGroupBlock:group];
-          }
-          removeBlock:^{
-            [weakSelf removeTabFromGroupBlock];
-          }];
-    } else {
-      tabGroupMenu = [self.actionFactory
-          menuToAddTabToGroupWithGroups:groups
-                           numberOfTabs:1
-                                  block:^(const TabGroup* group) {
-                                    [weakSelf addTabToGroupBlock:group];
-                                  }];
-    }
-    [staticActions addObject:tabGroupMenu];
-  }
-
   UIMenuElement* clipboardAction = [self menuElementForPasteboard];
   if (clipboardAction) {
     UIMenu* staticMenu = [UIMenu menuWithTitle:@""
@@ -602,13 +566,14 @@ std::optional<tab_groups::LocalTabGroupID> LocalTabGroupID(
                                        options:UIMenuOptionsDisplayInline
                                       children:staticActions];
 
-    return [UIMenu menuWithTitle:@"" children:@[ clipboardAction, staticMenu ]];
+    return [UIMenu menuWithTitle:@"" children:@[ staticMenu, clipboardAction ]];
   }
   return [UIMenu menuWithTitle:@"" children:staticActions];
 }
 
 /// Returns the menu for the TabGrid button.
 - (UIMenu*)menuForTabGridButton {
+  NSMutableArray* staticActions = [[NSMutableArray alloc] init];
   UIAction* openNewTab = [self.actionFactory actionToOpenNewTab];
 
   UIAction* openNewIncognitoTab =
@@ -616,8 +581,9 @@ std::optional<tab_groups::LocalTabGroupID> LocalTabGroupID(
 
   UIAction* closeTab = [self.actionFactory actionToCloseCurrentTab];
 
-  return [UIMenu menuWithTitle:@""
-                      children:@[ closeTab, openNewTab, openNewIncognitoTab ]];
+  [staticActions
+      addObjectsFromArray:@[ closeTab, openNewTab, openNewIncognitoTab ]];
+  return [UIMenu menuWithTitle:@"" children:staticActions];
 }
 
 /// Returns the UIMenuElement for the content of the pasteboard. Can return nil.
@@ -716,56 +682,6 @@ std::optional<tab_groups::LocalTabGroupID> LocalTabGroupID(
   const TabGroup* activeGroup = [self activeWebStateTabGroup];
   [self.consumer setTabGridButtonBlueDot:_dirtyGroups.contains(
                                              activeGroup->tab_group_id())];
-}
-
-/// Triggers the creation of a New Tab Group.
-- (void)createNewTabGroup {
-  if (!self.webState) {
-    return;
-  }
-
-  std::set<web::WebStateID> identifiers;
-  identifiers.insert(self.webState->GetUniqueIdentifier());
-  id<TabGroupsCommands> handler =
-      HandlerForProtocol(self.commandDispatcher, TabGroupsCommands);
-
-  [handler showTabGroupCreationForTabs:identifiers];
-}
-
-/// Creates a Move Tab to Group block for the Move Tab to Group menu.
-- (void)moveTabToGroupBlock:(const TabGroup*)group {
-  int tabIndex = self.webStateList->GetIndexOfWebState(self.webState);
-  if (tabIndex == WebStateList::kInvalidIndex) {
-    return;
-  }
-  std::set<int> tabIndices = {tabIndex};
-  self.webStateList->MoveToGroup(tabIndices, group);
-}
-
-/// Creates a Remove Tab from Group block for the Move Tab to Group menu.
-- (void)removeTabFromGroupBlock {
-  int tabIndex = self.webStateList->GetIndexOfWebState(self.webState);
-  if (tabIndex == WebStateList::kInvalidIndex) {
-    return;
-  }
-  std::set<int> tabIndices = {tabIndex};
-  self.webStateList->RemoveFromGroups(tabIndices);
-}
-
-/// Creates an Add Tab to Group block for the Add Tab to Group menu.
-- (void)addTabToGroupBlock:(const TabGroup*)group {
-  int tabIndex = self.webStateList->GetIndexOfWebState(self.webState);
-  if (tabIndex == WebStateList::kInvalidIndex) {
-    return;
-  }
-
-  std::set<int> tabIndices = {tabIndex};
-
-  if (group) {
-    self.webStateList->MoveToGroup(tabIndices, group);
-  } else {
-    [self createNewTabGroup];
-  }
 }
 
 // Gets messages to indicate that a shared tab group has been changed.

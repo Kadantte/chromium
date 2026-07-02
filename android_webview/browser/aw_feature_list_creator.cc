@@ -16,6 +16,7 @@
 #include "android_webview/browser/aw_metrics_service_client_delegate.h"
 #include "android_webview/browser/metrics/android_metrics_provider.h"
 #include "android_webview/browser/metrics/aw_metrics_service_client.h"
+#include "android_webview/browser/safe_browsing/aw_url_checker_delegate_impl.h"
 #include "android_webview/browser/supervised_user/aw_supervised_user_url_classifier.h"
 #include "android_webview/browser/tracing/aw_tracing_delegate.h"
 #include "android_webview/browser/variations/aw_entropy_providers.h"
@@ -70,7 +71,12 @@ bool g_signature_verification_enabled = true;
 // A list of Finch study names that should use the nonembedded low entropy
 // source.
 const char* const kNonembeddedLowEntropySourceAllowlist[] = {
+    "DefaultPassthroughCommandDecoder",
+    "WebViewFasterGetDefaultUserAgent",
+    "WebViewStartupNonBlockingWebViewConstructor",
+    "WebViewStaticMethodsNotTriggerStartup",
     "WebViewTestNonembeddedLowEntropySource",
+    "WebViewProfileStoreNotTriggerStartup"
 };
 
 // These prefs go in the JsonPrefStore, and will persist across runs. Other
@@ -78,6 +84,9 @@ const char* const kNonembeddedLowEntropySourceAllowlist[] = {
 const char* const kPersistentPrefsAllowlist[] = {
     // Restricted content blocking.
     android_webview::prefs::kShouldBlockRestrictedContent,
+
+    // Safe Browsing user opt-in.
+    android_webview::prefs::kSafeBrowsingUserOptIn,
 
     // Last known value of the app's cache quota.
     android_webview::prefs::kLastKnownAppCacheQuota,
@@ -189,6 +198,7 @@ std::unique_ptr<PrefService> AwFeatureListCreator::CreatePrefService() {
   AwTracingDelegate::RegisterPrefs(pref_registry.get());
   AwBrowserContextStore::RegisterPrefs(pref_registry.get());
   AwSupervisedUserUrlClassifier::RegisterPrefs(pref_registry.get());
+  AwUrlCheckerDelegateImpl::RegisterPrefs(pref_registry.get());
 
   PrefServiceFactory pref_service_factory;
 
@@ -248,9 +258,7 @@ void AwFeatureListCreator::SetUpFieldTrials() {
     // Use the cached flag to gate the nonembedded low entropy source logic.
     // This is required because entropy provider selection happens before
     // the variations framework is fully initialized.
-    if (CachedFlags::IsEnabled(
-            features::kWebViewUseNonembeddedLowEntropySource) &&
-        seed_proto->has_low_entropy_source()) {
+    if (seed_proto->has_low_entropy_source()) {
       nonembedded_low_entropy_source = seed_proto->low_entropy_source();
     }
   }
@@ -321,10 +329,7 @@ void AwFeatureListCreator::SetUpFieldTrials() {
   // variation_ids can be overridden by calls to ForceVariationIds in other
   // places.
   variations_field_trial_creator_->SetUpFieldTrials(
-      variation_ids,
-      command_line->GetSwitchValueASCII(
-          variations::switches::kForceVariationIds),
-      GetSwitchDependentFeatureOverrides(*command_line),
+      variation_ids, GetSwitchDependentFeatureOverrides(*command_line),
       std::move(feature_list), metrics_client->metrics_state_manager(),
       aw_field_trials_.get(), &ignored_safe_seed_manager,
       /*add_entropy_source_to_variations_ids=*/true, *entropy_providers);

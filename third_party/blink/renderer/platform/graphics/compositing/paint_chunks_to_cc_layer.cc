@@ -5,9 +5,11 @@
 #include "third_party/blink/renderer/platform/graphics/compositing/paint_chunks_to_cc_layer.h"
 
 #include "base/containers/adapters.h"
+#include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/numerics/safe_conversions.h"
+#include "cc/base/features.h"
 #include "cc/input/layer_selection_bound.h"
 #include "cc/layers/layer.h"
 #include "cc/paint/display_item_list.h"
@@ -29,11 +31,24 @@
 #include "third_party/blink/renderer/platform/graphics/paint/scrollbar_display_item.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "ui/gfx/geometry/point_conversions.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 
 namespace blink {
 
 namespace {
+
+bool IsInCanvasChild(const EffectPaintPropertyNodeOrAlias& starting_effect) {
+  for (const auto* effect = &starting_effect.Unalias(); effect;
+       effect = effect->UnaliasedParent()) {
+    // Compositing is disabled under canvas children, so we can stop once the
+    // first effect node with compositing reasons is found.
+    if (effect->HasDirectCompositingReasons()) {
+      return effect->RequiresCompositingForCanvasChild();
+    }
+  }
+  return false;
+}
 
 // Adapts cc::PaintOpBuffer to provide cc::DisplayItemList API with empty
 // implementations.
@@ -740,11 +755,22 @@ ScrollTranslationAction ConversionContext<Result>::StartEffect(
   current_clip_ = input_clip;
   current_effect_ = &effect;
 
-  if (effect.HasReferenceFilter()) {
+  if (effect.HasReferenceFilter() && effect.Filter()) {
     // For empty chunks, or chunks with empty bounds, with a filter applied
     // that produces output even when there's no input this will expand the
     // bounds to match.
     gfx::Rect filtered_bounds = effect.FilterOutputBounds();
+    effect_bounds_stack_.back().bounds = gfx::RectF(filtered_bounds);
+    // Emit an empty paint operation to add the filtered bounds (mapped to layer
+    // space) to the visual rect of the filter's SaveLayerOp.
+    result_.StartPaint();
+    result_.EndPaintOfUnpaired(
+        chunk_to_layer_mapper_.MapVisualRect(filtered_bounds));
+  }
+
+  if (effect.BackdropFilter()) {
+    gfx::Rect filtered_bounds = gfx::ToEnclosingRect(
+        gfx::SkRectToRectF(effect.BackdropFilterBounds().getBounds()));
     effect_bounds_stack_.back().bounds = gfx::RectF(filtered_bounds);
     // Emit an empty paint operation to add the filtered bounds (mapped to layer
     // space) to the visual rect of the filter's SaveLayerOp.
@@ -953,6 +979,14 @@ ConversionContext<cc::DisplayItemList>::ComputeScrollTranslationAction(
   const auto& target_scroll_translation =
       target_transform.NearestScrollTranslationNode();
   if (&target_scroll_translation == current_scroll_translation_) {
+    return {};
+  }
+
+  if (IsInCanvasChild(chunk_to_layer_mapper_.ChunkState().Effect()) &&
+      target_scroll_translation.ScrollNode() &&
+      target_scroll_translation.ScrollNode()
+              ->GetCompositedScrollingPreference() ==
+          CompositedScrollingPreference::kNotPreferred) {
     return {};
   }
 
@@ -1204,7 +1238,7 @@ class LayerPropertiesUpdater {
 
   void UpdateForNonCompositedScrollbar(const ScrollbarDisplayItem&);
   void UpdateRegionCaptureData(const RegionCaptureData&);
-  void UpdateTrackedElementData(const TrackedElementData&);
+  void UpdateTrackedElementRects(const TrackedElementRects&);
   gfx::Point MapSelectionBoundPoint(const gfx::Point&) const;
   cc::LayerSelectionBound PaintedSelectionBoundToLayerSelectionBound(
       const PaintedSelectionBound&) const;
@@ -1227,7 +1261,7 @@ class LayerPropertiesUpdater {
 #endif
   cc::Region main_thread_scroll_hit_test_region_;
   viz::RegionCaptureBounds capture_bounds_;
-  cc::TrackedElementBounds tracked_element_bounds_;
+  viz::TrackedElementRects tracked_element_rects_;
 
   // Top-level (i.e., non-nested) non-composited scrolls. Nested non-composited
   // scrollers will force the containing top non-composited scroller to hit test
@@ -1261,8 +1295,7 @@ TouchAction LayerPropertiesUpdater::ShouldDisableCursorControl() {
       break;
     }
     // If it is not kAuto, scroll can't propagate, so break here.
-    if (scroll_node->OverscrollBehaviorX() !=
-        cc::OverscrollBehavior::Type::kAuto) {
+    if (!scroll_node->OverscrollBehavior().PropagatesXScroll()) {
       break;
     }
   }
@@ -1300,7 +1333,7 @@ void LayerPropertiesUpdater::UpdateWheelEventRegion(
 #if BUILDFLAG(IS_ANDROID)
 void LayerPropertiesUpdater::UpdateXrTargetRegion(
     const HitTestData& hit_test_data) {
-  xr_hit_test_order_.AppendVector(hit_test_data.xr_regions);
+  xr_hit_test_order_.append_range(hit_test_data.xr_regions);
 }
 #endif
 
@@ -1345,9 +1378,14 @@ void LayerPropertiesUpdater::UpdateScrollHitTestData(const PaintChunk& chunk) {
 
   if (RuntimeEnabledFeatures::RasterInducingScrollEnabled() &&
       hit_test_data.scroll_translation) {
-    CHECK_EQ(chunk.id.type, DisplayItem::Type::kScrollHitTest);
-    AddNonCompositedScroll(chunk);
-    return;
+    if (!IsInCanvasChild(chunk.properties.Effect()) ||
+        hit_test_data.scroll_translation->ScrollNode()
+                ->GetCompositedScrollingPreference() !=
+            CompositedScrollingPreference::kNotPreferred) {
+      CHECK_EQ(chunk.id.type, DisplayItem::Type::kScrollHitTest);
+      AddNonCompositedScroll(chunk);
+      return;
+    }
   }
 
   gfx::Rect rect =
@@ -1540,12 +1578,19 @@ void LayerPropertiesUpdater::UpdateRegionCaptureData(
   }
 }
 
-void LayerPropertiesUpdater::UpdateTrackedElementData(
-    const TrackedElementData& tracked_element_data) {
-  for (const std::pair<TrackedElementId, gfx::Rect>& pair :
-       tracked_element_data.map) {
-    gfx::Rect rect = chunk_to_layer_mapper_.MapVisualRect(pair.second);
-    tracked_element_bounds_[pair.first.value()] = {rect};
+void LayerPropertiesUpdater::UpdateTrackedElementRects(
+    const TrackedElementRects& tracked_element_rects) {
+  for (const auto& [feature, element_rects] : tracked_element_rects.map) {
+    for (const auto& element_rect : element_rects) {
+      gfx::Rect rect =
+          chunk_to_layer_mapper_.MapVisualRect(element_rect.bounds);
+      viz::TrackedElementRect rect_data(
+          element_rect.id.value(), rect,
+          element_rect.should_add_to_compositor_frame_metadata,
+          element_rect.should_exclude_fixed_and_sticky_occlusions,
+          element_rect.frame_token, element_rect.parent_frame_token);
+      tracked_element_rects_[feature].push_back(std::move(rect_data));
+    }
   }
 }
 
@@ -1561,11 +1606,20 @@ LayerPropertiesUpdater::PaintedSelectionBoundToLayerSelectionBound(
   cc::LayerSelectionBound layer_bound;
   layer_bound.type = bound.type;
 
-  // This is similar to ComputeViewportSelectionBound(). Use the end point
-  // moved 1 pixel towards the start point and expanded by 1 as the sample
-  // rect to check visibility.
-  gfx::Rect sample(bound.edge_end, gfx::Size());
-  if (RuntimeEnabledFeatures::SelectionHandleWithBottomClippedEnabled()) {
+  gfx::Rect sample;
+  if (base::FeatureList::IsEnabled(
+          ::features::kSelectionEdgeVisibilityUsesFullEdge)) {
+    // Similar to ComputeViewportSelectionBound()
+    // (cc/trees/layer_tree_impl.cc), this is a conservative pre-check: if the
+    // mapped sample is empty, the bound must stay hidden. Use the full
+    // selection edge so the handle is shown when any part of the edge is
+    // visible (not fully clipped). This handles cases where edge_end
+    // overflows the clip by more than 1px, e.g. when line-height > height on
+    // input elements (crbug.com/451833352).
+    sample = gfx::BoundingRect(bound.edge_start, bound.edge_end);
+  } else {
+    // Legacy behavior kept as a runtime fallback.
+    sample = gfx::Rect(bound.edge_end, gfx::Size());
     auto offset = [](int start, int end) {
       return start < end ? -1 : start > end ? 1 : 0;
     };
@@ -1605,7 +1659,7 @@ void LayerPropertiesUpdater::Update() {
         NonCompositedScrollbarDisplayItem(it, layer_);
     if ((!selection_only_ &&
          (chunk.hit_test_data || non_composited_scrollbar ||
-          chunk.region_capture_data || chunk.tracked_element_data ||
+          chunk.region_capture_data || chunk.tracked_element_rects ||
           !top_non_composited_scrolls_.empty())) ||
         chunk.layer_selection_data) {
       chunk_to_layer_mapper_.SwitchToChunk(chunk);
@@ -1626,8 +1680,8 @@ void LayerPropertiesUpdater::Update() {
       if (chunk.region_capture_data) {
         UpdateRegionCaptureData(*chunk.region_capture_data);
       }
-      if (chunk.tracked_element_data) {
-        UpdateTrackedElementData(*chunk.tracked_element_data);
+      if (chunk.tracked_element_rects) {
+        UpdateTrackedElementRects(*chunk.tracked_element_rects);
       }
     }
     if (chunk.layer_selection_data) {
@@ -1647,7 +1701,7 @@ void LayerPropertiesUpdater::Update() {
 #endif
 
     layer_.SetCaptureBounds(std::move(capture_bounds_));
-    layer_.SetTrackedElementBounds(std::move(tracked_element_bounds_));
+    layer_.SetTrackedElementRects(std::move(tracked_element_rects_));
 
     std::vector<cc::ScrollHitTestRect> non_composited_scroll_hit_test_rects;
     for (const auto& scroll : top_non_composited_scrolls_) {

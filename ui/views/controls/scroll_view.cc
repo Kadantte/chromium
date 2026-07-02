@@ -395,6 +395,7 @@ void ScrollView::SetContentsImpl(std::unique_ptr<View> a_view) {
   contents_ = ReplaceChildView(
       contents_viewport_, contents_.ExtractAsDangling(), std::move(a_view));
   UpdateBackground();
+  UpdateMainSideScrollingEnabledState();
 }
 
 void ScrollView::SetContents(std::nullptr_t) {
@@ -456,6 +457,25 @@ gfx::Rect ScrollView::GetVisibleRect() const {
   gfx::PointF offset = CurrentOffset();
   return gfx::Rect(offset.x(), offset.y(), contents_viewport_->width(),
                    contents_viewport_->height());
+}
+
+gfx::Rect ScrollView::GetOpaqueVisibleRect() const {
+  gfx::Rect visible_rect = GetVisibleRect();
+  if (visible_rect.IsEmpty()) {
+    return visible_rect;
+  }
+  // Inset the rect if gradient masks are visible to ensure we only
+  // report the fully opaque region as "visible".
+  if (gradient_direction_ == GradientDirection::kVertical) {
+    int top_inset = is_leading_gradient_visible_ ? kGradientPixelSize : 0;
+    int bottom_inset = is_trailing_gradient_visible_ ? kGradientPixelSize : 0;
+    visible_rect.Inset(gfx::Insets::TLBR(top_inset, 0, bottom_inset, 0));
+  } else if (gradient_direction_ == GradientDirection::kHorizontal) {
+    int left_inset = is_leading_gradient_visible_ ? kGradientPixelSize : 0;
+    int right_inset = is_trailing_gradient_visible_ ? kGradientPixelSize : 0;
+    visible_rect.Inset(gfx::Insets::TLBR(0, left_inset, 0, right_inset));
+  }
+  return visible_rect;
 }
 
 void ScrollView::SetHorizontalScrollBarMode(
@@ -694,9 +714,17 @@ void ScrollView::SetHasFocusIndicator(bool has_focus_indicator) {
   }
   draw_focus_indicator_ = has_focus_indicator;
 
-  views::FocusRing::Get(this)->SchedulePaint();
+  views::FocusRing::Get(this)->Refresh();
   SchedulePaint();
   OnPropertyChanged(&draw_focus_indicator_, PropertyEffects::kPaint);
+}
+
+bool ScrollView::IsHorizontalContentOverflowing() const {
+  return contents_->width() > contents_viewport_->width();
+}
+
+bool ScrollView::IsVerticalContentOverflowing() const {
+  return contents_->height() > contents_viewport_->height();
 }
 
 base::CallbackListSubscription ScrollView::AddContentsScrolledCallback(
@@ -938,13 +966,11 @@ void ScrollView::Layout(PassKey) {
     UpdateOverflowIndicatorVisibility(CurrentOffset());
   }
 
-  // If registered, run the post-layout callback. This is used to move the
-  // scroll view contents to the appropriate position that's different from the
-  // position assigned above.
+  // If registered, run the post-layout callback.
   if (post_layout_callback_) {
-    const bool layout_needed = needs_layout();
+    // TODO(tluk): Consider adding a CHECK on needs_layout() once layout
+    // invalidation issues with overflow indicators have been resolved.
     post_layout_callback_.Run(this);
-    CHECK_EQ(layout_needed, needs_layout());
   }
 
   if (next_successful_frame_post_layout_callback_) {
@@ -1028,7 +1054,7 @@ void ScrollView::OnScrollEvent(ui::ScrollEvent* event) {
 
   ui::ScrollInputHandler* compositor_scroller =
       GetWidget()->GetCompositor()->scroll_input_handler();
-  if (compositor_scroller) {
+  if (compositor_scroller && scroll_synchronizer_count_ == 0) {
     DCHECK(scroll_with_layers_enabled_);
     if (compositor_scroller->OnScrollEvent(e, contents_->layer())) {
       e.SetHandled();
@@ -1371,6 +1397,53 @@ void ScrollView::EnableViewportLayer() {
   more_content_right_->SetPaintToLayer();
   more_content_bottom_->SetPaintToLayer();
   UpdateBackground();
+  UpdateMainSideScrollingEnabledState();
+}
+
+ScrollView::ScopedScrollSynchronizer::ScopedScrollSynchronizer(
+    base::PassKey<ScrollView>,
+    ScrollView& scroll_view)
+    : scroll_view_(&scroll_view) {
+  scroll_view.AddObserver(this);
+}
+
+ScrollView::ScopedScrollSynchronizer::~ScopedScrollSynchronizer() {
+  if (scroll_view_) {
+    scroll_view_->OnScopedScrollSynchronizerDestroyed();
+    scroll_view_->RemoveObserver(this);
+  }
+}
+
+void ScrollView::ScopedScrollSynchronizer::OnViewIsDeleting(
+    View* observed_view) {
+  scroll_view_ = nullptr;
+}
+
+std::unique_ptr<ScrollView::ScopedScrollSynchronizer>
+ScrollView::EnableScrollSynchronization() {
+  if (++scroll_synchronizer_count_ == 1) {
+    UpdateMainSideScrollingEnabledState();
+  }
+  return std::make_unique<ScopedScrollSynchronizer>(base::PassKey<ScrollView>(),
+                                                    *this);
+}
+
+void ScrollView::OnScopedScrollSynchronizerDestroyed() {
+  CHECK_GT(scroll_synchronizer_count_, 0);
+  if (--scroll_synchronizer_count_ == 0) {
+    UpdateMainSideScrollingEnabledState();
+  }
+}
+
+void ScrollView::UpdateMainSideScrollingEnabledState() {
+  if (!ScrollsWithLayers()) {
+    return;
+  }
+
+  const bool enabled = scroll_synchronizer_count_ > 0;
+  if (contents_ && contents_->layer()) {
+    contents_->layer()->SetMainSideScrollingEnabled(enabled);
+  }
 }
 
 void ScrollView::OnLayerScrolled(const gfx::PointF& current_offset,
@@ -1496,6 +1569,8 @@ void ScrollView::UpdateOverflowIndicatorVisibility(const gfx::PointF& offset) {
     UpdateGradientMask();
   } else if (layer() && layer()->HasGradientMask()) {
     layer()->SetGradientMask(gfx::LinearGradient::GetEmpty());
+    is_leading_gradient_visible_ = false;
+    is_trailing_gradient_visible_ = false;
   }
 }
 

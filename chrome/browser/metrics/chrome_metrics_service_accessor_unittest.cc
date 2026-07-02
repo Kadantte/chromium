@@ -4,11 +4,14 @@
 
 #include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
 
+#include "base/test/scoped_feature_list.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
+#include "components/metrics/metrics_features.h"
 #include "components/metrics/metrics_pref_names.h"
+#include "components/metrics/metrics_reporting_level.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -24,6 +27,15 @@ class ChromeMetricsServiceAccessorTest : public testing::Test {
 
   PrefService* GetLocalState() {
     return TestingBrowserProcess::GetGlobal()->local_state();
+  }
+
+  void SetMetricsReportingLevel(metrics::MetricsReportingLevel level) {
+    GetLocalState()->SetInteger(metrics::prefs::kMetricsReportingLevel,
+                                static_cast<int>(level));
+  }
+
+  void TearDown() override {
+    task_environment_.RunUntilIdle();
   }
 
  private:

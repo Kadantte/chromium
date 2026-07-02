@@ -68,7 +68,6 @@ class InlineLoginDialog : public SystemWebDialogDelegate,
   class ModalDialogManagerCleanup;
 
   // `Show` method can be called directly only by `AccountManagerUIImpl` class.
-  // To show the dialog, use `AccountManagerFacade`.
   friend class AccountManagerUIImpl;
 
   // Displays the dialog. |close_dialog_closure| will be called when the dialog
@@ -92,7 +91,7 @@ class InlineLoginDialog : public SystemWebDialogDelegate,
   const GURL url_;
   std::optional<account_manager::AccountAdditionOptions> add_account_options_;
   base::OnceClosure close_dialog_closure_;
-  base::ObserverList<web_modal::ModalDialogHostObserver>::Unchecked
+  base::ObserverList<web_modal::ModalDialogHostObserver>
       modal_dialog_host_observer_list_;
 };
 

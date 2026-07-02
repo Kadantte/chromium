@@ -8,6 +8,8 @@ import type {EditPasswordDialogElement, PasswordDetailsCardElement} from 'chrome
 import {Page, PasswordManagerImpl, PasswordViewPageInteractions, Router, SyncBrowserProxyImpl} from 'chrome://password-manager/password_manager.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import type {MetricsTracker} from 'chrome://webui-test/metrics_test_support.js';
+import {fakeMetricsPrivate} from 'chrome://webui-test/metrics_test_support.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {eventToPromise, isChildVisible, isVisible} from 'chrome://webui-test/test_util.js';
 
@@ -34,6 +36,7 @@ async function createCardElement(
 suite('PasswordDetailsCardTest', function() {
   let passwordManager: TestPasswordManagerProxy;
   let syncProxy: TestSyncBrowserProxy;
+  let metrics: MetricsTracker;
 
   setup(function() {
     loadTimeData.overrideValues({'passwordUploadUiUpdate': true});
@@ -43,6 +46,7 @@ suite('PasswordDetailsCardTest', function() {
     PasswordManagerImpl.setInstance(passwordManager);
     syncProxy = new TestSyncBrowserProxy();
     SyncBrowserProxyImpl.setInstance(syncProxy);
+    metrics = fakeMetricsPrivate();
     Router.getInstance().navigateTo(Page.PASSWORDS);
     return flushTasks();
   });
@@ -365,6 +369,11 @@ suite('PasswordDetailsCardTest', function() {
 
     assertTrue(isVisible(card.$.shareButton));
     assertEquals(card.$.shareButton.textContent.trim(), card.i18n('share'));
+    assertEquals(
+        card.i18n(
+            'passwordDetailsCardShareButtonAriaLabel',
+            card.i18n('passwordLabel'), 'vik'),
+        card.$.shareButton.getAttribute('aria-label'));
 
     assertFalse(!!card.shadowRoot!.querySelector('share-password-flow'));
 
@@ -400,9 +409,10 @@ suite('PasswordDetailsCardTest', function() {
     const card = document.createElement('password-details-card');
     card.password = createPasswordEntry();
     card.prefs = makePasswordManagerPrefs();
-    card.prefs.password_manager.password_sharing_enabled.value = false;
-    card.prefs.password_manager.password_sharing_enabled.enforcement =
-        chrome.settingsPrivate.Enforcement.ENFORCED;
+    const prefObject =
+        card.getPref<boolean>('password_manager.password_sharing_enabled');
+    prefObject.value = false;
+    prefObject.enforcement = chrome.settingsPrivate.Enforcement.ENFORCED;
     document.body.appendChild(card);
     await flushTasks();
 
@@ -490,6 +500,12 @@ suite('PasswordDetailsCardTest', function() {
         const movedIds =
             await passwordManager.whenCalled('movePasswordsToAccount');
         assertEquals(1, movedIds.length);
+
+        assertEquals(
+            1,
+            metrics.count(
+                'PasswordManager.AccountStorage.' +
+                'MoveToAccountStoreFlowAccepted2'));
       });
 });
 
@@ -497,6 +513,7 @@ suite('PasswordDetailsCardWithoutUploadUiUpdateTest', function() {
   let passwordManager: TestPasswordManagerProxy;
   let syncProxy: TestSyncBrowserProxy;
   let card: PasswordDetailsCardElement;
+  let metrics: MetricsTracker;
 
   setup(async function() {
     loadTimeData.overrideValues({'passwordUploadUiUpdate': false});
@@ -507,6 +524,7 @@ suite('PasswordDetailsCardWithoutUploadUiUpdateTest', function() {
     syncProxy = new TestSyncBrowserProxy();
     SyncBrowserProxyImpl.setInstance(syncProxy);
     Router.getInstance().navigateTo(Page.PASSWORDS);
+    metrics = fakeMetricsPrivate();
 
     passwordManager.data.isAccountStorageActive = true;
     syncProxy.syncInfo = {
@@ -542,5 +560,11 @@ suite('PasswordDetailsCardWithoutUploadUiUpdateTest', function() {
         assertTrue(!!moveDialog);
         const dialog = moveDialog.shadowRoot!.querySelector('#dialog');
         assertTrue(!!dialog);
+
+        assertEquals(
+            1,
+            metrics.count(
+                'PasswordManager.AccountStorage.' +
+                'MoveToAccountStoreFlowOffered'));
       });
 });

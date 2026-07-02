@@ -9,6 +9,7 @@
 
 #include "base/callback_list.h"
 #include "base/run_loop.h"
+#include "base/scoped_observation.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "ui/base/test/ui_controls.h"
@@ -34,6 +35,8 @@ class Widget;
 
 namespace ui_test_utils {
 
+#if !BUILDFLAG(IS_ANDROID)
+
 // Use in browser interactive uitests to wait until a browser is set to active.
 // To use, create and call WaitForActivation(). Since on some platforms, the
 // active browser list kept in |BrowserList| is updated before the actual
@@ -57,6 +60,8 @@ class BrowserActivationWaiter : public views::WidgetObserver {
  private:
   bool observed_ = false;
   base::RunLoop run_loop_;
+  base::ScopedObservation<views::Widget, views::WidgetObserver> observation_{
+      this};
 };
 
 
@@ -66,7 +71,7 @@ class BrowserActivationWaiter : public views::WidgetObserver {
     const BrowserWindowInterface* browser);
 
 // Returns true if the View is focused.
-bool IsViewFocused(const Browser* browser, ViewID vid);
+bool IsViewFocused(const BrowserWindowInterface* browser, ViewID vid);
 
 // Simulates a mouse click on a View in the browser.
 void ClickOnView(views::View* view);
@@ -84,6 +89,8 @@ void HideNativeWindow(gfx::NativeWindow window);
 
 // Show and focus a native window. Returns true on success.
 [[nodiscard]] bool ShowAndFocusNativeWindow(gfx::NativeWindow window);
+
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 // Sends key press and release events to a `browser` or `window`. Waits until at
 // least the key release (or key press, depending on `wait_for`) events have
@@ -109,6 +116,8 @@ void HideNativeWindow(gfx::NativeWindow window);
     bool alt,
     bool command,
     ui_controls::KeyEventType wait_for = ui_controls::kKeyRelease);
+
+#if !BUILDFLAG(IS_ANDROID)
 
 // Sends a move event blocking until received. Returns true if the event was
 // successfully received. This uses ui_controls::SendMouse***NotifyWhenDone,
@@ -178,6 +187,8 @@ display::Display GetSecondaryDisplay(display::Screen* screen);
 // second one is the other display.
 std::pair<display::Display, display::Display> GetDisplays(
     display::Screen* screen);
+
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 }  // namespace ui_test_utils
 

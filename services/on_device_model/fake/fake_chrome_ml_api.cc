@@ -6,11 +6,13 @@
 
 #include "base/files/file.h"
 #include "base/files/file_util.h"
+#include "base/logging.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "services/on_device_model/ml/chrome_ml.h"
 #include "services/on_device_model/ml/chrome_ml_api.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 
 namespace fake_ml {
@@ -21,31 +23,40 @@ constexpr std::string_view kEos = "<eos>";
 ChromeMLConstraintFns g_constraint_fns;
 
 std::string PieceToString(const ml::InputPiece& piece) {
-  if (std::holds_alternative<std::string>(piece)) {
-    return std::get<std::string>(piece);
-  }
-  if (std::holds_alternative<ml::Token>(piece)) {
-    switch (std::get<ml::Token>(piece)) {
-      case ml::Token::kSystem:
-        return "System: ";
-      case ml::Token::kModel:
-        return "Model: ";
-      case ml::Token::kUser:
-        return "User: ";
-      case ml::Token::kEnd:
-        return " End.";
-      case ml::Token::kToolCall:
-        return "ToolCall: ";
-      case ml::Token::kToolResponse:
-        return "ToolResponse: ";
-    }
-  }
-  if (std::holds_alternative<SkBitmap>(piece)) {
-    const SkBitmap& bitmap = std::get<SkBitmap>(piece);
-    return base::StringPrintf("[Bitmap of size %dx%d]", bitmap.width(),
-                              bitmap.height());
-  }
-  NOTREACHED();
+  return std::visit(
+      absl::Overload{
+          [](const std::string& text) -> std::string { return text; },
+          [](ml::Token token) -> std::string {
+            switch (token) {
+              case ml::Token::kSystem:
+                return "System: ";
+              case ml::Token::kModel:
+                return "Model: ";
+              case ml::Token::kUser:
+                return "User: ";
+              case ml::Token::kEnd:
+                return " End.";
+              case ml::Token::kToolCall:
+                return "ToolCall: ";
+              case ml::Token::kToolResponse:
+                return "ToolResponse: ";
+            }
+          },
+          [](const SkBitmap& bitmap) -> std::string {
+            return base::StringPrintf("[Bitmap of size %dx%d]", bitmap.width(),
+                                      bitmap.height());
+          },
+          [](const ml::AudioBuffer&) -> std::string { return "<audio>"; },
+          [](const ml::ToolDeclaration& decl) -> std::string {
+            return base::StrCat({kToolDeclPrefix, decl.name, "]"});
+          },
+          [](const ml::ToolResponse& resp) -> std::string {
+            return base::StrCat(
+                {kToolRespPrefix, resp.name, "=", resp.result_json, "]"});
+          },
+          [](bool) -> std::string { NOTREACHED(); },
+      },
+      piece);
 }
 
 std::string ReadFile(PlatformFile api_file) {
@@ -161,10 +172,10 @@ struct FakeSessionInstance {
   bool enable_audio_input;
   uint32_t top_k;
   float temperature;
-};
-
-struct FakeTsModelInstance {
-  std::string model_data;
+  // Whether tool declarations have been appended in a system prompt.
+  bool has_tool_declarations = false;
+  // Whether tool calls have been emitted and tool responses are expected.
+  bool awaiting_tool_responses = false;
 };
 
 struct FakeCancelInstance {
@@ -183,13 +194,6 @@ ChromeMLModel SessionCreateModel(const ChromeMLModelDescriptor* descriptor,
 void DestroyModel(ChromeMLModel model) {
   auto* instance = reinterpret_cast<FakeModelInstance*>(model);
   delete instance;
-}
-
-ChromeMLSafetyResult ClassifyTextSafety(ChromeMLModel model,
-                                        const char* text,
-                                        float* scores,
-                                        size_t* num_scores) {
-  return ChromeMLSafetyResult::kNoClassifier;
 }
 
 ChromeMLSession CreateSession(ChromeMLModel model,
@@ -230,6 +234,8 @@ ChromeMLSession CloneSession(ChromeMLSession session) {
       .enable_audio_input = instance->enable_audio_input,
       .top_k = instance->top_k,
       .temperature = instance->temperature,
+      .has_tool_declarations = instance->has_tool_declarations,
+      .awaiting_tool_responses = instance->awaiting_tool_responses,
   });
 }
 
@@ -243,13 +249,40 @@ bool SessionAppend(ChromeMLSession session,
                    ChromeMLCancel cancel) {
   auto* instance = reinterpret_cast<FakeSessionInstance*>(session);
   std::string text;
+  bool in_system_prompt = false;
   for (size_t i = 0; i < options->input_size; i++) {
     // SAFETY: `options->input_size` describes how big `options->input` is.
     const ml::InputPiece& piece = UNSAFE_BUFFERS(options->input[i]);
-    CHECK(!std::holds_alternative<SkBitmap>(piece) ||
-          instance->enable_image_input);
-    CHECK(!std::holds_alternative<ml::AudioBuffer>(piece) ||
-          instance->enable_audio_input);
+    std::visit(
+        absl::Overload{
+            [&](ml::Token token) {
+              if (token == ml::Token::kSystem) {
+                in_system_prompt = true;
+              } else if (token == ml::Token::kUser ||
+                         token == ml::Token::kModel ||
+                         token == ml::Token::kEnd) {
+                in_system_prompt = false;
+              }
+            },
+            [&](const SkBitmap&) { CHECK(instance->enable_image_input); },
+            [&](const ml::AudioBuffer&) {
+              CHECK(instance->enable_audio_input);
+            },
+            [&](const ml::ToolDeclaration&) {
+              if (in_system_prompt) {
+                instance->has_tool_declarations = true;
+              } else {
+                LOG(WARNING)
+                    << "Tool declaration ignored outside system prompt.";
+              }
+            },
+            [&](const ml::ToolResponse&) {
+              instance->awaiting_tool_responses = false;
+            },
+            [](const std::string&) {},
+            [](bool) {},
+        },
+        piece);
     text += PieceToString(piece);
   }
   if (options->max_tokens < text.size()) {
@@ -315,6 +348,24 @@ bool SessionGenerate(ChromeMLSession session,
     OutputChunk(GenerateConstraintString(options->constraint));
     g_constraint_fns.Delete(options->constraint);
   }
+
+  // Simulate tool calls when tool declarations were appended.
+  if (instance->has_tool_declarations) {
+    instance->awaiting_tool_responses = true;
+    ChromeMLToolCall fake_call = {
+        .call_id = kFakeToolCallId,
+        .name = kFakeToolName,
+        .arguments_json = R"({"arg":"value"})",
+    };
+    ChromeMLExecutionOutput tool_output = {};
+    tool_output.status = ChromeMLExecutionStatus::kInProgress;
+    tool_output.tool_calls = &fake_call;
+    tool_output.tool_calls_size = 1;
+    (*options->output_fn)(&tool_output);
+    OutputChunk("");
+    return true;
+  }
+
   OutputChunk("");
   return true;
 }
@@ -386,7 +437,9 @@ void SetConstraintFns(const ChromeMLConstraintFns* fns) {
 }
 
 bool GetTokenizerParams(ChromeMLModel model,
-                        const ChromeMLGetTokenizerParamsFn& fn) {
+                        ChromeMLSession session,
+                        const ChromeMLGetTokenizerParamsFn& fn,
+                        bool use_optimization) {
   // Create a simple tokenizer mapping each byte to itself.
   std::string tokens;
   std::vector<uint32_t> token_lens;
@@ -410,48 +463,41 @@ bool GetTokenizerParams(ChromeMLModel model,
 bool GetTokenizerParamsV2(ChromeMLModel model,
                           ChromeMLSession session,
                           const ChromeMLGetTokenizerParamsFn& fn) {
-  return GetTokenizerParams(model, fn);
+  return GetTokenizerParams(session, model, fn, /*use_optimization=*/true);
 }
 
-ChromeMLTSModel CreateTSModel(const ChromeMLTSModelDescriptor* descriptor) {
-  auto* instance = new FakeTsModelInstance{};
-  return reinterpret_cast<ChromeMLTSModel>(instance);
+TfLiteDelegate* CreateGpuDelegate() {
+  return nullptr;
 }
 
-void DestroyTSModel(ChromeMLTSModel model) {
-  auto* instance = reinterpret_cast<FakeTsModelInstance*>(model);
-  delete instance;
+TfLiteDelegate* CreateGpuDelegateWithPrecision(GpuDelegatePrecision precision) {
+  return nullptr;
 }
 
-ChromeMLSafetyResult TSModelClassifyTextSafety(ChromeMLTSModel model,
-                                               const char* text,
-                                               float* scores,
-                                               size_t* num_scores) {
-  if (*num_scores != 2) {
-    *num_scores = 2;
-    return ChromeMLSafetyResult::kInsufficientStorage;
+void DestroyGpuDelegate(TfLiteDelegate* delegate) {}
+
+ChromeMLASRStream ASRCreateStream(ChromeMLSession session,
+                                  const ChromeMLASRStreamOptions* options) {
+  if (options->sample_rate_hz == 0) {
+    return 0;
   }
-  bool has_unsafe = std::string(text).find("unsafe") != std::string::npos;
-  // SAFETY: Follows a C-API, num_scores checked above, test-only code.
-  UNSAFE_BUFFERS(scores[0]) = has_unsafe ? 0.8 : 0.2;
-  bool has_reasonable =
-      std::string(text).find("reasonable") != std::string::npos;
-  // SAFETY: Follows a C-API, num_scores checked above, test-only code.
-  UNSAFE_BUFFERS(scores[1]) = has_reasonable ? 0.2 : 0.8;
-  return ChromeMLSafetyResult::kOk;
+  return 1;
 }
+
+void ASRAddAudioChunk(ChromeMLASRStream stream, ml::AudioBuffer* audio_buffer) {
+}
+
+void ASRDestroyStream(ChromeMLASRStream stream) {}
 
 const ChromeMLAPI g_api = {
     .InitDawnProcs = &InitDawnProcs,
     .SetMetricsFns = &SetMetricsFns,
     .SetFatalErrorFn = &SetFatalErrorFn,
-    .ClassifyTextSafety = &ClassifyTextSafety,
     .DestroyModel = &DestroyModel,
     .GetEstimatedPerformance = &GetEstimatedPerformance,
     .QueryGPUAdapter = &QueryGPUAdapter,
     .GetCapabilities = &GetCapabilities,
     .SetFatalErrorNonGpuFn = &SetFatalErrorNonGpuFn,
-
     .SessionCreateModel = &SessionCreateModel,
     .SessionAppend = &SessionAppend,
     .SessionGenerate = &SessionGenerate,
@@ -467,11 +513,14 @@ const ChromeMLAPI g_api = {
     .SetConstraintFns = &SetConstraintFns,
     .GetTokenizerParams = &GetTokenizerParams,
     .GetTokenizerParamsV2 = &GetTokenizerParamsV2,
-    .ts_api =
+    .CreateGpuDelegate = &CreateGpuDelegate,
+    .CreateGpuDelegateWithPrecision = &CreateGpuDelegateWithPrecision,
+    .DestroyGpuDelegate = &DestroyGpuDelegate,
+    .asr_api =
         {
-            .CreateModel = &CreateTSModel,
-            .DestroyModel = &DestroyTSModel,
-            .ClassifyTextSafety = &TSModelClassifyTextSafety,
+            .CreateStream = &ASRCreateStream,
+            .AddAudioChunk = &ASRAddAudioChunk,
+            .DestroyStream = &ASRDestroyStream,
         },
 };
 

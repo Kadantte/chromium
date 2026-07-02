@@ -77,11 +77,8 @@ class WhatsNewFetcherBrowserTest : public InteractiveBrowserTest {
   }
   virtual void InitFeatures() {
     // Enabled/disable test data.
-    // Additionally, the refresh feature is disabled to simplify the tests.
-    // Eventually, the refresh URL will be the default, so this is fine for now.
-    feature_list_.InitWithFeatures(
-        {kTestModuleEnabled, kTestModule2Enabled},
-        {features::kWhatsNewDesktopRefresh, kTestModuleDisabled});
+    feature_list_.InitWithFeatures({kTestModuleEnabled, kTestModule2Enabled},
+                                   {kTestModuleDisabled});
   }
   ~WhatsNewFetcherBrowserTest() override {
     GlobalFeatures::ReplaceGlobalFeaturesForTesting(base::NullCallback());
@@ -100,13 +97,15 @@ IN_PROC_BROWSER_TEST_F(WhatsNewFetcherBrowserTest, GetServerURL) {
       base::StringPrintf("https://www.google.com/chrome/whats-new/?version=%d",
                          CHROME_VERSION_MAJOR);
 
-  EXPECT_EQ(expected, whats_new::GetServerURL().possibly_invalid_spec());
+  EXPECT_EQ(expected,
+            whats_new::GetServerURL(*GetRegistry()).possibly_invalid_spec());
 }
 
 IN_PROC_BROWSER_TEST_F(WhatsNewFetcherBrowserTest,
                        GetServerURLForRenderNoFeatures) {
   std::string expected = base::StringPrintf(
-      "https://www.google.com/chrome/whats-new/?version=%d&internal=true",
+      "https://www.google.com/chrome/whats-new/"
+      "?version=%d&internal=true",
       CHROME_VERSION_MAJOR);
 
   EXPECT_EQ(
@@ -207,12 +206,10 @@ class WhatsNewFetcherOneCustomizationBrowserTest
  public:
   void InitFeatures() override {
     // Enabled/disable test data.
-    // Additionally, the refresh feature is disabled to simplify the tests.
-    // Eventually, the refresh URL will be the default, so this is fine for now.
     feature_list_.InitWithFeaturesAndParameters(
         {{kTestModuleEnabled, {{whats_new::kCustomizationParam, "abc"}}},
          {kTestModule2Enabled, {{}}}},
-        {features::kWhatsNewDesktopRefresh, kTestModuleDisabled});
+        {kTestModuleDisabled});
   }
 };
 
@@ -257,13 +254,11 @@ class WhatsNewFetcherMultipleCustomizationsBrowserTest
  public:
   void InitFeatures() override {
     // Enabled/disable test data.
-    // Additionally, the refresh feature is disabled to simplify the tests.
-    // Eventually, the refresh URL will be the default, so this is fine for now.
     feature_list_.InitWithFeaturesAndParameters(
         {{kTestModuleEnabled, {{whats_new::kCustomizationParam, "abc"}}},
          {kTestModule2Enabled, {{whats_new::kCustomizationParam, "def"}}},
          {kTestEditionEnabled, {{whats_new::kCustomizationParam, "hij"}}}},
-        {features::kWhatsNewDesktopRefresh});
+        {});
   }
 };
 

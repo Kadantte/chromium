@@ -26,10 +26,12 @@
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
+#include "content/public/browser/security_principal.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "third_party/blink/public/common/input/web_gesture_event.h"
+#include "third_party/blink/public/common/page/drag_operation.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 
@@ -89,7 +91,8 @@ class GuestViewBase::OwnerContentsObserver : public WebContentsObserver {
   void RenderFrameHostChanged(content::RenderFrameHost* old_host,
                               content::RenderFrameHost* new_host) override {
     if (old_host && guest_->owner_rfh_id_ == old_host->GetGlobalId() &&
-        new_host && guest_->element_instance_id_ == kInstanceIDNone) {
+        new_host && guest_->element_instance_id_ == kInstanceIDNone &&
+        old_host->GetProcess() == new_host->GetProcess()) {
       // TODO(crbug.com/40202416): Do something similar for MPArch.
       guest_->owner_rfh_id_ = new_host->GetGlobalId();
     }
@@ -596,8 +599,11 @@ const GURL& GuestViewBase::GetOwnerLastCommittedURL() const {
   return owner_rfh()->GetLastCommittedURL();
 }
 
-const GURL& GuestViewBase::GetOwnerSiteURL() const {
-  return owner_rfh()->GetSiteInstance()->GetSiteURL();
+GURL GuestViewBase::GetOwnerSiteURL() const {
+  return owner_rfh()
+      ->GetLastCommittedOrigin()
+      .GetTupleOrPrecursorTupleIfOpaque()
+      .GetURL();
 }
 
 void GuestViewBase::SetAttachParams(const base::DictValue& params) {
@@ -621,6 +627,8 @@ void GuestViewBase::AttachToOuterWebContentsFrame(
     bool is_full_page_plugin,
     GuestViewMessageHandler::AttachToEmbedderFrameCallback
         attachment_callback) {
+  CHECK_EQ(owned_this.get(), this);
+
   // Stop tracking the old embedder's zoom level.
   // TODO(crbug.com/40436245): We should assert that we're not tracking the
   // embedder at this point, since guest reattachment is no longer possible.
@@ -994,17 +1002,6 @@ bool GuestViewBase::ShouldFocusPageAfterCrash(content::WebContents* source) {
   return false;
 }
 
-bool GuestViewBase::PreHandleGestureEvent(WebContents* source,
-                                          const blink::WebGestureEvent& event) {
-  CHECK(!base::FeatureList::IsEnabled(features::kGuestViewMPArch));
-  // Pinch events which cause a scale change should not be routed to a guest.
-  // We still allow synthetic wheel events for touchpad pinch to go to the page.
-  DCHECK(!blink::WebInputEvent::IsPinchGestureEventType(event.GetType()) ||
-         (event.SourceDevice() == blink::WebGestureDevice::kTouchpad &&
-          event.NeedsWheelEvent()));
-  return false;
-}
-
 void GuestViewBase::UpdatePreferredSize(WebContents* target_web_contents,
                                         const gfx::Size& pref_size) {
   CHECK(!base::FeatureList::IsEnabled(features::kGuestViewMPArch));
@@ -1023,6 +1020,19 @@ void GuestViewBase::UpdateTargetURL(WebContents* source, const GURL& url) {
       embedder_web_contents(), url);
 }
 
+bool GuestViewBase::CanDragEnter(WebContents* source,
+                                 const content::DropData& data,
+                                 blink::DragOperationsMask operations_allowed) {
+  CHECK(!base::FeatureList::IsEnabled(features::kGuestViewMPArch));
+
+  if (!attached() || !embedder_web_contents()->GetDelegate()) {
+    return false;
+  }
+
+  return embedder_web_contents()->GetDelegate()->CanDragEnter(
+      embedder_web_contents(), data, operations_allowed);
+}
+
 void GuestViewBase::DraggableRegionsChanged(
     const std::vector<blink::mojom::DraggableRegionPtr>& regions,
     content::WebContents* contents) {
@@ -1032,8 +1042,8 @@ void GuestViewBase::DraggableRegionsChanged(
     return;
   }
 
-  embedder_web_contents()->GetDelegate()->DraggableRegionsChanged(
-      regions, embedder_web_contents());
+  embedder_web_contents()->GetDelegate()->DraggableRegionsChanged(regions,
+                                                                  contents);
 }
 
 void GuestViewBase::OnZoomControllerDestroyed(zoom::ZoomController* source) {

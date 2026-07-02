@@ -7,10 +7,13 @@
 #include <algorithm>
 #include <array>
 #include <optional>
+#include <ranges>
 #include <string_view>
 #include <utility>
 
 #include "base/base64.h"
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/files/file.h"
@@ -20,14 +23,20 @@
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/timer/elapsed_timer.h"
 #include "base/types/to_address.h"
+#include "components/crx_file/id_util.h"
 #include "components/safe_browsing/core/browser/db/prefix_iterator.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
+#include "components/safe_browsing/core/browser/db/sb_store_file_format.h"
 #include "components/safe_browsing/core/browser/db/v4_rice.h"
 #include "components/safe_browsing/core/browser/db/v4_store.pb.h"
 #include "components/safe_browsing/core/common/features.h"
+#include "components/safe_browsing/core/common/proto/v5_store.pb.h"
 #include "components/safe_browsing/core/common/proto/webui.pb.h"
 #include "crypto/hash.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
@@ -66,9 +75,6 @@ const char kChromeExtMalwareUmaSuffix[] = ".ChromeExtMalware";
 const char kUrlMalBinUmaSuffix[] = ".UrlMalBin";
 const char kUrlSocengUmaSuffix[] = ".UrlSoceng";
 
-const uint32_t kFileMagic = 0x600D71FE;
-const uint32_t kFileVersion = 9;
-
 // The maximum size of additions hashes in a single update response.
 const int32_t ADDITIONS_HASHES_COUNT_PARTIAL_UPDATE_MAX = 10000;
 const int32_t ADDITIONS_HASHES_COUNT_FULL_UPDATE_MAX = 5000000;
@@ -83,14 +89,6 @@ void RecordEnumWithAndWithoutSuffix(const std::string& metric,
   base::UmaHistogramExactLinear(metric + kResult, value, maximum);
   std::string suffix = GetUmaSuffixForStore(file_path);
   base::UmaHistogramExactLinear(metric + kResult + suffix, value, maximum);
-}
-
-void RecordBooleanWithAndWithoutSuffix(const std::string& metric,
-                                       bool value,
-                                       const base::FilePath& file_path) {
-  base::UmaHistogramBoolean(metric, value);
-  std::string suffix = GetUmaSuffixForStore(file_path);
-  base::UmaHistogramBoolean(metric + suffix, value);
 }
 
 void RecordCountWithAndWithoutSuffix(const std::string& metric,
@@ -109,20 +107,6 @@ void RecordApplyUpdateResult(const std::string& base_metric,
                              const base::FilePath& file_path) {
   RecordEnumWithAndWithoutSuffix(base_metric + kApplyUpdate, result,
                                  APPLY_UPDATE_RESULT_MAX, file_path);
-}
-
-void RecordDecodeAdditionsResult(const std::string& base_metric,
-                                 V4DecodeResult result,
-                                 const base::FilePath& file_path) {
-  RecordEnumWithAndWithoutSuffix(base_metric + kDecodeAdditions, result,
-                                 DECODE_RESULT_MAX, file_path);
-}
-
-void RecordDecodeRemovalsResult(const std::string& base_metric,
-                                V4DecodeResult result,
-                                const base::FilePath& file_path) {
-  RecordEnumWithAndWithoutSuffix(base_metric + kDecodeRemovals, result,
-                                 DECODE_RESULT_MAX, file_path);
 }
 
 void RecordAdditionsHashesCount(const std::string& base_metric,
@@ -156,9 +140,16 @@ void RecordVerifyChecksumDuration(const std::string& base_metric,
   base::UmaHistogramTimes(base_metric + kVerifyChecksumDuration, duration);
 }
 
+void RecordVerifyChecksumDuration(base::TimeDelta duration) {
+  RecordVerifyChecksumDuration(kReadFromDisk, duration);
+  RecordVerifyChecksumDuration("SafeBrowsing.SBReadFromDisk", duration);
+}
+
 void RecordStoreReadResult(StoreReadResult result) {
   UMA_HISTOGRAM_ENUMERATION("SafeBrowsing.V4StoreRead.Result", result,
                             STORE_READ_RESULT_MAX);
+  base::UmaHistogramBoolean("SafeBrowsing.SBStoreRead.Success",
+                            result == READ_SUCCESS);
 }
 
 void RecordStoreWriteResult(StoreWriteResult result) {
@@ -251,76 +242,14 @@ class BaseFileOutputStream
   CopyingBaseFileOutputStream stream_;
 };
 
-// A ZeroCopyInputStream that reads from a file using base::File. Any errors
-// during deserialization close the file.
-class BaseFileInputStream : public google::protobuf::io::ZeroCopyInputStream {
- public:
-  // Creates and opens `input_file`.
-  explicit BaseFileInputStream(const base::FilePath& input_file)
-      : stream_(input_file), impl_(&stream_) {}
-  BaseFileInputStream(const BaseFileInputStream&) = delete;
-  BaseFileInputStream& operator=(const BaseFileInputStream&) = delete;
-
-  // Closes the file, if it was still open.
-  ~BaseFileInputStream() override = default;
-
-  // Returns `base::File::FILE_OK` if no error and the file is still open; else
-  // the error that led to closure of the file.
-  base::File::Error GetError() const { return stream_.GetError(); }
-
-  // google::protobuf::io::ZeroCopyInputStream:
-  bool Next(const void** data, int* size) override {
-    return impl_.Next(data, size);
+void RecordMigrationTime(base::TimeDelta elapsed,
+                         const base::FilePath& store_path) {
+  std::string suffix = GetUmaSuffixForStore(store_path);
+  if (!suffix.empty()) {
+    base::UmaHistogramTimes(
+        "SafeBrowsing.V4Store.V5ToV4Migration.TimeTaken" + suffix, elapsed);
   }
-  void BackUp(int count) override { return impl_.BackUp(count); }
-  bool Skip(int count) override { return impl_.Skip(count); }
-  int64_t ByteCount() const override { return impl_.ByteCount(); }
-
- private:
-  class CopyingBaseFileInputStream
-      : public google::protobuf::io::CopyingInputStream {
-   public:
-    explicit CopyingBaseFileInputStream(const base::FilePath& input_file)
-        : file_(input_file,
-                base::File::FLAG_OPEN | base::File::FLAG_READ |
-                    base::File::FLAG_WIN_EXCLUSIVE_WRITE |
-                    base::File::FLAG_WIN_SHARE_DELETE) {}
-    CopyingBaseFileInputStream(const CopyingBaseFileInputStream&) = delete;
-    CopyingBaseFileInputStream& operator=(const CopyingBaseFileInputStream&) =
-        delete;
-    ~CopyingBaseFileInputStream() override = default;
-
-    base::File::Error GetError() const { return file_.error_details(); }
-
-    // google::protobuf::io::CopyingInputStream:
-    int Read(void* buffer, int size) override {
-      if (!file_.IsValid()) {
-        return -1;
-      }
-      const std::optional<size_t> bytes_read = file_.ReadAtCurrentPos(
-          UNSAFE_TODO(base::span(reinterpret_cast<uint8_t*>(buffer),
-                                 base::checked_cast<size_t>(size))));
-      if (bytes_read) {
-        return base::checked_cast<int>(*bytes_read);
-      }
-      file_ = base::File(base::File::GetLastFileError());
-      return -1;
-    }
-
-    int Skip(int count) override {
-      if (file_.Seek(base::File::FROM_CURRENT, count) != -1) {
-        return count;
-      }
-      return CopyingInputStream::Skip(count);
-    }
-
-   private:
-    base::File file_;
-  };
-
-  CopyingBaseFileInputStream stream_;
-  google::protobuf::io::CopyingInputStreamAdaptor impl_;
-};
+}
 
 }  // namespace
 
@@ -332,11 +261,29 @@ std::ostream& operator<<(std::ostream& os, const V4Store& store) {
   return os;
 }
 
+SBStorePtr V4StoreFactory::CreateStore(
+    const scoped_refptr<base::SequencedTaskRunner>& db_task_runner,
+    const base::FilePath& base_path,
+    const ListInfo& list_info) {
+  const base::FilePath store_path = base_path.AppendASCII(list_info.filename());
+  return CreateV4Store(db_task_runner, store_path,
+                       /*v5_prefix_size=*/list_info.v5_prefix_size().value(),
+                       /*is_eligible_for_migration=*/list_info.list_id() !=
+                           GetUrlCsdAllowlistId(),
+                       /*is_extensions_blocklist=*/list_info.list_id() ==
+                           GetChromeExtMalwareId());
+}
+
 V4StorePtr V4StoreFactory::CreateV4Store(
     const scoped_refptr<base::SequencedTaskRunner>& task_runner,
-    const base::FilePath& store_path) {
-  V4StorePtr new_store(new V4Store(task_runner, store_path),
-                       V4StoreDeleter(task_runner));
+    const base::FilePath& store_path,
+    PrefixSize v5_prefix_size,
+    bool is_eligible_for_migration,
+    bool is_extensions_blocklist) {
+  V4StorePtr new_store(
+      new V4Store(task_runner, store_path, v5_prefix_size,
+                  is_eligible_for_migration, is_extensions_blocklist),
+      SBStoreDeleter(task_runner));
   new_store->Initialize();
   return new_store;
 }
@@ -350,26 +297,47 @@ void V4Store::Initialize() {
   RecordStoreReadResult(store_read_result);
 }
 
-bool V4Store::HasValidData() {
-  // Record every 256th time (`record_has_valid_data_counter_` is 8-bit).
-  if (++record_has_valid_data_counter_ == 1) {
-    RecordBooleanWithAndWithoutSuffix("SafeBrowsing.V4Store.IsStoreValid",
-                                      has_valid_data_, store_path_);
-  }
-  return has_valid_data_;
+std::string V4Store::GetMetricPrefix() const {
+  return "SafeBrowsing.V4Store";
 }
 
 V4Store::V4Store(const scoped_refptr<base::SequencedTaskRunner>& task_runner,
                  const base::FilePath& store_path,
+                 PrefixSize v5_prefix_size,
+                 bool is_eligible_for_migration,
+                 bool is_extensions_blocklist,
                  const int64_t old_file_size)
-    : hash_prefix_map_(
+    : SBStore(task_runner, store_path, old_file_size),
+      hash_prefix_map_(
           std::make_unique<HashPrefixMap>(store_path, task_runner)),
-      file_size_(old_file_size),
-      has_valid_data_(false),
-      store_path_(store_path),
-      task_runner_(task_runner) {}
+      v5_prefix_size_(v5_prefix_size),
+      is_eligible_for_migration_(is_eligible_for_migration),
+      is_extensions_blocklist_(is_extensions_blocklist) {
+  CHECK_GT(v5_prefix_size_, 0u);
+  if (base::FeatureList::IsEnabled(
+          kAllowSafeBrowsingV4StoreDiskMigrationChanges) &&
+      is_extensions_blocklist_) {
+    CHECK_EQ(v5_prefix_size_, 16u);
+  }
+}
 
 V4Store::~V4Store() = default;
+
+// static
+void V4Store::RecordDecodeAdditionsResult(const std::string& base_metric,
+                                          V4DecodeResult result,
+                                          const base::FilePath& file_path) {
+  RecordEnumWithAndWithoutSuffix(base_metric + kDecodeAdditions, result,
+                                 DECODE_RESULT_MAX, file_path);
+}
+
+// static
+void V4Store::RecordDecodeRemovalsResult(const std::string& base_metric,
+                                         V4DecodeResult result,
+                                         const base::FilePath& file_path) {
+  RecordEnumWithAndWithoutSuffix(base_metric + kDecodeRemovals, result,
+                                 DECODE_RESULT_MAX, file_path);
+}
 
 std::string V4Store::DebugString() const {
   std::string state_base64 = base::Base64Encode(state_);
@@ -507,25 +475,30 @@ ApplyUpdateResult V4Store::ProcessUpdate(
 }
 
 void V4Store::ApplyUpdate(
-    std::unique_ptr<ListUpdateResponse> response,
+    std::unique_ptr<SBUpdateResponse> response,
     const scoped_refptr<base::SequencedTaskRunner>& callback_task_runner,
     UpdatedStoreReadyCallback callback) {
+  CHECK(response->v4_response);
+  std::unique_ptr<ListUpdateResponse> v4_response =
+      std::move(response->v4_response);
   base::ElapsedThreadTimer thread_timer;
-  V4StorePtr new_store(new V4Store(task_runner_, store_path_, file_size_),
-                       V4StoreDeleter(task_runner_));
+  V4StorePtr new_store(new V4Store(task_runner_, store_path_, v5_prefix_size_,
+                                   is_eligible_for_migration_,
+                                   is_extensions_blocklist_, file_size_),
+                       SBStoreDeleter(task_runner_));
   ApplyUpdateResult apply_update_result;
   std::optional<std::string> metric;
   ApplyUpdateType apply_update_type;
-  if (response->response_type() == ListUpdateResponse::PARTIAL_UPDATE) {
+  if (v4_response->response_type() == ListUpdateResponse::PARTIAL_UPDATE) {
     metric = kProcessPartialUpdate;
     apply_update_type = ApplyUpdateType::kPartial;
     apply_update_result = new_store->ProcessPartialUpdateAndWriteToDisk(
-        metric.value(), hash_prefix_map_->view(), std::move(response));
-  } else if (response->response_type() == ListUpdateResponse::FULL_UPDATE) {
+        metric.value(), hash_prefix_map_->view(), std::move(v4_response));
+  } else if (v4_response->response_type() == ListUpdateResponse::FULL_UPDATE) {
     apply_update_type = ApplyUpdateType::kFull;
     metric = kProcessFullUpdate;
     apply_update_result = new_store->ProcessFullUpdateAndWriteToDisk(
-        metric.value(), std::move(response));
+        metric.value(), std::move(v4_response));
   } else {
     apply_update_type = ApplyUpdateType::kInvalid;
     apply_update_result = UNEXPECTED_RESPONSE_TYPE_FAILURE;
@@ -676,6 +649,146 @@ void V4Store::InitializeIteratorMap(const HashPrefixMapView& hash_prefix_map,
   }
 }
 
+ApplyUpdateResult V4Store::MergeUpdateFast(
+    const HashPrefixMapView& old_prefixes_map,
+    const HashPrefixMapView& additions_map,
+    const RepeatedField<int32_t>* raw_removals,
+    const std::string& expected_checksum) {
+  const PrefixSize prefix_size = old_prefixes_map.begin()->first;
+  base::span<const uint8_t> old_prefixes =
+      base::as_byte_span(old_prefixes_map.begin()->second);
+  base::span<const uint8_t> new_prefixes =
+      base::as_byte_span(additions_map.begin()->second);
+
+  auto removals_iter =
+      raw_removals ? std::make_optional(raw_removals->begin()) : std::nullopt;
+
+  // Keep track of the number of elements picked from the old map. This is used
+  // to determine which elements to drop based on the raw_removals. Note that
+  // picked is not the same as merged. A picked element isn't merged if its
+  // index is on the raw_removals list.
+  int total_picked_from_old = 0;
+
+  crypto::hash::Hasher checksum_ctx(crypto::hash::HashKind::kSha256);
+  const bool calculate_checksum = !expected_checksum.empty();
+
+  // Look ahead in `prefixes` to see how many sequential prefixes are lower than
+  // `limit_prefix`, the next prefix from the other list. This uses a binary
+  // search.
+  auto get_skip_count = [&](base::span<const uint8_t> prefixes,
+                            base::span<const uint8_t> limit_prefix) {
+    size_t num_prefixes = prefixes.size() / prefix_size;
+    if (num_prefixes < 2 ||
+        prefixes.subspan(prefix_size, prefix_size) >= limit_prefix) {
+      return size_t{1};
+    }
+
+    size_t left = 2;
+    size_t right = num_prefixes;
+    size_t run_length = 1;
+    while (left <= right) {
+      size_t mid = left + (right - left) / 2;
+      if (prefixes.subspan((mid - 1) * prefix_size, prefix_size) <
+          limit_prefix) {
+        run_length = mid;
+        left = mid + 1;
+      } else {
+        right = mid - 1;
+      }
+    }
+    return run_length;
+  };
+
+  while (!old_prefixes.empty() || !new_prefixes.empty()) {
+    bool pick_from_old = !old_prefixes.empty();
+    if (pick_from_old && !new_prefixes.empty()) {
+      base::span<const uint8_t> old_prefix = old_prefixes.first(prefix_size);
+      base::span<const uint8_t> add_prefix = new_prefixes.first(prefix_size);
+      if (old_prefix == add_prefix) {
+        return ADDITIONS_HAS_EXISTING_PREFIX_FAILURE;
+      }
+      pick_from_old = old_prefix < add_prefix;
+    }
+
+    if (pick_from_old) {
+      // Should this index be removed?
+      if (removals_iter && *removals_iter != raw_removals->end() &&
+          **removals_iter == total_picked_from_old) {
+        old_prefixes.take_first(prefix_size);
+        total_picked_from_old++;
+        (*removals_iter)++;
+        continue;
+      }
+
+      // We can only scan ahead up to the next removal index.
+      size_t count = old_prefixes.size() / prefix_size;
+      if (removals_iter && *removals_iter != raw_removals->end()) {
+        count = std::min(count, static_cast<size_t>(**removals_iter -
+                                                    total_picked_from_old));
+      }
+
+      // Determine how many prefixes we can take in a row from this list by
+      // scanning ahead.
+      if (!new_prefixes.empty()) {
+        base::span<const uint8_t> add_prefix = new_prefixes.first(prefix_size);
+        count = std::min(count,
+                         get_skip_count(old_prefixes.first(count * prefix_size),
+                                        add_prefix));
+      }
+      CHECK_GE(count, 1u);
+
+      // Append the selected prefixes.
+      base::span<const uint8_t> to_append =
+          old_prefixes.take_first(count * prefix_size);
+      hash_prefix_map_->Append(prefix_size, base::as_string_view(to_append));
+      if (calculate_checksum) {
+        checksum_ctx.Update(to_append);
+      }
+      total_picked_from_old += count;
+      continue;
+    }
+
+    // Picking from `new_prefixes`.
+    size_t count = new_prefixes.size() / prefix_size;
+
+    // Scan ahead.
+    if (!old_prefixes.empty()) {
+      base::span<const uint8_t> old_prefix = old_prefixes.first(prefix_size);
+      count = std::min(count, get_skip_count(new_prefixes, old_prefix));
+    }
+    CHECK_GE(count, 1u);
+
+    // Append the selected prefixes.
+    base::span<const uint8_t> to_append =
+        new_prefixes.take_first(count * prefix_size);
+    hash_prefix_map_->Append(prefix_size, base::as_string_view(to_append));
+    if (calculate_checksum) {
+      checksum_ctx.Update(to_append);
+    }
+  }
+
+  if (removals_iter && *removals_iter != raw_removals->end()) {
+    return REMOVALS_INDEX_TOO_LARGE_FAILURE;
+  }
+
+  if (calculate_checksum) {
+    std::array<uint8_t, crypto::hash::kSha256Size> checksum;
+    checksum_ctx.Finish(checksum);
+    auto expected = base::as_byte_span(expected_checksum);
+    if (expected != checksum) {
+#if DCHECK_IS_ON()
+      std::string checksum_b64 = base::Base64Encode(checksum);
+      std::string expected_b64 = base::Base64Encode(expected);
+      DVLOG(1) << "Failure: Checksum mismatch: calculated: " << checksum_b64
+               << "; expected: " << expected_b64 << "; store: " << *this;
+#endif
+      return CHECKSUM_MISMATCH_FAILURE;
+    }
+  }
+
+  return APPLY_UPDATE_SUCCESS;
+}
+
 ApplyUpdateResult V4Store::MergeUpdate(
     const HashPrefixMapView& old_prefixes_map,
     const HashPrefixMapView& additions_map,
@@ -691,6 +804,12 @@ ApplyUpdateResult V4Store::MergeUpdate(
   }
 
   hash_prefix_map_->Clear();
+
+  if (old_prefixes_map.size() == 1 && additions_map.size() == 1 &&
+      old_prefixes_map.begin()->first == additions_map.begin()->first) {
+    return MergeUpdateFast(old_prefixes_map, additions_map, raw_removals,
+                           expected_checksum);
+  }
 
   IteratorMap old_iterator_map;
   HashPrefixStr next_smallest_prefix_old;
@@ -805,59 +924,76 @@ ApplyUpdateResult V4Store::MergeUpdate(
   return APPLY_UPDATE_SUCCESS;
 }
 
-HashPrefixMap::MigrateResult V4Store::MigrateFileFormatIfNeeded(
-    V4StoreFileFormat* file_format) {
-  HashPrefixMap::MigrateResult result =
-      hash_prefix_map_->MigrateFileFormat(store_path_, file_format);
-  if (result != HashPrefixMap::MigrateResult::kSuccess)
-    return result;
-  if (WriteToDisk(file_format) == WRITE_SUCCESS)
-    return HashPrefixMap::MigrateResult::kSuccess;
-  return HashPrefixMap::MigrateResult::kFailure;
+V5ToV4MigrationResult V4Store::AttemptV5ToV4Migration() {
+  CHECK(task_runner_->RunsTasksInCurrentSequence());
+
+  if (base::PathExists(store_path_)) {
+    return V5ToV4MigrationResult::kDiskAlreadyV4;
+  }
+  base::FilePath v5_store_path =
+      store_path_.InsertBeforeExtension(FILE_PATH_LITERAL("_v5"));
+  if (!base::PathExists(v5_store_path)) {
+    return V5ToV4MigrationResult::kV5StoreNotFound;
+  }
+
+  base::ElapsedTimer timer;
+  absl::Cleanup log_timer = [this, &timer] {
+    RecordMigrationTime(timer.Elapsed(), store_path_);
+  };
+
+  if (!is_eligible_for_migration_) {
+    bool wipe_succeeded = WipeV5Store(v5_store_path);
+    return wipe_succeeded ? V5ToV4MigrationResult::kStoreIneligibleWipeSucceeded
+                          : V5ToV4MigrationResult::kStoreIneligibleWipeFailed;
+  }
+  return MigrateFromV5(v5_store_path);
 }
 
 StoreReadResult V4Store::ReadFromDisk() {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
 
-  V4StoreFileFormat file_format;
-  int64_t file_size;
-  {
-    BaseFileInputStream input_stream(store_path_);
-    if (!file_format.ParseFromZeroCopyStream(&input_stream)) {
-      return input_stream.GetError() != base::File::FILE_OK
-                 ? FILE_UNREADABLE_FAILURE
-                 : PROTO_PARSING_FAILURE;
-    }
-    // `ParseFromZeroCopyStream` will return true if the file didn't exist, so
-    // explicitly check for an error when reading from the file.
-    if (input_stream.GetError() != base::File::FILE_OK) {
+  if (!base::FeatureList::IsEnabled(
+          kAllowSafeBrowsingV4StoreDiskMigrationChanges)) {
+    return ReadFromDiskInternal();
+  }
+
+  V5ToV4MigrationResult migration_result = AttemptV5ToV4Migration();
+  base::UmaHistogramEnumeration("SafeBrowsing.V4Store.V5ToV4MigrationResult",
+                                migration_result);
+  switch (migration_result) {
+    case V5ToV4MigrationResult::kDiskAlreadyV4:
+    case V5ToV4MigrationResult::kV5ToV4MigrationSucceeded:
+      return ReadFromDiskInternal();
+    case V5ToV4MigrationResult::kStoreIneligibleWipeSucceeded:
+      return V5_TO_V4_MIGRATION_WIPED_SUCCESSFULLY;
+    case V5ToV4MigrationResult::kV5StoreNotFound:
       return FILE_UNREADABLE_FAILURE;
-    }
-    file_size = input_stream.ByteCount();
-    if (!file_size) {
-      return FILE_EMPTY_FAILURE;
-    }
+    case V5ToV4MigrationResult::kReadV5Failed:
+    case V5ToV4MigrationResult::kPrefixSizeMismatchFailure:
+    case V5ToV4MigrationResult::kHashFileMissingFailure:
+    case V5ToV4MigrationResult::kRenameHashFileFailure:
+    case V5ToV4MigrationResult::kWriteV4FileFailure:
+    case V5ToV4MigrationResult::kRenameV4StoreFileFailure:
+    case V5ToV4MigrationResult::kProtoSerializationFailure:
+    case V5ToV4MigrationResult::kStoreIneligibleWipeFailed:
+    case V5ToV4MigrationResult::kExtensionBlocklistMigrationFailed:
+      return V5_TO_V4_MIGRATION_FAILURE;
   }
+}
 
-  if (file_format.magic_number() != kFileMagic) {
-    return UNEXPECTED_MAGIC_NUMBER_FAILURE;
-  }
+StoreReadResult V4Store::ReadFromDiskInternal() {
+  DCHECK(task_runner_->RunsTasksInCurrentSequence());
 
-  if (file_format.version_number() != kFileVersion) {
-    return FILE_VERSION_INCOMPATIBLE_FAILURE;
-  }
-
-  if (!file_format.has_list_update_response()) {
-    return HASH_PREFIX_INFO_MISSING_FAILURE;
-  }
-
-  migrate_result_ = MigrateFileFormatIfNeeded(&file_format);
-  if (migrate_result_ == HashPrefixMap::MigrateResult::kFailure) {
-    return MIGRATION_FAILURE;
+  V4StoreFileFormat file_format;
+  int64_t file_size = 0;
+  StoreReadResult validation_result =
+      ParseAndValidateV4StoreFileFormat(store_path_, file_format, &file_size);
+  if (validation_result != READ_SUCCESS) {
+    return validation_result;
   }
 
   ApplyUpdateResult apply_update_result =
-      hash_prefix_map_->ReadFromDisk(file_format);
+      hash_prefix_map_->ReadFromDisk(SBStoreFileFormat(&file_format));
   if (apply_update_result == APPLY_UPDATE_SUCCESS) {
     std::unique_ptr<ListUpdateResponse> response(new ListUpdateResponse);
     response->Swap(file_format.mutable_list_update_response());
@@ -872,15 +1008,208 @@ StoreReadResult V4Store::ReadFromDisk() {
     return HASH_PREFIX_MAP_GENERATION_FAILURE;
   }
 
-  // If a migration happened, we already updated file size.
-  if (migrate_result_ != HashPrefixMap::MigrateResult::kSuccess) {
-    // Update |file_size_| now because we parsed the file correctly.
-    file_size_ = file_size;
-    for (const auto& hash_file : file_format.hash_files())
-      file_size_ += hash_file.file_size();
+  // Update |file_size_| now because we parsed the file correctly.
+  file_size_ = file_size;
+  for (const auto& hash_file : file_format.hash_files()) {
+    file_size_ += hash_file.file_size();
   }
 
   return READ_SUCCESS;
+}
+
+ConvertExtensionBlocklistV5ToV4Result
+V4Store::ConvertExtensionsBlocklistFromV5ToV4(
+    const base::FilePath& v5_hash_file_path,
+    const base::FilePath& v4_hash_file_path,
+    std::string* checksum_sha256,
+    uint64_t* file_size) {
+  std::string v5_data;
+  if (!base::ReadFileToString(v5_hash_file_path, &v5_data)) {
+    return ConvertExtensionBlocklistV5ToV4Result::kReadV5Failed;
+  }
+
+  // Verify V5 checksum if provided and not empty. For the purposes of the disk
+  // migration, we don't fail when the checksum is missing, because
+  // `V4Store::VerifyChecksum` allows it. `V5Store::VerifyChecksum` may end up
+  // being different.
+  if (checksum_sha256 && !checksum_sha256->empty()) {
+    auto calculated_checksum = crypto::hash::Sha256(v5_data);
+    if (checksum_sha256->size() != crypto::hash::kSha256Size ||
+        base::as_byte_span(*checksum_sha256) != calculated_checksum) {
+      return ConvertExtensionBlocklistV5ToV4Result::kV5ChecksumMismatch;
+    }
+  }
+  if (v5_data.size() % 16 != 0) {
+    return ConvertExtensionBlocklistV5ToV4Result::kInvalidFileSize;
+  }
+  base::span<const uint8_t> v5_span = base::as_byte_span(v5_data);
+  std::string v4_id_data;
+  v4_id_data.reserve(v5_span.size() * 2);
+  for (size_t i = 0; i < v5_span.size(); i += 16u) {
+    v4_id_data.append(
+        crx_file::id_util::GenerateIdFromHash(v5_span.subspan(i, 16u)));
+  }
+  if (!base::WriteFile(v4_hash_file_path, v4_id_data)) {
+    return ConvertExtensionBlocklistV5ToV4Result::kWriteV4Failed;
+  }
+  *file_size = v4_id_data.size();
+
+  if (checksum_sha256 && !checksum_sha256->empty()) {
+    std::array<uint8_t, crypto::hash::kSha256Size> v4_checksum;
+    crypto::hash::Hash(crypto::hash::HashKind::kSha256,
+                       base::as_byte_span(v4_id_data), v4_checksum);
+    checksum_sha256->assign(v4_checksum.begin(), v4_checksum.end());
+  }
+
+  return ConvertExtensionBlocklistV5ToV4Result::kSuccess;
+}
+
+V5ToV4MigrationResult V4Store::MigrateFromV5(
+    const base::FilePath& v5_store_path) {
+  const PrefixSize kV4ExtensionIdPrefixSize = 32;
+  V5StoreFileFormat v5_file_format;
+  int64_t v5_file_size = 0;
+  base::FilePath v5_hash_file_path;
+  base::FilePath v4_hash_file_path;
+  base::FilePath temp_store_path = store_path_.AddExtensionASCII("tmp");
+  bool migration_succeeded = false;
+
+  // If we fail to migrate from v5, we wipe the v5 files and the attempted v4
+  // file format temp file.
+  absl::Cleanup cleanup_on_failure = [&v5_store_path, &v5_hash_file_path,
+                                      &v4_hash_file_path, &temp_store_path,
+                                      &migration_succeeded] {
+    if (!migration_succeeded) {
+      base::DeleteFile(v5_store_path);
+      if (!v5_hash_file_path.empty()) {
+        base::DeleteFile(v5_hash_file_path);
+      }
+      if (!v4_hash_file_path.empty()) {
+        base::DeleteFile(v4_hash_file_path);
+      }
+      base::DeleteFile(temp_store_path);
+    }
+  };
+
+  // Parse and validate the existing V5 store file.
+  V5StoreReadResult validation_result = ParseAndValidateV5StoreFileFormat(
+      v5_store_path, v5_file_format, &v5_file_size);
+  if (validation_result != V5StoreReadResult::kReadSuccess) {
+    base::UmaHistogramEnumeration(
+        "SafeBrowsing.V4Store.V5ToV4Migration.V5ReadFailureReason",
+        validation_result);
+    return V5ToV4MigrationResult::kReadV5Failed;
+  }
+
+  auto* list_details = v5_file_format.mutable_list_details();
+  std::string v4_ext;
+  PrefixSize v4_prefix_size =
+      is_extensions_blocklist_ ? kV4ExtensionIdPrefixSize : v5_prefix_size_;
+  uint64_t file_size = 0;
+  std::string* v4_checksum = nullptr;
+  if (list_details->has_checksum() && list_details->checksum().has_sha256()) {
+    v4_checksum = list_details->mutable_checksum()->mutable_sha256();
+  }
+
+  // Move the V5 hash file to the V4 path if it exists.
+  if (list_details->has_hash_file()) {
+    const auto& hash_file = list_details->hash_file();
+    // This is used in `cleanup_on_failure` above so it needs to run as soon as
+    // we have the `hash_file.extension()` available.
+    v5_hash_file_path =
+        HashPrefixContainer::GetPath(v5_store_path, hash_file.extension());
+
+    if (hash_file.file_size() % v5_prefix_size_ != 0) {
+      return V5ToV4MigrationResult::kPrefixSizeMismatchFailure;
+    }
+    // Determine the new v4 hash file's path.
+    file_size = hash_file.file_size();
+    v4_ext = base::NumberToString(v4_prefix_size) + "_" + hash_file.extension();
+    v4_hash_file_path = HashPrefixContainer::GetPath(store_path_, v4_ext);
+
+    if (!base::PathExists(v5_hash_file_path)) {
+      return V5ToV4MigrationResult::kHashFileMissingFailure;
+    }
+
+    // Write to the new hash file.
+    if (is_extensions_blocklist_) {
+      // For the extensions blocklist, migrate the 16-byte extension hashes to
+      // length-16 extension IDs into the v4 hash file, and delete the v5 hash
+      // file.
+      ConvertExtensionBlocklistV5ToV4Result result =
+          ConvertExtensionsBlocklistFromV5ToV4(
+              v5_hash_file_path, v4_hash_file_path, v4_checksum, &file_size);
+      base::UmaHistogramEnumeration(
+          "SafeBrowsing.V4Store.ConvertExtensionBlocklistV5ToV4Result", result);
+      if (result != ConvertExtensionBlocklistV5ToV4Result::kSuccess) {
+        return V5ToV4MigrationResult::kExtensionBlocklistMigrationFailed;
+      }
+      base::DeleteFile(v5_hash_file_path);
+    } else {
+      // For other blocklists, just rename the v5 hash file to v4.
+      if (!base::Move(v5_hash_file_path, v4_hash_file_path)) {
+        return V5ToV4MigrationResult::kRenameHashFileFailure;
+      }
+    }
+  }
+
+  // Construct the new V4StoreFileFormat proto.
+  V4StoreFileFormat v4_file_format;
+  v4_file_format.set_magic_number(v5_file_format.magic_number());
+  v4_file_format.set_version_number(kV4FileVersion);
+
+  ListUpdateResponse* response = v4_file_format.mutable_list_update_response();
+  if (list_details->has_version()) {
+    response->set_new_client_state(list_details->version());
+  }
+  if (v4_checksum) {
+    response->mutable_checksum()->set_sha256(std::move(*v4_checksum));
+  }
+  response->set_response_type(ListUpdateResponse::FULL_UPDATE);
+
+  if (list_details->has_hash_file()) {
+    HashFile* hash_file = v4_file_format.add_hash_files();
+    hash_file->set_prefix_size(v4_prefix_size);
+    hash_file->set_extension(v4_ext);
+    hash_file->set_file_size(file_size);
+  }
+
+  // Serialize and write the new V4 proto to disk.
+  std::string v4_file_format_string;
+  if (!v4_file_format.SerializeToString(&v4_file_format_string)) {
+    return V5ToV4MigrationResult::kProtoSerializationFailure;
+  }
+
+  if (!base::WriteFile(temp_store_path, v4_file_format_string)) {
+    return V5ToV4MigrationResult::kWriteV4FileFailure;
+  }
+
+  if (!base::Move(temp_store_path, store_path_)) {
+    return V5ToV4MigrationResult::kRenameV4StoreFileFailure;
+  }
+
+  migration_succeeded = true;
+
+  // Delete the old V5 store file.
+  base::DeleteFile(v5_store_path);
+
+  return V5ToV4MigrationResult::kV5ToV4MigrationSucceeded;
+}
+
+bool V4Store::WipeV5Store(const base::FilePath& v5_store_path) {
+  V5StoreFileFormat v5_file_format;
+  bool hash_delete_success = true;
+  if (ParseAndValidateV5StoreFileFormat(v5_store_path, v5_file_format) ==
+      V5StoreReadResult::kReadSuccess) {
+    const auto& list_details = v5_file_format.list_details();
+    if (list_details.has_hash_file()) {
+      base::FilePath v5_hash_file_path = HashPrefixContainer::GetPath(
+          v5_store_path, list_details.hash_file().extension());
+      hash_delete_success = base::DeleteFile(v5_hash_file_path);
+    }
+  }
+  bool store_delete_success = base::DeleteFile(v5_store_path);
+  return hash_delete_success && store_delete_success;
 }
 
 StoreWriteResult V4Store::WriteToDisk(const Checksum& checksum) {
@@ -908,10 +1237,11 @@ StoreWriteResult V4Store::WriteToDisk(V4StoreFileFormat* file_format) {
   // `write_session` must remain alive until `file_format` is committed to disk.
   // Additionally, note that `hash_prefix_map_` is unusable throughout the
   // lifetime of `write_session`.
-  if (auto write_session = hash_prefix_map_->WriteToDisk(file_format);
+  SBStoreFileFormat sb_file_format(file_format);
+  if (auto write_session = hash_prefix_map_->WriteToDisk(sb_file_format);
       write_session) {
     file_format->set_magic_number(kFileMagic);
-    file_format->set_version_number(kFileVersion);
+    file_format->set_version_number(kV4FileVersion);
     {
       BaseFileOutputStream output_stream(new_filename);
       if (!file_format->SerializeToZeroCopyStream(&output_stream) ||
@@ -952,9 +1282,42 @@ HashPrefixStr V4Store::GetMatchingHashPrefix(std::string_view full_hash) {
   return hash_prefix_map_->GetMatchingHashPrefix(full_hash);
 }
 
+bool V4Store::VerifyChecksumFast(const HashPrefixMapView& map_view) {
+  crypto::hash::Hasher checksum_ctx(crypto::hash::HashKind::kSha256);
+  auto map_pair = *map_view.begin();
+  checksum_ctx.Update(base::as_byte_span(map_pair.second));
+
+  std::array<uint8_t, crypto::hash::kSha256Size> checksum;
+  checksum_ctx.Finish(checksum);
+  if (base::as_byte_span(expected_checksum_) != checksum) {
+    RecordApplyUpdateResult(kReadFromDisk, CHECKSUM_MISMATCH_FAILURE,
+                            store_path_);
+#if DCHECK_IS_ON()
+    std::string checksum_b64 = base::Base64Encode(checksum);
+    std::string expected_checksum_b64 = base::Base64Encode(expected_checksum_);
+    DVLOG(1) << "Failure: Checksum mismatch: calculated: " << checksum_b64
+             << "; expected: " << expected_checksum_b64 << "; store: " << *this;
+#endif
+    return false;
+  }
+  return true;
+}
+
 bool V4Store::VerifyChecksum() {
   base::ElapsedThreadTimer thread_timer;
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
+
+  // TODO(crbug.com/362791941): Remove this once have confirmed assumption that
+  // empty checksums are rare for valid stores.
+  if (has_valid_data_) {
+    base::UmaHistogramBoolean(
+        "SafeBrowsing.V4Store.VerifyChecksum.ValidStoreChecksumEmpty" +
+            GetUmaSuffixForStore(store_path_),
+        expected_checksum_.empty());
+    base::UmaHistogramBoolean(
+        "SafeBrowsing.V4Store.VerifyChecksum.ValidStoreChecksumEmpty",
+        expected_checksum_.empty());
+  }
 
   if (expected_checksum_.empty()) {
     // Nothing to check here folks!
@@ -962,9 +1325,16 @@ bool V4Store::VerifyChecksum() {
     return true;
   }
 
+  // Fast path when there is only 1 prefix size.
+  const HashPrefixMapView map_view = hash_prefix_map_->view();
+  if (map_view.size() == 1) {
+    bool result = VerifyChecksumFast(map_view);
+    RecordVerifyChecksumDuration(thread_timer.Elapsed());
+    return result;
+  }
+
   IteratorMap iterator_map;
   HashPrefixStr next_smallest_prefix;
-  const HashPrefixMapView map_view = hash_prefix_map_->view();
   InitializeIteratorMap(map_view, &iterator_map);
   CHECK_EQ(map_view.size(), iterator_map.size());
   bool has_unmerged = GetNextSmallestUnmergedPrefix(map_view, iterator_map,
@@ -997,11 +1367,11 @@ bool V4Store::VerifyChecksum() {
     DVLOG(1) << "Failure: Checksum mismatch: calculated: " << checksum_b64
              << "; expected: " << expected_checksum_b64 << "; store: " << *this;
 #endif
-    RecordVerifyChecksumDuration(kReadFromDisk, thread_timer.Elapsed());
+    RecordVerifyChecksumDuration(thread_timer.Elapsed());
     return false;
   }
 
-  RecordVerifyChecksumDuration(kReadFromDisk, thread_timer.Elapsed());
+  RecordVerifyChecksumDuration(thread_timer.Elapsed());
   return true;
 }
 
@@ -1029,8 +1399,7 @@ int64_t V4Store::RecordAndReturnFileSize(const std::string& base_metric) {
 }
 
 void V4Store::CollectStoreInfo(
-    DatabaseManagerInfo::DatabaseInfo::StoreInfo* store_info,
-    const std::string& base_metric) {
+    DatabaseManagerInfo::DatabaseInfo::StoreInfo* store_info) {
   store_info->set_file_name(GetUmaSuffixForStore(store_path_)
                                 .substr(1));  // Strip the '.' off the front
   store_info->set_file_size_bytes(file_size_);
@@ -1045,11 +1414,8 @@ void V4Store::CollectStoreInfo(
   hash_prefix_map_->GetPrefixInfo(store_info->mutable_prefix_sets());
 }
 
-V4StoreDeleter::V4StoreDeleter(
-    scoped_refptr<base::SequencedTaskRunner> task_runner)
-    : task_runner_(std::move(task_runner)) {}
-V4StoreDeleter::~V4StoreDeleter() = default;
-V4StoreDeleter::V4StoreDeleter(V4StoreDeleter&&) = default;
-V4StoreDeleter& V4StoreDeleter::operator=(V4StoreDeleter&&) = default;
+const std::string& V4Store::GetStoreState() const {
+  return state_;
+}
 
 }  // namespace safe_browsing

@@ -8,7 +8,6 @@
 #include <utility>
 
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/task/sequenced_task_runner.h"
 #include "components/safe_browsing/core/browser/db/v4_get_hash_protocol_manager.h"
 #include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
@@ -71,7 +70,7 @@ bool SafeBrowsingDatabaseManager::CheckApiBlocklistUrl(const GURL& url,
   api_checks_.insert(check.get());
 
   std::vector<std::string> list_client_states;
-  V4ProtocolManagerUtil::GetListClientStatesFromStoreStateMap(
+  SBProtocolManagerUtil::GetListClientStatesFromStoreStateMap(
       GetStoreStateMap(), &list_client_states);
 
   v4_get_hash_protocol_manager_->GetFullHashesWithApis(

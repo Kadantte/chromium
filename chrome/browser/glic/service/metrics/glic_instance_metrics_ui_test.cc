@@ -8,6 +8,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/glic/host/glic_features.mojom.h"
+#include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/service/glic_instance_impl.h"
 #include "chrome/browser/glic/service/metrics/glic_instance_metrics.h"
 #include "chrome/browser/glic/service/metrics/glic_metrics_session_manager.h"
@@ -47,8 +48,6 @@ class GlicInstanceMetricsTest : public test::InteractiveGlicTest {
               {features::kGlicMetricsSessionRestartDebounceTimer.name,
                base::NumberToString(DEBOUNCE_TIMEOUT_MS.InMilliseconds()) +
                    "ms"}}},
-            {features::kGlicMultiInstance, {}},
-            {mojom::features::kGlicMultiTab, {}},
         },
         {});
   }
@@ -76,7 +75,7 @@ IN_PROC_BROWSER_TEST_F(GlicInstanceMetricsTest,
         START_TIMER_MS + base::Milliseconds(10));
     run_loop.Run();
   }
-  EXPECT_EQ(user_action_tester_.GetActionCount("Glic.Instance.Created"), 2);
+  EXPECT_EQ(user_action_tester_.GetActionCount("Glic.Instance.Created"), 1);
 }
 
 IN_PROC_BROWSER_TEST_F(GlicInstanceMetricsTest,
@@ -125,6 +124,36 @@ IN_PROC_BROWSER_TEST_F(GlicInstanceMetricsTest, SessionEndsWhenHidden) {
                 "Glic.Instance.Session.EndReason",
                 GlicMultiInstanceSessionEndReason::kHidden),
             1);
+}
+
+class GlicFreMetricsTest : public test::InteractiveGlicTest {
+ public:
+  GlicFreMetricsTest() {}
+  ~GlicFreMetricsTest() override = default;
+
+  void SetUpOnMainThread() override {
+    test::InteractiveGlicTest::SetUpOnMainThread();
+    glic::GlicKeyedService::Get(browser()->profile())
+        ->enabling()
+        .SetCompletedFre(glic::prefs::FreStatus::kNotStarted);
+  }
+
+ protected:
+  base::UserActionTester user_action_tester_;
+};
+
+IN_PROC_BROWSER_TEST_F(GlicFreMetricsTest, FreShownAndDismissed) {
+  RunTestSequence(
+      ToggleGlicWindow(GlicWindowMode::kAttached),
+      WaitForAndInstrumentGlic(GlicInstrumentMode::kHostAndContents),
+      Wait(START_TIMER_MS + base::Milliseconds(10)),
+      ToggleGlicWindow(GlicWindowMode::kAttached),
+      WaitForHide(test::kGlicHostElementId));
+
+  EXPECT_EQ(user_action_tester_.GetActionCount("Glic.Fre.Shown"), 1);
+  EXPECT_EQ(user_action_tester_.GetActionCount("Glic.Onboarding.OptInAccept"),
+            0);
+  EXPECT_EQ(user_action_tester_.GetActionCount("Glic.Fre.Dismissed"), 1);
 }
 
 }  // namespace glic

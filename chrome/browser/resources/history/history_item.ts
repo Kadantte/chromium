@@ -25,17 +25,17 @@ import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
-import {BrowserServiceImpl} from './browser_service.js';
+import {BrowserProxyImpl} from './browser_proxy.js';
 import {getCss} from './history_item.css.js';
 import {getHtml} from './history_item.html.js';
 
 export interface HistoryItemElement {
   $: {
-    'checkbox': CrCheckboxElement,
-    'icon': HTMLElement,
-    'link': HTMLElement,
-    'menu-button': CrIconButtonElement,
-    'time-accessed': HTMLElement,
+    checkbox: CrCheckboxElement,
+    icon: HTMLElement,
+    link: HTMLElement,
+    menuButton: CrIconButtonElement,
+    timeAccessed: HTMLElement,
   };
 }
 
@@ -127,7 +127,7 @@ export class HistoryItemElement extends HistoryItemElementBase {
   }
 
   focusOnMenuButton() {
-    focusWithoutInk(this.$['menu-button']);
+    focusWithoutInk(this.$.menuButton);
   }
 
   private onCheckboxKeydown_(e: KeyboardEvent) {
@@ -144,7 +144,7 @@ export class HistoryItemElement extends HistoryItemElementBase {
     const path = e.composedPath();
     // VoiceOver has issues with click events within elements that have a role
     // of row, so this event listeners has to be on the row itself.
-    // (See crbug.com/1185827.)
+    // (See crbug.com/40753378.)
     let inItemContainer = false;
     for (let i = 0; i < path.length; i++) {
       const elem = path[i] as HTMLElement;
@@ -174,7 +174,11 @@ export class HistoryItemElement extends HistoryItemElementBase {
    * has to fire before onCheckboxChange_. If we bind it to click/press,
    * it might trigger out of desired order.
    */
-  protected onCheckboxClick_(e: MouseEvent) {
+  protected onCheckboxMousedown_(e: MouseEvent) {
+    this.isShiftKeyDown_ = e.shiftKey;
+  }
+
+  protected onCheckboxSelectKeydown_(e: KeyboardEvent) {
     this.isShiftKeyDown_ = e.shiftKey;
   }
 
@@ -229,8 +233,7 @@ export class HistoryItemElement extends HistoryItemElementBase {
   }
 
   protected shouldShowActorTooltip_() {
-    return loadTimeData.getBoolean('enableBrowsingHistoryActorIntegrationM1') &&
-        this.item?.isActorVisit;
+    return this.item?.isActorVisit;
   }
 
   /**
@@ -243,12 +246,12 @@ export class HistoryItemElement extends HistoryItemElementBase {
 
     if (this.shadowRoot.querySelector('#bookmark-star') ===
         this.shadowRoot.activeElement) {
-      focusWithoutInk(this.$['menu-button']);
+      focusWithoutInk(this.$.menuButton);
     }
 
-    const browserService = BrowserServiceImpl.getInstance();
-    browserService.handler.removeBookmark(this.item.url);
-    browserService.recordAction('BookmarkStarClicked');
+    const browserProxy = BrowserProxyImpl.getInstance();
+    browserProxy.handler.removeBookmark(this.item.url);
+    browserProxy.recordAction('BookmarkStarClicked');
 
     this.fire('remove-bookmark-stars', this.item.url);
   }
@@ -283,11 +286,11 @@ export class HistoryItemElement extends HistoryItemElementBase {
    * Record metrics when a result is clicked.
    */
   protected onLinkClick_() {
-    const browserService = BrowserServiceImpl.getInstance();
-    browserService.recordAction('EntryLinkClick');
+    const browserProxy = BrowserProxyImpl.getInstance();
+    browserProxy.recordAction('EntryLinkClick');
 
     if (this.searchTerm) {
-      browserService.recordAction('SearchResultClick');
+      browserProxy.recordAction('SearchResultClick');
     }
 
     this.fire('record-history-link-click', {
@@ -296,8 +299,12 @@ export class HistoryItemElement extends HistoryItemElementBase {
     });
   }
 
-  protected onLinkRightClick_() {
-    BrowserServiceImpl.getInstance().recordAction('EntryLinkRightClick');
+  protected onLinkAuxclick_() {
+    this.onLinkClick_();
+  }
+
+  protected onLinkContextmenu_() {
+    BrowserProxyImpl.getInstance().recordAction('EntryLinkRightClick');
   }
 
   /**
@@ -311,7 +318,7 @@ export class HistoryItemElement extends HistoryItemElementBase {
         this.item.url, this.item.isUrlInRemoteUserData,
         this.item.remoteIconUrlForUma);
     this.eventTracker_.add(
-        this.$['time-accessed'], 'mouseover', () => this.addTimeTitle_());
+        this.$.timeAccessed, 'mouseover', () => this.addTimeTitle_());
   }
 
   protected cardTitle_(): string {
@@ -329,7 +336,7 @@ export class HistoryItemElement extends HistoryItemElementBase {
     if (!this.item) {
       return;
     }
-    const el = this.$['time-accessed'];
+    const el = this.$.timeAccessed;
     el.setAttribute('title', new Date(this.item.time).toString());
     this.eventTracker_.remove(el, 'mouseover');
   }

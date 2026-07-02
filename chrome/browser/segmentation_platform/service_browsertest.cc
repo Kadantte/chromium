@@ -4,13 +4,16 @@
 
 #include <memory>
 
+#include "base/files/file_util.h"
 #include "base/metrics/metrics_hashes.h"
 #include "base/metrics/statistics_recorder.h"
+#include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
@@ -21,6 +24,7 @@
 #include "chrome/browser/segmentation_platform/segmentation_platform_service_factory.h"
 #include "chrome/browser/segmentation_platform/ukm_data_manager_test_utils.h"
 #include "chrome/browser/segmentation_platform/ukm_database_client.h"
+#include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/platform_browser_test.h"
 #include "components/optimization_guide/core/delivery/model_info.h"
@@ -50,6 +54,7 @@
 #include "components/ukm/ukm_service.h"
 #include "content/public/test/browser_test.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
+#include "sql/database.h"
 
 namespace segmentation_platform {
 
@@ -299,7 +304,7 @@ class SegmentationPlatformTest : public PlatformBrowserTest {
   base::WeakPtrFactory<SegmentationPlatformTest> weak_ptr_factory_{this};
 };
 
-// https://crbug.com/1257820 -- Tests using "PRE_" don't work on Android.
+// https://crbug.com/40200835 -- Tests using "PRE_" don't work on Android.
 #if BUILDFLAG(IS_ANDROID)
 #define MAYBE_PRE_CachedClassificationModel \
   DISABLED_PRE_CachedClassificationModel
@@ -527,6 +532,31 @@ IN_PROC_BROWSER_TEST_F(SegmentationPlatformTest,
       1, 0);
 }
 
+// Android doesn't have a shutdown path in which databases are closed.
+#if !BUILDFLAG(IS_ANDROID)
+// Tests that the database's -wal file is removed at shutdown. A failure to do
+// so means that the database was not closed.
+class SegmentationPlatformCleanupTest : public SegmentationPlatformTest {
+ protected:
+  void TearDownInProcessBrowserTestFixture() override {
+    SegmentationPlatformTest::TearDownInProcessBrowserTestFixture();
+    ASSERT_FALSE(
+        base::PathExists(sql::Database::WriteAheadLogPath(GetUkmDbPath())));
+  }
+
+  base::FilePath GetUkmDbPath() {
+    return base::PathService::CheckedGet(chrome::DIR_USER_DATA)
+        .Append(FILE_PATH_LITERAL("segmentation_platform"))
+        .Append(FILE_PATH_LITERAL("ukm_db"));
+  }
+};
+IN_PROC_BROWSER_TEST_F(SegmentationPlatformCleanupTest, WalFileIsRemoved) {
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  ASSERT_TRUE(
+      base::PathExists(sql::Database::WriteAheadLogPath(GetUkmDbPath())));
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
 class SegmentationPlatformUkmModelTest : public SegmentationPlatformTest {
  public:
   SegmentationPlatformUkmModelTest()
@@ -562,8 +592,8 @@ class SegmentationPlatformUkmModelTest : public SegmentationPlatformTest {
 // incognito mode. This disables the segmentation platform data collection.
 // TODO(ssid): Fix this test for CrOS by waiting for signin profile to be
 // deleted at startup before adding metrics.
-// https://crbug.com/1467530 -- Flaky on Mac
-// https://crbug.com/1257820 -- Tests using "PRE_" don't work on Android.
+// https://crbug.com/40276817 -- Flaky on Mac
+// https://crbug.com/40200835 -- Tests using "PRE_" don't work on Android.
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID)
 #define MAYBE_PRE_RunUkmBasedModel DISABLED_PRE_RunUkmBasedModel
 #define MAYBE_RunUkmBasedModel DISABLED_RunUkmBasedModel

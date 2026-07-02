@@ -57,13 +57,6 @@ void FakeLocalFrameHost::SetVirtualKeyboardMode(
 void FakeLocalFrameHost::VisibilityChanged(
     mojom::blink::FrameVisibility visibility) {}
 
-void FakeLocalFrameHost::DidChangeThemeColor(
-    std::optional<::SkColor> theme_color) {}
-
-void FakeLocalFrameHost::DidChangeBackgroundColor(
-    const SkColor4f& background_color,
-    bool color_adjust) {}
-
 void FakeLocalFrameHost::DidFailLoadWithError(const ::blink::KURL& url,
                                               int32_t error_code) {}
 
@@ -158,7 +151,8 @@ void FakeLocalFrameHost::RunBeforeUnloadConfirm(
 }
 
 void FakeLocalFrameHost::UpdateFaviconURL(
-    Vector<blink::mojom::blink::FaviconURLPtr> favicon_urls) {}
+    Vector<blink::mojom::blink::FaviconURLPtr> favicon_urls,
+    blink::mojom::blink::FaviconUpdateReason reason) {}
 
 void FakeLocalFrameHost::DownloadURL(
     mojom::blink::DownloadURLParamsPtr params) {}
@@ -268,17 +262,6 @@ void FakeLocalFrameHost::SetFencedFrameAutomaticBeaconReportEventData(
     bool once,
     bool cross_origin_exposed) {}
 
-void FakeLocalFrameHost::DisableUntrustedNetworkInFencedFrame(
-    DisableUntrustedNetworkInFencedFrameCallback callback) {
-  std::move(callback).Run();
-}
-
-void FakeLocalFrameHost::ExemptUrlFromNetworkRevocationForTesting(
-    const blink::KURL& exempted_url,
-    ExemptUrlFromNetworkRevocationForTestingCallback callback) {
-  std::move(callback).Run();
-}
-
 void FakeLocalFrameHost::SendLegacyTechEvent(
     const String& type,
     mojom::blink::LegacyTechEventCodeLocationPtr code_location) {}
@@ -293,12 +276,6 @@ void FakeLocalFrameHost::CreateFencedFrame(
     const base::UnguessableToken& devtools_frame_token) {
   NOTREACHED() << "At the moment, FencedFrame is not used in any unit tests, "
                   "so this path should not be hit";
-}
-
-void FakeLocalFrameHost::ForwardFencedFrameEventAndUserActivationToEmbedder(
-    const String& event_type) {
-  NOTREACHED() << "ForwardFencedFrameEventToEmbedder is tested above the unit "
-                  "test layer";
 }
 
 void FakeLocalFrameHost::StartDragging(
@@ -326,8 +303,5 @@ void FakeLocalFrameHost::InitializeCrashReportContext(
     InitializeCrashReportContextCallback callback) {}
 
 void FakeLocalFrameHost::NotifyDocumentInteractive() {}
-
-void FakeLocalFrameHost::SetStorageAccessApiStatus(
-    net::StorageAccessApiStatus status) {}
 
 }  // namespace blink

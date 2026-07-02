@@ -83,6 +83,12 @@ def parse_common_args(
     parser.add_argument(
         "-o", "--output-dir", required=True, help="output directory")
     parser.add_argument("-t", "--target-os", required=True, help="target os")
+    parser.add_argument(
+        "--use-static-angle",
+        choices=["true", "false"],
+        default="false",
+        help="whether ANGLE is statically linked",
+    )
     return parser
 
 
@@ -280,6 +286,7 @@ class InstallerConfig:
     target_os: str
     is_official_build: bool
     shlib_perms: int
+    use_static_angle: bool = False
 
     # From chromium-browser.info or google-chrome.info
     info_vars: dict[str, str] = dataclasses.field(default_factory=dict)
@@ -327,6 +334,7 @@ class InstallerConfig:
     logo_resources_png: str = ""
     uri_scheme: str = ""
     extra_desktop_entries: str = ""
+    startup_wm_class: str = ""
 
     @classmethod
     def from_args(cls, args: argparse.Namespace,
@@ -342,6 +350,7 @@ class InstallerConfig:
             "is_official_build": args.official,
             "output_dir": output_dir,
             "shlib_perms": StandardPermissions.EXECUTABLE,
+            "use_static_angle": args.use_static_angle == "true",
             # Placeholder for build specific paths, set by caller if needed
             "script_dir": pathlib.Path("."),
             "staging_dir": pathlib.Path("."),
@@ -403,8 +412,8 @@ class InstallerConfig:
         data["channel"] = channel
         data["versionfull"] = f"{data['version']}-{data['package_release']}"
         data["package_orig"] = data["info_vars"]["PACKAGE"]
-        data[
-            "usr_bin_symlink_name"] = f"{data['info_vars']['PACKAGE']}-{channel}"
+        data["usr_bin_symlink_name"] = (
+            f"{data['info_vars']['PACKAGE']}-{channel}")
         if channel != "stable":
             data["info_vars"]["INSTALLDIR"] += f"-{channel}"
             data["info_vars"]["PACKAGE"] += f"-{channel}"
@@ -412,6 +421,8 @@ class InstallerConfig:
             data["rdn_desktop"] = f"{data['info_vars']['RDN']}.{channel}"
         else:
             data["rdn_desktop"] = data["info_vars"]["RDN"]
+
+        data["startup_wm_class"] = data["info_vars"]["PACKAGE"] or ""
 
         return data
 
@@ -479,15 +490,8 @@ class InstallerConfig:
                 is_optional=True,
             ),
             Artifact(
-                "libEGL.so.stripped",
-                "libEGL.so",
-                ArtifactType.BINARY,
-                self.shlib_perms,
-                is_optional=True,
-            ),
-            Artifact(
-                "libGLESv2.so.stripped",
-                "libGLESv2.so",
+                "libLiteRtWebGpuAccelerator.so.stripped",
+                "libLiteRtWebGpuAccelerator.so",
                 ArtifactType.BINARY,
                 self.shlib_perms,
                 is_optional=True,
@@ -545,6 +549,24 @@ class InstallerConfig:
                     ArtifactType.DIRECTORY,
                     StandardPermissions.EXECUTABLE,
                 ))
+
+        if not self.use_static_angle:
+            artifacts.extend([
+                Artifact(
+                    "libEGL.so.stripped",
+                    "libEGL.so",
+                    ArtifactType.BINARY,
+                    self.shlib_perms,
+                    is_optional=True,
+                ),
+                Artifact(
+                    "libGLESv2.so.stripped",
+                    "libGLESv2.so",
+                    ArtifactType.BINARY,
+                    self.shlib_perms,
+                    is_optional=True,
+                ),
+            ])
 
         return artifacts
 
@@ -632,21 +654,20 @@ class InstallerConfig:
                 ))
 
         # Privacy Sandbox Attestation
-        psa_manifest = (
-            self.output_dir /
-            "PrivacySandboxAttestationsPreloaded/manifest.json")
+        psa_dir = "PrivacySandboxAttestationsPreloaded"
+        psa_manifest = self.output_dir / psa_dir / "manifest.json"
         if psa_manifest.exists():
             artifacts.append(
                 Artifact(
-                    "PrivacySandboxAttestationsPreloaded/manifest.json",
-                    "PrivacySandboxAttestationsPreloaded/manifest.json",
+                    f"{psa_dir}/manifest.json",
+                    f"{psa_dir}/manifest.json",
                     ArtifactType.RESOURCE,
                     StandardPermissions.REGULAR,
                 ))
             artifacts.append(
                 Artifact(
-                    "PrivacySandboxAttestationsPreloaded/privacy-sandbox-attestations.dat",
-                    "PrivacySandboxAttestationsPreloaded/privacy-sandbox-attestations.dat",
+                    f"{psa_dir}/privacy-sandbox-attestations.dat",
+                    f"{psa_dir}/privacy-sandbox-attestations.dat",
                     ArtifactType.RESOURCE,
                     StandardPermissions.REGULAR,
                 ))
@@ -758,20 +779,13 @@ class InstallerConfig:
         else:
             self.uri_scheme = "x-scheme-handler/chromium;"
 
-        # xdg-mime and xdg-settings
+        # apparmor profile
         artifacts.append(
             Artifact(
-                "xdg-mime",
-                "xdg-mime",
-                ArtifactType.RESOURCE,
-                StandardPermissions.EXECUTABLE,
-            ))
-        artifacts.append(
-            Artifact(
-                "xdg-settings",
-                "xdg-settings",
-                ArtifactType.RESOURCE,
-                StandardPermissions.EXECUTABLE,
+                "installer/common/apparmor.template",
+                pathlib.Path("apparmor.d") / self.usr_bin_symlink_name,
+                ArtifactType.TEMPLATE,
+                StandardPermissions.REGULAR,
             ))
 
         # appdata.xml
@@ -893,6 +907,7 @@ class Installer:
             (self.config.staging_dir /
              "usr/share/gnome-control-center/default-apps"),
             self.config.staging_dir / "usr/share/man/man1",
+            install_dir / "apparmor.d",
         ]
         for d in dirs:
             d.mkdir(parents=True, exist_ok=True)

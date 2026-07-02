@@ -349,10 +349,15 @@ void ComposeboxOmniboxClient::OnAutocompleteAccept(
                      isSearchType:AutocompleteMatch::IsSearchType(match.type)];
 }
 
-base::WeakPtr<OmniboxClient> ComposeboxOmniboxClient::AsWeakPtr() {
+base::WeakPtr<OmniboxClientIOS> ComposeboxOmniboxClient::AsWeakPtr() {
   return weak_factory_.GetWeakPtr();
 }
 
 omnibox::InputState ComposeboxOmniboxClient::GetInputState() const {
-  return [delegate_ inputState];
+  std::optional<contextual_search::InputState> state = [delegate_ inputState];
+  return state.value_or(omnibox::InputState());
+}
+
+bool ComposeboxOmniboxClient::ShouldSkipZeroSuggestRequest() const {
+  return [delegate_ awaitingAttachmentSignals];
 }

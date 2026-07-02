@@ -7,12 +7,12 @@
  * 'settings-your-saved-info-page' is the entry point for users to see
  * and manage their saved info.
  */
+import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
 import './account_card.js';
 import './category_reference_card.js';
 import './collapsible_autofill_settings_card.js';
 import '/shared/settings/prefs/prefs.js';
 import '../settings_page/settings_section.js';
-import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
 
 import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
 import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
@@ -58,6 +58,7 @@ interface DataTypeHierarchy {
   contactInfo: DataCategory;
   identityDocs: DataCategory;
   travel: DataCategory;
+  shopping: DataCategory;
 }
 
 interface DataCategory {
@@ -100,11 +101,27 @@ export class SettingsYourSavedInfoPageElement extends
       hierarchy_: {
         type: Object,
       },
+
+      enableYourSavedInfoShoppingPage_: {
+        type: Boolean,
+        value() {
+          return loadTimeData.getBoolean('enableYourSavedInfoShoppingPage');
+        },
+      },
+
+      showSuggestionsFromGeminiSettings_: {
+        type: Boolean,
+        value() {
+          return loadTimeData.getBoolean('showSuggestionsFromGeminiSettings');
+        },
+      },
     };
   }
 
-  declare prefs: {[key: string]: any};
+  declare prefs: Record<string, unknown>;
   declare private hierarchy_: DataTypeHierarchy;
+  declare private enableYourSavedInfoShoppingPage_: boolean;
+  declare private showSuggestionsFromGeminiSettings_: boolean;
 
   private dataChipIdToChip_: Map<YourSavedInfoDataChip, DataChip> = new Map();
   private dataChipIdToCategory_: Map<YourSavedInfoDataChip, DataCategory> =
@@ -177,8 +194,7 @@ export class SettingsYourSavedInfoPageElement extends
             id: YourSavedInfoDataChip.LOYALTY_CARDS,
             label: this.i18n('loyaltyCardsTitle'),
             icon: 'settings20:loyalty-programs',
-            computeAvailability: () =>
-                loadTimeData.getBoolean('enableLoyaltyCardsFilling'),
+            computeAvailability: () => true,
           },
         ],
       },
@@ -245,6 +261,25 @@ export class SettingsYourSavedInfoPageElement extends
             icon: 'settings20:directions-car',
             computeAvailability: () =>
                 this.availableAutofillAiTypes_.has(EntityTypeName.kVehicle),
+          },
+        ],
+      },
+      shopping: {
+        id: YourSavedInfoDataCategory.SHOPPING,
+        chips: [
+          {
+            id: YourSavedInfoDataChip.ORDERS,
+            label: this.i18n('yourSavedInfoOrdersChip'),
+            icon: 'settings20:orders',
+            computeAvailability: () =>
+                this.availableAutofillAiTypes_.has(EntityTypeName.kOrder),
+          },
+          {
+            id: YourSavedInfoDataChip.SHIPMENTS,
+            label: this.i18n('yourSavedInfoShipmentsChip'),
+            icon: 'settings20:local-shipping',
+            computeAvailability: () =>
+                this.availableAutofillAiTypes_.has(EntityTypeName.kShipment),
           },
         ],
       },
@@ -327,6 +362,7 @@ export class SettingsYourSavedInfoPageElement extends
           }
           this.notifyPath('hierarchy_.identityDocs.chips');
           this.notifyPath('hierarchy_.travel.chips');
+          this.notifyPath('hierarchy_.shopping.chips');
         });
 
     // Wallet: Loyalty cards count.
@@ -364,6 +400,12 @@ export class SettingsYourSavedInfoPageElement extends
     this.setChipCount_(
         YourSavedInfoDataChip.FLIGHT_RESERVATIONS,
         entityCounts.get(EntityTypeName.kFlightReservation) ?? 0);
+    this.setChipCount_(
+        YourSavedInfoDataChip.ORDERS,
+        entityCounts.get(EntityTypeName.kOrder) ?? 0);
+    this.setChipCount_(
+        YourSavedInfoDataChip.SHIPMENTS,
+        entityCounts.get(EntityTypeName.kShipment) ?? 0);
   }
 
   override disconnectedCallback() {
@@ -399,6 +441,13 @@ export class SettingsYourSavedInfoPageElement extends
     if (routes.YOUR_SAVED_INFO_TRAVEL) {
       map.set(routes.YOUR_SAVED_INFO_TRAVEL.path, '#travelManagerButton');
     }
+    if (routes.YOUR_SAVED_INFO_SHOPPING) {
+      map.set(routes.YOUR_SAVED_INFO_SHOPPING.path, '#shoppingManagerButton');
+    }
+    if (routes.SUGGESTIONS_FROM_GEMINI) {
+      map.set(
+          routes.SUGGESTIONS_FROM_GEMINI.path, '#suggestionsFromGeminiLinkRow');
+    }
     return map;
   }
 
@@ -423,12 +472,20 @@ export class SettingsYourSavedInfoPageElement extends
       case 'travel':
         triggerId = 'travelManagerButton';
         break;
+      case 'shopping':
+        triggerId = 'shoppingManagerButton';
+        break;
+      case 'suggestionsFromGemini':
+        triggerId = 'suggestionsFromGeminiLinkRow';
+        break;
       default:
         assertNotReached(`Unrecognized child view ID: ${childViewId}`);
     }
     const control =
         this.shadowRoot!.querySelector<HTMLElement>(`#${triggerId}`);
-    assert(control);
+    assert(
+        control,
+        `Failed to find associated control for child '${childViewId}'`);
     return control;
   }
 
@@ -485,11 +542,19 @@ export class SettingsYourSavedInfoPageElement extends
       case YourSavedInfoDataCategory.TRAVEL:
         Router.getInstance().navigateTo(routes.YOUR_SAVED_INFO_TRAVEL);
         break;
+      case YourSavedInfoDataCategory.SHOPPING:
+        Router.getInstance().navigateTo(routes.YOUR_SAVED_INFO_SHOPPING);
+        break;
       case YourSavedInfoDataCategory.MAX_VALUE:
         assertNotReached();
       default:
         assertNotReachedCase(categoryId);
     }
+  }
+
+  private onSuggestionsFromGeminiClick_() {
+    // TODO(crbug.com/512204278): Add metrics.
+    Router.getInstance().navigateTo(routes.SUGGESTIONS_FROM_GEMINI);
   }
 
   /**

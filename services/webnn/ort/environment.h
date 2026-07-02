@@ -5,24 +5,29 @@
 #ifndef SERVICES_WEBNN_ORT_ENVIRONMENT_H_
 #define SERVICES_WEBNN_ORT_ENVIRONMENT_H_
 
+#include <optional>
 #include <string>
+#include <string_view>
 
 #include "base/containers/flat_map.h"
 #include "base/containers/span.h"
-#include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/no_destructor.h"
-#include "base/strings/cstring_view.h"
 #include "base/synchronization/lock.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/types/expected.h"
 #include "base/types/pass_key.h"
-#include "gpu/config/gpu_feature_info.h"
 #include "services/webnn/ort/scoped_ort_types.h"
+#include "services/webnn/public/cpp/ep_device_info.h"
 #include "services/webnn/public/cpp/execution_providers_info.h"
 #include "services/webnn/public/mojom/ep_package_info.mojom.h"
+#include "services/webnn/public/mojom/webnn_service_introspection.mojom.h"
 #include "third_party/windows_app_sdk_headers/src/inc/abi/winml/winml/onnxruntime_c_api.h"
+
+namespace base {
+class FilePath;
+}
 
 namespace webnn::ort {
 
@@ -32,10 +37,26 @@ class Environment : public base::subtle::RefCountedThreadSafeBase {
  public:
   REQUIRE_ADOPTION_FOR_REFCOUNTED_TYPE();
 
-  static base::expected<scoped_refptr<Environment>, std::string> GetInstance(
-      const gpu::GpuFeatureInfo& gpu_feature_info,
+  // Returns the singleton instance of `Environment` if it has been created, or
+  // null if it has not been created yet. This is used by WebNN Internals
+  // to check if the ORT environment has been initialized without triggering its
+  // initialization.
+  static std::optional<scoped_refptr<Environment>> GetInstance();
+
+  // Creates an `Environment` instance if it is not created yet and returns a
+  // reference-counted pointer to it. The returned `Environment` instance will
+  // be shared by all sessions in WebNN.
+  static base::expected<scoped_refptr<Environment>, std::string>
+  GetOrCreateInstance(
       const base::flat_map<std::string, mojom::EpPackageInfoPtr>&
           ep_package_info_map);
+
+  // Creates an `Environment` instance for the Compiler process, which targets
+  // a single EP device. The returned instance is shared by all sessions in
+  // WebNN within that process.
+  static base::expected<scoped_refptr<Environment>, std::string>
+  GetOrCreateInstanceForCompiler(const std::string& ep_name,
+                                 const base::FilePath& ep_library_path);
 
   Environment(base::PassKey<Environment> pass_key, ScopedOrtEnv env);
   Environment(const Environment&) = delete;
@@ -57,6 +78,16 @@ class Environment : public base::subtle::RefCountedThreadSafeBase {
       base::span<const OrtEpDevice* const> available_devices,
       OrtHardwareDeviceType device_type);
 
+  // Selects the first registered EP device matching `device_type` for use by
+  // the Compiler process. Returns nullopt if no matching device is found.
+  std::optional<EpDeviceInfo> SelectEpDeviceForCompiler(
+      OrtHardwareDeviceType device_type);
+
+  // Returns true if the execution provider name of `device` matches any of the
+  // names in `ep_names`.
+  static bool IsEpDevice(const OrtEpDevice* device,
+                         base::span<const std::string_view> ep_names);
+
   // Returns a span of registered execution provider devices in `env`. The span
   // is guaranteed to be valid until `env_` is released or the list of execution
   // providers is modified.
@@ -66,6 +97,18 @@ class Environment : public base::subtle::RefCountedThreadSafeBase {
   // immutable for the lifetime of the Environment object. Therefore, it is safe
   // for multiple threads to hold and use the returned span concurrently.
   base::span<const OrtEpDevice* const> GetRegisteredEpDevices() const;
+
+  // Returns a vector of execution provider details for all registered EPs in
+  // this environment. This is used for introspection purposes in WebNN
+  // Internals.
+  std::vector<mojom::WebNNExecutionProviderDetailsPtr> GetAvailableEpDetails()
+      const;
+
+  // Returns a vector of execution provider details for all selected EPs for a
+  // given device type. This is used for introspection purposes in WebNN
+  // Internals.
+  std::vector<mojom::WebNNExecutionProviderDetailsPtr> GetSelectedEpDetails(
+      OrtHardwareDeviceType device_type) const;
 
   // Get combined EP workarounds for the EPs that will be selected according to
   // the given device type.
@@ -83,13 +126,14 @@ class Environment : public base::subtle::RefCountedThreadSafeBase {
   std::vector<SessionConfigEntry> GetEpConfigEntries(
       OrtHardwareDeviceType device_type) const;
 
-  static bool is_npu_blocklisted() { return is_npu_blocklisted_; }
-
  private:
   static base::expected<scoped_refptr<Environment>, std::string> Create(
-      const gpu::GpuFeatureInfo& gpu_feature_info,
       const base::flat_map<std::string, mojom::EpPackageInfoPtr>&
           ep_package_info_map);
+
+  static base::expected<scoped_refptr<Environment>, std::string>
+  CreateForCompiler(const std::string& ep_name,
+                    const base::FilePath& ep_library_path);
 
   ~Environment();
 
@@ -107,8 +151,6 @@ class Environment : public base::subtle::RefCountedThreadSafeBase {
   // `Environment::Create()` that is already protected by `GetLock()`.
   static base::flat_set<std::wstring>& GetDependentEpPackages()
       EXCLUSIVE_LOCKS_REQUIRED(GetLock());
-
-  static bool is_npu_blocklisted_;
 };
 
 }  // namespace webnn::ort

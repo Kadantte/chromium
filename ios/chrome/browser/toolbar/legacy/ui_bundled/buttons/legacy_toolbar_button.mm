@@ -5,9 +5,9 @@
 #import "ios/chrome/browser/toolbar/legacy/ui_bundled/buttons/legacy_toolbar_button.h"
 
 #import "base/check.h"
-#import "ios/chrome/browser/intelligence/bwg/utils/bwg_constants.h"
+#import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
-#import "ios/chrome/browser/shared/public/commands/bwg_commands.h"
+#import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/shared/ui/util/util_swift.h"
@@ -148,8 +148,10 @@ const CGFloat kButtonImageInset = 3;
 
   if (hasBlueDot) {
     [self addBlueDotViewIfNeeded];
+    self.accessibilityValue = self.blueDotAccessibilityLabel;
   } else {
     [self removeBlueDotViewIfNeeded];
+    self.accessibilityValue = nil;
   }
 }
 
@@ -157,11 +159,9 @@ const CGFloat kButtonImageInset = 3;
     willDisplayMenuForConfiguration:(UIContextMenuConfiguration*)configuration
                            animator:
                                (id<UIContextMenuInteractionAnimating>)animator {
-  if (IsGeminiCopresenceEnabled()) {
-    [self.geminiHandler
-        hideFloatyIfInvokedAnimated:NO
-                         fromSource:gemini::FloatyUpdateSource::ContextMenu];
-  }
+  [self.geminiHandler
+      hideFloatyIfInvokedAnimated:NO
+                       fromSource:gemini::FloatyUpdateSource::ContextMenu];
 
   [super contextMenuInteraction:interaction
       willDisplayMenuForConfiguration:configuration
@@ -285,6 +285,7 @@ const CGFloat kButtonImageInset = 3;
   self.blueDotView = [[UIView alloc] init];
   self.blueDotView.translatesAutoresizingMaskIntoConstraints = NO;
   self.blueDotView.accessibilityIdentifier = kToolbarButtonBlueDotViewID;
+  self.blueDotView.isAccessibilityElement = NO;
   self.blueDotView.layer.cornerRadius = kBlueDotSize / 2;
   self.blueDotView.backgroundColor = [UIColor colorNamed:kBlue600Color];
   [self addSubview:self.blueDotView];

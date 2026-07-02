@@ -65,6 +65,8 @@ struct SameSizeAsFontDescription {
   FontSizeAdjust size_adjust_;
   ResolvedFontFeatures resolved_font_features_;
   FontSelectionRequest selection_request_;
+  FontSelectionValue original_slope_;
+  FontDescription::StyleSyntax style_syntax_;
   FieldsAsUnsignedType bitfields;
   AtomicString language_override_;
 };
@@ -140,6 +142,7 @@ bool FontDescription::operator==(const FontDescription& other) const {
          letter_spacing_ == other.letter_spacing_ &&
          word_spacing_ == other.word_spacing_ &&
          font_selection_request_ == other.font_selection_request_ &&
+         style_syntax_ == other.style_syntax_ &&
          fields_as_unsigned_.parts[0] == other.fields_as_unsigned_.parts[0] &&
          fields_as_unsigned_.parts[1] == other.fields_as_unsigned_.parts[1] &&
          (feature_settings_ == other.feature_settings_ ||
@@ -425,6 +428,7 @@ unsigned FontDescription::StyleHashWithoutFamilyList() const {
   AddIntToHash(hash, fields_as_unsigned_.parts[0]);
   AddIntToHash(hash, fields_as_unsigned_.parts[1]);
   AddIntToHash(hash, font_selection_request_.GetHash());
+  AddIntToHash(hash, static_cast<unsigned>(style_syntax_));
   AddIntToHash(hash, size_adjust_.GetHash());
 
   return hash;
@@ -450,6 +454,9 @@ void FontDescription::SetOrientation(FontOrientation orientation) {
 void FontDescription::SetStyle(FontSelectionValue value) {
   font_selection_request_.slope = value;
   original_slope = value;
+  // Since this value did not come from authored CSS, serialization falls
+  // back to the slope alone.
+  style_syntax_ = StyleSyntax::kImplicitAngle;
   UpdateSyntheticOblique();
 }
 
@@ -547,17 +554,6 @@ void FontDescription::UpdateFromSkiaFontStyle(const SkFontStyle& font_style) {
     SetStyle(kItalicSlopeValue);
   else
     SetStyle(kNormalSlopeValue);
-}
-
-int FontDescription::MinimumPrefixWidthToHyphenate() const {
-  // If the maximum width available for the prefix before the hyphen is small,
-  // then it is very unlikely that an hyphenation opportunity exists, so do not
-  // bother to look for it.  These are heuristic numbers for performance added
-  // in http://wkb.ug/45606
-  const int kMinimumPrefixWidthNumerator = 5;
-  const int kMinimumPrefixWidthDenominator = 4;
-  return ComputedPixelSize() * kMinimumPrefixWidthNumerator /
-         kMinimumPrefixWidthDenominator;
 }
 
 ResolvedFontFeatures FontDescription::ResolveFontFeatures() const {
@@ -761,20 +757,15 @@ String FontDescription::ToString(
 }
 
 String FontDescription::VariantLigatures::ToString() const {
-  return UNSAFE_TODO(String::Format(
-      "common=%s, discretionary=%s, historical=%s, contextual=%s",
-      FontDescription::ToString(static_cast<LigaturesState>(common))
-          .Ascii()
-          .data(),
-      FontDescription::ToString(static_cast<LigaturesState>(discretionary))
-          .Ascii()
-          .data(),
-      FontDescription::ToString(static_cast<LigaturesState>(historical))
-          .Ascii()
-          .data(),
-      FontDescription::ToString(static_cast<LigaturesState>(contextual))
-          .Ascii()
-          .data()));
+  return StrCat(
+      {"common=",
+       FontDescription::ToString(static_cast<LigaturesState>(common)),
+       ", discretionary=",
+       FontDescription::ToString(static_cast<LigaturesState>(discretionary)),
+       ", historical=",
+       FontDescription::ToString(static_cast<LigaturesState>(historical)),
+       ", contextual=",
+       FontDescription::ToString(static_cast<LigaturesState>(contextual))});
 }
 
 String FontDescription::Size::ToString() const {
@@ -784,10 +775,8 @@ String FontDescription::Size::ToString() const {
 }
 
 String FontDescription::FamilyDescription::ToString() const {
-  return String::Format(
-      "generic_family=%s, family=[%s]",
-      FontDescription::ToString(generic_family).Ascii().c_str(),
-      family.ToString().Ascii().c_str());
+  return StrCat({"generic_family=", FontDescription::ToString(generic_family),
+                 ", family=[", family.ToString(), "]"});
 }
 
 String FontDescription::ToString(FontVariantPosition variant_position) {

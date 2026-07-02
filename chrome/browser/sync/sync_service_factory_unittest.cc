@@ -8,6 +8,7 @@
 #include "base/feature_list.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/history/history_service_factory.h"
@@ -95,6 +96,15 @@ class SyncServiceFactoryTest : public testing::Test {
     // There may tasks in flight referencing fields owned by the test fixture.
     // Make sure they are flushed now to prevent memory safety errors, e.g.
     // use-after-destruction errors.
+
+    // Flush any pending initialization tasks (e.g. WebData) before destroying
+    // the profile, to avoid accessing closed DBs.
+    task_environment_.RunUntilIdle();
+
+    // Destroy the profile. This may post cleanup tasks.
+    profile_.reset();
+
+    // Flush cleanup tasks while NetworkHandler is still alive.
     task_environment_.RunUntilIdle();
   }
 
@@ -104,7 +114,7 @@ class SyncServiceFactoryTest : public testing::Test {
 
   // Returns the collection of default datatypes.
   syncer::DataTypeSet DefaultDatatypes() {
-    static_assert(62 == syncer::GetNumDataTypes(),
+    static_assert(63 == syncer::GetNumDataTypes(),
                   "When adding a new type, you probably want to add it here as "
                   "well (assuming it is already enabled). Check similar "
                   "function in "
@@ -133,8 +143,15 @@ class SyncServiceFactoryTest : public testing::Test {
 
 #if !BUILDFLAG(IS_ANDROID)
     datatypes.Put(syncer::THEMES);
-    datatypes.Put(syncer::SEARCH_ENGINES);
 #endif  // !BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_ANDROID)
+    if (base::FeatureList::IsEnabled(syncer::kSyncSearchEnginesAndroidLFF)) {
+      datatypes.Put(syncer::SEARCH_ENGINES);
+    }
+#else
+    datatypes.Put(syncer::SEARCH_ENGINES);
+#endif  // BUILDFLAG(IS_ANDROID)
 
     datatypes.Put(syncer::SAVED_TAB_GROUP);
 
@@ -167,10 +184,7 @@ class SyncServiceFactoryTest : public testing::Test {
     // types.
     datatypes.Put(syncer::AUTOFILL);
     datatypes.Put(syncer::AUTOFILL_PROFILE);
-    if (base::FeatureList::IsEnabled(
-            syncer::kSyncAutofillWalletCredentialData)) {
-      datatypes.Put(syncer::AUTOFILL_WALLET_CREDENTIAL);
-    }
+    datatypes.Put(syncer::AUTOFILL_WALLET_CREDENTIAL);
     datatypes.Put(syncer::AUTOFILL_WALLET_DATA);
     datatypes.Put(syncer::AUTOFILL_WALLET_METADATA);
     datatypes.Put(syncer::AUTOFILL_WALLET_OFFER);
@@ -212,9 +226,7 @@ class SyncServiceFactoryTest : public testing::Test {
     // because GoogleGroupsManagerFactory is null for testing and hence no
     // controller gets instantiated for the type.
 
-    if (base::FeatureList::IsEnabled(syncer::kSyncAutofillLoyaltyCard)) {
-      datatypes.Put(syncer::AUTOFILL_VALUABLE);
-    }
+    datatypes.Put(syncer::AUTOFILL_VALUABLE);
 
     if (base::FeatureList::IsEnabled(syncer::kSyncAutofillValuableMetadata)) {
       datatypes.Put(syncer::AUTOFILL_VALUABLE_METADATA);
@@ -244,6 +256,11 @@ class SyncServiceFactoryTest : public testing::Test {
       datatypes.Put(syncer::THEMES_IOS);
     }
 
+
+    if (base::FeatureList::IsEnabled(
+            syncer::kNewTabPageCustomizationThemeSync)) {
+      datatypes.Put(syncer::THEMES_ANDROID);
+    }
     return datatypes;
   }
 
@@ -291,4 +308,33 @@ TEST_F(SyncServiceFactoryTest, CreateSyncServiceImplDefault) {
     EXPECT_TRUE(types.Has(type))
         << syncer::DataTypeToDebugString(type) << " not found in datatypes map";
   }
+}
+
+class SyncServiceFactoryTestWithCrossDeviceThemeFeatures
+    : public SyncServiceFactoryTest {
+ public:
+  SyncServiceFactoryTestWithCrossDeviceThemeFeatures() {
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{syncer::kSyncThemesIos,
+                              syncer::kNewTabPageCustomizationThemeSync},
+        /*disabled_features=*/{});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_F(SyncServiceFactoryTestWithCrossDeviceThemeFeatures,
+       CreateSyncServiceImpl) {
+  syncer::SyncServiceImpl* sync_service =
+      SyncServiceFactory::GetAsSyncServiceImplForProfileForTesting(profile());
+  syncer::DataTypeSet types = sync_service->GetRegisteredDataTypesForTest();
+
+#if !BUILDFLAG(IS_ANDROID)
+  EXPECT_TRUE(types.Has(syncer::THEMES_IOS));
+  EXPECT_TRUE(types.Has(syncer::THEMES_ANDROID));
+#else
+  EXPECT_FALSE(types.Has(syncer::THEMES_IOS));
+  EXPECT_FALSE(types.Has(syncer::THEMES_ANDROID));
+#endif
 }

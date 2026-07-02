@@ -253,6 +253,7 @@ class TestDataTypeSyncBridge : public FakeDataTypeSyncBridge {
     merge_call_count_++;
 
     if (merge_full_sync_data_error_.has_value()) {
+      metadata_change_list->DropAllChanges();
       return merge_full_sync_data_error_;
     }
 
@@ -3234,11 +3235,6 @@ TEST_F(ClientTagBasedDataTypeProcessorTest, ShouldResetForMissingStorageKey) {
   EXPECT_EQ(0U, db()->metadata_count());
   EXPECT_EQ(0U, ProcessorEntityCount());
   EXPECT_FALSE(type_processor()->IsTrackingMetadata());
-
-  histogram_tester.ExpectUniqueSample(
-      "Sync.ClearMetadataDueToEmptyStorageKey",
-      /*sample=*/DataTypeHistogramValue(GetDataType()),
-      /*expected_bucket_count=*/1);
 
   // Initial update.
   worker()->UpdateFromServer();

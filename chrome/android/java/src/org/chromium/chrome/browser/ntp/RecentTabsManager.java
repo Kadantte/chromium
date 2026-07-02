@@ -111,7 +111,7 @@ public class RecentTabsManager
             Profile profile,
             ActivityResultTracker activityResultTracker,
             BottomSheetController bottomSheetController,
-            Supplier<@Nullable ModalDialogManager> modalDialogManagerSupplier,
+            Supplier<ModalDialogManager> modalDialogManagerSupplier,
             SnackbarManager snackbarManager,
             Runnable showHistoryManager,
             RecentlyClosedEntriesManager recentlyClosedEntriesManager) {
@@ -135,7 +135,7 @@ public class RecentTabsManager
                         activityResultTracker,
                         SigninAndHistorySyncActivityLauncherImpl.get(),
                         SupplierUtils.of(bottomSheetController),
-                        modalDialogManagerSupplier,
+                        modalDialogManagerSupplier.get(),
                         snackbarManager,
                         DeviceLockActivityLauncherImpl.get(),
                         new RecentTabsSigninPromoDelegate(
@@ -341,7 +341,8 @@ public class RecentTabsManager
      */
     public boolean getForeignFaviconForUrl(
             GURL url, int size, FaviconImageCallback faviconCallback) {
-        return mFaviconHelper.getForeignFaviconImageForURL(mProfile, url, size, faviconCallback);
+        return mFaviconHelper.getForeignFaviconImageForURL(
+                mProfile, url, size, /* fallbackToHost= */ true, faviconCallback);
     }
 
     /**
@@ -350,11 +351,11 @@ public class RecentTabsManager
      * @param url The url to fetch a favicon for.
      * @param size the desired favicon size.
      * @param faviconCallback the callback to be invoked when the favicon is available.
-     *
      * @return may return false if we could not fetch the favicon.
      */
     public boolean getLocalFaviconForUrl(GURL url, int size, FaviconImageCallback faviconCallback) {
-        return mFaviconHelper.getLocalFaviconImageForURL(mProfile, url, size, faviconCallback);
+        return mFaviconHelper.getLocalFaviconImageForURL(
+                mProfile, url, size, /* fallbackToHost= */ true, faviconCallback);
     }
 
     /**
@@ -472,7 +473,7 @@ public class RecentTabsManager
 
     // AccountsChangeObserver implementation.
     @Override
-    public void onCoreAccountInfosChanged() {
+    public void onAccountsChanged() {
         update();
     }
 

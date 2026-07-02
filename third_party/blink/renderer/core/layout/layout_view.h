@@ -49,6 +49,10 @@ struct VariableLengthTransformResult {
   TextOffsetMap offset_map;
 };
 
+using SVGTextDescendantsMap =
+    HeapHashMap<WeakMember<const LayoutBlock>,
+                Member<GCedHeapHashSet<Member<LayoutSVGText>>>>;
+
 // LayoutView is the root of the layout tree and the Document's LayoutObject.
 //
 // It corresponds to the CSS concept of 'initial containing block' (or ICB).
@@ -113,28 +117,15 @@ class CORE_EXPORT LayoutView : public LayoutBlockFlow {
 
   LayoutUnit ComputeMinimumWidth();
 
-  // Based on LocalFrameView::LayoutSize, but:
-  // - checks for null LocalFrameView
-  // - Accounts for printing layout
-  // - scrollbar exclusion is compatible with root layer scrolling
-  gfx::Size GetLayoutSize(IncludeScrollbarsInRect = kExcludeScrollbars) const;
+  // Based on `LocalFrameView::GetLayoutSize()`, but:
+  // - Checks for null `LocalFrameView`.
+  // - Accounts for printing layout.
+  // - Scrollbar exclusion is compatible with root layer scrolling.
+  gfx::Size GetLayoutSize(IncludeScrollbarsInRect) const;
 
   // Same as above, but ignore print settings.
   gfx::Size GetNonPrintingLayoutSize(IncludeScrollbarsInRect) const;
 
-  int ViewHeight(
-      IncludeScrollbarsInRect scrollbar_inclusion = kExcludeScrollbars) const {
-    NOT_DESTROYED();
-    return GetLayoutSize(scrollbar_inclusion).height();
-  }
-  int ViewWidth(
-      IncludeScrollbarsInRect scrollbar_inclusion = kExcludeScrollbars) const {
-    NOT_DESTROYED();
-    return GetLayoutSize(scrollbar_inclusion).width();
-  }
-
-  int ViewLogicalWidth(IncludeScrollbarsInRect = kExcludeScrollbars) const;
-  int ViewLogicalHeight(IncludeScrollbarsInRect = kExcludeScrollbars) const;
 
   LayoutUnit ViewLogicalHeightForPercentages() const;
 
@@ -151,7 +142,7 @@ class CORE_EXPORT LayoutView : public LayoutBlockFlow {
   bool MapToVisualRectInAncestorSpaceInternal(
       const LayoutBoxModelObject* ancestor,
       TransformState&,
-      VisualRectFlags = kDefaultVisualRectFlags) const override;
+      VisualRectFlags) const override;
 
   PhysicalOffset OffsetForFixedPosition() const;
 
@@ -287,6 +278,11 @@ class CORE_EXPORT LayoutView : public LayoutBlockFlow {
 
   bool ShouldPlaceBlockDirectionScrollbarOnLogicalLeft() const override;
 
+  bool IsBeingAutoSized() const {
+    NOT_DESTROYED();
+    return GetFrameView()->IsBeingAutoSized();
+  }
+
   PhysicalRect DebugRect() const override;
 
   // Returns the coordinates of find-in-page scrollbar tickmarks.  These come
@@ -330,9 +326,12 @@ class CORE_EXPORT LayoutView : public LayoutBlockFlow {
                           TransformState&,
                           MapCoordinatesFlags) const override;
 
-  LogicalSize InitialContainingBlockSize() const;
+  PhysicalSize InitialContainingBlockSize() const;
 
-  TrackedDescendantsMap& SvgTextDescendantsMap();
+  SVGTextDescendantsMap& SvgTextDescendantsMap() {
+    NOT_DESTROYED();
+    return svg_text_descendants_;
+  }
 
   // Manage rare data of LayoutText.
   void RegisterVariableLengthTransformResult(
@@ -351,14 +350,6 @@ class CORE_EXPORT LayoutView : public LayoutBlockFlow {
   void StyleDidChange(StyleDifference,
                       const ComputedStyle* old_style,
                       const StyleChangeContext&) override;
-  int ViewLogicalWidthForBoxSizing() const {
-    NOT_DESTROYED();
-    return ViewLogicalWidth(kIncludeScrollbars);
-  }
-  int ViewLogicalHeightForBoxSizing() const {
-    NOT_DESTROYED();
-    return ViewLogicalHeight(kIncludeScrollbars);
-  }
 
   // Set if laying out with a new initial containing block size, and populated
   // as we handle nodes that may have been affected by that.
@@ -404,7 +395,7 @@ class CORE_EXPORT LayoutView : public LayoutBlockFlow {
   // LayoutSVGText needs to do re-layout on transform changes of any ancestor
   // because LayoutSVGText's layout result depends on scaling factors
   // computed with ancestor transforms.
-  Member<TrackedDescendantsMap> svg_text_descendants_;
+  SVGTextDescendantsMap svg_text_descendants_;
 
   HeapHashMap<WeakMember<const LayoutText>, VariableLengthTransformResult>
       text_to_variable_length_transform_result_;

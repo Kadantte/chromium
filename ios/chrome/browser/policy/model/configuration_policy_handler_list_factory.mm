@@ -28,6 +28,7 @@
 #import "components/enterprise/data_controls/core/browser/data_controls_policy_handler.h"
 #import "components/enterprise/data_controls/core/browser/prefs.h"
 #import "components/enterprise/idle/idle_timeout_policy_handler.h"
+#import "components/enterprise/isolated_mode/prefs.h"
 #import "components/history/core/common/pref_names.h"
 #import "components/lens/lens_overlay_permission_utils.h"
 #import "components/metrics/metrics_pref_names.h"
@@ -39,9 +40,10 @@
 #import "components/policy/core/browser/configuration_policy_handler_list.h"
 #import "components/policy/core/browser/configuration_policy_handler_parameters.h"
 #import "components/policy/core/browser/gen_ai_default_settings_policy_handler.h"
-#import "components/policy/core/browser/incognito/incognito_mode_policy_handler.h"
+#import "components/policy/core/browser/url_list/incognito_mode_policy_handler.h"
 #import "components/policy/core/browser/url_list/url_allowlist_policy_handler.h"
 #import "components/policy/core/browser/url_list/url_blocklist_policy_handler.h"
+#import "components/policy/core/browser/url_list/url_list_policy_pref_names.h"
 #import "components/policy/core/common/policy_pref_names.h"
 #import "components/policy/policy_constants.h"
 #import "components/safe_browsing/core/common/safe_browsing_policy_handler.h"
@@ -156,6 +158,9 @@ constexpr auto kSimplePolicyMap = std::to_array<PolicyToPreferenceMapEntry>({
   { policy::key::kTabCompareSettings,
     optimization_guide::prefs::kProductSpecificationsEnterprisePolicyAllowed,
     base::Value::Type::INTEGER},
+  { policy::key::kAutofillPredictionSettings,
+    optimization_guide::prefs::kAutofillPredictionImprovementsEnterprisePolicyAllowed,
+    base::Value::Type::INTEGER },
   { policy::key::kDownloadRestrictions,
     policy::policy_prefs::kDownloadRestrictions,
     base::Value::Type::INTEGER },
@@ -171,8 +176,14 @@ constexpr auto kSimplePolicyMap = std::to_array<PolicyToPreferenceMapEntry>({
   { policy::key::kAIModeSettings,
     omnibox::kAIModeSettings,
     base::Value::Type::INTEGER },
+  { policy::key::kThirdPartyAiChatSettings,
+    omnibox::kThirdPartyAiChatSettings,
+    base::Value::Type::INTEGER },
   { policy::key::kGeminiSettings,
     prefs::kGeminiEnabledByPolicy,
+    base::Value::Type::INTEGER },
+  { policy::key::kGenAiDefaultSettings,
+    prefs::kGenAiEnabledByPolicy,
     base::Value::Type::INTEGER },
   { policy::key::kNTPCustomBackgroundEnabled,
     prefs::kNTPCustomBackgroundEnabledByPolicy,
@@ -182,6 +193,9 @@ constexpr auto kSimplePolicyMap = std::to_array<PolicyToPreferenceMapEntry>({
     base::Value::Type::INTEGER },
   { policy::key::kProvisionManagedClientCertificateForBrowser,
     client_certificates::prefs::kProvisionManagedClientCertificateForBrowserPrefs,
+    base::Value::Type::INTEGER },
+  { policy::key::kIsolatedModeSettings,
+    enterprise_isolated_mode::kEnterpriseIsolatedModeSettings,
     base::Value::Type::INTEGER },
 });
 // clang-format on
@@ -244,6 +258,14 @@ std::unique_ptr<policy::ConfigurationPolicyHandlerList> BuildPolicyHandlerList(
           policy::SimpleSchemaValidatingPolicyHandler::RECOMMENDED_PROHIBITED,
           policy::SimpleSchemaValidatingPolicyHandler::MANDATORY_ALLOWED));
 
+  handlers->AddHandler(
+      std::make_unique<policy::SimpleSchemaValidatingPolicyHandler>(
+          policy::key::kAutofillSettings,
+          autofill::prefs::kAutofillTypesBlocked, chrome_schema,
+          policy::SchemaOnErrorStrategy::SCHEMA_ALLOW_UNKNOWN,
+          policy::SimpleSchemaValidatingPolicyHandler::RECOMMENDED_PROHIBITED,
+          policy::SimpleSchemaValidatingPolicyHandler::MANDATORY_ALLOWED));
+
   handlers->AddHandler(std::make_unique<policy::SimpleDeprecatingPolicyHandler>(
       std::make_unique<policy::SimplePolicyHandler>(
           policy::key::kUrlKeyedAnonymizedDataCollectionEnabled,
@@ -271,6 +293,11 @@ std::unique_ptr<policy::ConfigurationPolicyHandlerList> BuildPolicyHandlerList(
       policy::key::kAIModeSettings, omnibox::kAIModeSettings,
       policy::GenAiDefaultSettingsPolicyHandler::PolicyValueToPrefMap(
           {{0, 0}, {1, 0}, {2, 1}}));
+  gen_ai_default_policies.emplace_back(
+      policy::key::kThirdPartyAiChatSettings,
+      omnibox::kThirdPartyAiChatSettings,
+      policy::GenAiDefaultSettingsPolicyHandler::PolicyValueToPrefMap(
+          {{0, 0}, {1, 0}, {2, 1}}));
   // Default value for SearchContentSharingSettings is 0 if
   // GenAiDefaultSettings value is 0 or 1, or 1 if the latter is 2.
   gen_ai_default_policies.emplace_back(
@@ -278,6 +305,10 @@ std::unique_ptr<policy::ConfigurationPolicyHandlerList> BuildPolicyHandlerList(
       contextual_search::kSearchContentSharingSettings,
       policy::GenAiDefaultSettingsPolicyHandler::PolicyValueToPrefMap(
           {{0, 0}, {1, 0}, {2, 1}}));
+  gen_ai_default_policies.emplace_back(
+      policy::key::kAutofillPredictionSettings,
+      optimization_guide::prefs::
+          kAutofillPredictionImprovementsEnterprisePolicyAllowed);
   handlers->AddHandler(
       std::make_unique<policy::GenAiDefaultSettingsPolicyHandler>(
           std::move(gen_ai_default_policies)));
@@ -305,6 +336,18 @@ std::unique_ptr<policy::ConfigurationPolicyHandlerList> BuildPolicyHandlerList(
           collaboration::prefs::kSharedTabGroupsManagedAccountSetting,
           base::Value::Type::INTEGER)));
 
+  handlers->AddHandler(std::make_unique<policy::CloudUserOnlyPolicyChecker>(
+      std::make_unique<SimplePolicyHandler>(
+          policy::key::kUserSecurityAuthenticatedReporting,
+          enterprise_reporting::kUserSecurityAuthenticatedReporting,
+          base::Value::Type::BOOLEAN)));
+
+  handlers->AddHandler(std::make_unique<policy::CloudUserOnlyPolicyChecker>(
+      std::make_unique<SimplePolicyHandler>(
+          policy::key::kUserSecuritySignalsReporting,
+          enterprise_reporting::kUserSecuritySignalsReporting,
+          base::Value::Type::BOOLEAN)));
+
   handlers->AddHandler(std::make_unique<ThemeColorPolicyHandler>());
 
   handlers->AddHandler(
@@ -314,6 +357,20 @@ std::unique_ptr<policy::ConfigurationPolicyHandlerList> BuildPolicyHandlerList(
           enterprise_connectors::kEnterpriseRealTimeUrlCheckMode,
           enterprise_connectors::kEnterpriseRealTimeUrlCheckScope,
           chrome_schema));
+
+  handlers->AddHandler(
+      std::make_unique<
+          enterprise_connectors::EnterpriseConnectorsPolicyHandler>(
+          policy::key::kOnBulkDataEntryEnterpriseConnector,
+          enterprise_connectors::kOnBulkDataEntryPref,
+          enterprise_connectors::kOnBulkDataEntryScopePref, chrome_schema));
+
+  handlers->AddHandler(
+      std::make_unique<
+          enterprise_connectors::EnterpriseConnectorsPolicyHandler>(
+          policy::key::kOnFileDownloadedEnterpriseConnector,
+          enterprise_connectors::kOnFileDownloadedPref,
+          enterprise_connectors::kOnFileDownloadedScopePref, chrome_schema));
 
   handlers->AddHandler(
       std::make_unique<

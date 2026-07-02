@@ -76,24 +76,41 @@ const NSString* kCannotExecuteJSInDocumentErrorMessage =
     @"Cannot execute JavaScript in this document";
 
 void LogScriptResultError(base::WeakPtr<web::WebState> web_state,
+                          base::WeakPtr<web::WebFrameImpl> web_frame,
                           const std::string& api,
                           NSString* script,
                           url::Origin security_origin,
                           bool is_main_frame,
                           NSError* error) {
-  std::string executed_script = base::SysNSStringToUTF8(script);
-  std::string error_string =
-      base::SysNSStringToUTF8(error.userInfo[NSLocalizedDescriptionKey]);
   NSString* ns_exception = error.userInfo[@"WKJavaScriptExceptionMessage"];
-  std::string exception = base::SysNSStringToUTF8(ns_exception);
 
-  DLOG(WARNING) << "Script execution of:" << executed_script
-                << "\nfailed with error: " << error_string
-                << "\nand exception: " << exception;
+  if (DLOG_IS_ON(WARNING)) {
+    std::string executed_script = base::SysNSStringToUTF8(script);
+    std::string error_string =
+        base::SysNSStringToUTF8(error.userInfo[NSLocalizedDescriptionKey]);
+    std::string exception = base::SysNSStringToUTF8(ns_exception);
+
+    DLOG(WARNING) << "Script execution of:" << executed_script
+                  << "\nfailed with error: " << error_string
+                  << "\nand exception: " << exception;
+  }
 
   if (base::FeatureList::IsEnabled(web::features::kAssertOnJavaScriptErrors)) {
     CHECK(false)
         << "JavaScript error occurred with kAssertOnJavaScriptErrors enabled.";
+  }
+
+  // Ignore WKErrorJavaScriptResultTypeIsUnsupported error due to the WebView
+  // or WebFrame being released or navigated while a JavaScript function is
+  // executing. In case of a webstate navigation, the old web_frames are
+  // destroyed, and checking `!web_frame` catches this case.
+  bool isTypeUnsupportedResultError =
+      [error.domain isEqualToString:WKErrorDomain] &&
+      error.code == WKErrorJavaScriptResultTypeIsUnsupported;
+
+  if ((!web_state || !web_frame) && isTypeUnsupportedResultError) {
+    UMA_HISTOGRAM_BOOLEAN("IOS.JavaScript.InterestingScriptError", false);
+    return;
   }
 
   // Do not log invalid target frame errors. This error means that the frame is
@@ -133,18 +150,13 @@ void LogScriptResultError(base::WeakPtr<web::WebState> web_state,
     return;
   }
 
-  std::string err;
-  if (!exception.empty()) {
-    err = exception;
-  } else {
-    err = error_string;
-  }
-  report_processor->ReportJavaScriptExecutionFailed(api, security_origin, err,
+  report_processor->ReportJavaScriptExecutionFailed(api, security_origin, error,
                                                     is_main_frame);
 }
 
 void OnJavaScriptExecutedInContentWorld(
     base::WeakPtr<web::WebState> web_state,
+    base::WeakPtr<web::WebFrameImpl> web_frame,
     NSString* script,
     url::Origin security_origin,
     bool is_main_frame,
@@ -152,8 +164,8 @@ void OnJavaScriptExecutedInContentWorld(
     id value,
     NSError* error) {
   if (error) {
-    LogScriptResultError(web_state, /*api=*/"", script, security_origin,
-                         is_main_frame, error);
+    LogScriptResultError(web_state, web_frame, /*api=*/"", script,
+                         security_origin, is_main_frame, error);
 
     std::move(callback).Run(nullptr, error);
   } else {
@@ -171,17 +183,17 @@ void JSExecutionCompleteReplyWithResultForMessageId(
     bool is_main_frame,
     id value,
     NSError* error) {
-  if (error) {
-    LogScriptResultError(web_state, api, script, security_origin, is_main_frame,
-                         error);
-  }
-
   if (web_frame) {
+    if (error) {
+      LogScriptResultError(web_state, web_frame, api, script, security_origin,
+                           is_main_frame, error);
+    }
     web_frame->OnJSResultReceivedForMessageWithId(message_id, value);
   }
 }
 
 void JSExecutionComplete(base::WeakPtr<web::WebState> web_state,
+                         base::WeakPtr<web::WebFrameImpl> web_frame,
                          const std::string& api,
                          NSString* script,
                          url::Origin security_origin,
@@ -189,8 +201,16 @@ void JSExecutionComplete(base::WeakPtr<web::WebState> web_state,
                          id value,
                          NSError* error) {
   if (error) {
-    LogScriptResultError(web_state, api, script, security_origin, is_main_frame,
-                         error);
+    bool unsupportedResultError =
+        [error.domain isEqualToString:WKErrorDomain] &&
+        error.code == WKErrorJavaScriptResultTypeIsUnsupported;
+    // `JSExecutionComplete` is only called if the caller is NOT interested in
+    // the returned value from JS so we can safely ignore unsupported type
+    // errors and do not need to report them.
+    if (!unsupportedResultError) {
+      LogScriptResultError(web_state, web_frame, api, script, security_origin,
+                           is_main_frame, error);
+    }
   }
 }
 
@@ -363,13 +383,88 @@ bool WebFrameImpl::ExecuteJavaScriptInContentWorld(
 
   NSString* ns_script = base::SysUTF16ToNSString(script);
   auto completion = base::BindOnce(
-      &OnJavaScriptExecutedInContentWorld, web_state_->GetWeakPtr(), ns_script,
-      security_origin_, is_main_frame_, std::move(callback));
+      &OnJavaScriptExecutedInContentWorld, web_state_->GetWeakPtr(),
+      weak_ptr_factory_.GetWeakPtr(), ns_script, security_origin_,
+      is_main_frame_, std::move(callback));
 
   web::ExecuteJavaScript(
       frame_info_.webView, content_world->GetWKContentWorld(), frame_info_,
       ns_script, base::CallbackToBlock(std::move(completion)));
   return true;
+}
+
+bool WebFrameImpl::ExecuteAsyncJavaScript(
+    const std::u16string& script,
+    const base::DictValue& parameters,
+    ExecuteJavaScriptCallbackWithError callback) {
+  JavaScriptContentWorld* content_world =
+      JavaScriptFeatureManager::GetContentWorldForBrowserState(
+          content_world_, GetBrowserState());
+
+  return ExecuteAsyncJavaScriptInContentWorld(script, parameters, content_world,
+                                              std::move(callback));
+}
+
+bool WebFrameImpl::ExecuteAsyncJavaScriptInContentWorld(
+    const std::u16string& script,
+    const base::DictValue& parameters,
+    JavaScriptContentWorld* content_world,
+    ExecuteJavaScriptCallbackWithError callback) {
+  DCHECK(frame_info_);
+
+  NSString* ns_script = base::SysUTF16ToNSString(script);
+
+  id ns_dict = web::NSDictionaryFromValue(parameters);
+
+  auto completion = base::BindOnce(
+      &OnJavaScriptExecutedInContentWorld, web_state_->GetWeakPtr(),
+      weak_ptr_factory_.GetWeakPtr(), ns_script, security_origin_,
+      is_main_frame_, std::move(callback));
+
+  web::ExecuteAsyncJavaScript(
+      frame_info_.webView, content_world->GetWKContentWorld(), frame_info_,
+      ns_script, ns_dict, base::CallbackToBlock(std::move(completion)));
+  return true;
+}
+
+bool WebFrameImpl::CallAsyncJavaScriptFunction(
+    const std::string& name,
+    const base::DictValue& parameters,
+    ExecuteJavaScriptCallbackWithError callback) {
+  JavaScriptContentWorld* content_world =
+      JavaScriptFeatureManager::GetContentWorldForBrowserState(
+          content_world_, GetBrowserState());
+  return CallAsyncJavaScriptFunctionInContentWorld(
+      name, parameters, content_world, std::move(callback));
+}
+
+bool WebFrameImpl::CallAsyncJavaScriptFunctionInContentWorld(
+    const std::string& name,
+    const base::DictValue& parameters,
+    JavaScriptContentWorld* content_world,
+    ExecuteJavaScriptCallbackWithError callback) {
+  base::DictValue arguments;
+  arguments.Set("crw_args", parameters.Clone());
+
+  std::optional<std::pair<std::string_view, std::string_view>> name_parts =
+      base::SplitStringOnce(name, ".");
+
+  std::string api_name;
+  std::string function_name;
+
+  if (name_parts) {
+    api_name = name_parts->first;
+    function_name = name_parts->second;
+  } else {
+    api_name = "";
+    function_name = name;
+  }
+
+  std::string script = "return __gCrWeb.callFunctionInGcrWeb('" + api_name +
+                       "', '" + function_name + "', [crw_args]);";
+
+  return ExecuteAsyncJavaScriptInContentWorld(
+      base::UTF8ToUTF16(script), arguments, content_world, std::move(callback));
 }
 
 ExecuteJavaScriptCallbackWithError
@@ -411,8 +506,9 @@ bool WebFrameImpl::ExecuteJavaScriptFunction(
                            base::CallbackToBlock(std::move(callback)));
   } else {
     auto callback =
-        base::BindOnce(&JSExecutionComplete, web_state_->GetWeakPtr(), name,
-                       script, security_origin_, is_main_frame_);
+        base::BindOnce(&JSExecutionComplete, web_state_->GetWeakPtr(),
+                       weak_ptr_factory_.GetWeakPtr(), name, script,
+                       security_origin_, is_main_frame_);
     web::ExecuteJavaScript(frame_info_.webView, world, frame_info_, script,
                            base::CallbackToBlock(std::move(callback)));
   }

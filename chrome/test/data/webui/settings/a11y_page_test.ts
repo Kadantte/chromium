@@ -58,7 +58,7 @@ suite('A11yPage', () => {
   let browserProxy: TestAccessibilityBrowserProxy;
   let metrics: MetricsTracker;
 
-  setup(function() {
+  setup(async function() {
     loadTimeData.overrideValues({
       axTreeFixingEnabled: true,
       mainNodeAnnotationsEnabled: true,
@@ -71,26 +71,25 @@ suite('A11yPage', () => {
     settingsPrefs.initialize(settingsPrivate);
     document.body.appendChild(settingsPrefs);
 
-    return CrSettingsPrefs.initialized.then(function() {
-      // Set up test browser proxy.
-      browserProxy = new TestAccessibilityBrowserProxy();
-      AccessibilityBrowserProxyImpl.setInstance(browserProxy);
+    await CrSettingsPrefs.initialized;
+    // Set up test browser proxy.
+    browserProxy = new TestAccessibilityBrowserProxy();
+    AccessibilityBrowserProxyImpl.setInstance(browserProxy);
 
-      // Set up languages helper.
-      const settingsLanguages = document.createElement('settings-languages');
-      settingsLanguages.prefs = settingsPrefs.prefs;
-      fakeDataBind(settingsPrefs, settingsLanguages, 'prefs');
-      document.body.appendChild(settingsLanguages);
+    // Set up languages helper.
+    const settingsLanguages = document.createElement('settings-languages');
+    settingsLanguages.prefs = settingsPrefs.prefs!;
+    fakeDataBind(settingsPrefs, settingsLanguages, 'prefs');
+    document.body.appendChild(settingsLanguages);
 
-      a11yPage = document.createElement('settings-a11y-page');
-      a11yPage.prefs = settingsPrefs.prefs;
-      fakeDataBind(settingsPrefs, a11yPage, 'prefs');
+    a11yPage = document.createElement('settings-a11y-page');
+    a11yPage.prefs = settingsPrefs.prefs!;
+    fakeDataBind(settingsPrefs, a11yPage, 'prefs');
 
-      document.body.appendChild(a11yPage);
-      flush();
+    document.body.appendChild(a11yPage);
+    flush();
 
-      return settingsLanguages.whenReady();
-    });
+    return settingsLanguages.whenReady();
   });
 
   test('ax tree fixing toggle and pref', async () => {
@@ -104,12 +103,14 @@ suite('A11yPage', () => {
 
     // The AX Tree Fixing pref is off by default, so the button should be
     // toggled off.
-    assertFalse(a11yPage.getPref('settings.a11y.enable_ax_tree_fixing').value);
+    assertFalse(
+        a11yPage.getPref<boolean>('settings.a11y.enable_ax_tree_fixing').value);
     assertFalse(toggle.checked);
 
     toggle.click();
     await flushTasks();
-    assertTrue(a11yPage.getPref('settings.a11y.enable_ax_tree_fixing').value);
+    assertTrue(
+        a11yPage.getPref<boolean>('settings.a11y.enable_ax_tree_fixing').value);
     assertTrue(toggle.checked);
   });
 

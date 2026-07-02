@@ -20,6 +20,12 @@
 #include "realbox_handler.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/window_open_disposition.h"
+#include "ui/gfx/geometry/size.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/webui/omnibox_popup/mojom/omnibox_popup.mojom.h"
+#endif
 
 class MockTabContextualizationController
     : public lens::TabContextualizationController {
@@ -28,6 +34,7 @@ class MockTabContextualizationController
       tabs::TabInterface* tab_interface);
   ~MockTabContextualizationController() override;
 
+  MOCK_METHOD(bool, GetInitialPageContextEligibility, (), (override));
   MOCK_METHOD(void,
               GetPageContext,
               (GetPageContextCallback callback),
@@ -61,8 +68,13 @@ class MockSearchboxPage : public searchbox::mojom::Page {
               UpdateSelection,
               (searchbox::mojom::OmniboxPopupSelectionPtr,
                searchbox::mojom::OmniboxPopupSelectionPtr));
+  MOCK_METHOD(void,
+              StepSelection,
+              (searchbox::mojom::SelectionDirection,
+               searchbox::mojom::SelectionStep));
+  MOCK_METHOD(void, OpenCurrentSelection, (WindowOpenDisposition));
+  MOCK_METHOD(void, SetAimButtonVisible, (bool visible));
   MOCK_METHOD(void, SetKeywordSelected, (bool is_keyword_selected), (override));
-  MOCK_METHOD(void, OnShow, ());
   MOCK_METHOD(void, SetInputText, (const std::string& input_text));
   MOCK_METHOD(void,
               SetThumbnail,
@@ -70,8 +82,8 @@ class MockSearchboxPage : public searchbox::mojom::Page {
   MOCK_METHOD(void,
               OnContextualInputStatusChanged,
               (const base::UnguessableToken&,
-               contextual_search::FileUploadStatus,
-               std::optional<contextual_search::FileUploadErrorType>));
+               contextual_search::ContextUploadStatus,
+               std::optional<contextual_search::ContextUploadErrorType>));
   MOCK_METHOD(void, OnTabStripChanged, ());
   MOCK_METHOD(void,
               OnInputStateChanged,
@@ -85,10 +97,40 @@ class MockSearchboxPage : public searchbox::mojom::Page {
               UpdateAutoSuggestedTabContext,
               (searchbox::mojom::TabInfoPtr));
   MOCK_METHOD(void, UpdateLensSearchEligibility, (bool eligible), (override));
-  MOCK_METHOD(void, UpdateAimEligibility, (bool eligible), (override));
+  MOCK_METHOD(void, UpdateAimPopupEligibility, (bool eligible), (override));
   MOCK_METHOD(void, UpdateContentSharingPolicy, (bool enabled), (override));
-  MOCK_METHOD(void, OnShowAiModePrefChanged, (bool canShow), (override));
+  MOCK_METHOD(void,
+              OnPermissionPromptChanged,
+              (bool, const gfx::Size&),
+              (override));
+  MOCK_METHOD(void,
+              SetRestoredTabIds,
+              (const std::vector<int32_t>& ids),
+              (override));
+  MOCK_METHOD(void,
+              SetAimThreadRestoredTabs,
+              (std::vector<searchbox::mojom::TabInfoPtr> tabs),
+              (override));
 };
+
+#if !BUILDFLAG(IS_ANDROID)
+class MockOmniboxPopupPage : public omnibox_popup::mojom::Page {
+ public:
+  MockOmniboxPopupPage();
+  ~MockOmniboxPopupPage() override;
+  mojo::PendingRemote<omnibox_popup::mojom::Page> BindAndGetRemote();
+  mojo::Receiver<omnibox_popup::mojom::Page> receiver_{this};
+
+  void FlushForTesting() { receiver_.FlushForTesting(); }
+
+  MOCK_METHOD(void, OnShow, (), (override));
+  MOCK_METHOD(void, OnContextMenuClosed, (), (override));
+  MOCK_METHOD(void,
+              SetInputState,
+              (omnibox_popup::mojom::OmniboxInputStatePtr state),
+              (override));
+};
+#endif
 
 class MockAutocompleteController : public AutocompleteController {
  public:
@@ -113,7 +155,7 @@ class MockOmniboxEditModel : public OmniboxEditModel {
 
   // OmniboxEditModel:
   MOCK_METHOD(void, SetUserText, (const std::u16string&), (override));
-  MOCK_METHOD(void, OpenAiMode, (bool, bool), (override));
+  MOCK_METHOD(void, OpenAiMode, (AimActivation), (override));
 };
 
 class MockLensSearchboxClient : public LensSearchboxClient {

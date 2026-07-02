@@ -75,7 +75,7 @@ String EventListenerBreakpointKey(const String& event_name,
                                   const String& target_name) {
   if (target_name.empty() || target_name == "*")
     return StrCat({event_name, "$$*"});
-  return StrCat({event_name, "$$", target_name.LowerASCII()});
+  return StrCat({event_name, "$$", target_name.ToAsciiLower()});
 }
 }  // namespace
 
@@ -262,9 +262,10 @@ protocol::Response InspectorDOMDebuggerAgent::RemoveBreakpoint(
   return protocol::Response::Success();
 }
 
-void InspectorDOMDebuggerAgent::DidInvalidateStyleAttr(Node* node) {
-  if (HasBreakpoint(node, AttributeModified))
-    BreakProgramOnDOMEvent(node, AttributeModified, false);
+void InspectorDOMDebuggerAgent::DidInvalidateStyleAttr(Element* element) {
+  if (HasBreakpoint(element, AttributeModified)) {
+    BreakProgramOnDOMEvent(element, AttributeModified, false);
+  }
 }
 
 void InspectorDOMDebuggerAgent::DidInsertDOMNode(Node* node) {
@@ -697,8 +698,9 @@ String InspectorDOMDebuggerAgent::MatchXHRBreakpoints(const String& url) const {
   if (pause_on_all_xhrs_.Get())
     return g_empty_string;
   for (const String& breakpoint : xhr_breakpoints_.Keys()) {
-    if (url.Contains(breakpoint))
+    if (url.contains(breakpoint)) {
       return breakpoint;
+    }
   }
   return String();
 }

@@ -15,7 +15,6 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.when;
-import static org.robolectric.Shadows.shadowOf;
 
 import android.Manifest;
 import android.app.Activity;
@@ -25,25 +24,23 @@ import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
-import android.os.Looper;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.webkit.MimeTypeMap;
 
 import androidx.core.content.ContextCompat;
 
-import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentMatcher;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.Shadows;
-import org.robolectric.android.util.concurrent.PausedExecutorService;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.LooperMode;
 import org.robolectric.shadows.ShadowMimeTypeMap;
 
 import org.chromium.base.ContextUtils;
@@ -52,8 +49,8 @@ import org.chromium.base.FileProviderUtils;
 import org.chromium.base.FileUtils;
 import org.chromium.base.FileUtilsJni;
 import org.chromium.base.task.AsyncTask;
-import org.chromium.base.task.PostTask;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -77,28 +74,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
     UiAndroidFeatures.SELECT_FILE_OPEN_DOCUMENT
 })
 @EnableFeatures({UiAndroidFeatures.DISABLE_PHOTO_PICKER_FOR_VIDEO_CAPTURE})
-@LooperMode(LooperMode.Mode.PAUSED)
 public class SelectFileDialogTest {
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     // A callback that fires when the file selection pipeline shuts down as a result of an action.
     public final CallbackHelper mOnActionCallback = new CallbackHelper();
 
-    // The Executor to run tasks on during the test.
-    private final PausedExecutorService mExecutor = new PausedExecutorService();
-
     @Mock FileUtils.Natives mFileUtilsMocks;
 
-    @Before
-    public void setUp() throws Exception {
-        MockitoAnnotations.initMocks(this);
-        PostTask.setPrenativeThreadPoolExecutorForTesting(mExecutor);
-    }
-
     private void runAllAsyncTasks() {
-        // Run AsyncTasks
-        mExecutor.runAll();
-
-        // Wait for onPostExecute() of the AsyncTasks to run on the UI Thread.
-        shadowOf(Looper.getMainLooper()).idle();
+        RobolectricUtil.runAllBackgroundAndUi();
     }
 
     /** Argument matcher that matches Intents with the same action. */
@@ -975,6 +960,27 @@ public class SelectFileDialogTest {
         assertEquals("///storage/emulated/0/DCIM/Camera/IMG_1.jpg", task.mFilePaths[1].toString());
     }
 
+    @Test
+    public void testMultipleFileSelectorWithSchemelessUris() {
+        SelectFileDialog selectFileDialog = new SelectFileDialog(0);
+        Uri[] filePathArray =
+                new Uri[] {Uri.parse("/data/data/com.android.chrome/app_chrome/Default/Cookies")};
+        SelectFileDialog.GetDisplayNameTask task =
+                selectFileDialog
+                .new GetDisplayNameTask(ContextUtils.getApplicationContext(), true, filePathArray);
+        assertEquals(null, task.doInBackground());
+    }
+
+    @Test
+    public void testMultipleFileSelectorWithInvalidSchemeUris() {
+        SelectFileDialog selectFileDialog = new SelectFileDialog(0);
+        Uri[] filePathArray = new Uri[] {Uri.parse("http://example.com/test.jpg")};
+        SelectFileDialog.GetDisplayNameTask task =
+                selectFileDialog
+                .new GetDisplayNameTask(ContextUtils.getApplicationContext(), true, filePathArray);
+        assertEquals(null, task.doInBackground());
+    }
+
     private void testFilePath(
             String path, SelectFileDialog selectFileDialog, boolean expectedPass) {
         testFilePath(path, selectFileDialog, expectedPass, expectedPass);
@@ -1411,7 +1417,7 @@ public class SelectFileDialogTest {
                                     : ContextUtils.getApplicationContext().getContentResolver(),
                             filesSelected,
                             useMediaPicker);
-            task.executeOnExecutor(mExecutor);
+            task.executeOnExecutor(RobolectricUtil.getPausedExecutor());
             runAllAsyncTasks();
             histogramWatcher.assertExpected(
                     "File: "

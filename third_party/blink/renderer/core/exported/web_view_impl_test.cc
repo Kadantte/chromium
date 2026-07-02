@@ -38,11 +38,50 @@ class WebViewImplTest : public testing::Test {
   frame_test_helpers::WebViewHelper web_view_helper_;
 };
 
+TEST_F(WebViewImplTest, WebViewDoubleScaling) {
+  WebViewImpl* web_view = WebView();
+
+  frame_test_helpers::LoadHTMLString(
+      web_view->MainFrameImpl(),
+      "<!DOCTYPE html>"
+      "<style>"
+      "  .scaled {"
+      "    font-size: 16px;"
+      "    text-size-adjust: calc(100% * env(preferred-text-scale));"
+      "  }"
+      "</style>"
+      "<div id='test' class='scaled'>Hello</div>",
+      url_test_helpers::ToKURL("http://example.com/"));
+  web_view->MainFrameWidget()->UpdateAllLifecyclePhases(
+      DocumentUpdateReason::kTest);
+  // Now set Settings in the same order that WebView does.
+  web_view->GetSettings()->SetTextSizeAdjustEnabled(true);
+  if (RuntimeEnabledFeatures::WebViewEnvReorderFixEnabled()) {
+    web_view->GetSettings()->SetScaleAllFontsIfNoMetaTextScaleTag(true);
+  }
+  web_view->GetSettings()->SetAccessibilityFontScaleFactor(1.5f);
+  if (!RuntimeEnabledFeatures::WebViewEnvReorderFixEnabled()) {
+    web_view->GetSettings()->SetScaleAllFontsIfNoMetaTextScaleTag(true);
+  }
+  web_view->MainFrameImpl()->GetFrame()->SetTextZoomFactor(1.5f);
+
+  web_view->MainFrameWidget()->UpdateAllLifecyclePhases(
+      DocumentUpdateReason::kTest);
+
+  Document* document = web_view->MainFrameImpl()->GetFrame()->GetDocument();
+  Element* test_element = document->getElementById(AtomicString("test"));
+  ASSERT_TRUE(test_element);
+  ASSERT_TRUE(test_element->GetComputedStyle());
+
+  // We expect NO double scaling (24px).
+  // If bug is present, it will be 36px.
+  EXPECT_FLOAT_EQ(24.0f, test_element->GetComputedStyle()->FontSize());
+}
+
 TEST_F(WebViewImplTest, MaximumLegiblePageScale) {
   WebViewImpl* web_view = WebView();
   web_view->EnableFakePageScaleAnimationForTesting(true);
   web_view->GetSettings()->SetAccessibilityFontScaleFactor(2.0f);
-  web_view->GetSettings()->SetTextAutosizingEnabled(false);
 
   // Set up a page with text-scale meta tag.
   frame_test_helpers::LoadHTMLString(
@@ -80,7 +119,6 @@ TEST_F(WebViewImplTest, MaximumLegiblePageScaleWithoutMetaTag) {
   web_view->GetSettings()->SetWideViewportQuirkEnabled(
       true);  // Simulate WebView quirk
   web_view->GetSettings()->SetAccessibilityFontScaleFactor(2.0f);
-  web_view->GetSettings()->SetTextAutosizingEnabled(false);
 
   // Set up a page WITHOUT text-scale meta tag.
   frame_test_helpers::LoadHTMLString(
@@ -112,6 +150,7 @@ TEST_F(WebViewImplTest, DynamicMetaTagTextZoom) {
 
   // Simulate Android WebView where the user has a 2x OS-level font scale.
   web_view->GetSettings()->SetScaleAllFontsIfNoMetaTextScaleTag(true);
+  web_view->GetSettings()->SetTextSizeAdjustEnabled(true);
   web_view->GetSettings()->SetAccessibilityFontScaleFactor(2.0f);
   web_view->MainFrameImpl()->GetFrame()->SetTextZoomFactor(2.0f);
 

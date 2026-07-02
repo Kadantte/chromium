@@ -46,10 +46,13 @@ class ChromeBrowserMainExtraPartsViews : public ChromeBrowserMainExtraParts {
   void ToolkitInitialized() override;
   void PreCreateThreads() override;
   void PreProfileInit() override;
+  void PostProfileInit(Profile* profile, bool is_initial_profile) override;
   void PostBrowserStart() override;
   void PostMainMessageLoopRun() override;
 
  private:
+  void RegisterInfobars();
+
   // An owning pointer to the views delegate. This may be nullptr if another
   // class creates the global ViewsDelegate instance before us (test only).
   std::unique_ptr<views::ViewsDelegate> views_delegate_;

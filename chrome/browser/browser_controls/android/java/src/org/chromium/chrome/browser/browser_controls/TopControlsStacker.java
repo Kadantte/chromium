@@ -36,7 +36,7 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
 
     private static final String TAG = "TopControlsStacker";
 
-    private static boolean sDumpStatusForTesting;
+    private static boolean sDumpStatusLogs;
 
     /** Enums that defines the types of top controls. */
     @Target(ElementType.TYPE_USE)
@@ -173,6 +173,8 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
         mBrowserControlsSizer.addObserver(this);
         mBrowserControlsVisibilityDelegate.addSyncObserverAndPostIfNonNull(
                 mBrowserControlsStateCallback);
+        // TODO (crbug.com/510433799): Remove this once the bug is fixed.
+        sDumpStatusLogs = ChromeFeatureList.sDebugToolbarPositioning.isEnabled();
     }
 
     /**
@@ -263,8 +265,6 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
 
     @VisibleForTesting
     void updateLayersInternally(boolean animate, boolean shouldUpdateOffsets) {
-        if (!ChromeFeatureList.sTopControlsRefactor.isEnabled()) return;
-
         recalculateHeights();
         recalculateLayerRestingOffsets();
         prepForAnimation(animate);
@@ -304,9 +304,12 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
     }
 
     /**
-     * Returns true when the given control type is at the bottom of the set of top controls. We
-     * define the bottom as the point in the stack that has no non-null, visible,
-     * height-contributing layers beyond it.
+     * Returns whether the given layer is the bottom-most visible layer.
+     *
+     * <p>We define the bottom as the point in the stack that has no non-null, visible,
+     * height-contributing layers beyond it. Non-height-contributing layers (such as the progress
+     * bar overlay) are ignored when determining the bottom of the layout stack, as they do not
+     * affect the physical layout boundary.
      *
      * @param controlType Type of control to query for.
      * @return Whether or not the control is at the bottom.
@@ -315,14 +318,14 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
         // A null layer (not in the map) cannot be at the bottom.
         if (mControls.get(controlType) == null) return false;
 
-        // Find the bottom-most visible layer that contributes to the total height of the top
-        // controls (i.e. the first we encounter). If it is the same as the given |controlType|,
-        // then that type is the bottom layer.
+        // Iterate from the bottom of the stack order upward. The first visible, height-contributing
+        // layer we encounter defines the physical bottom boundary of the top controls. If it
+        // matches |controlType|, then that type is the bottom layer.
         for (int i = STACK_ORDER.length - 1; i >= 0; i--) {
             @TopControlType int currentType = STACK_ORDER[i];
             TopControlLayer layer = mControls.get(currentType);
 
-            if (!isLayerHidden(layer)) {
+            if (!isLayerHidden(layer) && layer.contributesToTotalHeight()) {
                 return currentType == controlType;
             }
         }
@@ -412,10 +415,8 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
             int initialTopOffset,
             int initialTopControlsMinHeightOffset,
             boolean offsetsAppliedByBrowser) {
-        if (!BrowserControlsUtils.isTopControlsRefactorOffsetEnabled()) return;
-
-        if (sDumpStatusForTesting) {
-            Log.d(
+        if (sDumpStatusLogs) {
+            Log.i(
                     TAG,
                     "*** repositionLayers *** initialTopOffset="
                             + initialTopOffset
@@ -554,7 +555,7 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
             }
             layer.onBrowserControlsOffsetUpdate(yOffset, controlsAtResting);
 
-            if (sDumpStatusForTesting) {
+            if (sDumpStatusLogs) {
                 dumpLayerStatus(layer, yOffset);
             }
         }
@@ -696,9 +697,6 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
 
     @Override
     public void onTopControlsHeightChanged(int topControlsHeight, int topControlsMinHeight) {
-        // No-op by default until refactor work is enabled.
-        if (!ChromeFeatureList.sTopControlsRefactor.isEnabled()) return;
-
         // Inform any controls that there was a change to the top controls height.
         for (TopControlLayer topControlLayer : mControls.values()) {
             topControlLayer.onTopControlLayerHeightChanged(topControlsHeight, topControlsMinHeight);
@@ -711,8 +709,6 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
             BrowserControlsOffsetTagsInfo offsetTagsInfo,
             @BrowserControlsState int constraints,
             boolean shouldUpdateOffsets) {
-        if (!ChromeFeatureList.sTopControlsRefactor.isEnabled()) return;
-
         if (mTopControlsOffsetTagInfo == offsetTagsInfo && mBrowserControlsState == constraints) {
             return;
         }
@@ -768,7 +764,7 @@ public class TopControlsStacker implements BrowserControlsStateProvider.Observer
     }
 
     private void dumpLayerStatus(TopControlLayer layer, int yOffset) {
-        Log.d(
+        Log.i(
                 TAG,
                 "["
                         + getName(layer.getTopControlType())

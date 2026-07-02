@@ -40,11 +40,18 @@ namespace extensions_features {
 // Controls the availability of action.openPopup().
 BASE_DECLARE_FEATURE(kApiActionOpenPopup);
 
+// Controls the limit for alarms.create() API input.
+BASE_DECLARE_FEATURE(kApiAlarmsCreateLengthLimit);
+
 // Controls the availability of contentSettings.clipboard.
 BASE_DECLARE_FEATURE(kApiContentSettingsClipboard);
 
 // Controls the availability of the enterprise.kioskInput API.
 BASE_DECLARE_FEATURE(kApiEnterpriseKioskInput);
+
+// Controls the availability of registering public MIME handlers via
+// the mimeHandler manifest key.
+BASE_DECLARE_FEATURE(kApiMimeHandler);
 
 // Controls the availability of the runtime.actionData API.
 // TODO(crbug.com/376354347): Remove this when the experiment is finished.
@@ -65,9 +72,38 @@ BASE_DECLARE_FEATURE(kApiUserScriptsMultipleWorlds);
 // Controls the availability of the odfsConfigPrivate API.
 BASE_DECLARE_FEATURE(kApiOdfsConfigPrivate);
 
+// Controls the availability of the contextualTasksPrivate API.
+BASE_DECLARE_FEATURE(kApiContextualTasksPrivate);
+
+// Controls the availability of the glicPrivate API.
+BASE_DECLARE_FEATURE(kApiGlicPrivate);
+
 // Controls the availability of the
 // `enterprise.reportingPrivate.onDataMaskingRulesTriggered` API.
 BASE_DECLARE_FEATURE(kApiEnterpriseReportingPrivateOnDataMaskingRulesTriggered);
+
+// Controls the availability of Glic access from Google webpages.
+BASE_DECLARE_FEATURE(kApiGlicAccessFromGoogleWebpage);
+// Controls the availability of Glic access from Chrome promotion pages.
+BASE_DECLARE_FEATURE(kApiGlicAccessFromPromotionPage);
+extern const base::FeatureParam<std::string> kProdPromptEndpointUrlParam;
+extern const base::FeatureParam<std::string> kGlicInvokeApiOAuth2ScopeParam;
+extern const base::FeatureParam<bool> kGlicRequireConsentForInvokeParam;
+
+enum class GlicOpenNewTabDisposition {
+  kForeground,                // Always open in foreground.
+  kBackground,                // Always open in background.
+  kForegroundIfNotConsented,  // Open in foreground if user has not consented,
+                              // else in background.
+};
+extern const base::FeatureParam<GlicOpenNewTabDisposition>
+    kGlicOpenNewTabDispositionParam;
+
+// String constants for GlicOpenNewTabDisposition.
+inline constexpr char kGlicOpenNewTabDispositionForeground[] = "foreground";
+inline constexpr char kGlicOpenNewTabDispositionBackground[] = "background";
+inline constexpr char kGlicOpenNewTabDispositionForegroundIfNotConsented[] =
+    "foreground_if_not_consented";
 
 // Controls the availability of the new `proxyOverrideRulesPrivate` API.
 BASE_DECLARE_FEATURE(kApiProxyOverrideRulesPrivate);
@@ -93,11 +129,9 @@ BASE_DECLARE_FEATURE(kAllowWithholdingExtensionPermissionsOnInstall);
 // extension).
 BASE_DECLARE_FEATURE(kCheckingNoExtensionIdInExtensionIpcs);
 
-// If enabled, `ResetURLLoaderFactories()` will not reset extensions'
-// service workers URLLoaderFactories used for fetching scripts and
-// sub-resources. This avoids disrupting the worker(s) registration(s)
-// when they are in flight.
-BASE_DECLARE_FEATURE(kSkipResetServiceWorkerURLLoaderFactories);
+// Controls whether component extensions are allowed to use chrome://resources/
+// URLs in worker scripts and subresources.
+BASE_DECLARE_FEATURE(kComponentExtensionAllowWorkerChromeResources);
 
 // If enabled, <webview>s will be allowed to request permission from an
 // embedding Chrome App to request access to Human Interface Devices.
@@ -126,28 +160,6 @@ BASE_DECLARE_FEATURE(kExtensionLocalizationGuid);
 // A replacement key for declaring icons, in addition to supporting dark mode.
 BASE_DECLARE_FEATURE(kExtensionIconVariants);
 
-// Controls disabling affected MV2 extensions that are no longer supported.
-// Users can re-enable these extensions.
-BASE_DECLARE_FEATURE(kExtensionManifestV2Disabled);
-
-// Controls fully removing support for user-installed MV2 extensions.
-// Users may no longer re-enable these extensions. Enterprises may still
-// override this.
-BASE_DECLARE_FEATURE(kExtensionManifestV2Unsupported);
-
-// Allows server-side configuration of a temporary exception list.
-BASE_DECLARE_FEATURE(kExtensionManifestV2ExceptionList);
-extern const base::FeatureParam<std::string>
-    kExtensionManifestV2ExceptionListParam;
-
-// A feature to allow legacy MV2 extensions, even if they are not supported by
-// the browser or experiment configuration. This is important to allow
-// developers of MV2 extensions to continue loading, running, and testing their
-// extensions for as long as MV2 is supported in any variant.
-// This will be removed once the ExtensionManifestV2Availability enterprise
-// policy is no longer supported.
-BASE_DECLARE_FEATURE(kAllowLegacyMV2Extensions);
-
 // If enabled, allows an extension to specify protocol_handlers keys in the
 // Manifest, registering a group of custom handlers so that the browser can
 // handle navigation requests to URLs with unknown schemes. This feature
@@ -156,12 +168,9 @@ BASE_DECLARE_FEATURE(kAllowLegacyMV2Extensions);
 // section of the HTML specification.
 BASE_DECLARE_FEATURE(kExtensionProtocolHandlers);
 
-// If enabled, only manifest v3 extensions is allowed while v2 will be disabled.
-// Note that this feature is now only checked by `ExtensionManagement` which
-// represents enterprise extension configurations. Flip the feature will block
-// mv2 extension by default but the error messages will improperly mention
-// enterprise policy.
-BASE_DECLARE_FEATURE(kExtensionsManifestV3Only);
+// Enables extension support for the "tab" context menu, allowing extensions
+// to add custom items when right-clicking a tab.
+BASE_DECLARE_FEATURE(kExtensionTabContextMenu);
 
 // Enables enhanced site control for extensions and allowing the user to control
 // site permissions.
@@ -204,10 +213,8 @@ BASE_DECLARE_FEATURE(kSafeBrowsingCrxAllowlistAutoDisable);
 // messaging hosts.
 BASE_DECLARE_FEATURE(kStructuredCloningForMessaging);
 
-// If enabled, APIs of the Telemetry Extension platform that have pending
-// approval will be enabled. Read more about the platform here:
-// https://chromium.googlesource.com/chromium/src/+/master/docs/telemetry_extension/README.md.
-BASE_DECLARE_FEATURE(kTelemetryExtensionPendingApprovalApi);
+// Controls whether the component webstore hosted app is loaded.
+BASE_DECLARE_FEATURE(kWebstoreHostedApp);
 
 // Used to control whether downloads initiated by `WebstoreInstaller` are marked
 // as having a corresponding user gesture or not.
@@ -248,34 +255,23 @@ BASE_DECLARE_FEATURE(kDeclarativeNetRequestHeaderSubstitution);
 // line switch.
 BASE_DECLARE_FEATURE(kDisableDisableExtensionsExceptCommandLineSwitch);
 
-
 // Disables the `--extensions-on-chrome-urls` flag's functionality on
 // `chrome://` URLs. Extension can still run on extension URLs using the new
 // flag `--extensions-on-extension-urls` flag.
 BASE_DECLARE_FEATURE(kDisableExtensionsOnChromeUrlsSwitch);
 
-// Changes the chrome.userScript API to be enabled by a per-extension toggle
-// rather than the developer mode toggle on chrome://extensions.
-BASE_DECLARE_FEATURE(kUserScriptUserExtensionToggle);
+// If enabled, high-risk extension DOM activity is collected and reported
+// for enterprise auditing.
+BASE_DECLARE_FEATURE(kEnterpriseExtensionDOMActivityTelemetry);
 
 // Forces the debugger API/feature to always be restricted by developer mode.
 // This ensures we're always testing the developer mode API/feature restriction
 // capability, even when no other API/feature might be restricted by it.
 BASE_DECLARE_FEATURE(kDebuggerAPIRestrictedToDevMode);
 
-// Creates a `browser` object that can be used in place of `chrome` where
-// extension APIs are available. It does not include non-extension APIs like
-// `loadTimes`, `csi`, etc. or deprecated APIs (e.g. `app`).
-// Also aligns one-time message (e.g. runtime.sendMessage) behavior more closely
-// with the mozilla/webextension-polyfill. This includes supporting
-// chrome.runtime.onMessage() listeners returning a Promise. Also in more error
-// cases (like listeners sending unserializable responses or throwing errors
-// during execution) the error is passed back to the sender.
-BASE_DECLARE_FEATURE(kExtensionBrowserNamespaceAndPolyfillSupport);
-
-// Optimizes service worker start requests by checking readiness before
-// initiating a start.
-BASE_DECLARE_FEATURE(kOptimizeServiceWorkerStartRequests);
+// When enabled, the `browser` namespace is made available on web pages
+// even if they are not externally connectable.
+BASE_DECLARE_FEATURE(kExtensionBrowserNamespaceOnWebPages);
 
 // When enabled, a call to base::ListValue::Clone is avoided when dispatching an
 // extension function. Behind a feature to assess impact
@@ -292,18 +288,6 @@ BASE_DECLARE_FEATURE(kAvoidCloneArgsOnExtensionFunctionDispatch);
 // memory leaks from stale cache entries and false-positive corruption reports.
 BASE_DECLARE_FEATURE(kExtensionContentVerificationUsesExtensionRoot);
 
-// Addresses content verification race conditions during extension updates. When
-// an extension updates, a content verification job for a previous version can
-// sometimes run *after* the new version has been loaded. This can lead to two
-// issues:
-//   1) the old job might be given the hashes for the new version, or
-//   2) it might unnecessarily re-create hashes for the old version.
-//
-// When this feature is enabled, the verification job will strictly use its
-// original extension version for all hash lookups and creations, preventing
-// these inconsistencies.
-BASE_DECLARE_FEATURE(kContentVerifyJobUseJobVersionForHashing);
-
 // Enables the shouldShowPromotion API to determine which promotion to show for
 // Chrome Enterprise on CWS.
 BASE_DECLARE_FEATURE(kEnableShouldShowPromotion);
@@ -313,6 +297,12 @@ BASE_DECLARE_FEATURE(kEnableShouldShowPromotion);
 // must be used to confirm the choice of using the new search engine, or
 // returning to the previous provider.
 BASE_DECLARE_FEATURE(kSearchEngineExplicitChoiceDialog);
+BASE_DECLARE_FEATURE_PARAM(bool, kSearchEngineExplicitChoiceDialogEscapable);
+
+// If true, the dialog is re-shown until a choice is made. If false, the
+// dialog is limited to once per session, as the original dialog works.
+BASE_DECLARE_FEATURE_PARAM(bool,
+                           kSearchEngineExplicitChoiceDialogUnlimitedShows);
 
 // When enabled, all search extensions will unconditionally get the search
 // engine override dialog.
@@ -322,16 +312,21 @@ BASE_DECLARE_FEATURE(kSearchEngineUnconditionalDialog);
 // Allowing them to retrieve certificate information from web requests.
 BASE_DECLARE_FEATURE(kWebRequestSecurityInfo);
 
-// When enabled, filtered webRequest event listeners for service worker-based
-// extensions are persisted to ExtensionPrefs. This allows the browser to know
-// about the listeners before starting the extension service worker (e.g. on
-// browser startup).
-BASE_DECLARE_FEATURE(kWebRequestPersistFilteredEvents);
+// When enabled, optimizes WebRequest proxying by strictly limiting it to
+// requests that are subject to interception. This ensures that the 'webview'
+// permission only triggers proxying for its own guest frames (e.g., <webview>
+// or Controlled Frame), rather than globally proxying all requests. This
+// avoids unnecessary performance overhead and restores navigation
+// optimizations like preconnect.
+BASE_DECLARE_FEATURE(kOptimizeWebRequestProxy);
 
-// When enabled, use an alternative way to add listeners for the webRequest API,
-// which uses the standard `addListener` only, rather than using
-// WebRequestInternal's custom API.
-BASE_DECLARE_FEATURE(kWebRequestAlternativeAddListener);
+// When enabled, the browser dispatches blocking webRequest events once per
+// renderer context (using the parent event name) instead of once per listener
+// (using per-listener synthetic sub-event names). The renderer matches
+// listeners itself, reports each blocking listener's response via the
+// `webRequestInternal.eventHandled` function, and signals completion with a
+// single `webRequestInternal.eventHandlingDone` per context.
+BASE_DECLARE_FEATURE(kWebRequestPerContextEventDispatch);
 
 }  // namespace extensions_features
 

@@ -36,6 +36,20 @@ EVENT_TYPE(FAILED)
 // Marks the creation/destruction of a request (net::URLRequest).
 EVENT_TYPE(REQUEST_ALIVE)
 
+// Marks the lifecycle of a WebSocket connection (net::WebSocketChannel).
+// Emitted as a BEGIN event in the constructor, an END event in the destructor,
+// and replayed as a synthetic BEGIN event when NetLog capture starts to surface
+// pre-existing connections that were opened before logging began.
+EVENT_TYPE(WEBSOCKET_ALIVE)
+
+// Marks a WebSocket channel state transition.
+// The event parameters include:
+//   {
+//     "old_state": <string>,
+//     "new_state": <string>,
+//   }
+EVENT_TYPE(WEBSOCKET_STATE_CHANGED)
+
 // ------------------------------------------------------------------------
 // HostResolverManager (previously known as HostResolverImpl)
 // ------------------------------------------------------------------------
@@ -625,6 +639,12 @@ EVENT_TYPE(SOCKS_UNKNOWN_ADDRESS_TYPE)
 //    "cipher_suite": <Integer code for the cipher suite>,
 //    "is_resumed": <Whether we resumed a session>,
 //    "next_proto": <The next protocol negotiated via ALPN>,
+//    "key_exchange_group": <ID of the (EC)DH group used for key exchange>,
+//    "peer_signature_algorithm": <signature algorithm used by peer>,
+//    "encrypted_client_hello": <if Encrypted Client Hello was used>,
+//    "requested_server_padding": <Whether server padding was requested>,
+//    "received_server_padding": <Whether server padding was received>,
+//
 //  }
 EVENT_TYPE(SSL_CONNECT)
 
@@ -898,6 +918,9 @@ EVENT_TYPE(CONNECT_JOB_TIMED_OUT)
 // The start/end of the TransportConnectJob::Connect().
 EVENT_TYPE(TRANSPORT_CONNECT_JOB_CONNECT)
 
+// The start/end of the TcpConnectJob::Connect().
+EVENT_TYPE(TCP_CONNECT_JOB_CONNECT)
+
 // The start/end of the SSLConnectJob::Connect().
 EVENT_TYPE(SSL_CONNECT_JOB_CONNECT)
 
@@ -922,15 +945,57 @@ EVENT_TYPE(SSL_CONNECT_JOB_RESTART_WITH_ECH_CONFIG_LIST)
 EVENT_TYPE(TRANSPORT_CONNECT_JOB_IPV6_FALLBACK)
 
 // This event is logged whenever the ConnectJob attempts a new TCP connection.
-// association. The ConnectJob may attempt multiple addresses in parallel, so
-// this event does not log when the connection attempt succeeds or fails. The
-// source dependency may be used to determine this.
+// The ConnectJob may attempt multiple addresses in parallel, so this event does
+// not log when the connection attempt succeeds or fails. The source dependency
+// may be used to determine this.
 //
 //   {
 //     "address": <String of the network address being attempted>,
 //     "source_dependency": <The source identifier for the new socket.>,
 //   }
 EVENT_TYPE(TRANSPORT_CONNECT_JOB_CONNECT_ATTEMPT)
+
+// This event is logged whenever a TcpConnectJob::Connector attempts a new TCP
+// connection.
+//
+//   {
+//     "address": <The network address being attempted>,
+//     "connector": <Name of the Connector>,
+//     "source_dependency": <The source identifier for the new socket.>,
+//   }
+EVENT_TYPE(TCP_CONNECT_JOB_CONNECTOR_CONNECT_START)
+
+// This event is logged whenever a TcpConnectJob::Connector finishes trying to
+// establish a TCP connection to a particular address, either successfully or
+// with an error.
+//
+//   {
+//     "connector": <Name of the Connector>,
+//     "net_error": <Net error code, on error>,
+//   }
+EVENT_TYPE(TCP_CONNECT_JOB_CONNECTOR_CONNECT_COMPLETE)
+
+// This event is logged whenever a TcpConnectJob::Connector completely finishes
+// - it either gives up, or it finishes establishing a connection.
+//
+//   {
+//     "connector": <Name of the Connector>,
+//     "net_error": <Net error code, on error>,
+//   }
+EVENT_TYPE(TCP_CONNECT_JOB_CONNECTOR_DONE)
+
+// This event is logged whenever a TcpConnectJob::Connector determines whether a
+// successfully connected socket is usable or not.
+//
+//   {
+//     "connector": <Name of the Connector>,
+//     "is_usable": <true or false depending on if the endpoint is usable>,
+//   }
+EVENT_TYPE(TCP_CONNECT_JOB_VERIFY_IP_ENDPOINT_USABLE)
+
+// This event is logged when the TcpConnectJob slow timer triggers, and a second
+// connector is created.
+EVENT_TYPE(TCP_CONNECT_JOB_CREATE_SECOND_CONNECTOR)
 
 // This event is logged whenever the SSLConnectJob attempts a
 // SSLClientSocket::Connect().
@@ -946,6 +1011,8 @@ EVENT_TYPE(TRANSPORT_CONNECT_JOB_CONNECT_ATTEMPT)
 //     "selected_trust_anchor_ids_for_retry": <Optional: comma-separated trust
 //                                             anchor IDs sent in the TLS
 //                                             ClientHello on retry>,
+//     "requested_server_padding": <Optional: Amount of server padding
+//                                  requested>,
 //   }
 EVENT_TYPE(SSL_CONNECT_JOB_SSL_CONNECT)
 
@@ -1139,6 +1206,8 @@ EVENT_TYPE(URL_REQUEST_DELEGATE_CERTIFICATE_REQUESTED)
 EVENT_TYPE(URL_REQUEST_DELEGATE_RECEIVED_REDIRECT)
 EVENT_TYPE(URL_REQUEST_DELEGATE_RESPONSE_STARTED)
 EVENT_TYPE(URL_REQUEST_DELEGATE_SSL_CERTIFICATE_ERROR)
+EVENT_TYPE(
+    URL_REQUEST_DELEGATE_PLATFORM_LOCAL_NETWORK_ACCESS_PERMISSION_REQUIRED)
 
 // Like the above events, but the END phase also has the following parameter:
 //   {
@@ -1244,6 +1313,32 @@ EVENT_TYPE(HTTP_CACHE_CALLER_REQUEST_HEADERS)
 // There are no parameters.
 EVENT_TYPE(HTTP_CACHE_RESTART_PARTIAL_REQUEST)
 EVENT_TYPE(HTTP_CACHE_RE_SEND_PARTIAL_REQUEST)
+
+// Brackets a zstd decompression session for a cached body. The BEGIN phase
+// is logged when the decompressor is initialized for a transaction; the END
+// phase is logged when decompression terminates, either by clean EOF or by
+// any error path. (Init failure is logged as a single non-bracketing event
+// because no decompression session ever started.)
+//
+// For the BEGIN phase, the following parameter is attached:
+//   {
+//     "expected_content_length": <int, decompressed Content-Length, or -1
+//                                 if not advertised>,
+//   }
+//
+// For the END phase, exactly one of the following parameter shapes is
+// attached:
+//   - On success:
+//     {
+//       "compressed_bytes":   <int, total compressed bytes consumed>,
+//       "decompressed_bytes": <int, total decompressed bytes delivered>,
+//     }
+//   - On failure (also used for the standalone "init_failed" event):
+//     {
+//       "reason": <"init_failed" | "zstd_error" | "truncated_frame" |
+//                  "size_mismatch">,
+//     }
+EVENT_TYPE(HTTP_CACHE_DECOMPRESS)
 
 // Indicates that an entry from the NoVarySearchCache was used to rewrite the
 // URL for this request.
@@ -1476,6 +1571,23 @@ EVENT_TYPE(HTTP_STREAM_JOB_CONTROLLER_PROXY_SERVER_RESOLVED)
 //   }
 EVENT_TYPE(HTTP_STREAM_JOB_CONTROLLER_ALT_SVC_FOUND)
 
+// Logs that a WebSocket-over-HTTP/3 job was created to attempt reusing an
+// existing QUIC session with Extended CONNECT support.
+// The event parameters are:
+//   {
+//      "destination": The destination (scheme://host:port) for the WebSocket.
+//   }
+EVENT_TYPE(HTTP_STREAM_JOB_CONTROLLER_WS_OVER_H3_CREATED)
+
+// Logs that a WebSocket-over-HTTP/3 job was not created because no existing
+// QUIC session with Extended CONNECT support was found.
+// The event parameters are:
+//   {
+//      "destination": The destination (scheme://host:port) for the WebSocket.
+//      "reason": Why the job was skipped.
+//   }
+EVENT_TYPE(HTTP_STREAM_JOB_CONTROLLER_WS_OVER_H3_SKIPPED)
+
 // ------------------------------------------------------------------------
 // HttpStreamPool
 // ------------------------------------------------------------------------
@@ -1508,6 +1620,14 @@ EVENT_TYPE(HTTP_STREAM_POOL_CLOSING_SOCKET)
 //      "respect_limits": <True when the job respects stream limits>,
 //   }
 EVENT_TYPE(HTTP_STREAM_POOL_JOB_CONTROLLER_ALIVE)
+
+// Emitted when an HttpStreamPool::JobController skips an alternative service
+// because its port is not allowed for the scheme.
+// The event parameters are:
+//   {
+//      "port": <The port of the alternative service>,
+//   }
+EVENT_TYPE(HTTP_STREAM_POOL_JOB_CONTROLLER_SKIPPED_ALTSVC_RESTRICTED_PORT)
 
 // Emitted when an HttpStreamPool::JobController found an existing SPDY session.
 EVENT_TYPE(HTTP_STREAM_POOL_JOB_CONTROLLER_FOUND_EXISTING_SPDY_SESSION)
@@ -2411,6 +2531,7 @@ EVENT_TYPE(QUIC_SESSION_POOL_JOB_RESULT)
 //                                   DNS record>,
 //     "selected_trust_anchor_ids": <trust anchor IDs sent in the TLS
 //                                   ClientHello>,
+//     "server_padding": <optional, amount of server padding requested>
 //   }
 EVENT_TYPE(QUIC_SESSION)
 
@@ -2429,6 +2550,8 @@ EVENT_TYPE(QUIC_SESSION_CLOSE_ON_ERROR)
 
 // Session verification of a certificate from the server failed.
 //   {
+//     "subjects": <list of DNS names that the certificate is valid for, not
+//                  present if cert could not be parsed>,
 //     "server_available_trust_anchors_ids":
 //         <Optional: trust anchor IDs sent by the server in the handshake,
 //          converted to strings and joined with commas>,
@@ -2833,6 +2956,12 @@ EVENT_TYPE(QUIC_SESSION_CRYPTO_FRAME_SENT)
 //    "offset": <The offset of the CRYPTO frame>
 //  }
 EVENT_TYPE(QUIC_SESSION_CRYPTO_FRAME_RECEIVED)
+
+// Session completed the Crypto Handshake
+//  {
+//    "received_server_padding": <Whether server padding was received>,
+//  }
+EVENT_TYPE(QUIC_SESSION_CRYPTO_HANDSHAKE_COMPLETE)
 
 // Session sent a STOP_SENDING frame.
 //  {
@@ -3746,6 +3875,16 @@ EVENT_TYPE(DNS_TRANSACTION_TCP_ATTEMPT)
 //   }
 EVENT_TYPE(DNS_TRANSACTION_HTTPS_ATTEMPT)
 
+// This event is created when DnsTransaction creates a new platform attempt.
+//
+// It has a single parameter:
+//
+//   {
+//     "source_dependency": <Source id of the platform API attempt created for
+//                           the attempt>,
+//   }
+EVENT_TYPE(DNS_TRANSACTION_PLATFORM_ATTEMPT)
+
 // This event is created when DnsTransaction receives a matching response.
 //
 // It has the following parameters:
@@ -3982,8 +4121,6 @@ EVENT_TYPE(CERT_VERIFY_PROC_ADDITIONAL_CERT)
 // CertVerifyProcBuiltin.
 // The BEGIN phase contains the following information:
 // {
-//      "digest_policy": <Specifies which digest methods are accepted in this
-//                        attempt.>
 //      "is_ev_attempt": <True if this is an EV verification attempt.>
 //      "is_qwac_attempt": <True if this is a QWAC verification attempt.>
 //      "is_network_time_attempt": <True if this attempt used the network time.>
@@ -5115,3 +5252,16 @@ EVENT_TYPE(PROXY_OVERRIDE_END_HOST_RESOLUTION)
 //       }]
 //   }
 EVENT_TYPE(PROXY_RESOLUTION_OVERRIDE_RULE_APPLIED)
+
+// This event is logged by a TrustedHeaderClient when it modifies headers
+// during OnBeforeSendHeaders. The event can be logged by multiple clients,
+// each putting their own dictionary under a distinct key.
+//   {
+//      "http_header_injection_policy": {
+//         <header name>: {
+//           "value": <string>,
+//           "is_override": <bool>
+//         }, ...
+//      }
+//   }
+EVENT_TYPE(ON_BEFORE_SEND_HEADERS_RESULT)

@@ -88,7 +88,8 @@ class CORE_EXPORT FrameLoader final {
             std::unique_ptr<PolicyContainer> policy_container,
             const StorageKey& storage_key,
             ukm::SourceId document_ukm_source_id,
-            const KURL& creator_base_url);
+            const KURL& creator_base_url,
+            std::unique_ptr<base::UnguessableToken> sandbox_origin_token);
 
   ResourceRequest ResourceRequestForReload(
       WebFrameLoadType,
@@ -188,6 +189,7 @@ class CORE_EXPORT FrameLoader final {
   bool DetachDocument();
 
   bool ShouldClose(bool is_reload,
+                   bool force_to_proceed,
                    base::TimeTicks& out_before_unload_dialog_opened_time,
                    base::TimeTicks& out_before_unload_dialog_closed_time);
 
@@ -259,6 +261,8 @@ class CORE_EXPORT FrameLoader final {
   bool AllowRequestForThisFrame(const FrameLoadRequest&);
 
   mojo::PendingRemote<mojom::blink::CodeCacheHost> CreateWorkerCodeCacheHost();
+
+  void ProcessPendingCrossDocumentFragment();
 
  private:
   bool ShouldPerformFragmentNavigation(bool is_form_submission,
@@ -347,6 +351,10 @@ class CORE_EXPORT FrameLoader final {
   // The origins for which a legacy TLS version warning has been printed. The
   // size of this set is capped, after which no more warnings are printed.
   HashSet<String> tls_version_warning_origins_;
+
+  // True if we skipped processing a fragment and may need to do it again when
+  // asked.
+  bool has_pending_cross_document_fragment_ = false;
 };
 
 }  // namespace blink

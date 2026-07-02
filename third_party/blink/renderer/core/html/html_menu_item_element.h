@@ -20,6 +20,9 @@ class CORE_EXPORT HTMLMenuItemElement final : public HTMLElement {
  public:
   explicit HTMLMenuItemElement(Document&);
   ~HTMLMenuItemElement() override;
+  ElementType GetElementType() const final {
+    return ElementType::kHTMLMenuItemElement;
+  }
   void Trace(Visitor* visitor) const override;
 
   int index() const;
@@ -32,7 +35,14 @@ class CORE_EXPORT HTMLMenuItemElement final : public HTMLElement {
   bool setChecked(bool);
   bool ShouldAppearChecked() const;
 
-  HTMLMenuOwnerElement* OwningMenuElement() const;
+  HTMLMenuOwnerElement* OwningMenuElement() const {
+    return owning_menu_element_;
+  }
+
+  HTMLMenuOwnerElement* OwnerElementForList() const {
+    return owning_menu_element_;
+  }
+
   HTMLFieldSetElement* NearestAncestorFieldSet() const {
     return nearest_ancestor_field_set_.Get();
   }
@@ -40,6 +50,7 @@ class CORE_EXPORT HTMLMenuItemElement final : public HTMLElement {
   bool CanBeCommandInvoker() const override;
   bool IsValidInterestInvoker(Element& target) const override;
   HTMLMenuListElement* GetInvokedSubmenu() const;
+  bool ShouldHaveExpandIcon() const;
 
   Node::InsertionNotificationRequest InsertedInto(ContainerNode&) override;
   void RemovedFrom(ContainerNode&) override;
@@ -49,22 +60,25 @@ class CORE_EXPORT HTMLMenuItemElement final : public HTMLElement {
       UpdateBehavior update_behavior =
           UpdateBehavior::kStyleAndLayout) const override;
 
-  bool HandleCommandForActivation() override;
   void DefaultEventHandler(Event&) override;
 
   bool MatchesDefaultPseudoClass() const override;
   bool MatchesEnabledPseudoClass() const override;
   bool IsSubmenuOpen() const;
 
+  void OpenPseudoChanged();
+
   void ParseAttribute(const AttributeModificationParams&) override;
   bool ShouldHaveFocusAppearance() const override;
+
+  // Returns true if this menuitem is scrolled into view within its ancestor
+  // menu owner element.
+  bool IsVisibleInViewport();
 
  protected:
   FocusableState SupportsFocus(UpdateBehavior update_behavior) const override;
 
  private:
-  int DefaultTabIndex() const override;
-
   // This is generally used when a menuitem has been selected, and the "tree" of
   // menus should now close. It finds the innermost (nearest ancestor) menulist
   // containing this menuitem, and then walks the tree of command invokers up
@@ -87,9 +101,6 @@ class CORE_EXPORT HTMLMenuItemElement final : public HTMLElement {
 
   // Represents 'checkedness'.
   bool is_checked_;
-  // This is used to avoid double-invoking target menus, due to custom logic
-  // that invokes sub-menus on mousedown.
-  bool ignore_next_command_ = false;
   // This is similar to the input element's `dirty_checkedness_` flag, but
   // better named. When only the default checkedness is set or unset, this will
   // remain true. When checkedness finally gets set in any other way after the

@@ -2,9 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import type {WindowOpenDisposition} from '//resources/mojo/ui/base/mojom/window_open_disposition.mojom-webui.js';
 import type {NavigationPredictor} from 'chrome://resources/mojo/components/omnibox/browser/omnibox.mojom-webui.js';
-import type {PageHandlerInterface, PageRemote, PlaceholderConfig, SelectedFileInfo} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
-import {PageCallbackRouter} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import type {OmniboxPopupSelection, PageHandlerInterface, PageRemote, PlaceholderConfig, SelectedFileInfo, SmartComposeStats, SuggestInventory} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import {DriveDisclaimerStatus, PageCallbackRouter} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import type {ModelMode, ToolMode} from 'chrome://resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 import type {BigBuffer} from 'chrome://resources/mojo/mojo/public/mojom/base/big_buffer.mojom-webui.js';
 import type {String16} from 'chrome://resources/mojo/mojo/public/mojom/base/string16.mojom-webui.js';
@@ -13,6 +14,7 @@ import type {UnguessableToken} from 'chrome://resources/mojo/mojo/public/mojom/b
 import type {Url} from 'chrome://resources/mojo/url/mojom/url.mojom-webui.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 
+import {MockInputState} from './searchbox_test_utils.js';
 
 /**
  * Helps track realbox browser call arguments. A mocked page handler remote
@@ -33,34 +35,40 @@ class FakePageHandler extends TestBrowserProxy implements PageHandlerInterface {
       'onThumbnailRemoved',
       'openAutocompleteMatch',
       'queryAutocomplete',
+      'queryAutocompleteWithSuggestInventory',
       'stopAutocomplete',
       'toggleSuggestionGroupIdVisibility',
       'onFocusChanged',
       'getPlaceholderConfig',
       'getRecentTabs',
       'getTabPreview',
+      'waitForTabFaviconLoad',
       'notifySessionStarted',
       'notifySessionAbandoned',
       'addFileContext',
       'addTabContext',
+      'onDriveUploadClicked',
       'deleteContext',
       'clearFiles',
       'submitQuery',
       'openLensSearch',
       'setActiveToolMode',
+      'recordToolSelectionAction',
       'setActiveModelMode',
-      'setPage',
+      'recordModelSelectionAction',
       'getInputState',
       'activateMetricsFunnel',
+      'setPopupSelection',
+      'openPopupSelection',
+      'getDriveDisclaimerStatus',
+      'onDriveDisclaimerAccepted',
+      'getPageClassification',
+      'setSmartComposeStats',
     ]);
   }
 
   setResultFor(methodName: string, result: any) {
     this.results_.set(methodName, result);
-  }
-
-  setPage(page: PageRemote) {
-    this.methodCalled('setPage', page);
   }
 
   onFocusChanged(focused: boolean) {
@@ -105,7 +113,8 @@ class FakePageHandler extends TestBrowserProxy implements PageHandlerInterface {
 
   openAutocompleteMatch(
       line: number, url: Url, areMatchesShowing: boolean, mouseButton: number,
-      altKey: boolean, ctrlKey: boolean, metaKey: boolean, shiftKey: boolean) {
+      altKey: boolean, ctrlKey: boolean, metaKey: boolean, shiftKey: boolean,
+      viaKeyboard: boolean) {
     this.methodCalled('openAutocompleteMatch', {
       line,
       url,
@@ -115,7 +124,12 @@ class FakePageHandler extends TestBrowserProxy implements PageHandlerInterface {
       ctrlKey,
       metaKey,
       shiftKey,
+      viaKeyboard,
     });
+  }
+
+  setSmartComposeStats(smartComposeStats: SmartComposeStats) {
+    this.methodCalled('setSmartComposeStats', {smartComposeStats});
   }
 
   onNavigationLikely(
@@ -127,8 +141,20 @@ class FakePageHandler extends TestBrowserProxy implements PageHandlerInterface {
     this.methodCalled('onThumbnailRemoved', {});
   }
 
-  queryAutocomplete(input: String16, preventInlineAutocomplete: boolean) {
-    this.methodCalled('queryAutocomplete', {input, preventInlineAutocomplete});
+  queryAutocomplete(
+      input: String16, preventInlineAutocomplete: boolean,
+      cursorPosition: number) {
+    this.methodCalled(
+        'queryAutocomplete',
+        {input, preventInlineAutocomplete, cursorPosition});
+  }
+
+  queryAutocompleteWithSuggestInventory(
+      input: String16, preventInlineAutocomplete: boolean,
+      cursorPosition: number, suggestInventory: SuggestInventory) {
+    this.methodCalled(
+        'queryAutocompleteWithSuggestInventory',
+        {input, preventInlineAutocomplete, cursorPosition, suggestInventory});
   }
 
   stopAutocomplete(clearResult: boolean) {
@@ -163,27 +189,24 @@ class FakePageHandler extends TestBrowserProxy implements PageHandlerInterface {
     return Promise.resolve({previewDataUrl: ''});
   }
 
+  waitForTabFaviconLoad(tabId: number) {
+    this.methodCalled('waitForTabFaviconLoad', {tabId});
+    return Promise.resolve({faviconDataUrl: null});
+  }
+
   getInputState() {
     this.methodCalled('getInputState');
+    if (this.results_.has('getInputState')) {
+      return this.results_.get('getInputState');
+    }
+
     return Promise.resolve({
-      state: {
-        allowedModels: [],
-        allowedTools: [],
-        allowedInputTypes: [],
-        activeModel: 0,
-        activeTool: 0,
-        disabledModels: [],
-        disabledTools: [],
-        disabledInputTypes: [],
+      state: new MockInputState({
         toolConfigs: [],
+        toolsSectionConfig: {header: ''},
         modelConfigs: [],
-        inputTypeConfigs: [],
-        toolsSectionConfig: null,
-        modelSectionConfig: null,
-        hintText: '',
-        maxInstances: {},
-        maxTotalInputs: 0,
-      },
+        modelSectionConfig: {header: ''},
+      }),
     });
   }
 
@@ -197,12 +220,20 @@ class FakePageHandler extends TestBrowserProxy implements PageHandlerInterface {
 
   addFileContext(fileInfo: SelectedFileInfo, fileBytes: BigBuffer) {
     this.methodCalled('addFileContext', {fileInfo, fileBytes});
-    return Promise.resolve({token: ''});
+    return Promise.resolve('');
   }
 
-  addTabContext(tabId: number) {
-    this.methodCalled('addTabContext', {tabId});
-    return Promise.resolve({token: ''});
+  onDriveUploadClicked() {
+    this.methodCalled('onDriveUploadClicked');
+    if (this.results_.has('onDriveUploadClicked')) {
+      return this.results_.get('onDriveUploadClicked');
+    }
+    return Promise.resolve({response: {files: [], error: null}});
+  }
+
+  addTabContext(tabId: number, delayUpload: boolean) {
+    this.methodCalled('addTabContext', {tabId, delayUpload});
+    return Promise.resolve('');
   }
 
   deleteContext(fileToken: UnguessableToken) {
@@ -229,12 +260,48 @@ class FakePageHandler extends TestBrowserProxy implements PageHandlerInterface {
     this.methodCalled('setActiveToolMode', tool);
   }
 
+  recordToolSelectionAction(tool: ToolMode) {
+    this.methodCalled('recordToolSelectionAction', tool);
+  }
+
   setActiveModelMode(model: ModelMode) {
     this.methodCalled('setActiveModelMode', model);
   }
 
+  recordModelSelectionAction(model: ModelMode) {
+    this.methodCalled('recordModelSelectionAction', model);
+  }
+
   activateMetricsFunnel(funnelName: string) {
     this.methodCalled('activateMetricsFunnel', funnelName);
+  }
+
+  setPopupSelection(selection: OmniboxPopupSelection) {
+    this.methodCalled('setPopupSelection', selection);
+  }
+
+  openPopupSelection(
+      resultSequenceId: number, selection: OmniboxPopupSelection,
+      disposition: WindowOpenDisposition) {
+    this.methodCalled(
+        'openPopupSelection', {resultSequenceId, selection, disposition});
+  }
+
+  getDriveDisclaimerStatus(): Promise<{status: DriveDisclaimerStatus}> {
+    this.methodCalled('getDriveDisclaimerStatus');
+    if (this.results_.has('getDriveDisclaimerStatus')) {
+      return this.results_.get('getDriveDisclaimerStatus');
+    }
+    return Promise.resolve({status: DriveDisclaimerStatus.kRestricted});
+  }
+
+  onDriveDisclaimerAccepted() {
+    this.methodCalled('onDriveDisclaimerAccepted');
+  }
+
+  getPageClassification() {
+    this.methodCalled('getPageClassification');
+    return Promise.resolve({metricSource: 'NTP_REALBOX'});
   }
 }
 

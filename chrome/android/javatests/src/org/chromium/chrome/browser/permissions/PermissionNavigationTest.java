@@ -38,7 +38,7 @@ public class PermissionNavigationTest {
     private static final String TEST_FILE = "/content/test/data/android/permission_navigation.html";
 
     private static final String DISMISS_TYPE_HISTOGRAM =
-            "Permissions.Prompt.Geolocation.ModalDialog.Dismissed.Method";
+            "Permissions.Prompt.GeolocationApproximateOrPrecise.ModalDialog.Dismissed.Method";
 
     private TestAndroidPermissionDelegate mTestAndroidPermissionDelegate;
 
@@ -120,14 +120,14 @@ public class PermissionNavigationTest {
                         .build();
         PermissionTestRule.waitForDialog(mPermissionRule.getActivity());
 
-        ChromeTabModalPresenter mTabModalPresenter =
+        ChromeTabModalPresenter tabModalPresenter =
                 (ChromeTabModalPresenter)
                         mPermissionRule
                                 .getActivity()
                                 .getModalDialogManager()
                                 .getPresenterForTest(ModalDialogType.TAB);
 
-        View dialogContainerForTest = mTabModalPresenter.getDialogContainerForTest();
+        View dialogContainerForTest = tabModalPresenter.getDialogContainerForTest();
         ThreadUtils.runOnUiThreadBlocking(dialogContainerForTest::performClick);
         histogramExpectation.assertExpected(
                 "Should record tapping outside the scrim to dismiss permission prompt in UMA");

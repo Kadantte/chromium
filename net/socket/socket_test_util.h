@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/byte_size.h"
 #include "base/check_op.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
@@ -126,6 +127,9 @@ class MockConnectCompleter {
 
   // Convenience function that combines WaitForConnect() and Complete().
   void WaitForConnectAndComplete(int result);
+
+  // Returns true if the completer has a waiting connection attempt.
+  bool is_connecting() const { return !callback_.is_null(); }
 
  private:
   friend class MockTCPClientSocket;
@@ -364,6 +368,8 @@ class SocketDataProvider {
   virtual MockWriteResult OnWrite(const std::string& data) = 0;
   virtual bool AllReadDataConsumed() const = 0;
   virtual bool AllWriteDataConsumed() const = 0;
+  virtual bool IsNextReadAsyncOrPause() const;
+  virtual bool IsReadReady() const;
   virtual void CancelPendingRead() {}
 
   // Returns the last set receive buffer size, or -1 if never set.
@@ -447,6 +453,23 @@ class SocketDataProvider {
   MockConnect connect_data() const { return connect_; }
   void set_connect_data(const MockConnect& connect) { connect_ = connect; }
 
+  // Makes IsConnected() start returning false for any socket using `this`,
+  // without any read or write error. Useful for simulating cases where an
+  // IsConnected() call is the first time a socket is revealed to be closed.
+  void set_silently_closed() { silently_closed_ = true; }
+  bool silently_closed() const { return silently_closed_; }
+
+  // Makes GetPeerAddress() fail with ERR_SOCKET_NOT_CONNECTED for any socket
+  // using `this`. Useful for simulating "zombie" sockets that are technically
+  // still pooled/connected but fail when queried for their address (e.g.
+  // simulating a socket that is in a semi-broken state).
+  void set_force_get_peer_address_failure(bool force) {
+    force_get_peer_address_failure_ = force;
+  }
+  bool force_get_peer_address_failure() const {
+    return force_get_peer_address_failure_;
+  }
+
  private:
   // Called to inform subclasses of initialization.
   virtual void Reset() = 0;
@@ -458,6 +481,10 @@ class SocketDataProvider {
   int send_buffer_size_ = -1;
   // This reflects the default state of TCPClientSockets.
   bool no_delay_ = true;
+
+  bool silently_closed_ = false;
+
+  bool force_get_peer_address_failure_ = false;
 
   KeepAliveState keep_alive_state_ = KeepAliveState::kDefault;
   int keep_alive_delay_ = 0;
@@ -528,6 +555,7 @@ class StaticSocketDataHelper {
 
   bool AllReadDataConsumed() const { return read_index() >= read_count(); }
   bool AllWriteDataConsumed() const { return write_index() >= write_count(); }
+  bool IsNextReadAsyncOrPause() const;
 
   void ExpectAllReadDataConsumed(SocketDataPrinter* printer) const;
   void ExpectAllWriteDataConsumed(SocketDataPrinter* printer) const;
@@ -569,6 +597,8 @@ class StaticSocketDataProvider : public SocketDataProvider {
   MockWriteResult OnWrite(const std::string& data) override;
   bool AllReadDataConsumed() const override;
   bool AllWriteDataConsumed() const override;
+  bool IsNextReadAsyncOrPause() const override;
+  bool IsReadReady() const override;
 
   size_t read_index() const { return helper_.read_index(); }
   size_t write_index() const { return helper_.write_index(); }
@@ -652,6 +682,7 @@ struct SSLSocketDataProvider {
   // Expects no trust anchors extension. This is a separate field to avoid a
   // confusing double-optional.
   bool expect_no_trust_anchor_ids = false;
+  std::optional<uint16_t> expected_server_padding_to_request;
 
   bool is_connect_data_consumed = false;
   bool is_confirm_data_consumed = false;
@@ -686,6 +717,8 @@ class SequencedSocketData : public SocketDataProvider {
   MockWriteResult OnWrite(const std::string& data) override;
   bool AllReadDataConsumed() const override;
   bool AllWriteDataConsumed() const override;
+  bool IsNextReadAsyncOrPause() const override;
+  bool IsReadReady() const override;
   bool IsIdle() const override;
   void CancelPendingRead() override;
 
@@ -796,7 +829,7 @@ class SocketDataProviderArray {
   size_t next_index_ = 0;
 
   // SocketDataProviders to be returned.
-  std::vector<T*> data_providers_;
+  std::vector<raw_ptr<T, DanglingUntriaged>> data_providers_;
 };
 
 class MockUDPClientSocket;
@@ -847,10 +880,12 @@ class MockClientSocketFactory : public ClientSocketFactory {
   // ClientSocketFactory
   std::unique_ptr<DatagramClientSocket> CreateDatagramClientSocket(
       DatagramSocket::BindType bind_type,
+      handles::NetworkHandle target_network,
       NetLog* net_log,
       const NetLogSource& source) override;
   std::unique_ptr<TransportClientSocket> CreateTransportClientSocket(
       const AddressList& addresses,
+      handles::NetworkHandle target_network,
       std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
       NetworkQualityEstimator* network_quality_estimator,
       NetLog* net_log,
@@ -1096,7 +1131,6 @@ class MockSSLClientSocket : public AsyncSocket, public SSLClientSocket {
 
   void RunConfirmHandshakeCallback(CompletionOnceCallback callback, int result);
 
-  bool connected_ = false;
   bool in_confirm_handshake_ = false;
   NetLogWithSource net_log_;
   std::unique_ptr<StreamSocket> stream_socket_;
@@ -1121,6 +1155,12 @@ class MockUDPClientSocket : public DatagramClientSocket, public AsyncSocket {
   int Read(IOBuffer* buf,
            int buf_len,
            CompletionOnceCallback callback) override;
+  base::expected<DatagramsMetadata, Error> ReadMultiple(
+      IOBuffer* buf,
+      size_t buf_len,
+      size_t maximum_packet_size,
+      base::OnceCallback<void(base::expected<DatagramsMetadata, Error>)>
+          callback) override;
   int Write(IOBuffer* buf,
             int buf_len,
             CompletionOnceCallback callback,
@@ -1181,9 +1221,18 @@ class MockUDPClientSocket : public DatagramClientSocket, public AsyncSocket {
 
  private:
   int CompleteRead();
+  void ClearPendingReadState();
 
   void RunCallbackAsync(CompletionOnceCallback callback, int result);
   void RunCallback(CompletionOnceCallback callback, int result);
+  void RunDatagramsCallback(
+      base::OnceCallback<void(base::expected<DatagramsMetadata, Error>)>
+          callback,
+      base::expected<DatagramsMetadata, Error> result);
+  void RunDatagramsCallbackAsync(
+      base::OnceCallback<void(base::expected<DatagramsMetadata, Error>)>
+          callback,
+      base::expected<DatagramsMetadata, Error> result);
 
   bool connected_ = false;
   raw_ptr<SocketDataProvider> data_;
@@ -1203,6 +1252,9 @@ class MockUDPClientSocket : public DatagramClientSocket, public AsyncSocket {
   scoped_refptr<IOBuffer> pending_read_buf_ = nullptr;
   int pending_read_buf_len_ = 0;
   CompletionOnceCallback pending_read_callback_;
+  base::OnceCallback<void(base::expected<DatagramsMetadata, Error>)>
+      pending_read_datagrams_callback_;
+  size_t pending_max_packet_size_ = 0;
   CompletionOnceCallback pending_write_callback_;
 
   NetLogWithSource net_log_;
@@ -1496,10 +1548,12 @@ class MockTaggingClientSocketFactory : public MockClientSocketFactory {
   // ClientSocketFactory implementation.
   std::unique_ptr<DatagramClientSocket> CreateDatagramClientSocket(
       DatagramSocket::BindType bind_type,
+      handles::NetworkHandle target_network,
       NetLog* net_log,
       const NetLogSource& source) override;
   std::unique_ptr<TransportClientSocket> CreateTransportClientSocket(
       const AddressList& addresses,
+      handles::NetworkHandle target_network,
       std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
       NetworkQualityEstimator* network_quality_estimator,
       NetLog* net_log,
@@ -1543,10 +1597,12 @@ extern const std::string_view kSOCKS5OkRequest;
 
 extern const std::string_view kSOCKS5OkResponse;
 
-// Helper function to get the total data size of the MockReads in |reads|.
+// Helper functions to get the total data size of the MockReads in |reads|.
+base::ByteSize CountReadByteSize(base::span<const MockRead> reads);
 int64_t CountReadBytes(base::span<const MockRead> reads);
 
-// Helper function to get the total data size of the MockWrites in |writes|.
+// Helper functions to get the total data size of the MockWrites in |writes|.
+base::ByteSize CountWriteByteSize(base::span<const MockWrite> writes);
 int64_t CountWriteBytes(base::span<const MockWrite> writes);
 
 #if BUILDFLAG(IS_ANDROID)
@@ -1557,10 +1613,6 @@ bool CanGetTaggedBytes();
 // |expected_tag| for our UID.  Return the count of received bytes.
 uint64_t GetTaggedBytes(int32_t expected_tag);
 #endif
-
-// This should be kept in sync with the field trial config's default pool.
-const SocketPoolAdditionalCapacity kFieldTrialPool =
-    SocketPoolAdditionalCapacity::CreateForTest(0.000001, 256, 0.01, 0.2);
 
 // The goal of this test is to walk a pool back and forth between being
 // capped and uncapped, tracking at what point the transition occurs

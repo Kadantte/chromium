@@ -36,12 +36,10 @@ namespace {
 class ZoomViewInteractiveUiTest : public InteractiveBrowserTest {
  public:
   ZoomViewInteractiveUiTest() {
-    // TODO(crbug.com/441102004): Update ShowAndHideZoomBubbleByClickWithMouse
-    //   to support kAiModeOmniboxEntryPoint.
     scoped_feature_list_.InitWithFeaturesAndParameters(
         {{features::kPageActionsMigration,
           {{features::kPageActionsMigrationZoom.name, "true"}}}},
-        {omnibox::kAiModeOmniboxEntryPoint});
+        {});
   }
 
   ZoomViewInteractiveUiTest(const ZoomViewInteractiveUiTest&) = delete;
@@ -195,6 +193,23 @@ IN_PROC_BROWSER_TEST_F(ZoomViewInteractiveUiTest,
                   CheckResult([&] { return GetZoomPercent(); }, 100),
                   WaitForZoomBubbleHide(),
                   WaitForHide(kActionItemZoomElementId));
+}
+
+IN_PROC_BROWSER_TEST_F(ZoomViewInteractiveUiTest,
+                       AccessibleNameUpdatesWhileBubbleVisible) {
+  RunTestSequence(
+      WaitForZoomBubbleHide(), DoZoomIn(),
+      WaitForShow(kActionItemZoomElementId),
+      CheckResult([&]() { return GetZoomPercent(); }, testing::Eq(110)),
+      CheckViewProperty(kActionItemZoomElementId,
+                        &page_actions::PageActionView::GetAccessibleName,
+                        u"Zoom: 110%"),
+      MoveMouseTo(kActionItemZoomElementId), ClickMouse(),
+      WaitForZoomBubbleShow(), DoZoomIn(),
+      CheckViewProperty(kActionItemZoomElementId,
+                        &page_actions::PageActionView::GetAccessibleName,
+                        u"Zoom: 125%"),
+      WaitForZoomBubbleShow());
 }
 
 }  // namespace

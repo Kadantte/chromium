@@ -11,7 +11,7 @@ class AuthenticationService;
 
 @protocol BWGGatewayProtocol;
 
-// GeminiStartupConfiguration is a configuration class that holds all the data
+// `GeminiStartupConfiguration` is a configuration class that holds all the data
 // necessary to configure Gemini at startup.
 @interface GeminiStartupConfiguration : NSObject
 
@@ -20,6 +20,14 @@ class AuthenticationService;
 
 // The BWG gateway for bridging internal protocols.
 @property(nonatomic, weak) id<BWGGatewayProtocol> gateway;
+
+// Whether image remix is enabled. This is not equivalent to a feature flag
+// because it has additional eligibility checks.
+@property(nonatomic, assign) BOOL imageRemixEnabled;
+
+// Whether Gemini Live is enabled. This is not equivalent to a feature flag
+// because it has additional eligibility checks.
+@property(nonatomic, assign) BOOL geminiLiveEnabled;
 
 @end
 

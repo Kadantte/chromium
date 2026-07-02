@@ -11,17 +11,19 @@ import android.content.res.TypedArray;
 import android.graphics.drawable.Drawable;
 import android.text.TextUtils;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.ImageButton;
 import android.widget.TextView;
 
 import androidx.annotation.ColorRes;
 import androidx.annotation.Px;
-import androidx.appcompat.content.res.AppCompatResources;
 import androidx.core.graphics.drawable.DrawableCompat;
 import androidx.core.widget.ImageViewCompat;
 
 import com.google.android.material.button.MaterialButton;
 
+import org.chromium.base.supplier.LazyOneshotSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.theme.ThemeModuleUtils;
 import org.chromium.chrome.browser.ui.appmenu.internal.R;
@@ -30,6 +32,7 @@ import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter;
 import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter.HighlightParams;
 import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter.HighlightShape;
 import org.chromium.ui.UiUtils;
+import org.chromium.ui.hierarchicalmenu.MenuItemWithSubmenuView;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -53,13 +56,16 @@ class AppMenuItemViewBinder {
         R.id.button_wrapper_five
     };
 
-    public static void bindStandardItem(PropertyModel model, View view, PropertyKey key) {
+    private static final View.AccessibilityDelegate sAccessibilityDelegate =
+            new AppMenuAccessibilityDelegate();
+
+    /* package */ static void bindStandardItem(PropertyModel model, View view, PropertyKey key) {
         if (key == AppMenuItemProperties.MENU_ITEM_ID) {
             int id = model.get(AppMenuItemProperties.MENU_ITEM_ID);
             view.setId(id);
         } else if (key == AppMenuItemProperties.TITLE) {
-            ((TextView) view.findViewById(R.id.menu_item_text))
-                    .setText(model.get(AppMenuItemProperties.TITLE));
+            CharSequence title = model.get(AppMenuItemProperties.TITLE);
+            ((TextView) view.findViewById(R.id.menu_item_text)).setText(title);
         } else if (key == AppMenuItemProperties.TITLE_CONDENSED) {
             setContentDescription(view.findViewById(R.id.menu_item_text), model);
         } else if (key == AppMenuItemProperties.ENABLED) {
@@ -74,6 +80,16 @@ class AppMenuItemViewBinder {
             }
         } else if (key == AppMenuItemProperties.ICON) {
             setIcon(view, model);
+        } else if (key == AppMenuItemProperties.ICON_SUPPLIER) {
+            LazyOneshotSupplier<Drawable> iconSupplier =
+                    model.get(AppMenuItemProperties.ICON_SUPPLIER);
+            if (iconSupplier != null) {
+                iconSupplier.onAvailable(
+                        (drawable) -> {
+                            model.set(AppMenuItemProperties.ICON, drawable);
+                        });
+                iconSupplier.get();
+            }
         } else if (key == AppMenuItemProperties.CLICK_HANDLER) {
             view.setOnTouchListener(
                     new OnPeripheralClickListener(
@@ -92,7 +108,18 @@ class AppMenuItemViewBinder {
         }
     }
 
-    public static void bindTitleButtonItem(PropertyModel model, View view, PropertyKey key) {
+    /* package */ static void bindHeaderItem(PropertyModel model, View view, PropertyKey key) {
+        if (key == AppMenuItemProperties.MENU_ITEM_ID) {
+            int id = model.get(AppMenuItemProperties.MENU_ITEM_ID);
+            view.setId(id);
+        } else if (key == AppMenuItemProperties.TITLE) {
+            CharSequence title = model.get(AppMenuItemProperties.TITLE);
+            ((TextView) view.findViewById(R.id.menu_item_text)).setText(title);
+            view.setTooltipText(title);
+        }
+    }
+
+    /* package */ static void bindTitleButtonItem(PropertyModel model, View view, PropertyKey key) {
         bindStandardItem(model, view, key);
 
         if (key == AppMenuItemProperties.ADDITIONAL_ICONS) {
@@ -116,8 +143,8 @@ class AppMenuItemViewBinder {
                 checkbox.setChecked(buttonModel.get(AppMenuItemProperties.CHECKED));
                 ImageViewCompat.setImageTintList(
                         checkbox,
-                        AppCompatResources.getColorStateList(
-                                checkbox.getContext(), R.color.selection_control_button_tint_list));
+                        checkbox.getContext()
+                                .getColorStateList(R.color.selection_control_button_tint_list));
                 setupMenuButton(checkbox, buttonModel, appMenuClickHandler);
             } else if (buttonModel.get(AppMenuItemProperties.ICON) != null) {
                 // Display an icon alongside the MenuItem.
@@ -129,9 +156,9 @@ class AppMenuItemViewBinder {
                     Drawable icon = buttonModel.get(AppMenuItemProperties.ICON);
                     DrawableCompat.setTintList(
                             icon,
-                            AppCompatResources.getColorStateList(
-                                    button.getContext(),
-                                    R.color.default_icon_color_secondary_tint_list));
+                            button.getContext()
+                                    .getColorStateList(
+                                            R.color.default_icon_color_secondary_tint_list));
                     buttonModel.set(AppMenuItemProperties.ICON, icon);
                 }
                 setupImageButton(button, buttonModel, appMenuClickHandler);
@@ -165,7 +192,7 @@ class AppMenuItemViewBinder {
         }
     }
 
-    public static void bindIconRowItem(PropertyModel model, View view, PropertyKey key) {
+    /* package */ static void bindIconRowItem(PropertyModel model, View view, PropertyKey key) {
         if (key == AppMenuItemProperties.ADDITIONAL_ICONS) {
             // Obtain from the current theme a typed array containing all the attributes.
             TypedArray typedArray =
@@ -207,12 +234,13 @@ class AppMenuItemViewBinder {
                                 isChecked
                                         ? R.color.default_icon_color_accent1_tint_list
                                         : R.color.default_icon_color_tint_list;
-                        button.setIconTint(
-                                AppCompatResources.getColorStateList(button.getContext(), resId));
+                        button.setIconTint(button.getContext().getColorStateList(resId));
                     } else {
-                        button.setCheckable(true);
-                        button.setChecked(isChecked);
+                        button.setCheckable(false);
+                        button.setSelected(isChecked);
+                        button.setAccessibilityDelegate(sAccessibilityDelegate);
                     }
+
                     setupMenuButton(button, iconList.get(i).model, appMenuClickHandler);
                 } else {
                     buttonWrapper.setVisibility(View.GONE);
@@ -230,7 +258,7 @@ class AppMenuItemViewBinder {
         }
     }
 
-    public static @Px int getIconRowItemPixelHeight(Context context) {
+    /* package */ static @Px int getIconRowItemPixelHeight(Context context, PropertyModel model) {
         TypedArray a =
                 context.obtainStyledAttributes(
                         new int[] {R.attr.minInteractTargetSize, R.attr.appMenuIconRowPadding});
@@ -241,56 +269,51 @@ class AppMenuItemViewBinder {
         return itemRowHeight + 2 * iconRowPadding;
     }
 
-    public static void bindItemWithSubmenu(PropertyModel model, View view, PropertyKey key) {
-        if (key == AppMenuItemProperties.MENU_ITEM_ID) {
-            int id = model.get(AppMenuItemProperties.MENU_ITEM_ID);
-            view.setId(id);
-        } else if (key == AppMenuItemProperties.TITLE) {
-            ((TextView) view.findViewById(R.id.menu_item_text))
-                    .setText(model.get(AppMenuItemProperties.TITLE));
-        } else if (key == AppMenuItemProperties.TITLE_CONDENSED) {
-            setContentDescription(view.findViewById(R.id.menu_item_text), model);
-        } else if (key == AppMenuItemProperties.ENABLED) {
-            boolean enabled = model.get(AppMenuItemProperties.ENABLED);
-            view.setEnabled(enabled);
-        } else if (key == AppMenuItemProperties.HIGHLIGHTED) {
-            if (model.get(AppMenuItemProperties.HIGHLIGHTED)) {
-                ViewHighlighter.turnOnHighlight(
-                        view, new HighlightParams(HighlightShape.RECTANGLE));
-            } else {
-                ViewHighlighter.turnOffHighlight(view);
-            }
-        } else if (key == AppMenuItemProperties.ICON) {
-            setIcon(view, model);
-        } else if (key == AppMenuItemWithSubmenuProperties.CLICK_LISTENER) {
-            view.setOnClickListener(model.get(AppMenuItemWithSubmenuProperties.CLICK_LISTENER));
-        } else if (key == AppMenuItemProperties.HOVER_LISTENER) {
-            view.setOnHoverListener(model.get(AppMenuItemProperties.HOVER_LISTENER));
-        } else if (key == AppMenuItemProperties.HAS_HOVER_BACKGROUND) {
-            view.setHovered(model.get(AppMenuItemProperties.HAS_HOVER_BACKGROUND));
-        } else if (key == AppMenuItemProperties.KEY_LISTENER) {
-            view.setOnKeyListener(model.get(AppMenuItemProperties.KEY_LISTENER));
+    private static @Px int getListItemHeight(Context context) {
+        TypedArray a = context.obtainStyledAttributes(new int[] {R.attr.listItemHeight});
+        int height = a.getDimensionPixelSize(0, 0);
+        a.recycle();
+
+        return height;
+    }
+
+    /* package */ static @Px int getSubmenuHeaderPixelHeight(Context context, PropertyModel model) {
+        if (model.get(AppMenuSubmenuHeaderItemProperties.SHOULD_SHOW_ICON_ROW)) {
+            return getIconRowItemPixelHeight(context, model);
+        } else {
+            return getListItemHeight(context);
         }
     }
 
-    public static void bindSubmenuHeader(PropertyModel model, View view, PropertyKey key) {
-        if (key == AppMenuItemProperties.MENU_ITEM_ID) {
-            int id = model.get(AppMenuItemProperties.MENU_ITEM_ID);
-            view.setId(id);
-        } else if (key == AppMenuItemProperties.TITLE) {
-            ((TextView) view.findViewById(R.id.menu_item_text))
-                    .setText(model.get(AppMenuItemProperties.TITLE));
-        } else if (key == AppMenuItemProperties.ENABLED) {
-            boolean enabled = model.get(AppMenuItemProperties.ENABLED);
-            view.setEnabled(enabled);
+    /* package */ static @Px int getHeaderPixelHeight(Context context, PropertyModel model) {
+        return context.getResources().getDimensionPixelSize(R.dimen.menu_header_height);
+    }
+
+    /* package */ static void bindItemWithSubmenu(PropertyModel model, View view, PropertyKey key) {
+        bindStandardItem(model, view, key);
+
+        if (key == AppMenuItemWithSubmenuProperties.IS_EXPANDED) {
+            ((MenuItemWithSubmenuView) view)
+                    .setIsExpanded(model.get(AppMenuItemWithSubmenuProperties.IS_EXPANDED));
         } else if (key == AppMenuItemWithSubmenuProperties.CLICK_LISTENER) {
             view.setOnClickListener(model.get(AppMenuItemWithSubmenuProperties.CLICK_LISTENER));
-        } else if (key == AppMenuItemProperties.KEY_LISTENER) {
-            view.setOnKeyListener(model.get(AppMenuItemProperties.KEY_LISTENER));
         }
     }
 
-    public static void setContentDescription(View view, final PropertyModel model) {
+    /* package */ static void bindSubmenuHeader(PropertyModel model, View view, PropertyKey key) {
+        bindStandardItem(model, view, key);
+
+        if (key == AppMenuItemWithSubmenuProperties.CLICK_LISTENER) {
+            view.setOnClickListener(model.get(AppMenuItemWithSubmenuProperties.CLICK_LISTENER));
+        } else if (key == AppMenuSubmenuHeaderItemProperties.SHOULD_SHOW_ICON_ROW) {
+            ViewGroup.LayoutParams params = view.getLayoutParams();
+            assert params != null;
+            params.height = getSubmenuHeaderPixelHeight(view.getContext(), model);
+            view.setLayoutParams(params);
+        }
+    }
+
+    /* package */ static void setContentDescription(View view, final PropertyModel model) {
         CharSequence titleCondensed = model.get(AppMenuItemProperties.TITLE_CONDENSED);
         if (TextUtils.isEmpty(titleCondensed)) {
             view.setContentDescription(null);
@@ -300,8 +323,15 @@ class AppMenuItemViewBinder {
     }
 
     private static void setIcon(View view, final PropertyModel model) {
-        Drawable icon = model.get(AppMenuItemProperties.ICON);
         ChromeImageView imageView = view.findViewById(R.id.menu_item_icon);
+        if (imageView == null) {
+            return;
+        }
+
+        Drawable icon = model.get(AppMenuItemProperties.ICON);
+        LazyOneshotSupplier<Drawable> iconSupplier = model.get(AppMenuItemProperties.ICON_SUPPLIER);
+
+        boolean hasIcon = icon != null || iconSupplier != null;
 
         @ColorRes int colorResId = model.get(AppMenuItemProperties.ICON_COLOR_RES);
         ColorStateList tintList = null;
@@ -312,10 +342,10 @@ class AppMenuItemViewBinder {
         } else if (colorResId == 0) {
             // If there is no color assigned to the icon, use the default color.
             colorResId = R.color.default_icon_color_secondary_tint_list;
-            tintList = AppCompatResources.getColorStateList(imageView.getContext(), colorResId);
+            tintList = imageView.getContext().getColorStateList(colorResId);
         } else {
             // User the specific color requested.
-            tintList = AppCompatResources.getColorStateList(imageView.getContext(), colorResId);
+            tintList = imageView.getContext().getColorStateList(colorResId);
         }
 
         if (model.get(AppMenuItemProperties.ICON_SHOW_BADGE)) {
@@ -335,7 +365,7 @@ class AppMenuItemViewBinder {
         }
 
         imageView.setImageDrawable(icon);
-        imageView.setVisibility(icon == null ? View.GONE : View.VISIBLE);
+        imageView.setVisibility(hasIcon ? View.VISIBLE : View.GONE);
 
         // tint the icon
         ImageViewCompat.setImageTintList(imageView, tintList);
@@ -357,8 +387,8 @@ class AppMenuItemViewBinder {
         if (model.get(AppMenuItemProperties.CHECKED)) {
             ImageViewCompat.setImageTintList(
                     button,
-                    AppCompatResources.getColorStateList(
-                            button.getContext(), R.color.default_icon_color_accent1_tint_list));
+                    button.getContext()
+                            .getColorStateList(R.color.default_icon_color_accent1_tint_list));
         }
 
         setupMenuButton(button, model, appMenuClickHandler);
@@ -391,5 +421,13 @@ class AppMenuItemViewBinder {
 
         // Menu items may be hidden by command line flags before they get to this point.
         button.setVisibility(View.VISIBLE);
+    }
+
+    private static final class AppMenuAccessibilityDelegate extends View.AccessibilityDelegate {
+        @Override
+        public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
+            super.onInitializeAccessibilityNodeInfo(host, info);
+            info.setSelected(false);
+        }
     }
 }

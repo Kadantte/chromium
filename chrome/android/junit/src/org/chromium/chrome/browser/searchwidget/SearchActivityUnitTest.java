@@ -26,10 +26,10 @@ import static org.robolectric.Shadows.shadowOf;
 
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
 
-import android.app.Activity;
 import android.app.SearchManager;
 import android.content.Intent;
 import android.content.res.ColorStateList;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.view.View;
 import android.view.View.OnClickListener;
@@ -48,16 +48,13 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.Implementation;
-import org.robolectric.annotation.Implements;
 import org.robolectric.shadows.ShadowActivity;
-import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.Callback;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.UserActionTester;
@@ -89,25 +86,18 @@ import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.R
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.SearchType;
 import org.chromium.components.metrics.OmniboxEventProtos.OmniboxEventProto.PageClassification;
 import org.chromium.components.omnibox.AutocompleteInput;
-import org.chromium.components.omnibox.OmniboxFeatureList;
-import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.PageTransition;
+import org.chromium.ui.test.util.MockitoHelper;
 import org.chromium.url.GURL;
 
 import java.util.Map;
 import java.util.Set;
 
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {
-            SearchActivityUnitTest.ShadowSearchActivityUtils.class,
-            SearchActivityUnitTest.ShadowTabBuilder.class,
-        })
+@Config(manifest = Config.NONE)
 @EnableFeatures({
-    ChromeFeatureList.PROCESS_RANK_POLICY_ANDROID,
     ChromeFeatureList.UMA_SESSION_CORRECTNESS_FIXES
 })
 public class SearchActivityUnitTest {
@@ -121,35 +111,8 @@ public class SearchActivityUnitTest {
     private static final String HISTOGRAM_SUFFIX_LAUNCHER = ".Launcher";
     private static final String HISTOGRAM_SUFFIX_HUB = ".Hub";
 
-    // SearchActivityUtils call intercepting mock.
-    private interface TestSearchActivityUtils {
-        void resolveOmniboxRequestForResult(Activity activity, OmniboxLoadUrlParams params);
-    }
-
-    // Shadow forwarding static calls to TestSearchActivityUtils.
-    @Implements(SearchActivityUtils.class)
-    public static class ShadowSearchActivityUtils {
-        static TestSearchActivityUtils sMockUtils;
-
-        @Implementation
-        public static void resolveOmniboxRequestForResult(
-                Activity activity, OmniboxLoadUrlParams params) {
-            sMockUtils.resolveOmniboxRequestForResult(activity, params);
-        }
-    }
-
-    @Implements(TabBuilder.class)
-    public static class ShadowTabBuilder {
-        static Tab sMockTab;
-
-        @Implementation
-        public Tab build() {
-            return sMockTab;
-        }
-    }
-
     public @Rule MockitoRule mMockitoRule = MockitoJUnit.rule();
-    private @Mock TestSearchActivityUtils mUtils;
+    private @Mock SearchActivityUtils.TestDelegate mUtils;
     private @Mock TemplateUrlService mTemplateUrlSvc;
     private @Mock Profile mProfile;
     private @Mock TemplateUrlServiceFactoryJni mTemplateUrlFactoryJni;
@@ -171,6 +134,7 @@ public class SearchActivityUnitTest {
     private ShadowActivity mShadowActivity;
     private SearchBoxDataProvider mDataProvider;
     private View mAnchorView;
+    private View mControlContainer;
 
     @Before
     public void setUp() {
@@ -202,6 +166,11 @@ public class SearchActivityUnitTest {
                 ContextCompat.getColor(mActivity, R.color.search_suggestion_bg_color));
         mAnchorView.setBackground(anchorViewBackground);
         mActivity.setAnchorViewForTesting(mAnchorView);
+
+        mControlContainer = new View(mActivity);
+        doReturn(mControlContainer).when(mActivity).findViewById(R.id.control_container);
+        mActivity.setControlContainerForTesting(mControlContainer);
+
         mActivity.setLocationBarCoordinatorForTesting(mLocationBarCoordinator);
 
         lenient().when(mLocationBar.getBackground()).thenReturn(mSearchBoxBackground);
@@ -210,16 +179,16 @@ public class SearchActivityUnitTest {
                 .thenReturn(mStatusCoordinator);
         lenient().when(mLocationBarCoordinator.getUrlBarCoordinator()).thenReturn(mUrlCoordinator);
 
-        ShadowSearchActivityUtils.sMockUtils = mUtils;
+        SearchActivityUtils.setDelegateForTesting(mUtils);
         WebContentsFactory.setWebContentsForTesting(mWebContents);
-        ShadowTabBuilder.sMockTab = mTab;
+        TabBuilder.setTabForTesting(mTab);
         RevenueStats.setCustomTabSearchClientHookForTesting(mSetCustomTabSearchClient);
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
     }
 
     @After
     public void tearDown() {
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         FirstRunStatus.setFirstRunFlowComplete(false);
         IdentityServicesProvider.setInstanceForTests(null);
         TemplateUrlServiceFactory.setInstanceForTesting(null);
@@ -243,7 +212,7 @@ public class SearchActivityUnitTest {
 
     private void setProfile(Profile profile) {
         ProfileManager.setLastUsedProfileForTesting(profile);
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
     }
 
     @Test
@@ -432,6 +401,7 @@ public class SearchActivityUnitTest {
                 mDataProvider.getPageClassification(/* prefetch= */ false));
         assertFalse(mActivity.getEmbedderUiOverridesForTesting().isLensEntrypointAllowed());
         assertFalse(mActivity.getEmbedderUiOverridesForTesting().isVoiceEntrypointAllowed());
+        assertTrue(mActivity.getEmbedderUiOverridesForTesting().isEmbedderControlledHint());
 
         verify(mStatusCoordinator).setOnStatusIconNavigateBackButtonPress(any());
     }
@@ -765,12 +735,12 @@ public class SearchActivityUnitTest {
         setProfile(mProfile);
         mActivity.finishNativeInitialization();
 
-        ArgumentCaptor<Callback<Boolean>> captor = ArgumentCaptor.forClass(Callback.class);
+        ArgumentCaptor<Callback<Boolean>> captor = MockitoHelper.callbackCaptor();
         verify(mDelegate).showSearchEngineDialogIfNeeded(eq(mActivity), captor.capture());
 
         // Notify Activity that the search engine promo dialog was canceled.
         captor.getValue().onResult(false);
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         verify(mActivity, never()).finishDeferredInitialization();
         assertTrue(mActivity.isFinishing());
@@ -784,12 +754,12 @@ public class SearchActivityUnitTest {
         setProfile(mProfile);
         mActivity.finishNativeInitialization();
 
-        ArgumentCaptor<Callback<Boolean>> captor = ArgumentCaptor.forClass(Callback.class);
+        ArgumentCaptor<Callback<Boolean>> captor = MockitoHelper.callbackCaptor();
         verify(mDelegate).showSearchEngineDialogIfNeeded(eq(mActivity), captor.capture());
 
         // "should never happen".
         captor.getValue().onResult(null);
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         verify(mActivity, never()).finishDeferredInitialization();
         assertTrue(mActivity.isFinishing());
@@ -803,12 +773,12 @@ public class SearchActivityUnitTest {
         setProfile(mProfile);
         mActivity.finishNativeInitialization();
 
-        ArgumentCaptor<Callback<Boolean>> captor = ArgumentCaptor.forClass(Callback.class);
+        ArgumentCaptor<Callback<Boolean>> captor = MockitoHelper.callbackCaptor();
         verify(mDelegate).showSearchEngineDialogIfNeeded(eq(mActivity), captor.capture());
 
         // Notify Activity that the search engine promo dialog was completed.
         captor.getValue().onResult(true);
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         verify(mActivity).finishDeferredInitialization();
         assertFalse(mActivity.isFinishing());
@@ -834,19 +804,18 @@ public class SearchActivityUnitTest {
         setProfile(mProfile);
         mActivity.finishNativeInitialization();
 
-        ArgumentCaptor<Callback<Boolean>> captor = ArgumentCaptor.forClass(Callback.class);
+        ArgumentCaptor<Callback<Boolean>> captor = MockitoHelper.callbackCaptor();
         verify(mDelegate).showSearchEngineDialogIfNeeded(eq(mActivity), captor.capture());
 
         // Cancel activity, and notify that the search engine promo dialog was completed.
         mActivity.finish(TerminationReason.ACTIVITY_FOCUS_LOST, null);
         captor.getValue().onResult(true);
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         verify(mActivity, never()).finishDeferredInitialization();
     }
 
     @Test
-    @DisableFeatures({OmniboxFeatureList.ANDROID_HUB_SEARCH_TAB_GROUPS})
     public void finishNativeInitialization_setHubSearchBoxUrlBarElements() {
         mActivity.handleNewIntent(buildTestServiceIntent(IntentOrigin.HUB), false);
 
@@ -854,22 +823,6 @@ public class SearchActivityUnitTest {
         mActivity.finishNativeInitialization();
 
         String expectedText = mActivity.getResources().getString(R.string.hub_search_empty_hint);
-
-        verify(mUrlCoordinator).setUrlBarHintText(expectedText);
-    }
-
-    @Test
-    @EnableFeatures({OmniboxFeatureList.ANDROID_HUB_SEARCH_TAB_GROUPS})
-    public void finishNativeInitialization_setHubSearchBoxUrlBarElements_withTabGroups() {
-        OmniboxFeatures.sAndroidHubSearchEnableTabGroupStrings.setForTesting(true);
-
-        mActivity.handleNewIntent(buildTestServiceIntent(IntentOrigin.HUB), false);
-
-        setProfile(mProfile);
-        mActivity.finishNativeInitialization();
-
-        String expectedText =
-                mActivity.getResources().getString(R.string.hub_search_empty_hint_with_tab_groups);
 
         verify(mUrlCoordinator).setUrlBarHintText(expectedText);
     }
@@ -1149,34 +1102,46 @@ public class SearchActivityUnitTest {
         mActivity.handleNewIntent(buildTestServiceIntent(IntentOrigin.HUB), false);
 
         // Assert that the search box has the correct color scheme on inflation.
+        int expectedRegularColor = mActivity.getColor(R.color.omnibox_suggestion_dropdown_bg);
         assertEquals(
-                ColorStateList.valueOf(mActivity.getColor(R.color.omnibox_suggestion_dropdown_bg)),
+                ColorStateList.valueOf(expectedRegularColor),
                 ((GradientDrawable) mAnchorView.getBackground()).getColor());
         verify(mSearchBoxBackground)
                 .setBackgroundColor(
                         ContextCompat.getColor(mActivity, R.color.search_suggestion_bg_color));
+        // Assert that the control container has the same color as the anchor view.
+        assertEquals(
+                expectedRegularColor,
+                ((ColorDrawable) mControlContainer.getBackground()).getColor());
 
         // Toggle the incognito state and check that the search box has the correct color scheme.
         mDataProvider.setIsIncognitoForTesting(true);
         mActivity.handleNewIntent(buildTestServiceIntent(IntentOrigin.HUB), false);
 
+        int expectedIncognitoColor = mActivity.getColor(R.color.omnibox_dropdown_bg_incognito);
         assertEquals(
-                ColorStateList.valueOf(mActivity.getColor(R.color.omnibox_dropdown_bg_incognito)),
+                ColorStateList.valueOf(expectedIncognitoColor),
                 ((GradientDrawable) mAnchorView.getBackground()).getColor());
         verify(mSearchBoxBackground)
                 .setBackgroundColor(
                         ContextCompat.getColor(
                                 mActivity, R.color.toolbar_text_box_background_incognito));
+        assertEquals(
+                expectedIncognitoColor,
+                ((ColorDrawable) mControlContainer.getBackground()).getColor());
 
         // Toggle to non-incognito and check that the search box has the correct color scheme.
         mDataProvider.setIsIncognitoForTesting(false);
         mActivity.handleNewIntent(buildTestServiceIntent(IntentOrigin.HUB), false);
 
         assertEquals(
-                ColorStateList.valueOf(mActivity.getColor(R.color.omnibox_suggestion_dropdown_bg)),
+                ColorStateList.valueOf(expectedRegularColor),
                 ((GradientDrawable) mAnchorView.getBackground()).getColor());
         verify(mSearchBoxBackground, times(2))
                 .setBackgroundColor(
                         ContextCompat.getColor(mActivity, R.color.search_suggestion_bg_color));
+        assertEquals(
+                expectedRegularColor,
+                ((ColorDrawable) mControlContainer.getBackground()).getColor());
     }
 }

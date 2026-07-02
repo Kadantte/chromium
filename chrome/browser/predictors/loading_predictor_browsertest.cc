@@ -53,6 +53,8 @@
 #include "components/page_load_metrics/browser/page_load_metrics_test_waiter.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/preconnect_manager.h"
@@ -61,15 +63,18 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/content_features.h"
+#include "content/public/common/page_type.h"
 #include "content/public/common/referrer.h"
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/content_mock_cert_verifier.h"
 #include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/preconnect_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/simple_url_loader_test_helper.h"
 #include "content/public/test/test_frame_navigation_observer.h"
+#include "content/public/test/test_navigation_observer.h"
 #include "net/base/features.h"
 #include "net/base/network_anonymization_key.h"
 #include "net/dns/mock_host_resolver.h"
@@ -529,7 +534,7 @@ class LoadingPredictorBrowserTest : public InProcessBrowserTest {
   // simultaneous navigations and avoids triggering the reload behavior.
   std::unique_ptr<content::TestNavigationManager> NavigateToURLAsync(
       const GURL& url) {
-    chrome::NewTab(browser());
+    chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
     content::WebContents* tab =
         browser()->tab_strip_model()->GetActiveWebContents();
     DCHECK(tab);
@@ -722,7 +727,7 @@ IN_PROC_BROWSER_TEST_F(LoadingPredictorBrowserTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   net::SchemefulSite site = net::SchemefulSite(url);
   auto network_anonymization_key =
-      net::NetworkAnonymizationKey ::CreateSameSite(site);
+      net::NetworkAnonymizationKey ::CreateSameSite(std::move(site));
   // Ensure that no backgound task would make a host lookup or attempt to
   // preconnect.
   base::RunLoop().RunUntilIdle();
@@ -765,7 +770,7 @@ IN_PROC_BROWSER_TEST_F(LoadingPredictorBrowserTest,
                                              embedded_test_server()->port()));
   net::SchemefulSite site = net::SchemefulSite(url);
   auto network_anonymization_key =
-      net::NetworkAnonymizationKey ::CreateSameSite(site);
+      net::NetworkAnonymizationKey ::CreateSameSite(std::move(site));
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   ResetNetworkState();
   ResetPredictorState();
@@ -918,7 +923,7 @@ IN_PROC_BROWSER_TEST_F(LoadingPredictorBrowserTest,
                                              embedded_test_server()->port()));
   net::SchemefulSite site = net::SchemefulSite(url);
   auto network_anonymization_key =
-      net::NetworkAnonymizationKey::CreateSameSite(site);
+      net::NetworkAnonymizationKey::CreateSameSite(std::move(site));
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   ResetNetworkState();
 
@@ -945,7 +950,7 @@ IN_PROC_BROWSER_TEST_F(LoadingPredictorBrowserTest, DnsPrefetch) {
   GURL url = embedded_test_server()->GetURL("/predictor/dns_prefetch.html");
   net::SchemefulSite site = net::SchemefulSite(url);
   auto network_anonymization_key =
-      net::NetworkAnonymizationKey::CreateSameSite(site);
+      net::NetworkAnonymizationKey::CreateSameSite(std::move(site));
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   preconnect_manager_observer()->WaitUntilHostLookedUp(
       GURL(kChromiumUrl).GetHost(), network_anonymization_key);
@@ -1874,7 +1879,7 @@ IN_PROC_BROWSER_TEST_P(LoadingPredictorNetworkIsolationKeyBrowserTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), preconnecting_test_server()->GetURL(kHost1, "/title1.html")));
 
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   content::WebContents* tab2 =
       browser()->tab_strip_model()->GetActiveWebContents();
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
@@ -1945,7 +1950,7 @@ IN_PROC_BROWSER_TEST_P(LoadingPredictorNetworkIsolationKeyBrowserTest,
   ASSERT_EQ(kHost2, iframe_2->GetLastCommittedOrigin().host());
 
   // Create another tab without an iframe, at kHost2.
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   content::WebContents* tab2 =
       browser()->tab_strip_model()->GetActiveWebContents();
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
@@ -2075,7 +2080,7 @@ IN_PROC_BROWSER_TEST_F(LoadingPredictorBrowserTestWithProxy,
                                              embedded_test_server()->port()));
   net::SchemefulSite site = net::SchemefulSite(url);
   auto network_anonymization_key =
-      net::NetworkAnonymizationKey::CreateSameSite(site);
+      net::NetworkAnonymizationKey::CreateSameSite(std::move(site));
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   ResetNetworkState();
   ResetPredictorState();
@@ -2104,7 +2109,7 @@ IN_PROC_BROWSER_TEST_F(LoadingPredictorBrowserTestWithProxy,
                                              embedded_test_server()->port()));
   net::SchemefulSite site = net::SchemefulSite(url);
   auto network_anonymization_key =
-      net::NetworkAnonymizationKey::CreateSameSite(site);
+      net::NetworkAnonymizationKey::CreateSameSite(std::move(site));
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   ResetNetworkState();
 
@@ -2240,7 +2245,7 @@ IN_PROC_BROWSER_TEST_P(LoadingPredictorBrowserTestWithOptimizationGuide,
                                              embedded_test_server()->port()));
   net::SchemefulSite site = net::SchemefulSite(url);
   auto network_anonymization_key =
-      net::NetworkAnonymizationKey::CreateSameSite(site);
+      net::NetworkAnonymizationKey::CreateSameSite(std::move(site));
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   ResetNetworkState();
 
@@ -2282,7 +2287,7 @@ IN_PROC_BROWSER_TEST_P(LoadingPredictorBrowserTestWithOptimizationGuide,
   url::Origin origin = url::Origin::Create(url);
   net::SchemefulSite site = net::SchemefulSite(origin);
   auto network_anonymization_key =
-      net::NetworkAnonymizationKey::CreateSameSite(site);
+      net::NetworkAnonymizationKey::CreateSameSite(std::move(site));
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   ResetNetworkState();
 
@@ -2342,7 +2347,7 @@ IN_PROC_BROWSER_TEST_P(LoadingPredictorBrowserTestWithOptimizationGuide,
   url::Origin origin = url::Origin::Create(url);
   net::SchemefulSite site = net::SchemefulSite(origin);
   auto network_anonymization_key =
-      net::NetworkAnonymizationKey::CreateSameSite(site);
+      net::NetworkAnonymizationKey::CreateSameSite(std::move(site));
 
   auto observer = NavigateToURLAsync(url);
   EXPECT_TRUE(observer->WaitForRequestStart());
@@ -2495,7 +2500,7 @@ IN_PROC_BROWSER_TEST_F(LoadingPredictorBrowserTestWithNoLocalPredictions,
   url::Origin origin = url::Origin::Create(url);
   net::SchemefulSite site = net::SchemefulSite(origin);
   auto network_anonymization_key =
-      net::NetworkAnonymizationKey::CreateSameSite(site);
+      net::NetworkAnonymizationKey::CreateSameSite(std::move(site));
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   ResetNetworkState();
 
@@ -2726,7 +2731,7 @@ class LoadingPredictorPrefetchBrowserTestWithBlockedLocalRequest
 };
 
 // Test that prefetches to local resources are blocked.
-// Disabled for being flaky. crbug.com/1116599
+// Disabled for being flaky. crbug.com/40144804
 IN_PROC_BROWSER_TEST_P(
     LoadingPredictorPrefetchBrowserTestWithBlockedLocalRequest,
     DISABLED_PrepareForPageLoadWithPredictionForPrefetch) {
@@ -2989,9 +2994,7 @@ IN_PROC_BROWSER_TEST_F(LoadingPredictorMultiplePageBrowserTest,
   EXPECT_EQ(2u, loading_predictor->GetTotalHintsActivatedForTesting());
 }
 
-// Test interaction with fenced frame `window.fence.disableUntrustedNetwork()`
-// API. See:
-// https://github.com/WICG/fenced-frame/blob/master/explainer/fenced_frames_with_local_unpartitioned_data_access.md#revoking-network-access
+// Test interaction with fenced frames.
 class FencedFrameLoadingPredictorBrowserTest
     : public LoadingPredictorBrowserTest {
  public:
@@ -3063,234 +3066,52 @@ IN_PROC_BROWSER_TEST_F(FencedFrameLoadingPredictorBrowserTest, DnsPrefetch) {
       dns_prefetch_url.GetHost(), network_anonymization_key));
 }
 
-// Verify DNS prefetch is disabled after fenced frame untrusted network cutoff.
-IN_PROC_BROWSER_TEST_F(FencedFrameLoadingPredictorBrowserTest,
-                       NetworkCutoffDisablesDnsPrefetch) {
-  ASSERT_TRUE(embedded_https_test_server().Start());
-
-  // Navigate to a page that contains a fenced frame.
-  const GURL main_url = embedded_https_test_server().GetURL(
-      "a.test", "/cross_site_iframe_factory.html?a.test(a.test{fenced})");
-  EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url));
-
-  // Get fenced frame render frame host.
-  std::vector<content::RenderFrameHost*> child_frames =
-      fenced_frame_test_helper().GetChildFencedFrameHosts(
-          GetWebContents()->GetPrimaryMainFrame());
-  ASSERT_EQ(child_frames.size(), 1u);
-  content::RenderFrameHost* fenced_frame_rfh = child_frames[0];
-
-  // Get fenced frame NetworkAnonymizationKey.
-  const net::NetworkAnonymizationKey& network_anonymization_key =
-      fenced_frame_rfh->GetIsolationInfoForSubresources()
-          .network_anonymization_key();
-
-  GURL dns_prefetch_url("https://chromium.org");
-
-  // Disable fenced frame untrusted network access, then add a link element
-  // that does a DNS prefetch.
-  EXPECT_TRUE(ExecJs(fenced_frame_rfh, content::JsReplace(R"(
-            (async () => {
-              await window.fence.disableUntrustedNetwork().then(
-                () => {
-                  var link_element = document.createElement('link');
-                  link_element.href = $1;
-                  link_element.rel = 'dns-prefetch';
-                  document.body.appendChild(link_element);
-                }
-              );
-            })();
-          )",
-                                                          dns_prefetch_url)));
-
-  // The observer should observe a DNS prefetch which is cancelled.
-  preconnect_manager_observer()->WaitUntilHostLookedUp(
-      dns_prefetch_url.GetHost(), network_anonymization_key);
-
-  // The host is looked up, but the lookup is eventually cancelled because the
-  // fenced frame untrusted network access has been disabled.
-  EXPECT_TRUE(preconnect_manager_observer()->HasHostBeenLookedUp(
-      dns_prefetch_url.GetHost(), network_anonymization_key));
-  EXPECT_FALSE(preconnect_manager_observer()->HostFound(
-      dns_prefetch_url.GetHost(), network_anonymization_key));
-}
-
-// Verify DNS prefetch triggered by link response header is working in fenced
-// frame.
-// TODO(crbug.com/360154073): Disabled for flakiness.
-IN_PROC_BROWSER_TEST_F(FencedFrameLoadingPredictorBrowserTest,
-                       DISABLED_DnsPrefetchFromLinkHeader) {
-  std::string relative_url = "/title1.html";
-  net::test_server::ControllableHttpResponse response(
-      &embedded_https_test_server(), relative_url);
-
-  ASSERT_TRUE(embedded_https_test_server().Start());
-
-  // Navigate to a page that contains a fenced frame.
-  const GURL main_url = embedded_https_test_server().GetURL(
-      "a.test", "/cross_site_iframe_factory.html?a.test(a.test{fenced})");
-  EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url));
-
-  // Get fenced frame render frame host.
-  std::vector<content::RenderFrameHost*> child_frames =
-      fenced_frame_test_helper().GetChildFencedFrameHosts(
-          GetWebContents()->GetPrimaryMainFrame());
-  ASSERT_EQ(child_frames.size(), 1u);
-  content::RenderFrameHost* fenced_frame_rfh = child_frames[0];
-
-  GURL dns_prefetch_url("https://chromium.org");
-  GURL navigation_url =
-      embedded_https_test_server().GetURL("a.test", relative_url);
-
-  // Navigate the fenced frame.
-  content::TestFrameNavigationObserver observer(fenced_frame_rfh);
-
-  EXPECT_TRUE(
-      ExecJs(GetWebContents()->GetPrimaryMainFrame(),
-             content::JsReplace(
-                 R"(document.getElementsByTagName('fencedframe')[0].config =
-                         new FencedFrameConfig($1);)",
-                 navigation_url)));
-
-  // Send a response header with link dns-prefetch field.
-  response.WaitForRequest();
-  ResetNetworkState();
-  ResetPredictorState();
-  response.Send(
-      base::StringPrintf("HTTP/1.1 200 OK\r\n"
-                         "Content-Type: text/html; charset=utf-8\r\n"
-                         "Supports-Loading-Mode: fenced-frame\r\n"
-                         "Link: <%s>; rel=dns-prefetch\r\n"
-                         "\r\n",
-                         dns_prefetch_url.spec().c_str()));
-  response.Done();
-
-  // Wait until navigation commits.
-  observer.WaitForCommit();
-
-  // Get the fenced frame render frame host again as it has changed after
-  // navigation.
-  child_frames = fenced_frame_test_helper().GetChildFencedFrameHosts(
-      GetWebContents()->GetPrimaryMainFrame());
-  ASSERT_EQ(child_frames.size(), 1u);
-  fenced_frame_rfh = child_frames[0];
-
-  // Get fenced frame NetworkAnonymizationKey after navigation commits. This
-  // is because DNS prefetch uses the NetworkAnonymizationKey from the
-  // IsolationInfo of the pending navigation. So the NetworkAnonymizationKey
-  // used for the checks below needs to be obtained from the new fenced frame
-  // render frame host.
-  const net::NetworkAnonymizationKey& network_anonymization_key =
-      fenced_frame_rfh->GetIsolationInfoForSubresources()
-          .network_anonymization_key();
-
-  // The observer should observe a DNS prefetch which succeeds.
-  preconnect_manager_observer()->WaitUntilHostLookedUp(
-      dns_prefetch_url.GetHost(), network_anonymization_key);
-  EXPECT_TRUE(preconnect_manager_observer()->HasHostBeenLookedUp(
-      dns_prefetch_url.GetHost(), network_anonymization_key));
-  EXPECT_TRUE(preconnect_manager_observer()->HostFound(
-      dns_prefetch_url.GetHost(), network_anonymization_key));
-}
-
-// Verify DNS prefetch triggered by link response header is disabled after
-// fenced frame untrusted network cutoff.
-IN_PROC_BROWSER_TEST_F(FencedFrameLoadingPredictorBrowserTest,
-                       NetworkCutoffDisablesDnsPrefetchFromLinkHeader) {
-  std::string relative_url = "/title1.html";
-  net::test_server::ControllableHttpResponse dns_prefetch_response(
-      &embedded_https_test_server(), relative_url);
-
-  ASSERT_TRUE(embedded_https_test_server().Start());
-
-  // Navigate to a page that contains a fenced frame and a nested iframe.
-  const GURL main_url = embedded_https_test_server().GetURL(
-      "a.test",
-      "/cross_site_iframe_factory.html?a.test(a.test{fenced}(a.test))");
-  EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url));
-
-  // Get fenced frame render frame host.
-  std::vector<content::RenderFrameHost*> child_frames =
-      fenced_frame_test_helper().GetChildFencedFrameHosts(
-          GetWebContents()->GetPrimaryMainFrame());
-  ASSERT_EQ(child_frames.size(), 1u);
-  content::RenderFrameHost* fenced_frame_rfh = child_frames[0];
-
-  // Get nested iframe render frame host.
-  content::RenderFrameHost* nested_iframe_rfh =
-      content::ChildFrameAt(fenced_frame_rfh, 0);
-
-  // Get fenced frame NetworkAnonymizationKey.
-  const net::NetworkAnonymizationKey& network_anonymization_key =
-      fenced_frame_rfh->GetIsolationInfoForSubresources()
-          .network_anonymization_key();
-
-  GURL dns_prefetch_url("https://chromium.org");
-  GURL navigation_url =
-      embedded_https_test_server().GetURL("a.test", relative_url);
-
-  // Disable fenced frame untrusted network access.
-  EXPECT_TRUE(ExecJs(fenced_frame_rfh, R"(
-                    (async () => {
-                      await window.fence.disableUntrustedNetwork();
-                    })();
-          )"));
-
-  // Exempt `navigation_url` from fenced frame network revocation.
-  content::test::ExemptUrlsFromFencedFrameNetworkRevocation(fenced_frame_rfh,
-                                                            {navigation_url});
-
-  // Navigate the nested iframe. The navigation is allowed because the url has
-  // been exempted from network revocation.
-  content::TestFrameNavigationObserver observer(nested_iframe_rfh);
-
-  EXPECT_TRUE(ExecJs(
-      fenced_frame_rfh,
-      content::JsReplace("document.getElementsByTagName('iframe')[0].src = $1;",
-                         navigation_url)));
-
-  // Send a response header with link dns-prefetch field.
-  dns_prefetch_response.WaitForRequest();
-  ResetNetworkState();
-  ResetPredictorState();
-  dns_prefetch_response.Send(
-      base::StringPrintf("HTTP/1.1 200 OK\r\n"
-                         "Content-Type: text/html; charset=utf-8\r\n"
-                         "Supports-Loading-Mode: fenced-frame\r\n"
-                         "Link: <%s>; rel=dns-prefetch\r\n"
-                         "\r\n",
-                         dns_prefetch_url.spec().c_str()));
-  dns_prefetch_response.Done();
-
-  // Wait until navigation commits.
-  observer.WaitForCommit();
-  ASSERT_TRUE(WaitForLoadStop(GetWebContents()));
-
-  base::RunLoop().RunUntilIdle();
-
-  // In rare cases, the NetworkHintsHandler will not receive the dns prefetch
-  // IPC call. Then there is no dns prefetch request initiated at all.
-  // `HasHostBeenLookedUp()` is not checked here to avoid flakiness.
-  EXPECT_FALSE(preconnect_manager_observer()->HostFound(
-      dns_prefetch_url.GetHost(), network_anonymization_key));
-}
-
+// TODO(crbug.com/489349560): Allow `LoadingPredictorBrowserTest` to specify the
+// type of EmbeddedTestServer, instead of the subclass to construct its own.
 class ConnectionAllowlistLoadingPredictorBrowserTest
     : public LoadingPredictorBrowserTest {
  public:
   ConnectionAllowlistLoadingPredictorBrowserTest() {
-    feature_list_.InitAndEnableFeature(
-        network::features::kConnectionAllowlists);
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{network::features::kConnectionAllowlists,
+                              blink::features::
+                                  kOverrideConnectionAllowlistOriginTrial},
+        /*disabled_features=*/{});
   }
 
-  void SetUp() override {
-    ASSERT_TRUE(embedded_test_server()->InitializeAndListen());
-    embedded_test_server()->RegisterRequestHandler(
+  // Note: `LoadingPredictorBrowserTest::SetUpOnMainThread()` sets up the
+  // ConnectionTracker on `embedded_test_server()`. If the tests need to
+  // use ConnectionTracker, it should construct a separate one on
+  // `embedded_https_test_server()`, instead of using `connection_tracker()`.
+  void SetUpOnMainThread() override {
+    LoadingPredictorBrowserTest::SetUpOnMainThread();
+
+    mock_cert_verifier_.mock_cert_verifier()->set_default_result(net::OK);
+    embedded_https_test_server().SetSSLConfig(
+        net::EmbeddedTestServer::CERT_TEST_NAMES);
+    embedded_https_test_server().AddDefaultHandlers();
+    embedded_https_test_server().RegisterRequestHandler(
         base::BindRepeating(&ConnectionAllowlistLoadingPredictorBrowserTest::
                                 HandleMainFrameRequest));
-    ASSERT_TRUE(preconnecting_test_server_.InitializeAndListen());
+    embedded_https_test_server().RegisterRequestHandler(base::BindRepeating(
+        &ConnectionAllowlistLoadingPredictorBrowserTest::
+            HandleMainFrameRequestWithDNSPrefetchLinkHeader));
+    ASSERT_TRUE(embedded_https_test_server().Start());
+  }
 
-    InProcessBrowserTest::SetUp();
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    LoadingPredictorBrowserTest::SetUpCommandLine(command_line);
+    mock_cert_verifier_.SetUpCommandLine(command_line);
+  }
+
+  void SetUpInProcessBrowserTestFixture() override {
+    LoadingPredictorBrowserTest::SetUpInProcessBrowserTestFixture();
+    mock_cert_verifier_.SetUpInProcessBrowserTestFixture();
+  }
+
+  void TearDownInProcessBrowserTestFixture() override {
+    LoadingPredictorBrowserTest::TearDownInProcessBrowserTestFixture();
+    mock_cert_verifier_.TearDownInProcessBrowserTestFixture();
   }
 
   static std::unique_ptr<net::test_server::HttpResponse> HandleMainFrameRequest(
@@ -3302,12 +3123,33 @@ class ConnectionAllowlistLoadingPredictorBrowserTest
     auto http_response =
         std::make_unique<net::test_server::BasicHttpResponse>();
     http_response->set_code(net::HTTP_OK);
-    http_response->AddCustomHeader("Connection-Allowlist", "(http://a.test)");
+    http_response->AddCustomHeader("Connection-Allowlist",
+                                   "(\"https://a.test\" \"https://b.test\")");
+    return http_response;
+  }
+
+  static std::unique_ptr<net::test_server::HttpResponse>
+  HandleMainFrameRequestWithDNSPrefetchLinkHeader(
+      const net::test_server::HttpRequest& request) {
+    if (request.relative_url != "/connection-allowlist-dns-prefetch") {
+      return nullptr;
+    }
+
+    auto http_response =
+        std::make_unique<net::test_server::BasicHttpResponse>();
+    http_response->set_code(net::HTTP_OK);
+    http_response->AddCustomHeader("Connection-Allowlist",
+                                   "(\"https://a.test\" \"https://b.test\")");
+    http_response->AddCustomHeader("Link",
+                                   "<https://b.test>; rel=dns-prefetch");
+    http_response->AddCustomHeader("Link",
+                                   "<https://c.test>; rel=dns-prefetch");
     return http_response;
   }
 
  private:
   base::test::ScopedFeatureList feature_list_;
+  content::ContentMockCertVerifier mock_cert_verifier_;
 };
 
 // Verify that DNS prefetch fails when requests to the host are prevented by the
@@ -3321,10 +3163,10 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistLoadingPredictorBrowserTest,
                        ConnectionAllowlistDnsPrefetchFails) {
   // Navigate the main frame to a page with a connection allowlist.
   const GURL main_url =
-      embedded_test_server()->GetURL("a.test", "/connection-allowlist");
+      embedded_https_test_server().GetURL("a.test", "/connection-allowlist");
   EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url));
 
-  GURL dns_prefetch_url("http://b.test");
+  GURL dns_prefetch_url("https://c.test");
 
   content::RenderFrameHost* main_frame_rfh = browser()
                                                  ->tab_strip_model()
@@ -3360,11 +3202,11 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistLoadingPredictorBrowserTest,
                        ConnectionAllowlistDnsPrefetchSucceeds) {
   // Navigate the main frame to a page with a connection allowlist.
   const GURL main_url =
-      embedded_test_server()->GetURL("a.test", "/connection-allowlist");
+      embedded_https_test_server().GetURL("a.test", "/connection-allowlist");
   EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url));
 
   // This URL is allowed by the Connection-Allowlist header.
-  GURL dns_prefetch_url("http://a.test");
+  GURL dns_prefetch_url("https://b.test");
 
   content::RenderFrameHost* main_frame_rfh = browser()
                                                  ->tab_strip_model()
@@ -3392,6 +3234,287 @@ IN_PROC_BROWSER_TEST_F(ConnectionAllowlistLoadingPredictorBrowserTest,
       dns_prefetch_url.GetHost(), network_anonymization_key));
   EXPECT_TRUE(preconnect_manager_observer()->HostFound(
       dns_prefetch_url.GetHost(), network_anonymization_key));
+}
+
+// Verify that window.open() to a host disallowed by the initiator's
+// Connection-Allowlist does not leak the destination host's DNS via the
+// speculative navigation preconnect. The navigation is blocked, so no
+// speculative network activity (which would carry no enforcing
+// network_restrictions_id) must reach the destination host.
+// Regression test for https://github.com/WICG/connection-allowlists/issues/11.
+IN_PROC_BROWSER_TEST_F(ConnectionAllowlistLoadingPredictorBrowserTest,
+                       ConnectionAllowlistWindowOpenNoTargetNoDnsLeak) {
+  // Navigate the main frame to a page that enforces a Connection-Allowlist of
+  // {a.test, b.test}.
+  const GURL main_url =
+      embedded_https_test_server().GetURL("a.test", "/connection-allowlist");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url));
+
+  content::RenderFrameHost* main_frame_rfh = browser()
+                                                 ->tab_strip_model()
+                                                 ->GetActiveWebContents()
+                                                 ->GetPrimaryMainFrame();
+  ASSERT_FALSE(main_frame_rfh->GetNetworkRestrictionsID().is_empty());
+
+  // c.test is not on the allowlist, so opening it must be blocked. The
+  // speculative navigation preconnect must not resolve its DNS.
+  const GURL disallowed_url("https://c.test");
+  const net::NetworkAnonymizationKey disallowed_nak =
+      net::NetworkAnonymizationKey::CreateSameSite(
+          net::SchemefulSite(disallowed_url));
+
+  content::WebContentsAddedObserver popup_observer;
+  ASSERT_TRUE(content::ExecJs(
+      main_frame_rfh, content::JsReplace("window.open($1);", disallowed_url)));
+  content::WebContents* popup = popup_observer.GetWebContents();
+  ASSERT_TRUE(popup);
+  // The popup navigation is blocked by the Connection-Allowlist; wait for it to
+  // finish so DidStartNavigation() (and any speculative preconnect it would
+  // trigger) has run. The blocked navigation commits an error page, so
+  // WaitForLoadStop() reports failure.
+  EXPECT_FALSE(content::WaitForLoadStop(popup));
+  // Confirm the navigation really was blocked (committed an error page) so the
+  // assertions below test the blocked path rather than passing vacuously.
+  ASSERT_TRUE(popup->GetController().GetLastCommittedEntry());
+  EXPECT_EQ(content::PAGE_TYPE_ERROR,
+            popup->GetController().GetLastCommittedEntry()->GetPageType());
+
+  // Synchronize on an allowed dns-prefetch from the opener. Preconnect jobs run
+  // concurrently (up to PreconnectManagerImpl::kMaxInflightPreresolves) and
+  // their lookups can finish in any order, so this is a run-loop barrier, not an
+  // in-order guarantee. The speculative preconnect for the blocked
+  // window.open() navigation, if it were attempted, has its DNS resolve started
+  // while that navigation is handled -- before this dns-prefetch is even issued
+  // -- and these localhost lookups settle during the run-loop spins here. So
+  // once this allowed lookup is observed (and pending callbacks are drained
+  // below), a disallowed-host lookup/preconnect would already have been recorded
+  // if the leak were present.
+  const GURL allowed_url("https://b.test");
+  const net::NetworkAnonymizationKey allowed_nak =
+      main_frame_rfh->GetIsolationInfoForSubresources()
+          .network_anonymization_key();
+  ASSERT_TRUE(content::ExecJs(main_frame_rfh, content::JsReplace(R"(
+            var link = document.createElement('link');
+            link.rel = 'dns-prefetch';
+            link.href = $1;
+            document.body.appendChild(link);
+          )",
+                                                                 allowed_url)));
+  preconnect_manager_observer()->WaitUntilHostLookedUp(allowed_url.GetHost(),
+                                                       allowed_nak);
+  ASSERT_TRUE(preconnect_manager_observer()->HostFound(allowed_url.GetHost(),
+                                                       allowed_nak));
+
+  // Drain any pending preconnect-manager completion callbacks so the checks
+  // below observe fully-settled state.
+  base::RunLoop().RunUntilIdle();
+
+  // The disallowed host must never have been looked up: the speculative
+  // navigation preconnect is suppressed for the blocked navigation.
+  EXPECT_FALSE(preconnect_manager_observer()->HasHostBeenLookedUp(
+      disallowed_url.GetHost(), disallowed_nak));
+  EXPECT_FALSE(preconnect_manager_observer()->HostFound(
+      disallowed_url.GetHost(), disallowed_nak));
+  EXPECT_FALSE(preconnect_manager_observer()->HasOriginAttemptedToPreconnect(
+      GURL("https://c.test/")));
+}
+
+IN_PROC_BROWSER_TEST_F(ConnectionAllowlistLoadingPredictorBrowserTest,
+                       ConnectionAllowlistLinkHeaderDnsPrefetch) {
+  // Navigate the main frame to a page with a Connection Allowlist and "Link
+  // rel=dns-prefetch" headers.
+  const GURL main_url = embedded_https_test_server().GetURL(
+      "a.test", "/connection-allowlist-dns-prefetch");
+  EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url));
+
+  // Create the NAK that should be used for DNS prefetch, which should just be
+  // the same as the key for a.test
+  net::NetworkAnonymizationKey network_anonymization_key =
+      net::NetworkAnonymizationKey::CreateSameSite(
+          net::SchemefulSite(main_url));
+
+  // Host lookup for the allowed host should complete successfully.
+  GURL allowed_prefetch_url("https://b.test");
+  preconnect_manager_observer()->WaitUntilHostLookedUp(
+      allowed_prefetch_url.GetHost(), network_anonymization_key);
+  EXPECT_TRUE(preconnect_manager_observer()->HasHostBeenLookedUp(
+      allowed_prefetch_url.GetHost(), network_anonymization_key));
+  EXPECT_TRUE(preconnect_manager_observer()->HostFound(
+      allowed_prefetch_url.GetHost(), network_anonymization_key));
+
+  // Host lookup for the disallowed host should fail, because it is not in the
+  // allowlist.
+  GURL denied_prefetch_url("https://c.test");
+  preconnect_manager_observer()->WaitUntilHostLookedUp(
+      denied_prefetch_url.GetHost(), network_anonymization_key);
+  EXPECT_TRUE(preconnect_manager_observer()->HasHostBeenLookedUp(
+      denied_prefetch_url.GetHost(), network_anonymization_key));
+  EXPECT_FALSE(preconnect_manager_observer()->HostFound(
+      denied_prefetch_url.GetHost(), network_anonymization_key));
+}
+
+// Verify that Connection-Allowlist policy is inherited by about:blank
+// iframes. When a parent document has Connection-Allowlist active, hints
+// injected into an about:blank iframe's contentDocument should be blocked
+// for non-allowlisted hosts.
+// Bug: crbug.com/496096539, crbug.com/496907108
+IN_PROC_BROWSER_TEST_F(ConnectionAllowlistLoadingPredictorBrowserTest,
+                       ConnectionAllowlistAboutBlankIframePolicyInheritance) {
+  const GURL main_url =
+      embedded_https_test_server().GetURL("a.test", "/connection-allowlist");
+  EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url));
+
+  GURL dns_prefetch_url("https://c.test");
+
+  content::RenderFrameHost* main_frame_rfh = browser()
+                                                 ->tab_strip_model()
+                                                 ->GetActiveWebContents()
+                                                 ->GetPrimaryMainFrame();
+  EXPECT_FALSE(main_frame_rfh->GetNetworkRestrictionsID().is_empty());
+
+  // Create an iframe and wait for it to load. The initial about:blank
+  // document should now correctly inherit policies and get a
+  // network_restrictions_id.
+  content::TestNavigationObserver observer(
+      browser()->tab_strip_model()->GetActiveWebContents());
+  EXPECT_TRUE(ExecJs(main_frame_rfh, R"(
+            var iframe = document.createElement('iframe');
+            document.body.appendChild(iframe);
+          )"));
+  observer.Wait();
+
+  content::RenderFrameHost* child_frame_rfh =
+      content::ChildFrameAt(main_frame_rfh, 0);
+  ASSERT_TRUE(child_frame_rfh);
+  EXPECT_FALSE(child_frame_rfh->GetNetworkRestrictionsID().is_empty());
+
+  net::NetworkAnonymizationKey network_anonymization_key =
+      child_frame_rfh->GetIsolationInfoForSubresources()
+          .network_anonymization_key();
+
+  // Inject a dns-prefetch link into the iframe's contentDocument.
+  EXPECT_TRUE(ExecJs(child_frame_rfh, content::JsReplace(R"(
+                var link = document.createElement('link');
+                link.rel = 'dns-prefetch';
+                link.href = $1;
+                document.head.appendChild(link);
+          )",
+                                                         dns_prefetch_url)));
+
+  preconnect_manager_observer()->WaitUntilHostLookedUp(
+      dns_prefetch_url.GetHost(), network_anonymization_key);
+
+  EXPECT_TRUE(preconnect_manager_observer()->HasHostBeenLookedUp(
+      dns_prefetch_url.GetHost(), network_anonymization_key));
+  EXPECT_FALSE(preconnect_manager_observer()->HostFound(
+      dns_prefetch_url.GetHost(), network_anonymization_key))
+      << "DNS lookup via initial about:blank iframe contentWindow injection "
+         "should be blocked for non-allowlisted host.";
+}
+
+// Verify that Connection-Allowlist policy is inherited by space-prefixed
+// " about:" iframes. The space before "about:" should not prevent policy
+// inheritance from the parent document.
+IN_PROC_BROWSER_TEST_F(
+    ConnectionAllowlistLoadingPredictorBrowserTest,
+    ConnectionAllowlistSpacePrefixedAboutIframePolicyInheritance) {
+  const GURL main_url =
+      embedded_https_test_server().GetURL("a.test", "/connection-allowlist");
+  EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url));
+
+  GURL dns_prefetch_url("https://c.test");
+
+  content::RenderFrameHost* main_frame_rfh = browser()
+                                                 ->tab_strip_model()
+                                                 ->GetActiveWebContents()
+                                                 ->GetPrimaryMainFrame();
+  content::TestNavigationObserver observer(
+      browser()->tab_strip_model()->GetActiveWebContents());
+  EXPECT_TRUE(ExecJs(main_frame_rfh, R"(
+            var iframe = document.createElement('iframe');
+            iframe.src = ' about:';
+            document.body.appendChild(iframe);
+          )"));
+  observer.Wait();
+
+  content::RenderFrameHost* child_frame_rfh =
+      content::ChildFrameAt(main_frame_rfh, 0);
+  ASSERT_TRUE(child_frame_rfh);
+  net::NetworkAnonymizationKey network_anonymization_key =
+      child_frame_rfh->GetIsolationInfoForSubresources()
+          .network_anonymization_key();
+
+  // Inject a dns-prefetch link into the iframe's contentDocument.
+  EXPECT_TRUE(ExecJs(child_frame_rfh, content::JsReplace(R"(
+              var link = document.createElement('link');
+              link.rel = 'dns-prefetch';
+              link.href = $1;
+              document.head.appendChild(link);
+            )",
+                                                         dns_prefetch_url)));
+
+  preconnect_manager_observer()->WaitUntilHostLookedUp(
+      dns_prefetch_url.GetHost(), network_anonymization_key);
+
+  EXPECT_TRUE(preconnect_manager_observer()->HasHostBeenLookedUp(
+      dns_prefetch_url.GetHost(), network_anonymization_key));
+  EXPECT_FALSE(preconnect_manager_observer()->HostFound(
+      dns_prefetch_url.GetHost(), network_anonymization_key))
+      << "DNS lookup via space-prefixed about: iframe contentWindow "
+         "injection should be blocked for non-allowlisted host.";
+}
+
+// Verify that entity-encoded rel attributes (e.g. rel="preco&#110;&#110;ect"
+// decoded by the HTML parser to "preconnect") are subject to
+// Connection-Allowlist enforcement when injected into an iframe's
+// contentDocument via innerHTML.
+IN_PROC_BROWSER_TEST_F(
+    ConnectionAllowlistLoadingPredictorBrowserTest,
+    ConnectionAllowlistEntityEncodedRelIframePolicyInheritance) {
+  const GURL main_url =
+      embedded_https_test_server().GetURL("a.test", "/connection-allowlist");
+  EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url));
+
+  GURL dns_prefetch_url("https://c.test");
+
+  content::RenderFrameHost* main_frame_rfh = browser()
+                                                 ->tab_strip_model()
+                                                 ->GetActiveWebContents()
+                                                 ->GetPrimaryMainFrame();
+  // Create about:blank iframe and wait for it to load.
+  content::TestNavigationObserver observer(
+      browser()->tab_strip_model()->GetActiveWebContents());
+  EXPECT_TRUE(ExecJs(main_frame_rfh, R"(
+            var iframe = document.createElement('iframe');
+            iframe.src = 'about:blank';
+            document.body.appendChild(iframe);
+          )"));
+  observer.Wait();
+
+  content::RenderFrameHost* child_frame_rfh =
+      content::ChildFrameAt(main_frame_rfh, 0);
+  ASSERT_TRUE(child_frame_rfh);
+  net::NetworkAnonymizationKey network_anonymization_key =
+      child_frame_rfh->GetIsolationInfoForSubresources()
+          .network_anonymization_key();
+
+  // Inject entity-encoded rel via innerHTML. The HTML parser decodes
+  // "preco&#110;&#110;ect" to "preconnect".
+  EXPECT_TRUE(ExecJs(child_frame_rfh, content::JsReplace(R"(
+              document.head.innerHTML =
+                  '<link rel="preco&#110;&#110;ect" href="' + $1 + '">';
+            )",
+                                                         dns_prefetch_url)));
+
+  preconnect_manager_observer()->WaitUntilHostLookedUp(
+      dns_prefetch_url.GetHost(), network_anonymization_key);
+
+  EXPECT_TRUE(preconnect_manager_observer()->HasHostBeenLookedUp(
+      dns_prefetch_url.GetHost(), network_anonymization_key));
+  EXPECT_FALSE(preconnect_manager_observer()->HostFound(
+      dns_prefetch_url.GetHost(), network_anonymization_key))
+      << "Entity-encoded rel in iframe contentWindow should be blocked "
+         "for non-allowlisted host.";
 }
 
 }  // namespace predictors

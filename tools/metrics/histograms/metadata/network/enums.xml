@@ -165,6 +165,11 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="Failed to set shill properties"/>
 </enum>
 
+<enum name="ConnectionAllowlistType">
+  <int value="0" label="Enforced"/>
+  <int value="1" label="Report Only"/>
+</enum>
+
 <enum name="ConnectionDiagnosticsIssue">
   <int value="0" label="IP collision detected."/>
   <int value="1" label="Routing problem detected."/>
@@ -1473,6 +1478,8 @@ chromium-metrics-reviews@google.com.
   <int value="64" label="expected_public_keys"/>
   <int value="65" label="permissions_policy"/>
   <int value="66" label="client_side_content_decoding_enabled"/>
+  <int value="67" label="allow_unsafe_redirect_schemes (deprecated)"/>
+  <int value="68" label="is_reload_navigation"/>
 </enum>
 
 <!-- LINT.ThenChange(//services/network/prefetch_matches.cc:FieldsForUma) -->
@@ -2242,7 +2249,7 @@ chromium-metrics-reviews@google.com.
   <int value="63" label="x-webchannel-content-type"/>
 </enum>
 
-<!-- LINT.ThenChange(//services/network/request_header_to_enum.h:RequestHeader) -->
+<!-- LINT.ThenChange(//services/network/public/cpp/request_header_to_enum.h:RequestHeader) -->
 
 <enum name="SharedDictionaryDocumentRequestCacheResult">
   <int value="0" label="Cache Miss"/>

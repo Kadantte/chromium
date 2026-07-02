@@ -12,10 +12,13 @@
 #include <stddef.h>
 
 #include <array>
+#include <cstdint>
 #include <limits>
 #include <optional>
 #include <ostream>
+#include <string>
 #include <type_traits>
+#include <vector>
 
 #include "base/base_export.h"
 #include "base/memory/raw_ptr.h"
@@ -36,7 +39,7 @@
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
-#include "base/feature_list.h"
+#include "base/feature.h"
 #endif
 
 namespace base {

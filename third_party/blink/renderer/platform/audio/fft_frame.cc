@@ -42,13 +42,47 @@
 
 namespace blink {
 
-void FFTFrame::DoPaddedFFT(const float* data, unsigned data_size) {
+unsigned FFTFrame::MinFFTSize() {
+  return PlatformMinFFTSize();
+}
+
+unsigned FFTFrame::MaxFFTSize() {
+  return PlatformMaxFFTSize();
+}
+
+void FFTFrame::Initialize(float sample_rate) {
+  PlatformInitialize(sample_rate);
+}
+
+void FFTFrame::Cleanup() {
+  PlatformCleanup();
+}
+
+FFTFrame::FFTFrame(unsigned fft_size)
+    : fft_size_(fft_size),
+      log2fft_size_(static_cast<unsigned>(log2(fft_size))) {
+  CHECK_GE(fft_size_, MinFFTSize());
+  CHECK_LE(fft_size_, MaxFFTSize());
+  PlatformConstruct();
+}
+
+void FFTFrame::DoFFT(base::span<const float> data) {
+  CHECK_GE(data.size(), FftSize());
+  PlatformDoFFT(data);
+}
+
+void FFTFrame::DoInverseFFT(base::span<float> data) {
+  CHECK_GE(data.size(), FftSize());
+  PlatformDoInverseFFT(data);
+}
+
+void FFTFrame::DoPaddedFFT(base::span<const float> data) {
   // Zero-pad the impulse response
   AudioFloatArray padded_response(FftSize());  // zero-initialized
-  padded_response.CopyToRange(data, 0, data_size);
+  padded_response.as_span().first(data.size()).copy_from(data);
 
   // Get the frequency-domain version of padded response
-  DoFFT(padded_response.Data());
+  DoFFT(padded_response.as_span());
 }
 
 std::unique_ptr<FFTFrame> FFTFrame::CreateInterpolatedFrame(
@@ -64,19 +98,20 @@ std::unique_ptr<FFTFrame> FFTFrame::CreateInterpolatedFrame(
   // circular convolution aliasing...
   int fft_size = new_frame->FftSize();
   AudioFloatArray buffer(fft_size);
-  new_frame->DoInverseFFT(buffer.Data());
+  base::span<float> buffer_span = buffer.as_span();
+  new_frame->DoInverseFFT(buffer_span);
   buffer.ZeroRange(fft_size / 2, fft_size);
 
   // Put back into frequency domain.
-  new_frame->DoFFT(buffer.Data());
+  new_frame->DoFFT(buffer_span);
 
   return new_frame;
 }
 
 void FFTFrame::ScaleFFT(float factor) {
-  vector_math::Vsmul(real_data_.Data(), 1, &factor, real_data_.Data(), 1,
+  vector_math::Vsmul(real_data_.as_span(), factor, real_data_.as_span(),
                      real_data_.size());
-  vector_math::Vsmul(imag_data_.Data(), 1, &factor, imag_data_.Data(), 1,
+  vector_math::Vsmul(imag_data_.as_span(), factor, imag_data_.as_span(),
                      imag_data_.size());
 }
 
@@ -103,28 +138,26 @@ void FFTFrame::InterpolateFrequencyComponents(const FFTFrame& frame1,
   double last_phase1 = 0.0;
   double last_phase2 = 0.0;
 
-  const float* real_p1_data = real1.Data();
-  const float* real_p2_data = real2.Data();
-  const float* imag_p1_data = imag1.Data();
-  const float* imag_p2_data = imag2.Data();
+  base::span<const float> real1_span = real1.as_span();
+  base::span<const float> real2_span = real2.as_span();
+  base::span<const float> imag1_span = imag1.as_span();
+  base::span<const float> imag2_span = imag2.as_span();
 
-  real[0] = static_cast<float>(s1base * real_p1_data[0] +
-                                         s2base * real_p2_data[0]);
-  imag[0] = static_cast<float>(s1base * imag_p1_data[0] +
-                                         s2base * imag_p2_data[0]);
+  real[0] = static_cast<float>(s1base * real1_span[0] + s2base * real2_span[0]);
+  imag[0] = static_cast<float>(s1base * imag1_span[0] + s2base * imag2_span[0]);
 
-  int n = fft_size_ / 2;
+  const unsigned packed_size = real1.size();
 
-  DCHECK_GE(real1.size(), static_cast<uint32_t>(n));
-  DCHECK_GE(imag1.size(), static_cast<uint32_t>(n));
-  DCHECK_GE(real2.size(), static_cast<uint32_t>(n));
-  DCHECK_GE(imag2.size(), static_cast<uint32_t>(n));
+  DCHECK_EQ(real.size(), packed_size);
+  DCHECK_EQ(imag.size(), packed_size);
+  DCHECK_GE(real1.size(), packed_size);
+  DCHECK_GE(imag1.size(), packed_size);
+  DCHECK_GE(real2.size(), packed_size);
+  DCHECK_GE(imag2.size(), packed_size);
 
-  for (int i = 1; i < n; ++i) {
-    std::complex<double> c1(UNSAFE_TODO(real_p1_data[i]),
-                            UNSAFE_TODO(imag_p1_data[i]));
-    std::complex<double> c2(UNSAFE_TODO(real_p2_data[i]),
-                            UNSAFE_TODO(imag_p2_data[i]));
+  for (unsigned i = 1; i < packed_size; ++i) {
+    std::complex<double> c1(real1_span[i], imag1_span[i]);
+    std::complex<double> c2(real2_span[i], imag2_span[i]);
 
     double mag1 = abs(c1);
     double mag2 = abs(c2);
@@ -214,13 +247,13 @@ double FFTFrame::ExtractAverageGroupDelay() {
   double weight_sum = 0.0;
   double last_phase = 0.0;
 
-  int half_size = FftSize() / 2;
+  const unsigned packed_size = real.size();
 
   const double sample_phase_delay =
       kTwoPiDouble / static_cast<double>(FftSize());
 
   // Calculate weighted average group delay
-  for (int i = 0; i < half_size; i++) {
+  for (unsigned i = 0; i < packed_size; i++) {
     std::complex<double> c(real[i], imag[i]);
     double mag = abs(c);
     double phase = arg(c);
@@ -260,7 +293,7 @@ double FFTFrame::ExtractAverageGroupDelay() {
 }
 
 void FFTFrame::AddConstantGroupDelay(double sample_frame_delay) {
-  int half_size = FftSize() / 2;
+  const unsigned packed_size = real_data_.size();
 
   AudioFloatArray& real = RealData();
   AudioFloatArray& imag = ImagData();
@@ -271,7 +304,7 @@ void FFTFrame::AddConstantGroupDelay(double sample_frame_delay) {
   double phase_adj = -sample_frame_delay * sample_phase_delay;
 
   // Add constant group delay
-  for (int i = 1; i < half_size; i++) {
+  for (unsigned i = 1; i < packed_size; i++) {
     std::complex<double> c(real[i], imag[i]);
     double mag = abs(c);
     double phase = arg(c);
@@ -294,22 +327,22 @@ void FFTFrame::Multiply(const FFTFrame& frame) {
   const AudioFloatArray& real2 = frame2.RealData();
   const AudioFloatArray& imag2 = frame2.ImagData();
 
-  unsigned half_size = FftSize() / 2;
+  const unsigned packed_size = real1.size();
   float real0 = real1[0];
   float imag0 = imag1[0];
 
-  DCHECK_GE(real1.size(), half_size);
-  DCHECK_GE(imag1.size(), half_size);
-  DCHECK_GE(real2.size(), half_size);
-  DCHECK_GE(imag2.size(), half_size);
+  DCHECK_GE(real1.size(), packed_size);
+  DCHECK_GE(imag1.size(), packed_size);
+  DCHECK_GE(real2.size(), packed_size);
+  DCHECK_GE(imag2.size(), packed_size);
 
-  vector_math::Zvmul(real1.Data(), imag1.Data(), real2.Data(),
-                     imag2.Data(), real1.Data(), imag1.Data(),
-                     half_size);
+  vector_math::Zvmul(real1.as_span(), imag1.as_span(), real2.as_span(),
+                     imag2.as_span(), real1.as_span(), imag1.as_span(),
+                     packed_size);
 
   // Multiply the packed DC/nyquist component
-  real1[0] = real0 * real2.Data()[0];
-  imag1[0] = imag0 * imag2.Data()[0];
+  real1[0] = real0 * real2[0];
+  imag1[0] = imag0 * imag2[0];
 }
 
 }  // namespace blink

@@ -92,7 +92,7 @@ public class ModalDialogView extends BoundedLinearLayout implements View.OnClick
     // displayed to prevent potentially unintentional user interactions. A value of zero turns off
     // this kind of tap-jacking protection.
     private long mButtonTapProtectionDurationMs;
-    private boolean mBlockTouchInput;
+    private boolean mBlockInput;
 
     private int mHorizontalMargin = NOT_SPECIFIED;
     private int mVerticalMargin = NOT_SPECIFIED;
@@ -141,7 +141,9 @@ public class ModalDialogView extends BoundedLinearLayout implements View.OnClick
         super.onFinishInflate();
 
         mTitleScrollView = findViewById(R.id.modal_dialog_title_scroll_view);
+        mTitleScrollView.disableScrollbarOnTablet();
         mModalDialogScrollView = findViewById(R.id.modal_dialog_scroll_view);
+        mModalDialogScrollView.disableScrollbarOnTablet();
         mTitleContainer = findViewById(R.id.title_container);
         mTitleView = mTitleContainer.findViewById(R.id.title);
         mTitleIcon = mTitleContainer.findViewById(R.id.title_icon);
@@ -680,12 +682,16 @@ public class ModalDialogView extends BoundedLinearLayout implements View.OnClick
      * @param shouldBlockInputs Whether all inputs on the modal dialog should be blocked.
      */
     void blockInputs(boolean shouldBlockInputs) {
-        mBlockTouchInput = shouldBlockInputs;
+        mBlockInput = shouldBlockInputs;
+    }
+
+    public boolean isBlockInputForTesting() {
+        return mBlockInput;
     }
 
     @Override
     public boolean dispatchTouchEvent(MotionEvent e) {
-        if (mBlockTouchInput) return true;
+        if (mBlockInput) return true;
 
         return super.dispatchTouchEvent(e);
     }
@@ -741,17 +747,23 @@ public class ModalDialogView extends BoundedLinearLayout implements View.OnClick
         boolean customButtonBarVisible =
                 mCustomButtonBarViewContainer.getVisibility() == View.VISIBLE;
         boolean buttonGroupVisible = mButtonGroup.getVisibility() == View.VISIBLE;
+        boolean customViewVisible = mCustomViewContainer.getVisibility() == View.VISIBLE;
+        boolean checkboxVisible = mCheckboxView.getVisibility() == View.VISIBLE;
 
+        // The footer, button bars, and custom views are responsible for their own bottom padding.
+        boolean bottomPaddingExists =
+                buttonBarVisible
+                        || customButtonBarVisible
+                        || buttonGroupVisible
+                        || footerMessageVisible
+                        || (customViewVisible && !checkboxVisible);
+        // The title, paragraph views, and checkbox views are not. So if the lowest view in the
+        // dialog is one of these, add additional padding to the bottom of the dialog.
         int bottomSpacerHeight =
                 getContext()
                         .getResources()
                         .getDimensionPixelSize(R.dimen.modal_dialog_bottom_spacer_height);
-        boolean spacerVisible =
-                !buttonBarVisible
-                        && !customButtonBarVisible
-                        && !buttonGroupVisible
-                        && !footerMessageVisible
-                        && getPaddingBottom() < bottomSpacerHeight;
+        boolean spacerVisible = !bottomPaddingExists && getPaddingBottom() < bottomSpacerHeight;
         mDialogBottomSpacer.setVisibility(spacerVisible ? View.VISIBLE : View.GONE);
     }
 
@@ -759,6 +771,7 @@ public class ModalDialogView extends BoundedLinearLayout implements View.OnClick
         if (mCheckboxView == null) return;
         boolean checkboxVisible = !TextUtils.isEmpty(mCheckboxView.getText());
         mCheckboxView.setVisibility(checkboxVisible ? View.VISIBLE : View.GONE);
+        updateContentVisibility();
     }
 
     private void updateButtonVisibility() {
@@ -782,6 +795,14 @@ public class ModalDialogView extends BoundedLinearLayout implements View.OnClick
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (mBlockInput) {
+            // Do not block system keys
+            if (event.isSystem()) {
+                return super.dispatchKeyEvent(event);
+            }
+            return true;
+        }
+
         if (mOnEscapeCallback != null
                 && event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE
                 && event.getAction() == KeyEvent.ACTION_DOWN

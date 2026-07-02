@@ -97,6 +97,7 @@ public class AwBrowserContext implements BrowserContextHandle {
     @NonNull private final String mName;
     @NonNull private final String mRelativePath;
     @NonNull private final AwCookieManager mCookieManager;
+    @NonNull private final AwHttpCacheManager mHttpCacheManager;
     private final boolean mIsDefault;
     @NonNull private final SharedPreferences mSharedPreferences;
 
@@ -154,6 +155,7 @@ public class AwBrowserContext implements BrowserContextHandle {
                 AwBrowserContextJni.get().getDefaultContextName(),
                 AwBrowserContextJni.get().getDefaultContextRelativePath(),
                 AwCookieManager.getDefaultCookieManager(),
+                new AwHttpCacheManager(0),
                 new AwPrefetchManager(0),
                 new AwPreconnector(0),
                 true);
@@ -164,6 +166,7 @@ public class AwBrowserContext implements BrowserContextHandle {
             @NonNull String name,
             @NonNull String relativePath,
             @NonNull AwCookieManager cookieManager,
+            @NonNull AwHttpCacheManager httpCacheManager,
             @NonNull AwPrefetchManager prefetchManager,
             @NonNull AwPreconnector preconnector,
             boolean isDefault) {
@@ -171,6 +174,7 @@ public class AwBrowserContext implements BrowserContextHandle {
         mName = name;
         mRelativePath = relativePath;
         mCookieManager = cookieManager;
+        mHttpCacheManager = httpCacheManager;
         mPrefetchManager = prefetchManager;
         mPreconnector = preconnector;
         mIsDefault = isDefault;
@@ -301,6 +305,11 @@ public class AwBrowserContext implements BrowserContextHandle {
     }
 
     @NonNull
+    public AwHttpCacheManager getHttpCacheManager() {
+        return mHttpCacheManager;
+    }
+
+    @NonNull
     public AwPreconnector getPreconnector() {
         return mPreconnector;
     }
@@ -428,9 +437,19 @@ public class AwBrowserContext implements BrowserContextHandle {
     }
 
     @UiThread
-    public void setMaxPrerenders(@Nullable Integer maxPrerenders) {
+    public void setMaxPrerenders(int maxPrerenders) {
         AwBrowserContextJni.get()
                 .setAllowedPrerenderingCount(mNativeAwBrowserContext, maxPrerenders);
+    }
+
+    @UiThread
+    public void clearMaxPrerenders() {
+        AwBrowserContextJni.get().clearAllowedPrerenderingCount(mNativeAwBrowserContext);
+    }
+
+    @UiThread
+    public int getAllowedPrerenderingCount() {
+        return AwBrowserContextJni.get().allowedPrerenderingCount(mNativeAwBrowserContext);
     }
 
     @UiThread
@@ -449,6 +468,7 @@ public class AwBrowserContext implements BrowserContextHandle {
             @JniType("std::string") String name,
             @JniType("std::string") String relativePath,
             AwCookieManager cookieManager,
+            AwHttpCacheManager httpCacheManager,
             AwPrefetchManager prefetchManager,
             AwPreconnector preconnector,
             boolean isDefault) {
@@ -457,6 +477,7 @@ public class AwBrowserContext implements BrowserContextHandle {
                 name,
                 relativePath,
                 cookieManager,
+                httpCacheManager,
                 prefetchManager,
                 preconnector,
                 isDefault);
@@ -528,9 +549,11 @@ public class AwBrowserContext implements BrowserContextHandle {
         void setServiceWorkerIoThreadClient(
                 long nativeAwBrowserContext, AwContentsIoThreadClient ioThreadClient);
 
-        void setAllowedPrerenderingCount(
-                long nativeAwBrowserContext,
-                @JniType("std::optional<int>") @Nullable Integer maxPrerenders);
+        void setAllowedPrerenderingCount(long nativeAwBrowserContext, int maxPrerenders);
+
+        void clearAllowedPrerenderingCount(long nativeAwBrowserContext);
+
+        int allowedPrerenderingCount(long nativeAwBrowserContext);
 
         @JniType("std::vector<std::string>")
         List<String> setOriginMatchedHeader(

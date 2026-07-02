@@ -4,8 +4,8 @@
 
 import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 
-import {MetricsBrowserProxyImpl, ReadAloudSettingsChange, ReadAnythingLogger, ReadAnythingSettingsChange, ReadAnythingVoiceType, SpeechControls, TimeFrom} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import {assertEquals, assertGT, assertLE} from 'chrome-untrusted://webui-test/chai_assert.js';
+import {LinkStatus, MetricsBrowserProxyImpl, ReadAloudSettingsChange, ReadAnythingLogger, ReadAnythingSettingsChange, ReadAnythingVoiceType, SpeechControls, TimeFrom} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {assertEquals, assertGT, assertLE, assertNotEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 
 import {createSpeechSynthesisVoice} from './common.js';
 import {FakeReadingMode} from './fake_reading_mode.js';
@@ -44,6 +44,12 @@ suite('Logger', () => {
     assertEquals(
         'Accessibility.ReadAnything.ReadAloudPlaySessionCount',
         await metrics.whenCalled('incrementMetricCount'));
+    metrics.reset();
+
+    logger.logSpeechControlClick(SpeechControls.PLAY_FROM_SELECTION);
+    assertEquals(
+        'Accessibility.ReadAnything.ReadAloudPlayFromSelectionSessionCount',
+        await metrics.whenCalled('incrementMetricCount'));
   });
 
   test('with speech logs speech played', () => {
@@ -67,6 +73,32 @@ suite('Logger', () => {
     logger.logHighlightGranularity(4);
 
     assertEquals(2, metrics.getCallCount('recordHighlightGranularity'));
+  });
+
+  test('logVoiceLanguageChange', () => {
+    const voice1 = createSpeechSynthesisVoice({lang: 'en-US'});
+    const voice2 = createSpeechSynthesisVoice({lang: 'en-UK'});
+    const voice3 = createSpeechSynthesisVoice({lang: 'fr-FR'});
+
+    // Same language should not log
+    logger.logVoiceLanguageChange(voice1, voice1);
+    assertEquals(0, metrics.getCallCount('recordVoiceLanguageChange'));
+
+    // Different locale, same base language should log (e.g. en-US to en-UK)
+    logger.logVoiceLanguageChange(voice1, voice2);
+    assertEquals(1, metrics.getCallCount('recordVoiceLanguageChange'));
+    metrics.reset();
+
+    // Different language should log
+    logger.logVoiceLanguageChange(voice1, voice3);
+    assertEquals(1, metrics.getCallCount('recordVoiceLanguageChange'));
+    metrics.reset();
+
+    // Null voices should not log
+    logger.logVoiceLanguageChange(null, voice1);
+    logger.logVoiceLanguageChange(voice1, null);
+    logger.logVoiceLanguageChange(null, null);
+    assertEquals(0, metrics.getCallCount('recordVoiceLanguageChange'));
   });
 
   test('text settings', async () => {
@@ -108,6 +140,34 @@ suite('Logger', () => {
 
   test('empty state', () => {
     logger.logEmptyState();
+    assertEquals(1, metrics.getCallCount('recordEmptyState'));
+  });
+
+  test('when hidden does not log new page', () => {
+    logger.setHidden(true);
+    logger.logNewPage(false);
+    logger.logNewPage(true);
+
+    assertEquals(0, metrics.getCallCount('recordNewPage'));
+    assertEquals(0, metrics.getCallCount('recordNewPageWithSpeech'));
+
+    logger.setHidden(false);
+    logger.logNewPage(false);
+    logger.logNewPage(true);
+
+    assertEquals(1, metrics.getCallCount('recordNewPage'));
+    assertEquals(1, metrics.getCallCount('recordNewPageWithSpeech'));
+  });
+
+  test('when hidden does not log empty state', () => {
+    logger.setHidden(true);
+    logger.logEmptyState();
+
+    assertEquals(0, metrics.getCallCount('recordEmptyState'));
+
+    logger.setHidden(false);
+    logger.logEmptyState();
+
     assertEquals(1, metrics.getCallCount('recordEmptyState'));
   });
 
@@ -230,9 +290,62 @@ suite('Logger', () => {
     // The playback length should be at least the amount of time we waited above
     // and less than the starting time (i.e. we should be recording length of
     // time, not timestamp).
-    const recordedTime = await metrics.whenCalled('recordSpeechPlaybackLength');
+    const recordedTime =
+        await metrics.whenCalled('recordSpeechPlaybackLengthLegacy');
     assertLE(expectedTime, recordedTime);
     assertGT(startTime, recordedTime);
+  });
+
+  test(
+      'logSpeechPlaySession records time with page type and view mode',
+      async () => {
+        chrome.readingMode.isImmersiveEnabled = true;
+        const startTime = Date.now();
+
+        chrome.readingMode.isPdf = false;
+        chrome.readingMode.activePresentationState =
+            chrome.readingMode.inImmersiveOverlayPresentationState;
+        logger.logSpeechPlaySession(startTime, null);
+        let args = await metrics.whenCalled('recordSpeechPlaybackLength');
+        assertEquals(
+            'Accessibility.ReadAnything.SpeechPlaybackSession.WebPageInFullPage',
+            args[0]);
+
+        metrics.reset();
+        chrome.readingMode.activePresentationState =
+            chrome.readingMode.inSidePanelPresentationState;
+        logger.logSpeechPlaySession(startTime, null);
+        args = await metrics.whenCalled('recordSpeechPlaybackLength');
+        assertEquals(
+            'Accessibility.ReadAnything.SpeechPlaybackSession.WebPageInSidePanel',
+            args[0]);
+
+        metrics.reset();
+        chrome.readingMode.isPdf = true;
+        logger.logSpeechPlaySession(startTime, null);
+        args = await metrics.whenCalled('recordSpeechPlaybackLength');
+        assertEquals(
+            'Accessibility.ReadAnything.SpeechPlaybackSession.PDFInSidePanel',
+            args[0]);
+
+        metrics.reset();
+        chrome.readingMode.activePresentationState =
+            chrome.readingMode.inImmersiveOverlayPresentationState;
+        logger.logSpeechPlaySession(startTime, null);
+        args = await metrics.whenCalled('recordSpeechPlaybackLength');
+        assertEquals(
+            'Accessibility.ReadAnything.SpeechPlaybackSession.PDFInFullPage',
+            args[0]);
+      });
+
+  test('logSpeechPlaySession does not record with invalid page type', () => {
+    const startTime = Date.now();
+    chrome.readingMode.isPdf = false;
+    chrome.readingMode.activePresentationState = 10000;
+
+    logger.logSpeechPlaySession(startTime, null);
+
+    assertEquals(0, metrics.getCallCount('recordSpeechPlaybackLength'));
   });
 
   test('logTimeFrom uses correct uma name', () => {
@@ -252,5 +365,267 @@ suite('Logger', () => {
     logger.logTimeFrom(TimeFrom.APP, startTime, endTime);
 
     assertEquals(expectedTime, (await metrics.whenCalled('recordTime'))[1]);
+  });
+
+  test('logLinkStatusCount', async () => {
+    logger.logLinkStatusCount(LinkStatus.NO_HREF, 10);
+    logger.logLinkStatusCount(LinkStatus.NO_MATCH, 20);
+    logger.logLinkStatusCount(LinkStatus.TOO_MANY_MATCHES, 30);
+    logger.logLinkStatusCount(LinkStatus.SUCCESS, 40);
+
+    assertEquals(4, metrics.getCallCount('recordCount'));
+    assertEquals(
+        'Accessibility.ReadAnything.Readability.PageLinksNoHrefCount',
+        (await metrics.whenCalled('recordCount'))[0]);
+  });
+
+  suite('logDistilledPageStructure', () => {
+    let container: HTMLElement;
+
+    setup(() => {
+      container = document.createElement('div');
+      metrics.reset();
+    });
+
+    test('when hidden does not log', () => {
+      logger.setHidden(true);
+      container.appendChild(document.createElement('h1'));
+      container.appendChild(document.createElement('p'));
+      logger.logDistilledPageStructure(container);
+      assertEquals(0, metrics.getCallCount('recordCount'));
+      assertEquals(0, metrics.getCallCount('recordBoolean'));
+    });
+
+    test('single h1 excluded from top two calculation', () => {
+      // 1 h1, 2 h2s, 0 h3s, 5 h4s, 2 paragraphs
+      container.appendChild(document.createElement('h1'));
+      for (let i = 0; i < 2; i++) {
+        container.appendChild(document.createElement('h2'));
+      }
+      for (let i = 0; i < 5; i++) {
+        container.appendChild(document.createElement('h4'));
+      }
+      for (let i = 0; i < 2; i++) {
+        container.appendChild(document.createElement('p'));
+      }
+      logger.logDistilledPageStructure(container);
+
+      // TotalHeaderCount: 1 + 2 + 5 = 8
+      // UniqueHeaderTags: h1, h2, h4 = 3
+      // NumberParagraphs: 2
+      // HeadingToParagraphRatio: (8 / 2) * 100 = 400
+      // TopTwoHeadersCount (excluding h1): h2 (2) + h4 (5) = 7
+      // TopTwoHeadersHaveMinimumTwoItems: h2 has 2, h4 has 5 -> true
+      // TopTwoHeadingRatio: (2 / 5) * 100 = 40
+
+      assertEquals(6, metrics.getCallCount('recordCount'));
+      assertEquals(1, metrics.getCallCount('recordBoolean'));
+
+      const countCalls = metrics.getArgs('recordCount');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TotalHeaderCount',
+          countCalls[0][0]);
+      assertEquals(8, countCalls[0][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.UniqueHeaderTags',
+          countCalls[1][0]);
+      assertEquals(3, countCalls[1][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.NumberParagraphs',
+          countCalls[2][0]);
+      assertEquals(2, countCalls[2][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.HeadingToParagraphRatio',
+          countCalls[3][0]);
+      assertEquals(400, countCalls[3][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersCount',
+          countCalls[4][0]);
+      assertEquals(7, countCalls[4][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadingRatio',
+          countCalls[5][0]);
+      assertEquals(40, countCalls[5][1]);
+
+      const booleanCalls = metrics.getArgs('recordBoolean');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersHaveMinimumTwoItems',
+          booleanCalls[0][0]);
+      assertEquals(true, booleanCalls[0][1]);
+    });
+
+    test('multiple h1s included in top two calculation', () => {
+      // 5 h1s, 5 h2s, 20 h3s, 1 h4, 10 paragraphs
+      for (let i = 0; i < 5; i++) {
+        container.appendChild(document.createElement('h1'));
+        container.appendChild(document.createElement('h2'));
+      }
+      for (let i = 0; i < 20; i++) {
+        container.appendChild(document.createElement('h3'));
+      }
+      container.appendChild(document.createElement('h4'));
+      for (let i = 0; i < 10; i++) {
+        container.appendChild(document.createElement('p'));
+      }
+      logger.logDistilledPageStructure(container);
+
+      // TotalHeaderCount: 5 + 5 + 20 + 1 = 31
+      // UniqueHeaderTags: h1, h2, h3, h4 = 4
+      // NumberParagraphs: 10
+      // HeadingToParagraphRatio: Math.round((31 / 10) * 100) = 310
+      // TopTwoHeadersCount (h1 and h2): 5 + 5 = 10
+      // TopTwoHeadersHaveMinimumTwoItems: h1 has 5, h2 has 5 -> true
+      // TopTwoHeadingRatio: (5 / 5) * 100 = 100
+
+      assertEquals(6, metrics.getCallCount('recordCount'));
+      assertEquals(1, metrics.getCallCount('recordBoolean'));
+
+      const countCalls = metrics.getArgs('recordCount');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TotalHeaderCount',
+          countCalls[0][0]);
+      assertEquals(31, countCalls[0][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.UniqueHeaderTags',
+          countCalls[1][0]);
+      assertEquals(4, countCalls[1][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.NumberParagraphs',
+          countCalls[2][0]);
+      assertEquals(10, countCalls[2][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.HeadingToParagraphRatio',
+          countCalls[3][0]);
+      assertEquals(310, countCalls[3][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersCount',
+          countCalls[4][0]);
+      assertEquals(10, countCalls[4][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadingRatio',
+          countCalls[5][0]);
+      assertEquals(100, countCalls[5][1]);
+
+      const booleanCalls = metrics.getArgs('recordBoolean');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersHaveMinimumTwoItems',
+          booleanCalls[0][0]);
+      assertEquals(true, booleanCalls[0][1]);
+    });
+
+    test('zero paragraphs and single header type', () => {
+      // 1 h1, 5 h2s, 0 paragraphs
+      container.appendChild(document.createElement('h1'));
+      for (let i = 0; i < 5; i++) {
+        container.appendChild(document.createElement('h2'));
+      }
+      logger.logDistilledPageStructure(container);
+
+      // TotalHeaderCount: 6
+      // UniqueHeaderTags: 2
+      // NumberParagraphs: 0
+      // HeadingToParagraphRatio: not logged (0 paragraphs)
+      // TopTwoHeadersCount (excluding h1): h2 (5), no second header -> 5
+      // TopTwoHeadersHaveMinimumTwoItems: no second header -> false
+      // TopTwoHeadingRatio: not logged (no second header)
+
+      assertEquals(4, metrics.getCallCount('recordCount'));
+      assertEquals(1, metrics.getCallCount('recordBoolean'));
+
+      const countCalls = metrics.getArgs('recordCount');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TotalHeaderCount',
+          countCalls[0][0]);
+      assertEquals(6, countCalls[0][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.UniqueHeaderTags',
+          countCalls[1][0]);
+      assertEquals(2, countCalls[1][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.NumberParagraphs',
+          countCalls[2][0]);
+      assertEquals(0, countCalls[2][1]);
+
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersCount',
+          countCalls[3][0]);
+      assertEquals(5, countCalls[3][1]);
+
+      const booleanCalls = metrics.getArgs('recordBoolean');
+      assertEquals(
+          'Accessibility.ReadAnything.DistilledPageStructure.TopTwoHeadersHaveMinimumTwoItems',
+          booleanCalls[0][0]);
+      assertEquals(false, booleanCalls[0][1]);
+    });
+
+    test('logs pdf structure for pdfs', () => {
+      chrome.readingMode.isPdf = true;
+      for (let i = 0; i < 5; i++) {
+        container.appendChild(document.createElement('h1'));
+        container.appendChild(document.createElement('h2'));
+      }
+      container.appendChild(document.createElement('h3'));
+      for (let i = 0; i < 30; i++) {
+        container.appendChild(document.createElement('p'));
+      }
+
+      logger.logDistilledPageStructure(container);
+
+      assertNotEquals(0, metrics.getCallCount('recordCount'));
+      const countCalls = metrics.getArgs('recordCount');
+      const h1Metric = countCalls.find(
+          args => args[0] === 'Accessibility.ReadAnything.Pdf.Headings.H1');
+      assertTrue(!!h1Metric);
+      assertEquals(5, h1Metric[1]);
+
+      const h2Metric = countCalls.find(
+          args => args[0] === 'Accessibility.ReadAnything.Pdf.Headings.H2');
+      assertTrue(!!h2Metric);
+      assertEquals(5, h2Metric[1]);
+
+      const h3Metric = countCalls.find(
+          args => args[0] === 'Accessibility.ReadAnything.Pdf.Headings.H3');
+      assertTrue(!!h3Metric);
+      assertEquals(1, h3Metric[1]);
+
+      const h4Metric = countCalls.find(
+          args => args[0] === 'Accessibility.ReadAnything.Pdf.Headings.H4');
+      assertTrue(!!h4Metric);
+      assertEquals(0, h4Metric[1]);
+
+      const h5Metric = countCalls.find(
+          args => args[0] === 'Accessibility.ReadAnything.Pdf.Headings.H5');
+      assertTrue(!!h5Metric);
+      assertEquals(0, h5Metric[1]);
+
+      const h6Metric = countCalls.find(
+          args => args[0] === 'Accessibility.ReadAnything.Pdf.Headings.H6');
+      assertTrue(!!h6Metric);
+      assertEquals(0, h6Metric[1]);
+
+      const pMetric = countCalls.find(
+          args =>
+              args[0] === 'Accessibility.ReadAnything.Pdf.NumberParagraphs');
+      assertTrue(!!pMetric);
+      assertEquals(30, pMetric[1]);
+
+      const ratioMetric = countCalls.find(
+          args => args[0] ===
+              'Accessibility.ReadAnything.Pdf.HeadingToParagraphRatio');
+      assertTrue(!!ratioMetric);
+      assertNotEquals(0, ratioMetric[1]);
+    });
   });
 });

@@ -138,6 +138,7 @@ void OverscrollControllerAndroid::OnGestureEvent(
       if (event.SourceDevice() == blink::WebGestureDevice::kTouchpad) {
         gfx::Vector2dF scroll_delta(event.data.scroll_update.delta_x,
                                     event.data.scroll_update.delta_y);
+        scroll_delta.Scale(dpi_scale_);
         refresh_effect_->WillHandleScrollUpdate(scroll_delta);
       }
     } break;
@@ -223,13 +224,13 @@ void OverscrollControllerAndroid::OnOverscrolled(
   gfx::Vector2dF overscroll_location =
       params.causal_event_viewport_point.OffsetFromOrigin();
 
-  if (params.overscroll_behavior.x == cc::OverscrollBehavior::Type::kNone) {
+  if (!params.overscroll_behavior.HasXLocalBorderEffects()) {
     accumulated_overscroll.set_x(0);
     latest_overscroll_delta.set_x(0);
     current_fling_velocity.set_x(0);
   }
 
-  if (params.overscroll_behavior.y == cc::OverscrollBehavior::Type::kNone) {
+  if (!params.overscroll_behavior.HasYLocalBorderEffects()) {
     accumulated_overscroll.set_y(0);
     latest_overscroll_delta.set_y(0);
     current_fling_velocity.set_y(0);
@@ -302,6 +303,13 @@ void OverscrollControllerAndroid::SetTouchpadOverscrollHistoryNavigation(
     bool enabled) {
   if (refresh_effect_) {
     refresh_effect_->SetTouchpadOverscrollHistoryNavigation(enabled);
+  }
+}
+
+void OverscrollControllerAndroid::SetIsGestureNavigationMode(
+    bool is_gesture_navigation_mode) {
+  if (refresh_effect_) {
+    refresh_effect_->SetIsGestureNavigationMode(is_gesture_navigation_mode);
   }
 }
 

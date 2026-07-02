@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/base64.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -17,11 +18,11 @@
 #include "base/path_service.h"
 #include "base/strings/strcat.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/browsing_data/browsing_data_file_system_util.h"
 #include "chrome/browser/browsing_data/chrome_browsing_data_model_delegate.h"
 #include "chrome/browser/browsing_data/counters/site_data_counting_helper.h"
 #include "chrome/browser/net/system_network_context_manager.h"
@@ -231,6 +232,13 @@ int BrowsingDataRemoverBrowserTestBase::GetSiteDataCount(
   return count;
 }
 
+bool BrowsingDataRemoverBrowserTestBase::WaitForSiteDataCount(
+    int expected_count,
+    content::WebContents* web_contents) {
+  return base::test::RunUntil(
+      [&]() { return GetSiteDataCount(web_contents) == expected_count; });
+}
+
 network::mojom::NetworkContext*
 BrowsingDataRemoverBrowserTestBase::network_context() {
   return GetProfile()->GetDefaultStoragePartition()->GetNetworkContext();
@@ -263,7 +271,7 @@ Profile* BrowsingDataRemoverBrowserTestBase::GetProfile() {
 }
 
 // static
-bool BrowsingDataRemoverBrowserTestBase::CheckUserDirectoryForString(
+void BrowsingDataRemoverBrowserTestBase::CheckUserDirectoryForString(
     const std::string& hostname,
     const std::vector<std::string>& ignore_file_patterns,
     bool check_leveldb_content,
@@ -276,7 +284,6 @@ bool BrowsingDataRemoverBrowserTestBase::CheckUserDirectoryForString(
   base::FileEnumerator enumerator(
       user_data_dir, true /* recursive */,
       base::FileEnumerator::FILES | base::FileEnumerator::DIRECTORIES);
-  int found = 0;
   for (base::FilePath path = enumerator.Next(); !path.empty();
        path = enumerator.Next()) {
     // Remove |user_data_dir| part from path.
@@ -302,8 +309,8 @@ bool BrowsingDataRemoverBrowserTestBase::CheckUserDirectoryForString(
 
     // Check file name.
     if (file.find(hostname) != std::string::npos) {
-      found++;
-      LOG(WARNING) << "Found file name: " << file;
+      ADD_FAILURE() << "Found file name: " << file << " containing "
+                    << hostname;
     }
 
     // Check leveldb content.
@@ -342,8 +349,7 @@ bool BrowsingDataRemoverBrowserTestBase::CheckUserDirectoryForString(
           std::string entry =
               it->key().ToString() + ":" + it->value().ToString();
           if (entry.find(hostname) != std::string::npos) {
-            LOG(WARNING) << "Found leveldb entry: " << file << " " << entry;
-            found++;
+            ADD_FAILURE() << "Found leveldb entry: " << file << " " << entry;
           }
         }
       } else {
@@ -376,16 +382,16 @@ bool BrowsingDataRemoverBrowserTestBase::CheckUserDirectoryForString(
     }
     size_t pos = content.find(hostname);
     if (pos != std::string::npos) {
-      found++;
       // Print surrounding text of the match.
-      std::string partial_content = content.substr(
-          pos < 30 ? 0 : pos - 30,
-          std::min(content.size() - 1, pos + hostname.size() + 30));
-      LOG(WARNING) << "Found file content: " << file << "\n"
-                   << partial_content << "\n" << found;
+      size_t start = pos < 30 ? 0 : pos - 30;
+      size_t end = std::min(content.size(), pos + hostname.size() + 30);
+      std::string partial_content_b64 =
+          base::Base64Encode(content.substr(start, end - start));
+      ADD_FAILURE() << "Found file content: " << file << "\n"
+                    << "  which had partial_content (base64 encoded): "
+                    << partial_content_b64;
     }
   }
-  return found;
 }
 
 std::unique_ptr<BrowsingDataModel>
@@ -406,7 +412,7 @@ bool BrowsingDataRemoverBrowserTestBase::SetGaiaCookieForProfile(
       "SAPISID", std::string(), "." + google_url.GetHost(), "/", base::Time(),
       base::Time(), base::Time(), base::Time(), /*secure=*/true,
       /*httponly=*/false, net::CookieSameSite::NO_RESTRICTION,
-      net::COOKIE_PRIORITY_DEFAULT);
+      net::COOKIE_PRIORITY_DEFAULT, net::CookieSourceType::kOther);
   bool success = false;
   base::RunLoop loop;
   base::OnceCallback<void(net::CookieAccessResult)> callback =

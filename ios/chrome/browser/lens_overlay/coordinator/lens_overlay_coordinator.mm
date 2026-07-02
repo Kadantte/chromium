@@ -18,8 +18,9 @@
 #import "ios/chrome/app/profile/profile_state.h"
 #import "ios/chrome/browser/context_menu/ui_bundled/context_menu_configuration_provider.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
+#import "ios/chrome/browser/fullscreen/model/fullscreen_browser_agent.h"
+#import "ios/chrome/browser/fullscreen/public/fullscreen_metrics.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_controller.h"
-#import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_reason.h"
 #import "ios/chrome/browser/lens/ui_bundled/lens_entrypoint.h"
 #import "ios/chrome/browser/lens_overlay/coordinator/lens_omnibox_client.h"
 #import "ios/chrome/browser/lens_overlay/coordinator/lens_omnibox_client_delegate.h"
@@ -63,6 +64,7 @@
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/fullscreen_commands.h"
 #import "ios/chrome/browser/shared/public/commands/lens_commands.h"
 #import "ios/chrome/browser/shared/public/commands/lens_overlay_commands.h"
 #import "ios/chrome/browser/shared/public/commands/open_lens_input_selection_command.h"
@@ -917,6 +919,12 @@ const base::TimeDelta kSearchWithCameraTooltipHintDelay = base::Seconds(2.0);
   _selectionViewController.visibleAreaLayoutGuide = visibleAreaLayoutGuide;
 }
 
+- (void)lensOverlayResultsPagePresenter:
+            (id<LensOverlayResultsPagePresenting>)presenter
+                shouldZoomImageToCenter:(UIEdgeInsets)edgeInsets {
+  [_selectionViewController zoomImageToCenter:edgeInsets];
+}
+
 #pragma mark - LensOverlayMediatorDelegate
 
 - (void)lensOverlayMediatorDidOpenOverlayMenu:(LensOverlayMediator*)mediator {
@@ -1246,10 +1254,7 @@ const base::TimeDelta kSearchWithCameraTooltipHintDelay = base::Seconds(2.0);
     return NO;
   }
 
-  BOOL forceShowConsent =
-      base::FeatureList::IsEnabled(kLensOverlayForceShowOnboardingScreen);
-
-  return !self.termsOfServiceAccepted || forceShowConsent;
+  return !self.termsOfServiceAccepted;
 }
 
 // Return whether or not the terms of service has been accepted.
@@ -1360,13 +1365,22 @@ const base::TimeDelta kSearchWithCameraTooltipHintDelay = base::Seconds(2.0);
     return;
   }
 
-  FullscreenController* fullscreenController =
-      FullscreenController::FromBrowser(browser);
-
-  if (animated) {
-    fullscreenController->ExitFullscreen(FullscreenExitReason::kForcedByCode);
+  if (IsFullscreenRefactoringEnabled()) {
+    id<FullscreenCommands> fullscreenHandler =
+        HandlerForProtocol(browser->GetCommandDispatcher(), FullscreenCommands);
+    [fullscreenHandler
+        exitFullscreenWithTrigger:FullscreenModeTransitionTrigger::kForcedByCode
+                         animated:animated];
   } else {
-    fullscreenController->ExitFullscreenWithoutAnimation();
+    FullscreenController* fullscreenController =
+        FullscreenController::FromBrowser(browser);
+
+    if (animated) {
+      fullscreenController->ExitFullscreen(
+          FullscreenModeTransitionTrigger::kForcedByCode);
+    } else {
+      fullscreenController->ExitFullscreenWithoutAnimation();
+    }
   }
 }
 
@@ -1452,10 +1466,26 @@ const base::TimeDelta kSearchWithCameraTooltipHintDelay = base::Seconds(2.0);
     return NO;
   }
 
+  FullscreenController* fullscreenController =
+      IsFullscreenRefactoringEnabled()
+          ? nullptr
+          : FullscreenController::FromBrowser(browser);
+
+  FullscreenBrowserAgent* fullscreenAgent =
+      IsFullscreenRefactoringEnabled()
+          ? FullscreenBrowserAgent::FromBrowser(browser)
+          : nullptr;
+
+  id<FullscreenCommands> fullscreenHandler =
+      IsFullscreenRefactoringEnabled()
+          ? HandlerForProtocol(browser->GetCommandDispatcher(),
+                               FullscreenCommands)
+          : nil;
+
   _associatedTabHelper->SetSnapshotController(
       std::make_unique<LensOverlaySnapshotController>(
-          SnapshotTabHelper::FromWebState(activeWebState),
-          FullscreenController::FromBrowser(browser), sceneWindow,
+          SnapshotTabHelper::FromWebState(activeWebState), fullscreenController,
+          fullscreenAgent, fullscreenHandler, sceneWindow,
           IsCurrentLayoutBottomOmnibox(browser)));
 
   return YES;
@@ -1527,14 +1557,13 @@ const base::TimeDelta kSearchWithCameraTooltipHintDelay = base::Seconds(2.0);
 
   // If the window was resized and the current width does not match the initial
   // snapshot width anymore, refrain from repositioning.
-  CGFloat currentWindowWidth =
-      self.browser->GetSceneState().window.frame.size.width;
+  CGFloat currentWindowWidth = sceneWindow.frame.size.width;
   CGFloat initialImageWidth = _selectionViewController.imageSize.width;
 
   // Factor in the native scale of the screen to compensate for the initial
   // rescale. This initial adjustment was necessary to meet the specifications
   // of the Lens API.
-  CGFloat screenScale = [UIScreen mainScreen].nativeScale;
+  CGFloat screenScale = sceneWindow.windowScene.screen.nativeScale;
 
   return currentWindowWidth * screenScale == initialImageWidth;
 }

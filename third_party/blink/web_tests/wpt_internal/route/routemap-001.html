@@ -7,11 +7,11 @@
   {
     "routes": [
       {
-        "name": "r1",
-        "pattern": [ "*route*" ]
+        "name": "--r1",
+        "pattern": [ "/*/route/*" ]
       },
       {
-        "name": "r2",
+        "name": "--r2",
         "pattern": [ "should-not-match" ]
       }
     ]
@@ -21,7 +21,7 @@
   #target {
     display: none;
   }
-  @navigation (at: r1) {
+  @navigation (at: --r1) {
     #target {
       display: block;
       width: 100px;
@@ -29,7 +29,7 @@
       background: green;
     }
   }
-  @navigation (at: r2) {
+  @navigation (at: --r2) {
     #target {
       border: 10px solid red;
     }
@@ -39,9 +39,24 @@
 <script src="/resources/testharness.js"></script>
 <script src="/resources/testharnessreport.js"></script>
 <script>
-  test(()=> {
+  promise_test(async t => {
+    await new Promise(r => window.onload = () => t.step_timeout(r, 0));
+    let committed = Promise.withResolvers();
+    navigation.onnavigate = (event) => {
+      event.intercept({
+        async handler() {
+          committed.resolve();
+          await new Promise(resolve => requestAnimationFrame(resolve));
+        }
+      })
+    };
+
+    // Trigger an active navigation, so that any valid "at" rule will match.
+    navigation.navigate("somewhere");
+    await committed.promise;
+
     assert_equals(target.offsetWidth, 100);
     assert_equals(target.offsetHeight, 100);
     assert_equals(getComputedStyle(target).borderStyle, "none");
-  }, "Only route r1 should match");
+  }, "Only route --r1 should match");
 </script>

@@ -39,7 +39,7 @@ bool StringFromV8(v8::Isolate* isolate, v8::Local<v8::Value> val, String* out) {
 }
 
 bool IsReservedLockName(const String& lock_name) {
-  return lock_name.StartsWith('-');
+  return lock_name.starts_with('-');
 }
 
 bool IsValidSharedStorageBatchUpdateMethodsArgument(
@@ -202,7 +202,7 @@ bool CheckPrivateAggregationConfig(
       base::UmaHistogramCounts10000(
           "Storage.SharedStorage.PrivateAggregationConfig."
           "RequestedMaxContributions",
-          requested_max_contributions);
+          base::saturated_cast<int>(requested_max_contributions));
       if (requested_max_contributions == 0) {
         resolver.Reject(V8ThrowDOMException::CreateOrEmpty(
             script_state.GetIsolate(), DOMExceptionCode::kDataError,

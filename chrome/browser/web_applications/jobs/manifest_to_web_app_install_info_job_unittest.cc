@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/feature_list.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
@@ -37,9 +38,6 @@
 #include "components/webapps/browser/installable/installable_logging.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "content/public/browser/web_contents.h"
-#include "services/network/public/cpp/permissions_policy/origin_with_possible_wildcards.h"
-#include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
-#include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-shared.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
@@ -139,7 +137,7 @@ class ManifestToWebAppInstallInfoJobTest : public WebAppTest {
     // Set up manifest.
     auto manifest = blink::mojom::Manifest::New();
     manifest->start_url = start_url_;
-    manifest->id = GenerateManifestIdFromStartUrlOnly(start_url_);
+    manifest->id = GenerateManifestIdFromStartUrlOnly(start_url_).value();
     manifest->scope = start_url_.GetWithoutFilename();
     manifest->display = DisplayMode::kStandalone;
     manifest->name = u"Foo App";
@@ -170,7 +168,8 @@ class ManifestToWebAppInstallInfoJobTest : public WebAppTest {
 TEST_F(ManifestToWebAppInstallInfoJobTest, BasicFieldsPopulated) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures({blink::features::kFileHandlingIcons,
-                                 blink::features::kWebAppManifestLockScreen},
+                                 blink::features::kWebAppManifestLockScreen,
+                                 blink::features::kUnframedIwa},
                                 /*disabled_features=*/{});
 
   SetupBasicPageState();
@@ -208,18 +207,6 @@ TEST_F(ManifestToWebAppInstallInfoJobTest, BasicFieldsPopulated) {
         url::Origin::Create(GURL("https://scope_extensions_origin.com/"));
     scope_extension->has_origin_wildcard = false;
     manifest->scope_extensions.push_back(std::move(scope_extension));
-  }
-
-  {
-    network::ParsedPermissionsPolicyDeclaration declaration;
-    declaration.feature = network::mojom::PermissionsPolicyFeature::kFullscreen;
-    declaration.allowed_origins = {
-        *network::OriginWithPossibleWildcards::FromOrigin(
-            url::Origin::Create(GURL("https://www.example.com")))};
-    declaration.matches_all_origins = false;
-    declaration.matches_opaque_src = false;
-
-    manifest->permissions_policy.push_back(std::move(declaration));
   }
 
   {
@@ -292,17 +279,6 @@ TEST_F(ManifestToWebAppInstallInfoJobTest, BasicFieldsPopulated) {
 
   EXPECT_EQ(GURL("https://www.foo.bar/new-note-url"),
             web_app_info->note_taking_new_note_url);
-
-  // Check permissions policy was updated.
-  EXPECT_EQ(1u, web_app_info->permissions_policy.size());
-  auto declaration = web_app_info->permissions_policy[0];
-  EXPECT_EQ(declaration.feature,
-            network::mojom::PermissionsPolicyFeature::kFullscreen);
-  EXPECT_EQ(1u, declaration.allowed_origins.size());
-  EXPECT_EQ("https://www.example.com",
-            declaration.allowed_origins[0].Serialize());
-  EXPECT_FALSE(declaration.matches_all_origins);
-  EXPECT_FALSE(declaration.matches_opaque_src);
 
   // Check related applications were updated.
   ASSERT_EQ(1u, web_app_info->related_applications.size());
@@ -756,6 +732,26 @@ TEST_F(ManifestToWebAppInstallInfoJobTest, CrossOriginUrls_DropFields) {
   EXPECT_TRUE(web_app_info->note_taking_new_note_url.is_empty());
 }
 
+TEST_F(ManifestToWebAppInstallInfoJobTest, MigrateFromDropsCrossSiteData) {
+  SetupBasicPageState();
+  auto& manifest = GetPageManifest();
+  manifest->manifest_url = GURL("https://www.foo.bar/manifest.json");
+
+  auto migrate_same_site = blink::mojom::ManifestMigrateFrom::New();
+  migrate_same_site->id = GURL("https://old.foo.bar/id");
+  manifest->migrate_from.push_back(std::move(migrate_same_site));
+
+  auto migrate_cross_site = blink::mojom::ManifestMigrateFrom::New();
+  migrate_cross_site->id = GURL("https://malicious-site.com/id");
+  manifest->migrate_from.push_back(std::move(migrate_cross_site));
+
+  auto web_app_info = GetWebAppInstallInfoFromJob(*manifest);
+
+  ASSERT_EQ(1u, web_app_info->migration_sources.size());
+  EXPECT_EQ(GURL("https://old.foo.bar/id").spec(),
+            web_app_info->migration_sources[0].manifest_id().spec());
+}
+
 TEST_F(ManifestToWebAppInstallInfoJobTest, InvalidManifestUrl) {
   SetupBasicPageState();
   auto& manifest = GetPageManifest();
@@ -985,8 +981,6 @@ class ManifestToWebAppInstallInfoTrustedIconTest
     return false;
 #endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_CHROMEOS)
   }
-
-  base::test::ScopedFeatureList feature_list_{features::kWebAppUsePrimaryIcon};
 };
 
 TEST_F(ManifestToWebAppInstallInfoTrustedIconTest, ChooseLargestIconAny) {
@@ -1163,7 +1157,7 @@ TEST_F(ManifestToWebAppInstallInfoTrustedIconTest, MultiPurposeIcons) {
 
   // Verify the same bitmap has been parsed and generated as per the
   // requirements, since it is both maskable and any, and is the largest icon.
-  const std::map<SquareSizePx, SkBitmap>& icon_map_parsed =
+  const OrderedSizeToBitmap& icon_map_parsed =
       ShouldPreferMaskable() ? web_app_info->trusted_icon_bitmaps.maskable
                              : web_app_info->trusted_icon_bitmaps.any;
   for (const auto& icon_data : icon_map_parsed) {
@@ -1223,7 +1217,7 @@ TEST_F(ManifestToWebAppInstallInfoTrustedIconTest,
 
   // Verify the correct bitmap has been parsed and generated as per the
   // requirements.
-  const std::map<SquareSizePx, SkBitmap>& icon_map_parsed =
+  const OrderedSizeToBitmap& icon_map_parsed =
       ShouldPreferMaskable() ? web_app_info->trusted_icon_bitmaps.maskable
                              : web_app_info->trusted_icon_bitmaps.any;
   const SkColor final_color =
@@ -1302,7 +1296,7 @@ TEST_F(ManifestToWebAppInstallInfoTrustedIconTest, SVGIconsNoSize) {
 
   // Verify the correct bitmap has been parsed and downloaded as per the
   // requirements.
-  const std::map<SquareSizePx, SkBitmap>& icon_map_parsed =
+  const OrderedSizeToBitmap& icon_map_parsed =
       ShouldPreferMaskable() ? web_app_info->trusted_icon_bitmaps.maskable
                              : web_app_info->trusted_icon_bitmaps.any;
   for (const auto& icon_data : icon_map_parsed) {
@@ -2219,6 +2213,37 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
   auto icons = shortcut_info.GetShortcutIconInfosForPurpose(IconPurpose::ANY);
   ASSERT_EQ(1u, icons.size());
   EXPECT_EQ(default_icon_url, icons[0].url);
+}
+
+TEST_F(ManifestToWebAppInstallInfoJobTest,
+       AcceptsUnframedDisplayOverrideWhenTheFeatureIsEnabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(blink::features::kUnframedIwa);
+
+  ASSERT_TRUE(base::FeatureList::IsEnabled(blink::features::kUnframedIwa));
+
+  SetupBasicPageState();
+  blink::mojom::ManifestPtr& manifest = GetPageManifest();
+  manifest->display_override.push_back(
+      blink::Manifest::DisplayOverride::CreateUnframed({FooUrlPattern()}));
+
+  auto web_app_info = GetWebAppInstallInfoFromJob(*manifest);
+  EXPECT_THAT(
+      web_app_info->display_override,
+      testing::ElementsAre(DisplayOverride::CreateUnframed({FooUrlPattern()})));
+}
+
+TEST_F(ManifestToWebAppInstallInfoJobTest,
+       IgnoresUnframedDisplayOverrideWhenTheFeatureIsDisabled) {
+  ASSERT_FALSE(base::FeatureList::IsEnabled(blink::features::kUnframedIwa));
+
+  SetupBasicPageState();
+  blink::mojom::ManifestPtr& manifest = GetPageManifest();
+  manifest->display_override.push_back(
+      blink::Manifest::DisplayOverride::CreateUnframed());
+
+  auto web_app_info = GetWebAppInstallInfoFromJob(*manifest);
+  EXPECT_THAT(web_app_info->display_override, testing::IsEmpty());
 }
 
 }  // namespace

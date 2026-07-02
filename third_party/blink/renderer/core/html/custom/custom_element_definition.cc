@@ -43,7 +43,7 @@ CustomElementDefinition::~CustomElementDefinition() = default;
 
 void CustomElementDefinition::Trace(Visitor* visitor) const {
   visitor->Trace(registry_);
-  ElementRareDataField::Trace(visitor);
+  NodeRareDataField::Trace(visitor);
 }
 
 static String ErrorMessageForConstructorResult(Element& element,
@@ -170,6 +170,9 @@ HTMLElement* CustomElementDefinition::CreateElement(
     if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
         !registry_->IsGlobalRegistry()) {
       Element* element = CreateElementForConstructor(document);
+      // Set the registry for the element before running the constructor,
+      // to ensure user gets the correct registry in constructor if need.
+      element->SetCustomElementRegistry(registry_);
       CustomElementConstructionStackScope construction_stack_scope(*this,
                                                                    *element);
       // Keeping the following creation call here to avoid the construction
@@ -245,8 +248,10 @@ void CustomElementDefinition::Upgrade(Element& element) {
   if (ListedElement* listed_element = ListedElement::From(element)) {
     if (element.FastHasAttribute(html_names::kReadonlyAttr))
       listed_element->ReadonlyAttributeChanged();
-    if (element.FastHasAttribute(html_names::kDisabledAttr))
-      listed_element->DisabledAttributeChanged();
+    if (element.FastHasAttribute(html_names::kDisabledAttr)) {
+      listed_element->DisabledAttributeChanged(
+          DisabledChangedReason::kAttributeChanged);
+    }
   }
 
   if (IsFormAssociated())

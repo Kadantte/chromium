@@ -31,6 +31,7 @@ import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.components.browser_ui.styles.IncognitoColors;
 import org.chromium.components.embedder_support.view.ContentView;
+import org.chromium.content_public.browser.NavigationHandle;
 import org.chromium.ui.base.DeviceInput;
 import org.chromium.url.GURL;
 
@@ -220,7 +221,25 @@ public class LinkHoverStatusBarCoordinator extends EmptyTabObserver
     }
 
     @Override
+    public void onDidStartNavigationInPrimaryMainFrame(Tab tab, NavigationHandle navigationHandle) {
+        // If we are already in an empty URL state, there's no need to trigger hide logic.
+        if (mCurrentUrl.isEmpty()) return;
+
+        // Only hide for cross-document navigations. Same-document navigations like fragment changes
+        // don't cause the "blank screen" issue and the user might still be hovering over the link.
+        if (navigationHandle.isSameDocument()) return;
+
+        onUpdateTargetUrl(tab, GURL.emptyGURL());
+    }
+
+    @Override
     public boolean onHover(View view, MotionEvent event) {
+        if (event.getActionMasked() == MotionEvent.ACTION_HOVER_EXIT) {
+            Tab tab = mTabProvider.get();
+            if (tab != null) {
+                onUpdateTargetUrl(tab, GURL.emptyGURL());
+            }
+        }
         onCursorPositionChanged(event.getRawX(), event.getRawY());
         // Return false so the event is not consumed and can be passed to
         // other listeners.

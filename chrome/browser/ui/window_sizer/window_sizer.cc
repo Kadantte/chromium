@@ -14,7 +14,6 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
@@ -121,14 +120,14 @@ class DefaultStateProvider : public WindowSizer::StateProvider {
     // If a reference browser is set, use its window. Otherwise find last
     // active. Depending on the type of browser being created, different logic
     // determines if a particular browser can be a reference browser.
-    ui::BaseWindow* window = nullptr;
+    const ui::BaseWindow* window = nullptr;
     // Window may be null if browser is just starting up.
-    if (browser_ && browser_->window()) {
-      window = browser_->window();
+    if (browser_ && browser_->GetWindow()) {
+      window = browser_->GetWindow();
     } else if (web_app::AppBrowserController::IsWebApp(browser_)) {
       window = FindMostRecentWindow(
           [profile = browser_->profile(),
-           app_id = browser_->app_controller()->app_id(),
+           app_id = web_app::AppBrowserController::From(browser_)->app_id(),
            display = display::Screen::Get()->GetDisplayForNewWindows()](
               BrowserWindowInterface* browser) {
             if (browser->GetProfile() != profile) {
@@ -143,9 +142,7 @@ class DefaultStateProvider : public WindowSizer::StateProvider {
               return false;
             }
 #endif
-            if (!browser->GetBrowserForMigrationOnly()
-                     ->window()
-                     ->IsOnCurrentWorkspace())
+            if (!BrowserWindow::FromBrowser(browser)->IsOnCurrentWorkspace())
               return false;
             return true;
           });
@@ -162,7 +159,7 @@ class DefaultStateProvider : public WindowSizer::StateProvider {
       // maximized windows. Additionally creating a window with a maximized
       // show state results in an invisible window if the window is a PWA
       // (i.e. out-of-process remote cocoa) window
-      // (https://crbug.com/1441966). Never using WindowShowState::kMaximized
+      // (https://crbug.com/40910284). Never using WindowShowState::kMaximized
       // on Mac is also consistent with NativeWidgetMac::Show, which does not
       // support WindowShowState::kMaximized either.
 #if !BUILDFLAG(IS_MAC)
@@ -346,6 +343,15 @@ gfx::Rect WindowSizer::GetDefaultWindowBounds(
         static_cast<int>(work_area.width() / 2. - 1.5 * kWindowTilePixels);
   }
 #endif  // !BUILDFLAG(IS_MAC)
+
+  // When starting Chrome on a monitor in portrait orientation the default
+  // browser window height is equal to monitor work area height which looks
+  // weird, see http://crbug.com/493633417. So check if this is the case and if
+  // so, set the default height for 4:3 aspect ratio.
+  if (!display.is_landscape() && default_height > default_width) {
+    default_height = (default_width / 4) * 3;
+  }
+
   return gfx::Rect(kWindowTilePixels + work_area.x(),
                    kWindowTilePixels + work_area.y(), default_width,
                    default_height);

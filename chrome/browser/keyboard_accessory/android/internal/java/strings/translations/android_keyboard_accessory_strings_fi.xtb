@@ -11,6 +11,7 @@
 <translation id="2903493209154104877">Osoitteet</translation>
 <translation id="3399357656427473483">Kosketuksella täytettävien kirjautumistietojen lista</translation>
 <translation id="3688051737190211318">Jos <ph name="ORIGIN" /> on luotettava, voit kirjautua sisään tallennetulla salasanalla</translation>
+<translation id="4110818514910776249">Voit nyt täyttää enemmän tietoja automaattisesti Google Walletista. Ylläpidä tietojasi tai laita ehdotukset pois päältä asetuksista.</translation>
 <translation id="4553044860350038560">Lisää avainkoodeja</translation>
 <translation id="457912817138344555">Voit nyt täyttää kanta-asiakaskortit automaattisesti. Voit laittaa niiden ehdotukset pois päältä Google Walletissa.</translation>
 <translation id="4631649115723685955">Hyvitystarjous linkitetty</translation>
@@ -20,7 +21,9 @@
 <translation id="5234764350956374838">Hylkää</translation>
 <translation id="5441504010984421144">Kosketuksella täytettävien kirjautumistietojen lista avattu koko näytön korkeudella.</translation>
 <translation id="5447973833955560753">Palauttamisen salasana</translation>
+<translation id="5526221979327454308">Muista ja täytä</translation>
 <translation id="5880385758720707152">Täytä koti- ja työosoitteet automaattisesti Google-tililtä</translation>
+<translation id="6157023663990330996">Chrome voi nyt muistaa henkilökohtaiset tietosi Googlen sovelluksista ja täyttää ne automaattisesti millä tahansa sivulla</translation>
 <translation id="6296921860874265377">Näytä tallennetut salasanat ja salasana-asetukset</translation>
 <translation id="6393156038355142111">Ehdota vahvaa salasanaa</translation>
 <translation id="6657585470893396449">Salasana</translation>

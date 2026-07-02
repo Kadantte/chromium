@@ -28,6 +28,7 @@
 #include "components/media_effects/test/fake_video_capture_service.h"
 #include "components/media_effects/test/scoped_media_device_info.h"
 #include "components/strings/grit/components_strings.h"
+#include "content/public/browser/web_contents.h"
 #include "third_party/blink/public/common/features.h"
 #endif
 
@@ -95,6 +96,10 @@ class TestDelegate : public permissions::PermissionPrompt::Delegate {
   void Ignore(const PromptOptions& prompt_options) override {}
   GeolocationAccuracy GetInitialGeolocationAccuracySelection() const override {
     NOTREACHED();
+  }
+  std::optional<permissions::GeolocationPromptType> GetGeolocationPromptType()
+      const override {
+    return std::nullopt;
   }
   void FinalizeCurrentRequests() override {}
   void OpenHelpCenterLink(const ui::Event& event) override {}
@@ -225,6 +230,7 @@ class PermissionPromptBubbleOneOriginViewTestMediaPreview
  protected:
   void SetUp() override {
     TestWithBrowserView::SetUp();
+    AddTab(browser(), GURL("http://a.com"));
     base::test::TestFuture<void> mic_infos, camera_infos;
     audio_service_.SetOnRepliedWithInputDeviceDescriptionsCallback(
         mic_infos.GetCallback());
@@ -243,8 +249,8 @@ class PermissionPromptBubbleOneOriginViewTestMediaPreview
                            std::vector<std::string>{kMicId},
                            std::vector<std::string>{kCameraId});
     permission_prompt_ = std::make_unique<PermissionPromptBubbleOneOriginView>(
-        browser(), test_delegate_->GetWeakPtr(),
-        PermissionPromptStyle::kBubbleOnly);
+        browser()->GetTabStripModel()->GetActiveWebContents(),
+        test_delegate_->GetWeakPtr(), PermissionPromptStyle::kBubbleOnly);
   }
 
   void TearDown() override {

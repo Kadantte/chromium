@@ -20,6 +20,7 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/views/accessibility/caption_bubble_context_views.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -28,6 +29,12 @@
 #include "components/live_caption/caption_util.h"
 #include "components/live_caption/live_caption_bubble_settings.h"
 #include "components/live_caption/pref_names.h"
+#include "components/on_device_translation/buildflags/buildflags.h"
+
+#if BUILDFLAG(ENABLE_ON_DEVICE_TRANSLATION)
+#include "components/on_device_translation/public/language_pack.h"
+#endif
+
 #include "components/live_caption/views/caption_bubble.h"
 #include "components/live_caption/views/translation_view_wrapper.h"
 #include "components/soda/soda_installer.h"
@@ -36,7 +43,6 @@
 #include "content/public/test/scoped_accessibility_mode_override.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "media/base/media_switches.h"
-#include "media/mojo/mojom/speech_recognition_service.mojom.h"
 #include "ui/accessibility/ax_mode.h"
 #include "ui/base/buildflags.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -46,7 +52,6 @@
 #include "ui/gfx/font_list.h"
 #include "ui/views/accessibility/ax_virtual_view.h"
 #include "ui/views/accessibility/view_accessibility.h"
-#include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
@@ -96,13 +101,12 @@ class CaptionBubbleControllerViewsTest
       params["live_caption_scrollable_max_lines"] =
           "9";  // Same size as non-scrollable.
       scoped_feature_list_.InitWithFeaturesAndParameters(
-          {{media::kLiveTranslate, {}},
-           {media::kFeatureManagementLiveTranslateCrOS, {}},
+          {{media::kFeatureManagementLiveTranslateCrOS, {}},
            {kLiveCaptionScrollable, params}},
           {});
     } else {
       scoped_feature_list_.InitWithFeatures(
-          {media::kLiveTranslate, media::kFeatureManagementLiveTranslateCrOS},
+          {media::kFeatureManagementLiveTranslateCrOS},
           {captions::kLiveCaptionScrollable});
     }
   }
@@ -131,6 +135,21 @@ class CaptionBubbleControllerViewsTest
     }
     return controller_.get();
   }
+
+#if BUILDFLAG(ENABLE_ON_DEVICE_TRANSLATION)
+  void SimulateLanguagePackProgress(on_device_translation::LanguagePackKey key,
+                                    int progress) {
+    controller_->OnLanguagePackProgress(key, progress);
+  }
+  void SimulateLanguagePackInstalled(
+      on_device_translation::LanguagePackKey key) {
+    controller_->OnLanguagePackInstalled(key);
+  }
+  void SimulateLanguagePackInstallationChanged(
+      on_device_translation::LanguagePackKey key) {
+    controller_->OnLanguagePackInstallationChanged(key);
+  }
+#endif
 
   CaptionBubbleContext* GetCaptionBubbleContext() {
     if (!caption_bubble_context_) {
@@ -404,7 +423,7 @@ class CaptionBubbleControllerViewsTest
   }
 
   void SetWindowBounds(const gfx::Rect& bounds) {
-    browser()->window()->SetBounds(bounds);
+    browser()->GetWindow()->SetBounds(bounds);
     base::RunLoop().RunUntilIdle();
   }
 
@@ -539,7 +558,7 @@ IN_PROC_BROWSER_TEST_P(CaptionBubbleControllerViewsTest,
 
   SetWindowBounds(gfx::Rect(10, 10, 800, 600));
   gfx::Rect context_rect = views::Widget::GetWidgetForNativeWindow(
-                               browser()->window()->GetNativeWindow())
+                               browser()->GetWindow()->GetNativeWindow())
                                ->GetClientAreaBoundsInScreen();
 
   OnPartialTranscription("Mantis shrimp have 12-16 photoreceptors");
@@ -896,10 +915,12 @@ IN_PROC_BROWSER_TEST_P(CaptionBubbleControllerViewsTest,
   browser()->profile()->GetPrefs()->SetString(prefs::kLiveCaptionLanguageCode,
                                               "fr");
 
-  SkColor default_color = browser()->window()->GetColorProvider()->GetColor(
-      ui::kColorLiveCaptionBubbleForegroundDefault);
+  SkColor default_color =
+      BrowserWindow::FromBrowser(browser())->GetColorProvider()->GetColor(
+          ui::kColorLiveCaptionBubbleForegroundDefault);
   SkColor language_label_color =
-      browser()->window()->GetColorProvider()->GetColor(ui::kColorRefPrimary80);
+      BrowserWindow::FromBrowser(browser())->GetColorProvider()->GetColor(
+          ui::kColorRefPrimary80);
   ui::CaptionStyle caption_style;
 
   GetController()->UpdateCaptionStyle(std::nullopt);
@@ -980,8 +1001,9 @@ IN_PROC_BROWSER_TEST_P(CaptionBubbleControllerViewsTest,
 
 IN_PROC_BROWSER_TEST_P(CaptionBubbleControllerViewsTest,
                        UpdateCaptionStyleBackgroundColor) {
-  SkColor default_color = browser()->window()->GetColorProvider()->GetColor(
-      ui::kColorLiveCaptionBubbleBackgroundDefault);
+  SkColor default_color =
+      BrowserWindow::FromBrowser(browser())->GetColorProvider()->GetColor(
+          ui::kColorLiveCaptionBubbleBackgroundDefault);
   ui::CaptionStyle caption_style;
 
   GetController()->UpdateCaptionStyle(std::nullopt);
@@ -1484,6 +1506,129 @@ IN_PROC_BROWSER_TEST_P(CaptionBubbleControllerViewsTest, LiveTranslateLabel) {
   ASSERT_TRUE(GetSourceLanguageButton()->GetVisible());
 }
 
+#if BUILDFLAG(ENABLE_ON_DEVICE_TRANSLATION)
+IN_PROC_BROWSER_TEST_P(CaptionBubbleControllerViewsTest,
+                       DownloadProgressLabelTranslation) {
+  GetController();
+
+  EXPECT_FALSE(IsWidgetVisible());
+  ASSERT_FALSE(GetDownloadProgressLabel()->GetVisible());
+
+  OnPartialTranscription(
+      "Quokkas, known for their cute smiles, are also skilled tree climbers, "
+      "able to scale up to 2 meters high!");
+  EXPECT_TRUE(IsWidgetVisible());
+  ASSERT_TRUE(GetLabel()->GetVisible());
+  ASSERT_FALSE(GetDownloadProgressLabel()->GetVisible());
+
+  SimulateLanguagePackProgress(on_device_translation::LanguagePackKey::kEn_Fr,
+                               45);
+  ASSERT_FALSE(GetLabel()->GetVisible());
+  ASSERT_TRUE(GetDownloadProgressLabel()->GetVisible());
+  ASSERT_EQ(u"Downloading French language pack\u2026 45%",
+            GetDownloadProgressLabel()->GetText());
+
+  SimulateLanguagePackInstalled(on_device_translation::LanguagePackKey::kEn_Fr);
+  ASSERT_TRUE(GetLabel()->GetVisible());
+  ASSERT_FALSE(GetDownloadProgressLabel()->GetVisible());
+
+  SimulateLanguagePackProgress(on_device_translation::LanguagePackKey::kAr_En,
+                               30);
+  ASSERT_FALSE(GetLabel()->GetVisible());
+  ASSERT_TRUE(GetDownloadProgressLabel()->GetVisible());
+  ASSERT_EQ(u"Downloading Arabic language pack\u2026 30%",
+            GetDownloadProgressLabel()->GetText());
+
+  SimulateLanguagePackInstalled(on_device_translation::LanguagePackKey::kAr_En);
+  ASSERT_TRUE(GetLabel()->GetVisible());
+  ASSERT_FALSE(GetDownloadProgressLabel()->GetVisible());
+}
+
+IN_PROC_BROWSER_TEST_P(CaptionBubbleControllerViewsTest,
+                       DownloadProgressLabelTranslationCancellation) {
+  GetController();
+
+  OnPartialTranscription(
+      "Tasmanian devils hold the chomping champ title for mammals.");
+  EXPECT_TRUE(IsWidgetVisible());
+
+  SimulateLanguagePackProgress(on_device_translation::LanguagePackKey::kEn_Fr,
+                               12);
+  ASSERT_TRUE(GetDownloadProgressLabel()->GetVisible());
+
+  // By default, the pack is not registered or installed in the test
+  // environment. So OnLanguagePackInstallationChanged should detect it as
+  // cancelled/failed and clear progress.
+  SimulateLanguagePackInstallationChanged(
+      on_device_translation::LanguagePackKey::kEn_Fr);
+
+  ASSERT_TRUE(GetLabel()->GetVisible());
+  ASSERT_FALSE(GetDownloadProgressLabel()->GetVisible());
+}
+
+IN_PROC_BROWSER_TEST_P(CaptionBubbleControllerViewsTest,
+                       DownloadProgressLabelMultipleDownloads) {
+  GetController();
+
+  OnPartialTranscription(
+      "Quokkas, known for their cute smiles, are also skilled tree climbers.");
+  EXPECT_TRUE(IsWidgetVisible());
+
+  SimulateLanguagePackProgress(on_device_translation::LanguagePackKey::kEn_Fr,
+                               40);
+  ASSERT_TRUE(GetDownloadProgressLabel()->GetVisible());
+
+  SimulateLanguagePackProgress(on_device_translation::LanguagePackKey::kAr_En,
+                               60);
+
+  ASSERT_EQ(u"Downloading language packages\u2026 50%",
+            GetDownloadProgressLabel()->GetText());
+
+  SimulateLanguagePackInstalled(on_device_translation::LanguagePackKey::kEn_Fr);
+
+  ASSERT_EQ(u"Downloading Arabic language pack\u2026 60%",
+            GetDownloadProgressLabel()->GetText());
+}
+
+IN_PROC_BROWSER_TEST_P(CaptionBubbleControllerViewsTest,
+                       DownloadProgressLabelMultipleInstalling) {
+  GetController();
+
+  OnPartialTranscription(
+      "Quokkas, known for their cute smiles, are also skilled tree climbers.");
+  EXPECT_TRUE(IsWidgetVisible());
+
+  SimulateLanguagePackProgress(on_device_translation::LanguagePackKey::kEn_Fr,
+                               100);
+  ASSERT_TRUE(GetDownloadProgressLabel()->GetVisible());
+
+  SimulateLanguagePackProgress(on_device_translation::LanguagePackKey::kAr_En,
+                               100);
+
+  ASSERT_EQ(u"Installing language packages\u2026",
+            GetDownloadProgressLabel()->GetText());
+}
+
+IN_PROC_BROWSER_TEST_P(CaptionBubbleControllerViewsTest,
+                       DownloadProgressLabelDownloadingAndInstalling) {
+  GetController();
+
+  OnPartialTranscription(
+      "Quokkas, known for their cute smiles, are also skilled tree climbers.");
+  EXPECT_TRUE(IsWidgetVisible());
+
+  SimulateLanguagePackProgress(on_device_translation::LanguagePackKey::kEn_Fr,
+                               100);
+  ASSERT_TRUE(GetDownloadProgressLabel()->GetVisible());
+
+  SimulateLanguagePackProgress(on_device_translation::LanguagePackKey::kAr_En,
+                               50);
+
+  ASSERT_EQ(u"Downloading Arabic language pack\u2026 50%",
+            GetDownloadProgressLabel()->GetText());
+}
+#endif  // BUILDFLAG(ENABLE_ON_DEVICE_TRANSLATION)
+
 IN_PROC_BROWSER_TEST_P(CaptionBubbleControllerViewsTest, HeaderView) {
   OnPartialTranscription(
       "Stoats are able to change their fur color from brown to white in the "
@@ -1686,6 +1831,45 @@ IN_PROC_BROWSER_TEST_P(CaptionBubbleControllerViewsTest,
   ASSERT_EQ(48, GetDownloadProgressLabel()->GetPreferredSize().height());
 
   OnSodaInstalled();
+  ASSERT_TRUE(GetLabel()->GetVisible());
+  ASSERT_FALSE(GetDownloadProgressLabel()->GetVisible());
+}
+
+IN_PROC_BROWSER_TEST_P(CaptionBubbleControllerViewsTest,
+                       DownloadProgressLabelSodaInstalling) {
+  speech::SodaInstaller::GetInstance()->NeverDownloadSodaForTesting();
+  GetController();
+
+  OnPartialTranscription(
+      "Quokkas, known for their cute smiles, are also skilled tree climbers.");
+  EXPECT_TRUE(IsWidgetVisible());
+
+  OnSodaProgress(100);
+  ASSERT_TRUE(GetDownloadProgressLabel()->GetVisible());
+  ASSERT_EQ(u"Installing French\u2026", GetDownloadProgressLabel()->GetText());
+}
+
+IN_PROC_BROWSER_TEST_P(CaptionBubbleControllerViewsTest,
+                       DownloadProgressLabelSodaInstalledWhenModelNull) {
+  speech::SodaInstaller::GetInstance()->NeverDownloadSodaForTesting();
+  GetController();
+
+  OnSodaProgress(100);
+  OnSodaInstalled();
+
+  OnPartialTranscription(
+      "Quokkas, known for their cute smiles, are also skilled tree climbers.");
+  EXPECT_TRUE(IsWidgetVisible());
+
+  SimulateLanguagePackProgress(on_device_translation::LanguagePackKey::kEn_Fr,
+                               50);
+  ASSERT_TRUE(GetDownloadProgressLabel()->GetVisible());
+  ASSERT_EQ(u"Downloading French language pack\u2026 50%",
+            GetDownloadProgressLabel()->GetText());
+
+  SimulateLanguagePackInstallationChanged(
+      on_device_translation::LanguagePackKey::kEn_Fr);
+
   ASSERT_TRUE(GetLabel()->GetVisible());
   ASSERT_FALSE(GetDownloadProgressLabel()->GetVisible());
 }

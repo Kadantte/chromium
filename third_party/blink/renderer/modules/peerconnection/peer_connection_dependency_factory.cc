@@ -44,7 +44,7 @@
 #include "third_party/blink/public/common/peerconnection/webrtc_ip_handling_policy.h"
 #include "third_party/blink/public/mojom/peerconnection/webrtc_ip_handling_policy.mojom-blink.h"
 #include "third_party/blink/public/mojom/permissions/permission.mojom-blink.h"
-#include "third_party/blink/public/mojom/permissions/permission_status.mojom-blink-forward.h"
+#include "third_party/blink/public/mojom/permissions/permission_status.mojom-blink.h"
 #include "third_party/blink/public/platform/modules/webrtc/webrtc_logging.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/task_type.h"
@@ -280,23 +280,18 @@ class LocalNetworkAccessPermission final
     DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
     CHECK(RuntimeEnabledFeatures::LocalNetworkAccessWebRTCEnabled());
 
-    mojom::blink::PermissionName permission_name =
-        mojom::blink::PermissionName::LOCAL_NETWORK_ACCESS;
-    if (base::FeatureList::IsEnabled(
-            network::features::kLocalNetworkAccessChecksSplitPermissions)) {
-      network::mojom::IPAddressSpace target_address_space =
-          FromSocketAddress(candidate_address);
-      if (target_address_space == network::mojom::IPAddressSpace::kLoopback) {
-        permission_name = mojom::blink::PermissionName::LOOPBACK_NETWORK;
-      } else {
-        permission_name = mojom::blink::PermissionName::LOCAL_NETWORK;
-      }
+    mojom::blink::PermissionName permission_name;
+    network::mojom::IPAddressSpace target_address_space =
+        FromSocketAddress(candidate_address);
+    if (target_address_space == network::mojom::IPAddressSpace::kLoopback) {
+      permission_name = mojom::blink::PermissionName::LOOPBACK_NETWORK;
+    } else {
+      permission_name = mojom::blink::PermissionName::LOCAL_NETWORK;
     }
 
     callback_ = std::move(callback);
     permission_service_->RequestPermission(
         CreatePermissionDescriptor(permission_name),
-        /*user_gesture=*/false,
         BindRepeating(
             &LocalNetworkAccessPermission::OnPermissionRequested,
             // This is safe because this class owns `permission_service_` which
@@ -304,10 +299,11 @@ class LocalNetworkAccessPermission final
             base::Unretained(this)));
   }
 
-  void OnPermissionRequested(mojom::blink::PermissionStatus status) {
+  void OnPermissionRequested(
+      mojom::blink::PermissionStatusWithDetailsPtr status) {
     DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
-    switch (status) {
+    switch (status->status) {
       case mojom::blink::PermissionStatus::GRANTED:
         callback_(webrtc::LocalNetworkAccessPermissionStatus::kGranted);
         break;
@@ -348,7 +344,7 @@ class LocalNetworkAccessPermissionFactory final
       override {
     mojo::Remote<mojom::blink::PermissionService> permission_service;
     PostCrossThreadTask(
-        *main_thread_task_runner_.get(), FROM_HERE,
+        *main_thread_task_runner_, FROM_HERE,
         CrossThreadBindOnce(
             &PeerConnectionDependencyFactory::BindPermissionService,
             MakeUnwrappingCrossThreadWeakHandle(factory_),
@@ -640,14 +636,17 @@ void ReportUmaEncodeDecodeCapabilities(
     for (const auto& sdp_format : kSdpFormats) {
       bool decode_support =
           webrtc_decoder_factory
-              ->QueryCodecSupport(sdp_format, /*reference_scaling=*/false)
+              ->QueryCodecSupport(sdp_format, /*reference_scaling=*/false,
+                                  /*resolution=*/std::nullopt)
               .is_power_efficient;
 
       EncodeScalabilityMode encode_support =
           EncodeScalabilityMode::NotSupported;
       for (const auto& mode : kScalabilityModes) {
         if (webrtc_encoder_factory
-                ->QueryCodecSupport(sdp_format, mode.scalability_string)
+                ->QueryCodecSupport(
+                    sdp_format, /*scalability_mode=*/mode.scalability_string,
+                    /*resolution=*/std::nullopt)
                 .is_power_efficient) {
           encode_support = mode.scalability_enum;
         } else {
@@ -887,7 +886,7 @@ void PeerConnectionDependencyFactory::InitializeSignalingThread(
   // TODO(crbug.com/40265716): remove batch_udp_packets parameter.
   socket_factory_ = std::make_unique<IpcPacketSocketFactory>(
       CrossThreadBindRepeating(
-          &PeerConnectionDependencyFactory::DoGetDevtoolsToken,
+          &PeerConnectionDependencyFactory::DoGetDevtoolsThrottlingToken,
           WrapCrossThreadWeakPersistent(this)),
       p2p_socket_dispatcher_.Get(), traffic_annotation, /*batch_udp_packets=*/
       false);
@@ -965,7 +964,7 @@ void PeerConnectionDependencyFactory::InitializeSignalingThread(
   event->Signal();
 }
 
-void PeerConnectionDependencyFactory::DoGetDevtoolsToken(
+void PeerConnectionDependencyFactory::DoGetDevtoolsThrottlingToken(
     base::OnceCallback<void(std::optional<base::UnguessableToken>)> then) {
   context_task_runner_->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -975,21 +974,22 @@ void PeerConnectionDependencyFactory::DoGetDevtoolsToken(
             if (!factory) {
               return std::nullopt;
             }
-            return factory->GetDevtoolsToken();
+            return factory->GetDevtoolsThrottlingToken();
           },
           WrapCrossThreadWeakPersistent(this))),
       std::move(then));
 }
 
 std::optional<base::UnguessableToken>
-PeerConnectionDependencyFactory::GetDevtoolsToken() {
+PeerConnectionDependencyFactory::GetDevtoolsThrottlingToken() {
   if (!GetExecutionContext()) {
     return std::nullopt;
   }
   CHECK(GetExecutionContext()->IsContextThread());
-  std::optional<base::UnguessableToken> devtools_token;
-  probe::WillCreateP2PSocketUdp(GetExecutionContext(), &devtools_token);
-  return devtools_token;
+  std::optional<base::UnguessableToken> devtools_throttling_token;
+  probe::WillCreateP2PSocketUdp(GetExecutionContext(),
+                                &devtools_throttling_token);
+  return devtools_throttling_token;
 }
 
 bool PeerConnectionDependencyFactory::PeerConnectionFactoryCreated() {
@@ -1003,8 +1003,9 @@ PeerConnectionDependencyFactory::CreatePeerConnection(
     webrtc::PeerConnectionObserver* observer,
     ExceptionState& exception_state) {
   CHECK(observer);
-  if (!GetPcFactory().get())
+  if (!GetPcFactory()) {
     return nullptr;
+  }
 
   webrtc::PeerConnectionDependencies dependencies(observer);
   // |web_frame| may be null in tests, e.g. if
@@ -1279,8 +1280,9 @@ PeerConnectionDependencyFactory::GetWebRtcSignalingTaskRunner() {
 
 void PeerConnectionDependencyFactory::EnsureWebRtcAudioDeviceImpl() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  if (audio_device_.get())
+  if (audio_device_) {
     return;
+  }
 
   audio_device_ = new webrtc::RefCountedObject<blink::WebRtcAudioDeviceImpl>();
 }

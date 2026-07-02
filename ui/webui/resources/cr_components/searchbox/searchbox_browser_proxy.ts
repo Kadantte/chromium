@@ -13,7 +13,7 @@
  */
 
 import type {AutocompleteMatch, AutocompleteResult, PageHandlerInterface} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
-import {PageCallbackRouter, PageHandler} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import {PageCallbackRouter, PageHandlerFactory, PageHandlerRemote} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 
 export function createAutocompleteMatch(
     modifiers: Partial<AutocompleteMatch> = {}): AutocompleteMatch {
@@ -38,6 +38,7 @@ export function createAutocompleteMatch(
     iconUrl: '',
     imageDominantColor: '',
     imageUrl: '',
+    isContextualSuggestion: false,
     isNoncannedAimSuggestion: false,
     removeButtonA11yLabel: '',
     type: '',
@@ -60,6 +61,7 @@ export function createAutocompleteResultForTesting(
     matches: [],
     suggestionGroupsMap: {},
     smartComposeInlineHint: null,
+    sequenceId: 0,
   };
 
   return Object.assign(base, modifiers);
@@ -94,10 +96,13 @@ export class SearchboxBrowserProxy {
   callbackRouter: PageCallbackRouter;
 
   constructor() {
-    this.handler = PageHandler.getRemote();
+    const handler = new PageHandlerRemote();
+    this.handler = handler;
     this.callbackRouter = new PageCallbackRouter();
 
-    this.handler.setPage(this.callbackRouter.$.bindNewPipeAndPassRemote());
+    PageHandlerFactory.getRemote().createPageHandler(
+        this.callbackRouter.$.bindNewPipeAndPassRemote(),
+        handler.$.bindNewPipeAndPassReceiver());
   }
 }
 

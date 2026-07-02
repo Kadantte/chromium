@@ -10,6 +10,7 @@
 
 #include "base/functional/bind.h"
 #include "build/build_config.h"
+#include "build/buildflag.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/heavy_ad_intervention/heavy_ad_service_factory.h"
 #include "chrome/browser/history/history_service_factory.h"
@@ -34,7 +35,6 @@
 #include "chrome/browser/page_load_metrics/observers/optimization_guide_page_load_metrics_observer.h"
 #include "chrome/browser/page_load_metrics/observers/page_anchors_metrics_observer.h"
 #include "chrome/browser/page_load_metrics/observers/prefetch_page_load_metrics_observer.h"
-#include "chrome/browser/page_load_metrics/observers/preload_serving_metrics_page_load_metrics_observer.h"
 #include "chrome/browser/page_load_metrics/observers/protocol_page_load_metrics_observer.h"
 #include "chrome/browser/page_load_metrics/observers/scheme_page_load_metrics_observer.h"
 #include "chrome/browser/page_load_metrics/observers/security_state_page_load_metrics_observer.h"
@@ -45,11 +45,13 @@
 #include "chrome/browser/preloading/prefetch/no_state_prefetch/chrome_no_state_prefetch_contents_delegate.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search/search.h"
+#include "chrome/browser/ui/waap/waap_utils.h"
 #include "components/no_state_prefetch/browser/no_state_prefetch_contents.h"
 #include "components/page_load_metrics/browser/features.h"
 #include "components/page_load_metrics/browser/metrics_web_contents_observer.h"
 #include "components/page_load_metrics/browser/observers/ad_metrics/ads_page_load_metrics_observer.h"
 #include "components/page_load_metrics/browser/observers/paid_content_page_load_metrics_observer.h"
+#include "components/page_load_metrics/browser/observers/preload_serving_metrics_page_load_metrics_observer.h"
 #include "components/page_load_metrics/browser/observers/third_party_metrics_observer.h"
 #include "components/page_load_metrics/browser/observers/zstd_page_load_metrics_observer.h"
 #include "components/page_load_metrics/browser/page_load_metrics_embedder_base.h"
@@ -63,6 +65,7 @@
 #include "content/public/common/url_utils.h"
 #include "extensions/buildflags/buildflags.h"
 #include "third_party/blink/public/common/loader/lcp_critical_path_predictor_util.h"
+#include "ui/accessibility/accessibility_features.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
@@ -78,15 +81,19 @@
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/page_load_metrics/observers/initial_webui_page_load_metrics_observer.h"
 #include "chrome/browser/page_load_metrics/observers/non_tab_webui_page_load_metrics_observer.h"
+#include "chrome/browser/page_load_metrics/observers/top_chrome_webui_metrics_observer.h"
+#include "chrome/browser/ui/read_anything/read_anything_soft_navigation_observer.h"
 #include "chrome/browser/ui/waap/waap_utils.h"
+#include "chrome/browser/ui/webui/omnibox_popup/omnibox_popup_ui.h"
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_config.h"
+#include "chrome/common/webui_url_constants.h"
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/page_load_metrics/observers/ash_session_restore_page_load_metrics_observer.h"
 #endif
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/page_load_metrics/observers/serp_page_load_metrics_observer.h"
 #include "extensions/common/constants.h"
 #endif
@@ -173,6 +180,11 @@ void PageLoadMetricsEmbedder::RegisterObservers(
     tracker->AddObserver(std::make_unique<NonTabPageLoadMetricsObserver>(
         std::string(GetNonTabWebUIName(web_contents()->GetBrowserContext(),
                                        navigation_handle->GetURL()))));
+    if (navigation_handle->GetURL().host() ==
+        chrome::kChromeUIOmniboxPopupHost) {
+      tracker->AddObserver(std::make_unique<TopChromeWebUIMetricsObserver>(
+          std::string(OmniboxPopupUI::GetWebUIName())));
+    }
     return;
   }
 #endif
@@ -263,17 +275,15 @@ void PageLoadMetricsEmbedder::RegisterObservers(
     tracker->AddObserver(std::make_unique<BookmarkBarMetricsObserver>());
     tracker->AddObserver(
         std::make_unique<NewTabPageInitiatedPageLoadMetricsObserver>());
-    if (content::PreloadServingMetricsCapsule::IsFeatureEnabled()) {
-      tracker->AddObserver(
-          std::make_unique<PreloadServingMetricsPageLoadMetricsObserver>());
-    }
+    tracker->AddObserver(
+        std::make_unique<PreloadServingMetricsPageLoadMetricsObserver>());
   }
   tracker->AddObserver(
       std::make_unique<OmniboxSuggestionUsedMetricsObserver>());
   tracker->AddObserver(
       SecurityStatePageLoadMetricsObserver::MaybeCreateForProfile(
           web_contents()->GetBrowserContext()));
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   tracker->AddObserver(std::make_unique<SerpPageLoadMetricsObserver>());
 #endif
   tracker->AddObserver(
@@ -285,6 +295,13 @@ void PageLoadMetricsEmbedder::RegisterObservers(
     tracker->AddObserver(std::move(translate_observer));
   }
   tracker->AddObserver(std::make_unique<ZstdPageLoadMetricsObserver>());
+
+#if !BUILDFLAG(IS_ANDROID)
+  if (features::IsImmersiveReadAnythingEnabled()) {
+    tracker->AddObserver(
+        std::make_unique<ReadAnythingSoftNavigationObserver>());
+  }
+#endif
 
 #if BUILDFLAG(IS_CHROMEOS)
   if (AshSessionRestorePageLoadMetricsObserver::ShouldBeInstantiated(
@@ -314,7 +331,7 @@ bool PageLoadMetricsEmbedder::IsNoStatePrefetch(
 }
 
 bool PageLoadMetricsEmbedder::IsExtensionUrl(const GURL& url) {
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   return url.SchemeIs(extensions::kExtensionScheme);
 #else
   return false;

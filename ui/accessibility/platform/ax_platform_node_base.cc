@@ -261,6 +261,17 @@ std::string AXPlatformNodeBase::GetName() const {
     name += extra_text;
   }
 
+  if (GetRole() == ax::mojom::Role::kCanvas) {
+    std::string canvas_annotation =
+        GetStringAttribute(ax::mojom::StringAttribute::kCanvasAnnotation);
+    if (!canvas_annotation.empty()) {
+      if (!name.empty()) {
+        name += ". ";
+      }
+      name += canvas_annotation;
+    }
+  }
+
   DCHECK(base::IsStringUTF8AllowingNoncharacters(name)) << "Invalid UTF8";
   return name;
 }
@@ -622,6 +633,10 @@ bool AXPlatformNodeBase::GetStringAttribute(
     ax::mojom::StringAttribute attribute,
     std::string* value) const {
   return GetDelegate()->GetStringAttribute(attribute, value);
+}
+
+std::optional<std::string> AXPlatformNodeBase::GetAriaValueTextOrValue() const {
+  return GetDelegate()->GetAriaValueTextOrValue();
 }
 
 std::u16string AXPlatformNodeBase::GetString16Attribute(
@@ -1905,7 +1920,7 @@ int AXPlatformNodeBase::GetHypertextOffsetFromEndpoint(
   // TODO(crbug.com/40897578): Make sure this doesn't fire then turn the last
   // conditional into a CHECK_GT(endpoint_index_in_common_parent,
   // index_in_common_parent); and remove this code path.
-  DUMP_WILL_BE_NOTREACHED()
+  DCHECK(false)
       << "Was not in descendant, so the endpoint_index_in_common_parent should "
          "be < or > than the index_in_common_parent:\n"
       << "\n* This: " << this << "\n* Endpoint object: " << endpoint_object

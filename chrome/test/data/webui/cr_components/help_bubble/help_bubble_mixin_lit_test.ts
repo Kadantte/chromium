@@ -4,17 +4,17 @@
 
 import 'chrome://resources/cr_components/help_bubble/help_bubble.js';
 
-import type {HelpBubbleElement} from 'chrome://resources/cr_components/help_bubble/help_bubble.js';
+import type {TrackedElementProxy} from '//resources/js/tracked_element/tracked_element_proxy.js';
+import {TrackedElementProxyImpl} from '//resources/js/tracked_element/tracked_element_proxy.js';
 import type {HelpBubbleClientRemote, HelpBubbleHandlerInterface, HelpBubbleParams} from 'chrome://resources/cr_components/help_bubble/help_bubble.mojom-webui.js';
-import {HelpBubbleArrowPosition, HelpBubbleClientCallbackRouter, HelpBubbleClosedReason} from 'chrome://resources/cr_components/help_bubble/help_bubble.mojom-webui.js';
+import {browserProxyFactory, HelpBubbleArrowPosition, HelpBubbleClosedReason} from 'chrome://resources/cr_components/help_bubble/help_bubble.mojom-webui.js';
 import type {HelpBubbleController} from 'chrome://resources/cr_components/help_bubble/help_bubble_controller.js';
 import {ANCHOR_HIGHLIGHT_CLASS} from 'chrome://resources/cr_components/help_bubble/help_bubble_controller.js';
 import {HelpBubbleMixinLit} from 'chrome://resources/cr_components/help_bubble/help_bubble_mixin_lit.js';
-import type {HelpBubbleProxy} from 'chrome://resources/cr_components/help_bubble/help_bubble_proxy.js';
-import {HelpBubbleProxyImpl} from 'chrome://resources/cr_components/help_bubble/help_bubble_proxy.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {CrLitElement, html} from 'chrome://resources/lit/v3_0/lit.rollup.js';
-import type {TrackedElementHandlerInterface, TrackedElementHandlerPendingReceiver} from 'chrome://resources/mojo/ui/webui/resources/js/tracked_element/tracked_element.mojom-webui.js';
+import {TrackedElementManagerCallbackRouter} from 'chrome://resources/mojo/ui/webui/resources/js/tracked_element/tracked_element.mojom-webui.js';
+import type {TrackedElementHandlerInterface, TrackedElementHandlerPendingReceiver, TrackedElementManagerRemote} from 'chrome://resources/mojo/ui/webui/resources/js/tracked_element/tracked_element.mojom-webui.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertThrows, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 import {isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
@@ -29,6 +29,8 @@ const EVENT1_NAME: string = 'kFirstExampleCustomEvent';
 const EVENT2_NAME: string = 'kSecondExampleCustomEvent';
 const CLOSE_BUTTON_ALT_TEXT: string = 'Close help bubble.';
 const BODY_ICON_ALT_TEXT: string = 'Icon help bubble.';
+const CUSTOM_CONTAINER_NATIVE_ID: string =
+    'kHelpBubbleMixinTestCustomContainerElementId';
 
 const HelpBubbleMixinTestElementBase = HelpBubbleMixinLit(CrLitElement);
 
@@ -36,7 +38,6 @@ interface HelpBubbleMixinTestElement {
   $: {
     bulletList: HTMLElement,
     container: HTMLElement,
-    helpBubble: HelpBubbleElement,
     p1: HTMLElement,
     title: HTMLElement,
   };
@@ -47,11 +48,12 @@ let p1Bubble: HelpBubbleController;
 let bulletListBubble: HelpBubbleController;
 let spanBubble: HelpBubbleController;
 let nestedChildBubble: HelpBubbleController;
+let customContainerBubble: HelpBubbleController;
 
 // HelpBubbleMixinTestElement
 class HelpBubbleMixinTestElement extends HelpBubbleMixinTestElementBase {
   static get is() {
-    return 'help-bubble-mixin-test-element';
+    return 'help-bubble-mixin-test';
   }
 
   override render() {
@@ -64,7 +66,10 @@ class HelpBubbleMixinTestElement extends HelpBubbleMixinTestElementBase {
         <li>List item 2</li>
       </ul>
       <span style="display: block;">Span text</span>
-      <container-element id="container-element"></container-element>
+      <help-bubble-mixin-test-container id="container-element">
+      </help-bubble-mixin-test-container>
+      <div id="custom-container"></div>
+      <div id="custom-anchor">Custom Anchor</div>
     </div>`;
   }
 
@@ -82,6 +87,14 @@ class HelpBubbleMixinTestElement extends HelpBubbleMixinTestElementBase {
     // using different types of selectors to test query mechanism
     nestedChildBubble = this.registerHelpBubble(
         NESTED_CHILD_NATIVE_ID, ['#container-element', '.child-element'])!;
+
+    const customContainer =
+        this.shadowRoot.querySelector<HTMLElement>('#custom-container');
+    assertTrue(
+        customContainer !== null, 'connectedCallback: custom container exists');
+    customContainerBubble = this.registerHelpBubble(
+        CUSTOM_CONTAINER_NATIVE_ID, '#custom-anchor',
+        {containerElement: customContainer})!;
   }
 }
 
@@ -91,7 +104,7 @@ customElements.define(
 // HelpBubbleMixinTestContainerElement
 export class HelpBubbleMixinTestContainerElement extends CrLitElement {
   static get is() {
-    return 'container-element';
+    return 'help-bubble-mixin-test-container';
   }
 
   override render() {
@@ -115,10 +128,16 @@ class TestTrackedElementHandler extends TestBrowserProxy implements
   visibility: Map<string, boolean> = new Map();
   constructor() {
     super([
+      'setManager',
       'trackedElementVisibilityChanged',
       'trackedElementActivated',
       'trackedElementCustomEvent',
+      'trackedElementCanHighlightChanged',
     ]);
+  }
+
+  setManager(_: TrackedElementManagerRemote) {
+    this.methodCalled('setManager');
   }
 
   trackedElementVisibilityChanged(nativeIdentifier: string, visible: boolean) {
@@ -133,6 +152,12 @@ class TestTrackedElementHandler extends TestBrowserProxy implements
 
   trackedElementCustomEvent(nativeIdentifier: string, eventName: string) {
     this.methodCalled('trackedElementCustomEvent', nativeIdentifier, eventName);
+  }
+
+  trackedElementCanHighlightChanged(
+      nativeIdentifier: string, canHighlight: boolean) {
+    this.methodCalled(
+        'trackedElementCanHighlightChanged', nativeIdentifier, canHighlight);
   }
 }
 
@@ -158,34 +183,16 @@ class TestHelpBubbleHandler extends TestBrowserProxy implements
   }
 }
 
-class TestHelpBubbleProxy extends TestBrowserProxy implements HelpBubbleProxy {
-  private testTrackedElementHandler_ = new TestTrackedElementHandler();
-  private testHandler_ = new TestHelpBubbleHandler();
-  private callbackRouter_: HelpBubbleClientCallbackRouter =
-      new HelpBubbleClientCallbackRouter();
-  private callbackRouterRemote_: HelpBubbleClientRemote;
+class TestTrackedElementProxy implements TrackedElementProxy {
+  private handler_: TrackedElementHandlerInterface;
+  callbackRouter: TrackedElementManagerCallbackRouter =
+      new TrackedElementManagerCallbackRouter();
 
-  constructor() {
-    super();
-
-    this.callbackRouterRemote_ =
-        this.callbackRouter_.$.bindNewPipeAndPassRemote();
+  constructor(handler: TrackedElementHandlerInterface) {
+    this.handler_ = handler;
   }
-
-  getTrackedElementHandler(): TestTrackedElementHandler {
-    return this.testTrackedElementHandler_;
-  }
-
-  getHandler(): TestHelpBubbleHandler {
-    return this.testHandler_;
-  }
-
-  getCallbackRouter(): HelpBubbleClientCallbackRouter {
-    return this.callbackRouter_;
-  }
-
-  getCallbackRouterRemote(): HelpBubbleClientRemote {
-    return this.callbackRouterRemote_;
+  getHandler(): TrackedElementHandlerInterface {
+    return this.handler_;
   }
 }
 
@@ -196,7 +203,9 @@ interface WaitForSuccessParams {
 }
 
 suite('CrComponentsHelpBubbleMixinLitTest', () => {
-  let testProxy: TestHelpBubbleProxy;
+  let callbackRouterRemote: HelpBubbleClientRemote;
+  let mockHandler: TestHelpBubbleHandler;
+  let testTrackedElementHandler: TestTrackedElementHandler;
   let container: HelpBubbleMixinTestElement;
 
   /**
@@ -264,11 +273,17 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
   }
 
   setup(() => {
-    testProxy = new TestHelpBubbleProxy();
-    HelpBubbleProxyImpl.setInstance(testProxy);
+    mockHandler = new TestHelpBubbleHandler();
+    const {instance, remote} = browserProxyFactory.createForTest(mockHandler);
+    callbackRouterRemote = remote;
+    browserProxyFactory.setInstance(instance);
+
+    testTrackedElementHandler = new TestTrackedElementHandler();
+    TrackedElementProxyImpl.setInstance(
+        new TestTrackedElementProxy(testTrackedElementHandler));
 
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    container = document.createElement('help-bubble-mixin-test-element') as
+    container = document.createElement('help-bubble-mixin-test') as
         HelpBubbleMixinTestElement;
     document.body.appendChild(container);
     return waitForVisibilityEvents();
@@ -307,6 +322,21 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
         container.showHelpBubble(spanBubble, defaultParams);
         assertTrue(container.isHelpBubbleShowing());
         assertTrue(spanBubble.isBubbleShowing());
+      });
+
+  test(
+      'help bubble mixin shows bubble attached to custom containerElement',
+      () => {
+        assertFalse(container.isHelpBubbleShowing());
+        assertFalse(customContainerBubble.isBubbleShowing());
+        container.showHelpBubble(customContainerBubble, defaultParams);
+        assertTrue(container.isHelpBubbleShowing());
+        assertTrue(customContainerBubble.isBubbleShowing());
+        const bubble = container.getHelpBubbleForTesting('custom-anchor');
+        assertTrue(!!bubble, 'bubble exists');
+        assertEquals(
+            container.shadowRoot.querySelector('#custom-container'),
+            bubble.parentElement, 'bubble is child of custom container');
       });
 
   test(
@@ -380,7 +410,7 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
 
   test(
       'help bubble mixin shows help bubble when called via proxy', async () => {
-        testProxy.getCallbackRouterRemote().showHelpBubble(defaultParams);
+        callbackRouterRemote.showHelpBubble(defaultParams);
         await microtasksFinished();
         assertTrue(container.isHelpBubbleShowing(), 'a bubble is showing');
         const bubble = container.getHelpBubbleForTesting('p1');
@@ -392,7 +422,7 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
       });
 
   test('help bubble mixin uses close button alt text', async () => {
-    testProxy.getCallbackRouterRemote().showHelpBubble(defaultParams);
+    callbackRouterRemote.showHelpBubble(defaultParams);
     await microtasksFinished();
     assertTrue(container.isHelpBubbleShowing());
     const bubble = container.getHelpBubbleForTesting('p1')!;
@@ -403,7 +433,7 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
   });
 
   test('help bubble mixin uses body icon', async () => {
-    testProxy.getCallbackRouterRemote().showHelpBubble(defaultParams);
+    callbackRouterRemote.showHelpBubble(defaultParams);
     await microtasksFinished();
     assertTrue(container.isHelpBubbleShowing());
     const bubble = container.getHelpBubbleForTesting('p1')!;
@@ -419,7 +449,7 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
   test(
       'help bubble mixin does not use body icon when not defined', async () => {
         const noIconParams = {...defaultParams, bodyIconName: null};
-        testProxy.getCallbackRouterRemote().showHelpBubble(noIconParams);
+        callbackRouterRemote.showHelpBubble(noIconParams);
         await microtasksFinished();
         assertTrue(container.isHelpBubbleShowing());
         const bubble = container.getHelpBubbleForTesting('p1')!;
@@ -433,10 +463,9 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
 
   test(
       'help bubble mixin hides help bubble when called via proxy', async () => {
-        testProxy.getCallbackRouterRemote().showHelpBubble(defaultParams);
+        callbackRouterRemote.showHelpBubble(defaultParams);
         await microtasksFinished();
-        testProxy.getCallbackRouterRemote().hideHelpBubble(
-            defaultParams.nativeIdentifier);
+        callbackRouterRemote.hideHelpBubble(defaultParams.nativeIdentifier);
         await microtasksFinished();
         assertFalse(container.isHelpBubbleShowing());
       });
@@ -444,13 +473,11 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
   test(
       'help bubble adds class to element on external help bubble shown',
       async () => {
-        testProxy.getCallbackRouterRemote().externalHelpBubbleUpdated(
-            TITLE_NATIVE_ID, true);
+        callbackRouterRemote.externalHelpBubbleUpdated(TITLE_NATIVE_ID, true);
         await microtasksFinished();
         assertTrue(
             container.$.title.classList.contains(ANCHOR_HIGHLIGHT_CLASS));
-        testProxy.getCallbackRouterRemote().externalHelpBubbleUpdated(
-            TITLE_NATIVE_ID, false);
+        callbackRouterRemote.externalHelpBubbleUpdated(TITLE_NATIVE_ID, false);
         await microtasksFinished();
         assertFalse(
             container.$.title.classList.contains(ANCHOR_HIGHLIGHT_CLASS));
@@ -459,9 +486,9 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
   test(
       'help bubble mixin doesn\'t hide help bubble when called with wrong id',
       async () => {
-        testProxy.getCallbackRouterRemote().showHelpBubble(defaultParams);
+        callbackRouterRemote.showHelpBubble(defaultParams);
         await microtasksFinished();
-        testProxy.getCallbackRouterRemote().hideHelpBubble(LIST_NATIVE_ID);
+        callbackRouterRemote.hideHelpBubble(LIST_NATIVE_ID);
         await microtasksFinished();
         assertTrue(container.isHelpBubbleShowing());
       });
@@ -483,7 +510,7 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
           titleText: null,
         };
 
-        testProxy.getCallbackRouterRemote().showHelpBubble(params);
+        callbackRouterRemote.showHelpBubble(params);
         await microtasksFinished();
         assertFalse(container.isHelpBubbleShowing());
       });
@@ -491,18 +518,18 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
   test(
       'help bubble ignores unregistered ID in HideHelpBubble call',
       async () => {
-        testProxy.getCallbackRouterRemote().showHelpBubble(defaultParams);
+        callbackRouterRemote.showHelpBubble(defaultParams);
         await microtasksFinished();
-        testProxy.getCallbackRouterRemote().hideHelpBubble(
+        callbackRouterRemote.hideHelpBubble(
             'This is an unregistered identifier');
         await microtasksFinished();
         assertTrue(container.isHelpBubbleShowing());
       });
 
   test('help bubble ignores unregistered ID in focus call', async () => {
-    testProxy.getCallbackRouterRemote().showHelpBubble(defaultParams);
+    callbackRouterRemote.showHelpBubble(defaultParams);
     await microtasksFinished();
-    testProxy.getCallbackRouterRemote().toggleFocusForAccessibility(
+    callbackRouterRemote.toggleFocusForAccessibility(
         'This is an unregistered identifier');
     await microtasksFinished();
     assertTrue(container.isHelpBubbleShowing());
@@ -517,8 +544,9 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
           [LIST_NATIVE_ID, true],
           [SPAN_NATIVE_ID, true],
           [NESTED_CHILD_NATIVE_ID, true],
+          [CUSTOM_CONTAINER_NATIVE_ID, true],
         ]),
-        testProxy.getTrackedElementHandler().visibility);
+        testTrackedElementHandler.visibility);
   });
 
   test('help bubble mixin sends event on lost visibility', async () => {
@@ -532,8 +560,9 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
           [LIST_NATIVE_ID, false],
           [SPAN_NATIVE_ID, false],
           [NESTED_CHILD_NATIVE_ID, false],
+          [CUSTOM_CONTAINER_NATIVE_ID, false],
         ]),
-        testProxy.getTrackedElementHandler().visibility);
+        testTrackedElementHandler.visibility);
   });
 
   test('help bubble mixin sends event on element activated', async () => {
@@ -543,13 +572,10 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
     container.notifyHelpBubbleAnchorActivated(bulletListBubble.getNativeId());
     container.notifyHelpBubbleAnchorActivated(titleBubble.getNativeId());
     assertEquals(
-        2,
-        testProxy.getTrackedElementHandler().getCallCount(
-            'trackedElementActivated'));
+        2, testTrackedElementHandler.getCallCount('trackedElementActivated'));
     assertDeepEquals(
         [LIST_NATIVE_ID, TITLE_NATIVE_ID],
-        testProxy.getTrackedElementHandler().getArgs(
-            'trackedElementActivated'));
+        testTrackedElementHandler.getArgs('trackedElementActivated'));
   });
 
   test('help bubble mixin sends custom events', async () => {
@@ -561,16 +587,13 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
     container.notifyHelpBubbleAnchorCustomEvent(
         titleBubble.getNativeId(), EVENT2_NAME);
     assertEquals(
-        2,
-        testProxy.getTrackedElementHandler().getCallCount(
-            'trackedElementCustomEvent'));
+        2, testTrackedElementHandler.getCallCount('trackedElementCustomEvent'));
     assertDeepEquals(
         [
           [PARAGRAPH_NATIVE_ID, EVENT1_NAME],
           [TITLE_NATIVE_ID, EVENT2_NAME],
         ],
-        testProxy.getTrackedElementHandler().getArgs(
-            'trackedElementCustomEvent'));
+        testTrackedElementHandler.getArgs('trackedElementCustomEvent'));
   });
 
   test(
@@ -582,11 +605,10 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
         container.$.p1.style.display = 'none';
         await waitForVisibilityEvents();
 
-        assertEquals(
-            1, testProxy.getHandler().getCallCount('helpBubbleClosed'));
+        assertEquals(1, mockHandler.getCallCount('helpBubbleClosed'));
         assertDeepEquals(
             [[PARAGRAPH_NATIVE_ID, HelpBubbleClosedReason.kPageChanged]],
-            testProxy.getHandler().getArgs('helpBubbleClosed'));
+            mockHandler.getArgs('helpBubbleClosed'));
         assertFalse(container.isHelpBubbleShowing());
       });
 
@@ -598,8 +620,7 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
         // This is not the current bubble anchor, so should not send an event.
         container.$.title.style.display = 'none';
         await waitForVisibilityEvents();
-        assertEquals(
-            0, testProxy.getHandler().getCallCount('helpBubbleClosed'));
+        assertEquals(0, mockHandler.getCallCount('helpBubbleClosed'));
         assertTrue(container.isHelpBubbleShowing());
       });
 
@@ -609,22 +630,21 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
     // This is not the current bubble anchor, so should not send an event.
     container.$.title.style.display = 'none';
     await waitForVisibilityEvents();
-    assertEquals(0, testProxy.getHandler().getCallCount('helpBubbleClosed'));
+    assertEquals(0, mockHandler.getCallCount('helpBubbleClosed'));
     assertTrue(container.isHelpBubbleShowing());
     await sleep(100);  // 100ms
-    assertEquals(0, testProxy.getHandler().getCallCount('helpBubbleClosed'));
+    assertEquals(0, mockHandler.getCallCount('helpBubbleClosed'));
     assertTrue(container.isHelpBubbleShowing());
   });
 
   test('help bubble mixin reshow bubble', async () => {
-    testProxy.getCallbackRouterRemote().showHelpBubble(defaultParams);
+    callbackRouterRemote.showHelpBubble(defaultParams);
     await microtasksFinished();
     assertTrue(container.isHelpBubbleShowing());
-    testProxy.getCallbackRouterRemote().hideHelpBubble(
-        defaultParams.nativeIdentifier);
+    callbackRouterRemote.hideHelpBubble(defaultParams.nativeIdentifier);
     await microtasksFinished();
     assertFalse(container.isHelpBubbleShowing());
-    testProxy.getCallbackRouterRemote().showHelpBubble(defaultParams);
+    callbackRouterRemote.showHelpBubble(defaultParams);
     await microtasksFinished();
     assertTrue(container.isHelpBubbleShowing());
     const bubble = container.getHelpBubbleForTesting('p1');
@@ -648,9 +668,9 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
   };
 
   test('help bubble mixin shows multiple bubbles', async () => {
-    testProxy.getCallbackRouterRemote().showHelpBubble(defaultParams);
+    callbackRouterRemote.showHelpBubble(defaultParams);
     await microtasksFinished();
-    testProxy.getCallbackRouterRemote().showHelpBubble(paramsWithTitle);
+    callbackRouterRemote.showHelpBubble(paramsWithTitle);
     await microtasksFinished();
     assertTrue(container.isHelpBubbleShowing());
     const bubble1 = container.getHelpBubbleForTesting('title');
@@ -664,9 +684,9 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
   });
 
   test('help bubble mixin shows bubbles with and without title', async () => {
-    testProxy.getCallbackRouterRemote().showHelpBubble(defaultParams);
+    callbackRouterRemote.showHelpBubble(defaultParams);
     await microtasksFinished();
-    testProxy.getCallbackRouterRemote().showHelpBubble(paramsWithTitle);
+    callbackRouterRemote.showHelpBubble(paramsWithTitle);
     await microtasksFinished();
     assertTrue(container.isHelpBubbleShowing());
     const titleBubble = container.getHelpBubbleForTesting('title')!;
@@ -694,9 +714,9 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
 
   test(
       'help bubble mixin shows bubbles with and without progress', async () => {
-        testProxy.getCallbackRouterRemote().showHelpBubble(defaultParams);
+        callbackRouterRemote.showHelpBubble(defaultParams);
         await microtasksFinished();
-        testProxy.getCallbackRouterRemote().showHelpBubble(paramsWithProgress);
+        callbackRouterRemote.showHelpBubble(paramsWithProgress);
         await microtasksFinished();
         assertTrue(container.isHelpBubbleShowing());
         const paragraphBubble = container.getHelpBubbleForTesting('p1')!;
@@ -709,13 +729,12 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
       });
 
   test('help bubble mixin hides multiple bubbles', async () => {
-    testProxy.getCallbackRouterRemote().showHelpBubble(defaultParams);
+    callbackRouterRemote.showHelpBubble(defaultParams);
     await microtasksFinished();
-    testProxy.getCallbackRouterRemote().showHelpBubble(paramsWithTitle);
+    callbackRouterRemote.showHelpBubble(paramsWithTitle);
     await microtasksFinished();
 
-    testProxy.getCallbackRouterRemote().hideHelpBubble(
-        defaultParams.nativeIdentifier);
+    callbackRouterRemote.hideHelpBubble(defaultParams.nativeIdentifier);
     await microtasksFinished();
     assertTrue(container.isHelpBubbleShowing());
     assertEquals(
@@ -723,8 +742,7 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
         container.getHelpBubbleForTesting('title')?.getAnchorElement());
     assertEquals(null, container.getHelpBubbleForTesting('p1'));
 
-    testProxy.getCallbackRouterRemote().hideHelpBubble(
-        paramsWithTitle.nativeIdentifier);
+    callbackRouterRemote.hideHelpBubble(paramsWithTitle.nativeIdentifier);
     await microtasksFinished();
     assertFalse(container.isHelpBubbleShowing());
     assertEquals(null, container.getHelpBubbleForTesting('title'));
@@ -737,10 +755,10 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
     // Click the close button.
     container.shadowRoot.querySelector('help-bubble')!.$.close.click();
     await waitForVisibilityEvents();
-    assertEquals(1, testProxy.getHandler().getCallCount('helpBubbleClosed'));
+    assertEquals(1, mockHandler.getCallCount('helpBubbleClosed'));
     assertDeepEquals(
         [[PARAGRAPH_NATIVE_ID, HelpBubbleClosedReason.kDismissedByUser]],
-        testProxy.getHandler().getArgs('helpBubbleClosed'));
+        mockHandler.getArgs('helpBubbleClosed'));
     assertFalse(container.isHelpBubbleShowing());
   });
 
@@ -778,11 +796,10 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
     assertTrue(!!button);
     button.click();
     await waitForVisibilityEvents();
-    assertEquals(
-        1, testProxy.getHandler().getCallCount('helpBubbleButtonPressed'));
+    assertEquals(1, mockHandler.getCallCount('helpBubbleButtonPressed'));
     assertDeepEquals(
         [[PARAGRAPH_NATIVE_ID, 1]],
-        testProxy.getHandler().getArgs('helpBubbleButtonPressed'));
+        mockHandler.getArgs('helpBubbleButtonPressed'));
     assertFalse(container.isHelpBubbleShowing());
   });
 
@@ -818,7 +835,7 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
     container.showHelpBubble(p1Bubble, longTimeoutParams);
     await microtasksFinished();
     assertEquals(
-        0, testProxy.getHandler().getCallCount('helpBubbleClosed'),
+        0, mockHandler.getCallCount('helpBubbleClosed'),
         'helpBubbleClosed has not be called');
     assertTrue(container.isHelpBubbleShowing());
   });
@@ -840,12 +857,12 @@ suite('CrComponentsHelpBubbleMixinLitTest', () => {
       retryIntervalMs: 50,
       totalMs: 1500,
       assertionFn: () => assertEquals(
-          1, testProxy.getHandler().getCallCount('helpBubbleClosed'),
+          1, mockHandler.getCallCount('helpBubbleClosed'),
           'helpBubbleClosed has been called'),
     }) as number;
     assertDeepEquals(
         [[PARAGRAPH_NATIVE_ID, HelpBubbleClosedReason.kTimedOut]],
-        testProxy.getHandler().getArgs('helpBubbleClosed'),
+        mockHandler.getArgs('helpBubbleClosed'),
         'helpBubbleClosed is called with correct arguments');
     assertFalse(container.isHelpBubbleShowing(), 'no bubbles are showing');
   });

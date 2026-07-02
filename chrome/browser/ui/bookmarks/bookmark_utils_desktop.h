@@ -17,8 +17,10 @@
 #include "ui/gfx/native_ui_types.h"
 
 class Browser;
+class BrowserWindowInterface;
 struct NavigateParams;
 class TabGroup;
+class TabStripModel;
 
 namespace content {
 class BrowserContext;
@@ -104,7 +106,7 @@ bool ConfirmDeleteBookmarkNode(gfx::NativeWindow window,
                                const bookmarks::BookmarkNode* node);
 
 // Shows the bookmark all tabs dialog.
-void ShowBookmarkAllTabsDialog(Browser* browser);
+void ShowBookmarkAllTabsDialog(BrowserWindowInterface* browser);
 
 // Shows the bookmark tab group dialog.
 void ShowBookmarkTabGroupDialog(
@@ -144,7 +146,7 @@ void GetURLsAndFoldersForTabEntries(
 
 // Populates |folder_data| with all tabs from the tab group.
 void GetURLsAndFoldersForTabGroup(
-    const Browser* browser,
+    const TabStripModel* tab_strip_model,
     const TabGroup& tab_group,
     std::vector<BookmarkEditor::EditDetails::BookmarkData>* folder_data);
 

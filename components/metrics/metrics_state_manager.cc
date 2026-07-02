@@ -188,7 +188,7 @@ bool ShouldEnableBenchmarking(bool force_benchmarking_mode) {
   // switches.
   return force_benchmarking_mode ||
          base::CommandLine::ForCurrentProcess()->HasSwitch(
-             variations::switches::kEnableBenchmarking);
+             ::switches::kEnableBenchmarking);
 }
 
 }  // namespace
@@ -375,9 +375,6 @@ void MetricsStateManager::ForceClientIdCreation() {
   // kMetricsRecordingOnly is used by Chromedriver tests.
   DCHECK(enabled_state_provider_->IsConsentGiven() ||
          IsMetricsReportingForceEnabled() || IsMetricsRecordingOnlyEnabled());
-#if BUILDFLAG(IS_CHROMEOS)
-  std::string previous_client_id = client_id_;
-#endif  // BUILDFLAG(IS_CHROMEOS)
   {
     std::string client_id_from_prefs = ReadClientId(local_state_);
     // If client id in prefs matches the cached copy, return early.
@@ -609,11 +606,12 @@ void MetricsStateManager::ResetMetricsIDsIfNecessary() {
 
   local_state_->ClearPref(prefs::kMetricsClientID);
   local_state_->ClearPref(prefs::kMetricsLogRecordId);
+  local_state_->ClearPref(prefs::kInstallDate);
   EntropyState::ClearPrefs(local_state_);
 
   cloned_install_detector_.RecordClonedInstallInfo(local_state_);
 
-  // Also clear the backed up client info. This is asynchronus; any reads
+  // Also clear the backed up client info. This is asynchronous; any reads
   // shortly after may retrieve the old ClientInfo from the backup.
   store_client_info_.Run(ClientInfo());
 }

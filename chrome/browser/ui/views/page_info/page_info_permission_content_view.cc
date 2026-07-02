@@ -26,6 +26,7 @@
 #include "chrome/browser/ui/views/controls/rich_hover_button.h"
 #include "chrome/browser/ui/views/file_system_access/file_system_access_scroll_panel.h"
 #include "chrome/browser/ui/views/page_info/page_info_view_factory.h"
+#include "chrome/browser/ui/views/sub_apps_permission_explanation.h"
 #include "components/content_settings/core/browser/permission_settings_registry.h"
 #include "components/page_info/page_info.h"
 #include "components/permissions/permission_util.h"
@@ -40,6 +41,11 @@
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/separator.h"
 #include "ui/views/layout/flex_layout.h"
+
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PageInfoPermissionContentView,
+                                      kStateLabelElementId);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PageInfoPermissionContentView,
+                                      kRememberCheckboxElementId);
 
 namespace {
 std::u16string PageInfoSubpageText(ContentSettingsType type) {
@@ -65,9 +71,11 @@ PageInfoPermissionContentView::PageInfoPermissionContentView(
   ChromeLayoutProvider* layout_provider = ChromeLayoutProvider::Get();
   const int bottom_margin =
       layout_provider->GetDistanceMetric(DISTANCE_CONTENT_LIST_VERTICAL_MULTI);
-  // The last view is a RichHoverButton, which overrides the bottom
-  // dialog inset in favor of its own.
-  SetProperty(views::kMarginsKey, gfx::Insets::TLBR(0, 0, bottom_margin, 0));
+
+  auto* layout_manager =
+      SetLayoutManager(std::make_unique<views::FlexLayout>());
+  layout_manager->SetOrientation(views::LayoutOrientation::kVertical);
+  layout_manager->SetInteriorMargin(gfx::Insets::TLBR(0, 0, bottom_margin, 0));
 
   // Use the same insets as buttons and permission rows in the main page for
   // consistency.
@@ -75,10 +83,6 @@ PageInfoPermissionContentView::PageInfoPermissionContentView(
       layout_provider->GetInsetsMetric(INSETS_PAGE_INFO_HOVER_BUTTON);
   const int controls_spacing = layout_provider->GetDistanceMetric(
       views::DISTANCE_RELATED_CONTROL_VERTICAL);
-
-  auto* layout_manager =
-      SetLayoutManager(std::make_unique<views::FlexLayout>());
-  layout_manager->SetOrientation(views::LayoutOrientation::kVertical);
 
   auto* permission_info_container =
       AddChildView(std::make_unique<views::View>());
@@ -103,6 +107,9 @@ PageInfoPermissionContentView::PageInfoPermissionContentView(
       views::style::STYLE_BODY_4));
   state_label_->SetEnabledColor(kColorPageInfoSubtitleForeground);
   state_label_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+  state_label_->SetID(
+      PageInfoViewFactory::VIEW_ID_PAGE_INFO_PERMISSION_SUBTITLE_LABEL);
+  state_label_->SetProperty(views::kElementIdentifierKey, kStateLabelElementId);
 
   // Add extra details as sublabel.
   std::u16string detail = ui_delegate_->GetPermissionDetail(type);
@@ -122,8 +129,8 @@ PageInfoPermissionContentView::PageInfoPermissionContentView(
         FileSystemAccessPermissionContextFactory::GetForProfileIfExists(
             web_contents->GetBrowserContext());
     if (context) {
-      granted_file_paths = context->GetGrantedPaths(
-          url::Origin::Create(web_contents->GetLastCommittedURL()));
+      granted_file_paths =
+          context->GetGrantedPaths(url::Origin::Create(presenter_->site_url()));
     }
     if (!granted_file_paths.empty()) {
       std::unique_ptr<views::ScrollView> scroll_panel =
@@ -145,6 +152,8 @@ PageInfoPermissionContentView::PageInfoPermissionContentView(
   remember_setting_->SetID(
       PageInfoViewFactory::
           VIEW_ID_PAGE_INFO_PERMISSION_SUBPAGE_REMEMBER_CHECKBOX);
+  remember_setting_->SetProperty(views::kElementIdentifierKey,
+                                 kRememberCheckboxElementId);
   remember_setting_->SetProperty(views::kMarginsKey,
                                  gfx::Insets::TLBR(controls_spacing, 0, 0, 0));
 
@@ -171,6 +180,27 @@ PageInfoPermissionContentView::PageInfoPermissionContentView(
           DISTANCE_HORIZONTAL_SEPARATOR_PADDING_PAGE_INFO_VIEW)));
 
   MaybeAddMediaPreview(web_contents, *separator);
+
+  if (web_contents_.MaybeValid()) {
+    if (std::optional<std::u16string> explanation =
+            GetSubAppsPermissionExplanation(web_contents_.get())) {
+      auto* custom_label = AddChildView(std::make_unique<views::Label>(
+          *explanation, views::style::CONTEXT_DIALOG_BODY_TEXT,
+          views::style::STYLE_BODY_4));
+      custom_label->SetMultiLine(true);
+      custom_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+      custom_label->SetProperty(views::kCrossAxisAlignmentKey,
+                                views::LayoutAlignment::kStretch);
+      custom_label->SetProperty(
+          views::kMarginsKey,
+          gfx::Insets::VH(ChromeLayoutProvider::Get()->GetDistanceMetric(
+                              views::DISTANCE_RELATED_CONTROL_VERTICAL),
+                          0));
+      custom_label->SetMaximumWidth(
+          ChromeLayoutProvider::Get()->GetDistanceMetric(
+              views::DISTANCE_BUBBLE_PREFERRED_WIDTH));
+    }
+  }
 
   // TODO(crbug.com/40775890): Consider to use permission specific text.
   auto* subpage_manage_button = AddChildView(std::make_unique<RichHoverButton>(
@@ -251,8 +281,8 @@ void PageInfoPermissionContentView::SetPermissionInfo(
       remember_setting_->SetVisible(context &&
                                     setting != CONTENT_SETTING_BLOCK);
       remember_setting_->SetChecked(
-          context && context->OriginHasExtendedPermission(url::Origin::Create(
-                         web_contents_->GetLastCommittedURL())));
+          context && context->OriginHasExtendedPermission(
+                         url::Origin::Create(presenter_->site_url())));
     }
   } else {
     auto* info =
@@ -350,8 +380,7 @@ void PageInfoPermissionContentView::ToggleFileSystemExtendedPermissions() {
     return;
   }
   bool checkbox_enabled = remember_setting_->GetChecked();
-  const url::Origin site_origin =
-      url::Origin::Create(web_contents_->GetLastCommittedURL());
+  const url::Origin site_origin = url::Origin::Create(presenter_->site_url());
   bool origin_has_extended_permission =
       context->OriginHasExtendedPermission(site_origin);
 

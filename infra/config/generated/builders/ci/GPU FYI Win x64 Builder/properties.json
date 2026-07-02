@@ -264,6 +264,64 @@
           {
             "builder_id": {
               "bucket": "ci",
+              "builder": "Win11 FYI x64 Experimental Release (AMD 9070XT)",
+              "project": "chromium"
+            },
+            "builder_spec": {
+              "builder_group": "chromium.gpu.fyi",
+              "execution_mode": "TEST",
+              "legacy_chromium_config": {
+                "apply_configs": [
+                  "mb"
+                ],
+                "build_config": "Release",
+                "config": "chromium",
+                "target_bits": 64,
+                "target_platform": "win"
+              },
+              "legacy_gclient_config": {
+                "config": "chromium"
+              },
+              "parent": {
+                "bucket": "ci",
+                "builder": "GPU FYI Win x64 Builder",
+                "project": "chromium"
+              },
+              "run_tests_serially": true
+            }
+          },
+          {
+            "builder_id": {
+              "bucket": "ci",
+              "builder": "Win11 FYI x64 Experimental Release (AMD 9900X)",
+              "project": "chromium"
+            },
+            "builder_spec": {
+              "builder_group": "chromium.gpu.fyi",
+              "execution_mode": "TEST",
+              "legacy_chromium_config": {
+                "apply_configs": [
+                  "mb"
+                ],
+                "build_config": "Release",
+                "config": "chromium",
+                "target_bits": 64,
+                "target_platform": "win"
+              },
+              "legacy_gclient_config": {
+                "config": "chromium"
+              },
+              "parent": {
+                "bucket": "ci",
+                "builder": "GPU FYI Win x64 Builder",
+                "project": "chromium"
+              },
+              "run_tests_serially": true
+            }
+          },
+          {
+            "builder_id": {
+              "bucket": "ci",
               "builder": "Win11 FYI x64 Experimental Release (AMD RX 5500XT)",
               "project": "chromium"
             },
@@ -323,6 +381,35 @@
             "builder_id": {
               "bucket": "ci",
               "builder": "Win11 FYI x64 Experimental Release (NVIDIA RTX 4070 Super)",
+              "project": "chromium"
+            },
+            "builder_spec": {
+              "builder_group": "chromium.gpu.fyi",
+              "execution_mode": "TEST",
+              "legacy_chromium_config": {
+                "apply_configs": [
+                  "mb"
+                ],
+                "build_config": "Release",
+                "config": "chromium",
+                "target_bits": 64,
+                "target_platform": "win"
+              },
+              "legacy_gclient_config": {
+                "config": "chromium"
+              },
+              "parent": {
+                "bucket": "ci",
+                "builder": "GPU FYI Win x64 Builder",
+                "project": "chromium"
+              },
+              "run_tests_serially": true
+            }
+          },
+          {
+            "builder_id": {
+              "bucket": "ci",
+              "builder": "Win11 FYI x64 Experimental Release (NVIDIA RTX 5080)",
               "project": "chromium"
             },
             "builder_spec": {
@@ -458,6 +545,16 @@
         },
         {
           "bucket": "ci",
+          "builder": "Win11 FYI x64 Experimental Release (AMD 9070XT)",
+          "project": "chromium"
+        },
+        {
+          "bucket": "ci",
+          "builder": "Win11 FYI x64 Experimental Release (AMD 9900X)",
+          "project": "chromium"
+        },
+        {
+          "bucket": "ci",
           "builder": "Win11 FYI x64 Experimental Release (AMD RX 5500XT)",
           "project": "chromium"
         },
@@ -469,6 +566,11 @@
         {
           "bucket": "ci",
           "builder": "Win11 FYI x64 Experimental Release (NVIDIA RTX 4070 Super)",
+          "project": "chromium"
+        },
+        {
+          "bucket": "ci",
+          "builder": "Win11 FYI x64 Experimental Release (NVIDIA RTX 5080)",
           "project": "chromium"
         },
         {
@@ -532,7 +634,19 @@
           "group": "tryserver.chromium.win"
         },
         {
+          "builder": "gpu-fyi-try-win11-x64-amd-9900x-exp",
+          "group": "tryserver.chromium.win"
+        },
+        {
+          "builder": "gpu-fyi-try-win11-x64-amd-rx-9070xt-exp",
+          "group": "tryserver.chromium.win"
+        },
+        {
           "builder": "gpu-fyi-try-win11-x64-intel-arc-140v-exp",
+          "group": "tryserver.chromium.win"
+        },
+        {
+          "builder": "gpu-fyi-try-win11-x64-nvidia-rtx-5080-exp",
           "group": "tryserver.chromium.win"
         }
       ],

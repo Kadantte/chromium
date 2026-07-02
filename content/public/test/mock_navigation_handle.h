@@ -30,6 +30,7 @@
 #include "net/http/http_response_headers.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "third_party/blink/public/mojom/lcp_critical_path_predictor/lcp_critical_path_predictor.mojom.h"
 #include "third_party/blink/public/mojom/loader/referrer.mojom.h"
 #include "third_party/blink/public/mojom/loader/transferrable_url_loader.mojom.h"
 #include "third_party/blink/public/mojom/navigation/renderer_content_settings.mojom.h"
@@ -68,6 +69,9 @@ class MockNavigationHandle : public NavigationHandle {
   bool IsPrerenderedPageActivation() const override {
     return is_prerendered_page_activation_;
   }
+  PrerenderHostId GetPrerenderHostId() const override {
+    return PrerenderHostId();
+  }
   bool IsInFencedFrameTree() const override { return is_in_fenced_frame_tree_; }
   bool IsGuestViewMainFrame() const override {
     return GetNavigatingFrameType() == FrameType::kGuestMainFrame;
@@ -85,8 +89,18 @@ class MockNavigationHandle : public NavigationHandle {
   bool IsInPrimaryMainFrame() const override {
     return is_in_primary_main_frame_;
   }
+  const std::optional<base::UnguessableToken>& GetScriptToolInvocationId()
+      const override {
+    return script_tool_invocation_id_;
+  }
+  void set_script_tool_invocation_id(const base::UnguessableToken& id) {
+    script_tool_invocation_id_ = id;
+  }
   bool IsInOutermostMainFrame() const override {
     return !GetConstParentFrameOrOuterDocument();
+  }
+  size_t GetIgnoredDuplicateNavigationCount() const override {
+    return ignored_duplicate_navigation_count_;
   }
   content::FrameTreeNodeId GetFrameTreeNodeId() override {
     if (IsInPrimaryMainFrame()) {
@@ -106,6 +120,10 @@ class MockNavigationHandle : public NavigationHandle {
     return handle->IsPrerenderedPageActivation() ||
            handle->IsServedFromBackForwardCache();
   }
+  bool IsBlockedByConnectionAllowlist() const override {
+    return is_blocked_by_connection_allowlist_;
+  }
+  MOCK_CONST_METHOD0(IsNavigatingFromInitialEmptyDocument, bool());
   RenderFrameHost* GetParentFrame() override {
     return render_frame_host_ ? render_frame_host_->GetParent() : nullptr;
   }
@@ -176,9 +194,11 @@ class MockNavigationHandle : public NavigationHandle {
   const net::HttpResponseHeaders* GetResponseHeaders() override {
     return response_headers_.get();
   }
+  MOCK_METHOD0(GetDeclarativePerformanceObserverPolicy,
+               const network::mojom::DeclarativePerformanceObserverPolicy*());
   MOCK_METHOD1(
       SetLCPPNavigationHint,
-      void(const blink::mojom::LCPCriticalPathPredictorNavigationTimeHint&));
+      void(blink::mojom::LCPCriticalPathPredictorNavigationTimeHintPtr));
   MOCK_METHOD0(
       GetLCPPNavigationHint,
       const blink::mojom::LCPCriticalPathPredictorNavigationTimeHintPtr&());
@@ -217,6 +237,9 @@ class MockNavigationHandle : public NavigationHandle {
   const std::optional<GURL>& GetInitiatorBaseUrl() override {
     return initiator_base_url_;
   }
+  MOCK_METHOD(scoped_refptr<InitiatorNavigationState>,
+              GetInitiatorNavigationState,
+              ());
   const std::vector<std::string>& GetDnsAliases() override {
     static const base::NoDestructor<std::vector<std::string>>
         emptyvector_result;
@@ -249,7 +272,7 @@ class MockNavigationHandle : public NavigationHandle {
   MOCK_METHOD(bool, SetNavigationTimeout, (base::TimeDelta));
   MOCK_METHOD(void, CancelNavigationTimeout, ());
   MOCK_METHOD(PreloadingTriggerType, GetPrerenderTriggerType, ());
-  MOCK_METHOD(std::string, GetPrerenderEmbedderHistogramSuffix, ());
+  MOCK_METHOD(std::string, GetPrerenderHistogramSuffix, ());
   MOCK_METHOD(bool, IsPrerenderHostReused, ());
   MOCK_METHOD(void, SetAllowCookiesFromBrowser, (bool));
   MOCK_METHOD(void, GetResponseBody, (ResponseBodyCallback));
@@ -257,7 +280,7 @@ class MockNavigationHandle : public NavigationHandle {
               GetNavigationDiscardReason,
               ());
   MOCK_METHOD(bool, NeedsUrlLoader, ());
-  MOCK_METHOD(bool, IsInitialWebUISyncNavigation, ());
+  MOCK_METHOD(bool, IsInitialWebUINavigation, ());
 
 #if BUILDFLAG(IS_ANDROID)
   MOCK_METHOD(const base::android::JavaRef<jobject>&,
@@ -285,6 +308,10 @@ class MockNavigationHandle : public NavigationHandle {
     return process_selection_user_data_;
   }
 
+  MOCK_METHOD(BeforeUnloadExecutionMode,
+              GetBeforeUnloadExecutionMode,
+              (),
+              (const, override));
   MOCK_METHOD(void, SetIsAdTagged, ());
 
   blink::RuntimeFeatureStateContext& GetMutableRuntimeFeatureStateContext()
@@ -344,6 +371,9 @@ class MockNavigationHandle : public NavigationHandle {
   }
   void set_has_committed(bool has_committed) { has_committed_ = has_committed; }
   void set_is_error_page(bool is_error_page) { is_error_page_ = is_error_page; }
+  void set_is_blocked_by_connection_allowlist(bool value) {
+    is_blocked_by_connection_allowlist_ = value;
+  }
   void set_request_headers(const net::HttpRequestHeaders& request_headers) {
     request_headers_ = request_headers;
   }
@@ -404,9 +434,12 @@ class MockNavigationHandle : public NavigationHandle {
   bool is_in_fenced_frame_tree_ = false;
   bool is_renderer_initiated_ = true;
   bool is_in_primary_main_frame_ = true;
+  size_t ignored_duplicate_navigation_count_ = 0;
+  std::optional<base::UnguessableToken> script_tool_invocation_id_;
   std::vector<GURL> redirect_chain_;
   bool has_committed_ = false;
   bool is_error_page_ = false;
+  bool is_blocked_by_connection_allowlist_ = false;
   net::HttpRequestHeaders request_headers_;
   scoped_refptr<net::HttpResponseHeaders> response_headers_;
   std::optional<net::SSLInfo> ssl_info_;

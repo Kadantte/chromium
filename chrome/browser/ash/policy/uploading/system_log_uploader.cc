@@ -10,6 +10,8 @@
 #include <utility>
 #include <vector>
 
+#include "ash/constants/ash_policy_pref_names.h"
+#include "ash/constants/ash_switches.h"
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_file.h"
@@ -22,7 +24,6 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/values.h"
-#include "chrome/browser/ash/policy/core/policy_pref_names.h"
 #include "chrome/browser/ash/policy/uploading/upload_job_impl.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/device_identity/device_oauth2_token_service.h"
@@ -30,8 +31,6 @@
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
 #include "chrome/browser/policy/chrome_policy_conversions_client.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/common/chrome_features.h"
-#include "chrome/common/chrome_switches.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "components/feedback/redaction_tool/redaction_tool.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
@@ -260,10 +259,10 @@ base::TimeDelta GetUploadFrequency() {
   base::TimeDelta upload_frequency(
       base::Milliseconds(SystemLogUploader::kDefaultUploadDelayMs));
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kSystemLogUploadFrequency)) {
+          ash::switches::kSystemLogUploadFrequency)) {
     std::string string_value =
         base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-            switches::kSystemLogUploadFrequency);
+            ash::switches::kSystemLogUploadFrequency);
     int frequency;
     if (base::StringToInt(string_value, &frequency)) {
       upload_frequency = base::Milliseconds(frequency);
@@ -493,7 +492,7 @@ base::Time SystemLogUploader::UpdateLocalStateForLogs() {
   PrefService* local_state = g_browser_process->local_state();
 
   const base::ListValue& prev_log_uploads =
-      local_state->GetList(prefs::kStoreLogStatesAcrossReboots);
+      local_state->GetList(ash::prefs::kStoreLogStatesAcrossReboots);
 
   std::vector<base::Time> updated_log_uploads;
 
@@ -526,7 +525,7 @@ base::Time SystemLogUploader::UpdateLocalStateForLogs() {
   for (auto it : updated_log_uploads) {
     updated_prev_log_uploads.Append(it.InSecondsFSinceUnixEpoch());
   }
-  local_state->SetList(prefs::kStoreLogStatesAcrossReboots,
+  local_state->SetList(ash::prefs::kStoreLogStatesAcrossReboots,
                        std::move(updated_prev_log_uploads));
 
   // Write the changes to the disk to prevent loss of changes.
@@ -554,7 +553,7 @@ void SystemLogUploader::ScheduleNextSystemLogUpload(
   // To ensure at most kLogThrottleCount logs are uploaded in
   // kLogThrottleWindowDuration time.
   if (g_browser_process->local_state()
-              ->GetList(prefs::kStoreLogStatesAcrossReboots)
+              ->GetList(ash::prefs::kStoreLogStatesAcrossReboots)
               .size() >= kLogThrottleCount &&
       !frequency.is_zero()) {
     delay = std::max(delay, last_valid_log_upload + kLogThrottleWindowDuration -

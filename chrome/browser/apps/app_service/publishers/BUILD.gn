@@ -73,6 +73,7 @@ source_set("publishers") {
     ]
 
     deps += [
+      "//ash/strings:strings_grit",
       "//chrome/app/theme:chrome_unscaled_resources_grit",
       "//chrome/browser:browser_process",
       "//chrome/browser/apps/app_service/app_icon:util",
@@ -131,7 +132,6 @@ source_set("unit_tests") {
   deps = [
     ":publishers",
     "//base",
-    "//chrome/app:branded_strings",
     "//chrome/browser/apps/app_service",
     "//chrome/browser/apps/app_service:test_support",
     "//chrome/browser/extensions",

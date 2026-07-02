@@ -8,13 +8,18 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <algorithm>
+#include <memory>
 #include <optional>
 #include <ostream>
+#include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
+#include <vector>
 
+#include "base/check.h"
 #include "base/check_op.h"
+#include "base/feature_list.h"
 #include "base/i18n/rtl.h"
 #include "base/i18n/time_formatting.h"
 #include "base/metrics/histogram_macros.h"
@@ -23,28 +28,30 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/strings/utf_ostream_operators.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/uuid.h"
 #include "build/build_config.h"
-#include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/autofill_type.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component.h"
 #include "components/autofill/core/browser/data_model/data_model_utils.h"
+#include "components/autofill/core/browser/data_model/form_group.h"
 #include "components/autofill/core/browser/data_model/payments/payments_metadata.h"
 #include "components/autofill/core/browser/data_quality/autofill_data_util.h"
 #include "components/autofill/core/browser/data_quality/validation.h"
 #include "components/autofill/core/browser/field_types.h"
-#include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/payments/constants.h"
+#include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/common/autofill_clock.h"
 #include "components/autofill/core/common/autofill_constants.h"
-#include "components/autofill/core/common/autofill_features.h"
+#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/autofill/core/common/autofill_regexes.h"
 #include "components/autofill/core/common/credit_card_network_identifiers.h"
 #include "components/autofill/core/common/credit_card_number_validation.h"
-#include "components/autofill/core/common/form_field_data.h"
 #include "components/grit/components_scaled_resources.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "url/gurl.h"
 
 namespace autofill {
 
@@ -286,8 +293,11 @@ std::u16string CreditCard::NetworkForDisplay(const std::string& network) {
 int CreditCard::IconResourceId(Suggestion::Icon icon) {
   switch (icon) {
     case Suggestion::Icon::kCardAmericanExpress:
-      return ShouldUseNewFopDisplay() ? IDR_AUTOFILL_METADATA_CC_AMEX
-                                      : IDR_AUTOFILL_METADATA_CC_AMEX_OLD;
+      return base::FeatureList::IsEnabled(
+                 features::kAutofillEnableNewAmexNetworkArt)
+                 ? IDR_AUTOFILL_METADATA_CC_AMEX_NEW
+             : ShouldUseNewFopDisplay() ? IDR_AUTOFILL_METADATA_CC_AMEX
+                                        : IDR_AUTOFILL_METADATA_CC_AMEX_OLD;
     case Suggestion::Icon::kCardDiners:
       return ShouldUseNewFopDisplay() ? IDR_AUTOFILL_METADATA_CC_DINERS
                                       : IDR_AUTOFILL_METADATA_CC_DINERS_OLD;
@@ -321,15 +331,23 @@ int CreditCard::IconResourceId(Suggestion::Icon icon) {
     case Suggestion::Icon::kCardGeneric:
       return ShouldUseNewFopDisplay() ? IDR_AUTOFILL_METADATA_CC_GENERIC
                                       : IDR_AUTOFILL_METADATA_CC_GENERIC_OLD;
+    case Suggestion::Icon::kSaveAndFill:
+      return ShouldUseNewFopDisplay() ? IDR_AUTOFILL_METADATA_CC_GENERIC
+                                      : IDR_AUTOFILL_METADATA_CC_GENERIC_OLD;
     case Suggestion::Icon::kAccount:
+    case Suggestion::Icon::kCardGenericSpark:
     case Suggestion::Icon::kClear:
     case Suggestion::Icon::kCode:
     case Suggestion::Icon::kDelete:
     case Suggestion::Icon::kDevice:
     case Suggestion::Icon::kVehicle:
+    case Suggestion::Icon::kVehicleSpark:
     case Suggestion::Icon::kWork:
     case Suggestion::Icon::kEdit:
     case Suggestion::Icon::kEmail:
+    case Suggestion::Icon::kGmail:
+    case Suggestion::Icon::kGooglePhotos:
+    case Suggestion::Icon::kGoogleCalendar:
     case Suggestion::Icon::kError:
     case Suggestion::Icon::kGlobe:
     case Suggestion::Icon::kGoogle:
@@ -338,35 +356,43 @@ int CreditCard::IconResourceId(Suggestion::Icon icon) {
     case Suggestion::Icon::kGooglePay:
     case Suggestion::Icon::kHome:
     case Suggestion::Icon::kIdCard:
+    case Suggestion::Icon::kIdCard2:
+    case Suggestion::Icon::kIdCard2Spark:
+    case Suggestion::Icon::kIdCardSpark:
     case Suggestion::Icon::kIban:
     case Suggestion::Icon::kKey:
     case Suggestion::Icon::kLocation:
+    case Suggestion::Icon::kLocationSpark:
     case Suggestion::Icon::kLoyalty:
     case Suggestion::Icon::kMagic:
     case Suggestion::Icon::kNoIcon:
     case Suggestion::Icon::kOfferTag:
+    case Suggestion::Icon::kOrder:
+    case Suggestion::Icon::kOrderSpark:
+    case Suggestion::Icon::kPassport:
+    case Suggestion::Icon::kPassportSpark:
     case Suggestion::Icon::kPenSpark:
     case Suggestion::Icon::kPersonCheck:
-    case Suggestion::Icon::kPlusAddress:
     case Suggestion::Icon::kQuestionMark:
     case Suggestion::Icon::kRecoveryPassword:
-    case Suggestion::Icon::kSaveAndFill:
     case Suggestion::Icon::kScanCreditCard:
     case Suggestion::Icon::kSettings:
+    case Suggestion::Icon::kShipment:
+    case Suggestion::Icon::kShipmentSpark:
+    case Suggestion::Icon::kTextSpark:
     case Suggestion::Icon::kUndo:
     case Suggestion::Icon::kBnplGeneric:
-    case Suggestion::Icon::kBnplAffirmUnlinked:
-    case Suggestion::Icon::kBnplAffirmLinked:
-    case Suggestion::Icon::kBnplAfterpayLinked:
-    case Suggestion::Icon::kBnplAfterpayUnlinked:
-    case Suggestion::Icon::kBnplZipUnlinked:
-    case Suggestion::Icon::kBnplZipLinked:
-    case Suggestion::Icon::kBnplKlarnaUnlinked:
-    case Suggestion::Icon::kBnplKlarnaLinked:
+    case Suggestion::Icon::kBnplAffirm:
+    case Suggestion::Icon::kBnplAfterpay:
+    case Suggestion::Icon::kBnplKlarna:
+    case Suggestion::Icon::kBnplZip:
     case Suggestion::Icon::kGoogleWallet:
     case Suggestion::Icon::kGoogleWalletMonochrome:
     case Suggestion::Icon::kAndroidMessages:
     case Suggestion::Icon::kFlight:
+    case Suggestion::Icon::kFlightSpark:
+    case Suggestion::Icon::kSpark:
+    case Suggestion::Icon::kSadTab:
       NOTREACHED();
   }
   NOTREACHED();
@@ -440,10 +466,8 @@ double CreditCard::GetRankingScore(base::Time current_time) const {
 
 bool CreditCard::HasGreaterRankingThan(const CreditCard& other,
                                        base::Time comparison_time) const {
-  const double score = GetRankingScore(comparison_time);
-  const double other_score = other.GetRankingScore(comparison_time);
-  return usage_history_information_.CompareRankingScores(
-      score, other_score, other.usage_history_information_.use_date());
+  return usage_history_information_.HasGreaterRankingThan(
+      other.usage_history_information_, comparison_time);
 }
 
 bool CreditCard::SetMetadata(const PaymentsMetadata& metadata) {
@@ -952,40 +976,9 @@ bool CreditCard::SetExpirationYearFromString(std::u16string_view text) {
 }
 
 void CreditCard::SetExpirationDateFromString(std::u16string_view text) {
-  static constexpr char16_t kDateRegex[] =
-      uR"(^\s*[0-9]{1,2}\s*[-/|]?\s*[0-9]{2,4}\s*$)";
-  // Check that `text` fits the supported patterns: mmyy, mmyyyy, m-yy,
-  // mm-yy, m-yyyy and mm-yyyy. Note that myy and myyyy matched by this pattern
-  // but are not supported (ambiguous). Separators: -, / and |.
-  if (!MatchesRegex<kDateRegex>(text)) {
-    return;
-  }
-
   std::u16string month;
   std::u16string year;
-
-  // Check for a separator.
-  std::u16string found_separator;
-  const std::vector<std::u16string> kSeparators{u"-", u"/", u"|"};
-  for (const std::u16string& separator : kSeparators) {
-    if (text.find(separator) != std::u16string::npos) {
-      found_separator = separator;
-      break;
-    }
-  }
-
-  if (!found_separator.empty()) {
-    std::vector<std::u16string> month_year = base::SplitString(
-        text, found_separator, base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
-    DCHECK_EQ(2u, month_year.size());
-    month = month_year[0];
-    year = month_year[1];
-  } else if (text.size() % 2 == 0) {
-    // If there are no separators, the supported formats are mmyy and mmyyyy.
-    month = text.substr(0, 2);
-    year = text.substr(2);
-  } else {
-    // Odd number of digits with no separator is too ambiguous.
+  if (!data_util::ParseExpirationDate(text, &month, &year)) {
     return;
   }
 

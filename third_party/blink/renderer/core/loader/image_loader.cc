@@ -69,6 +69,7 @@
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/bindings/v8_per_isolate_data.h"
+#include "third_party/blink/renderer/platform/graphics/bitmap_image.h"
 #include "third_party/blink/renderer/platform/heap/cross_thread_handle.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
@@ -210,8 +211,7 @@ void ImageLoader::DispatchDecodeRequestsIfComplete() {
                 image->PaintImageForCurrentFrame(),
                 /*use_dark_mode=*/false,
                 SkIRect::MakeWH(image->width(), image->height()),
-                cc::PaintFlags::FilterQuality::kNone, SkM44(),
-                PaintImage::kDefaultFrameIndex);
+                cc::PaintFlags::FilterQuality::kNone, SkM44());
             // ImageLoader should be kept alive when decode is still
             // pending. JS may invoke 'decode' without capturing the Image
             // object. If GC kicks in, ImageLoader will be destroyed,
@@ -331,8 +331,7 @@ void ImageLoader::SetImageWithoutConsideringPendingLoadEvent(
     }
   }
 
-  if (LayoutImageResource* image_resource = GetLayoutImageResource())
-    image_resource->ResetAnimation();
+  ResetAnimation();
 }
 
 static void ConfigureRequest(
@@ -639,8 +638,9 @@ void ImageLoader::DoUpdateFromElement(const DOMWrapperWorld* world,
     }
   }
 
-  if (LayoutImageResource* image_resource = GetLayoutImageResource())
-    image_resource->ResetAnimation();
+  ResetAnimation(update_behavior == kUpdateForcedReload
+                     ? ResetTimeline::kAll
+                     : ResetTimeline::kSharedOnly);
 }
 
 void ImageLoader::UpdateFromElement(UpdateFromElementBehavior update_behavior,
@@ -736,8 +736,15 @@ KURL ImageLoader::ImageSourceToKURL(AtomicString image_source_url) const {
   if (!image_source_url.IsNull()) {
     StringView stripped_image_source_url =
         StripLeadingAndTrailingHtmlSpaces(image_source_url);
-    if (!stripped_image_source_url.empty())
-      url = document.CompleteURL(stripped_image_source_url);
+    if (!stripped_image_source_url.empty()) {
+      // Resolve the URL using the originating document, which can be different
+      // if this element was sourced from a (SVG <use>) resource document.
+      const Document& resolver_document =
+          RuntimeEnabledFeatures::SvgUseNestedResourceDocumentsEnabled()
+              ? element_->OriginatingTreeScope().GetDocument()
+              : document;
+      url = resolver_document.CompleteURL(stripped_image_source_url);
+    }
   }
   return url;
 }
@@ -798,7 +805,7 @@ void ImageLoader::ImageNotifyFinished(ImageResourceContent* content) {
     // shouldn't fire this <img loading="lazy">'s load event at this time,
     // because in the spec this <img> is still in Step 25 of
     // https://html.spec.whatwg.org/#update-the-image-data.
-    // When LazyLoadImageObserver reports it to be intersecting (or close to)
+    // When LazyLoadMediaObserver reports it to be intersecting (or close to)
     // the viewport later (i.e. this <img> proceeds to Step 26 of the spec),
     // actual load/error event will be fired, by going through the loading
     // process again from `UpdateFromElement()`. Note that in Chromium
@@ -891,6 +898,31 @@ void ImageLoader::OnAttachLayoutTree() {
     return;
   }
   image_resource->SetImageResource(image_content_);
+}
+
+void ImageLoader::ResetAnimation(ResetTimeline timeline) {
+  if (!RuntimeEnabledFeatures::SvgImageAnimationResetEnabled()) {
+    if (LayoutImageResource* image_resource = GetLayoutImageResource()) {
+      image_resource->ResetAnimation(timeline);
+    }
+    return;
+  }
+
+  if (!image_content_ || !image_content_->HasImage()) {
+    return;
+  }
+
+  if (auto* image = DynamicTo<BitmapImage>(image_content_->GetImage());
+      image && timeline == ImageLoader::ResetTimeline::kSharedOnly) {
+    image->ResetAnimationSharedTimelineOnly();
+  } else {
+    image_content_->GetImage()->ResetAnimation();
+  }
+
+  if (LayoutImageResource* image_resource = GetLayoutImageResource();
+      image_resource && image_resource->CachedImage() == image_content_) {
+    image_resource->InvalidatePaint();
+  }
 }
 
 void ImageLoader::UpdateLayoutObject() {

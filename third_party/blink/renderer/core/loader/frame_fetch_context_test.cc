@@ -51,8 +51,8 @@
 #include "third_party/blink/public/mojom/timing/resource_timing.mojom-blink-forward.h"
 #include "third_party/blink/public/platform/scheduler/web_scoped_virtual_time_pauser.h"
 #include "third_party/blink/public/platform/web_document_subresource_filter.h"
+#include "third_party/blink/renderer/core/ad_tracker/ad_tracker.h"
 #include "third_party/blink/renderer/core/dom/document.h"
-#include "third_party/blink/renderer/core/frame/ad_tracker.h"
 #include "third_party/blink/renderer/core/frame/frame_owner.h"
 #include "third_party/blink/renderer/core/frame/frame_types.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
@@ -108,6 +108,8 @@ class DummyFrameOwner final : public GarbageCollected<DummyFrameOwner>,
   void AddResourceTiming(mojom::blink::ResourceTimingInfoPtr) override {}
   void DispatchLoad() override {}
   void NaturalSizingInfoChanged() override {}
+  void ClearLastNaturalSizingInfo() override {}
+  void ClearAllNaturalSizingInfo() override {}
   void SetNeedsOcclusionTracking(bool) override {}
   AtomicString BrowsingContextContainerName() const override {
     return AtomicString();
@@ -120,6 +122,9 @@ class DummyFrameOwner final : public GarbageCollected<DummyFrameOwner>,
   bool AllowFullscreen() const override { return false; }
   bool AllowPaymentRequest() const override { return false; }
   bool IsDisplayNone() const override { return false; }
+  mojom::blink::FrameResponsiveSizing GetResponsiveSizing() const override {
+    return mojom::blink::FrameResponsiveSizing::kNone;
+  }
   mojom::blink::ColorScheme GetColorScheme() const override {
     return mojom::blink::ColorScheme::kLight;
   }
@@ -169,6 +174,21 @@ class FixedPolicySubresourceFilter : public WebDocumentSubresourceFilter {
   LoadPolicy GetLoadPolicyForWebTransportConnect(const WebURL&) override {
     return policy_;
   }
+
+  void GetDomainSelectors(
+      std::vector<std::string_view>& out_selectors) override {}
+  bool MaybeHasStyleRule(uint32_t hash) override { return false; }
+  void GetSelectorsByClass(
+      std::string_view class_name,
+      uint32_t hash,
+      std::vector<std::string_view>& out_selectors) override {}
+  void GetSelectorsById(std::string_view id_name,
+                        uint32_t hash,
+                        std::vector<std::string_view>& out_selectors) override {
+  }
+  bool IsDryRun() override { return false; }
+  uint64_t GetRulesetId() const override { return 0; }
+
   void ReportDisallowedLoad() override { ++*filtered_load_counter_; }
 
   bool ShouldLogToConsole() override { return false; }
@@ -299,11 +319,23 @@ class FrameFetchContextSubresourceFilterTest
         CanRequestInternal(ReportingDisposition::kReport);
     ResourceRequest request(KURL("http://example.com/"));
     FetchInitiatorInfo initiator_info;
-    EXPECT_EQ(expect_is_ad, GetFetchContext()->CalculateIfAdSubresource(
-                                request, std::nullopt /* alias_url */,
-                                ResourceType::kMock, initiator_info,
-                                /*scan_stack_for_ads=*/false,
-                                /*out_rule=*/nullptr));
+
+    std::optional<AdProvenance> ad_provenance =
+        GetFetchContext()->CalculateIfAdSubresource(
+            request, std::nullopt /* alias_url */, ResourceType::kMock,
+            initiator_info,
+            /*scan_stack_for_ads=*/false);
+
+    if (expect_is_ad) {
+      EXPECT_TRUE(std::holds_alternative<subresource_filter::ScopedRule>(
+          *ad_provenance));
+      // Note: Since the mock subresource filter does not populate specific
+      // rules, we only verify the provenance type rather than checking the
+      // rule's exact contents.
+    } else {
+      EXPECT_FALSE(ad_provenance.has_value());
+    }
+
     return reason;
   }
 
@@ -805,49 +837,8 @@ TEST_P(FrameFetchContextHintsTest, MonitorDeviceMemoryHintsLocalContext) {
   ExpectHeader("http://localhost/1.gif", "Sec-CH-Viewport-Width", false, "");
 }
 
-TEST_P(FrameFetchContextHintsTest, MonitorDeviceMemoryHintsOld) {
-  // Test with old limits. See https://crbug.com/454354290
-  // TODO: remove this whole section when feature flag is retired.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(
-      features::kUpdatedDeviceMemoryLimitsFor2026);
-  ExpectHeader("https://www.example.com/1.gif", "Device-Memory", false, "");
-  ClientHintsPreferences preferences;
-  preferences.SetShouldSend(
-      network::mojom::WebClientHintsType::kDeviceMemory_DEPRECATED);
-  preferences.SetShouldSend(network::mojom::WebClientHintsType::kDeviceMemory);
-  document->GetFrame()->GetClientHintsPreferences().UpdateFrom(preferences);
-  ApproximatedDeviceMemory::SetPhysicalMemoryMBForTesting(4096);
-  ExpectHeader("https://www.example.com/1.gif", "Device-Memory", true, "4");
-  ExpectHeader("https://www.example.com/1.gif", "Sec-CH-Device-Memory", true,
-               "4");
-  ApproximatedDeviceMemory::SetPhysicalMemoryMBForTesting(2048);
-  ExpectHeader("https://www.example.com/1.gif", "Device-Memory", true, "2");
-  ExpectHeader("https://www.example.com/1.gif", "Sec-CH-Device-Memory", true,
-               "2");
-  ApproximatedDeviceMemory::SetPhysicalMemoryMBForTesting(64385);
-  ExpectHeader("https://www.example.com/1.gif", "Device-Memory", true, "8");
-  ExpectHeader("https://www.example.com/1.gif", "Sec-CH-Device-Memory", true,
-               "8");
-  ApproximatedDeviceMemory::SetPhysicalMemoryMBForTesting(768);
-  ExpectHeader("https://www.example.com/1.gif", "Device-Memory", true, "0.5");
-  ExpectHeader("https://www.example.com/1.gif", "Sec-CH-Device-Memory", true,
-               "0.5");
-  ExpectHeader("https://www.example.com/1.gif", "DPR", false, "");
-  ExpectHeader("https://www.example.com/1.gif", "Sec-CH-DPR", false, "");
-  ExpectHeader("https://www.example.com/1.gif", "Width", false, "");
-  ExpectHeader("https://www.example.com/1.gif", "Sec-CH-Width", false, "");
-  ExpectHeader("https://www.example.com/1.gif", "Viewport-Width", false, "");
-  ExpectHeader("https://www.example.com/1.gif", "Sec-CH-Viewport-Width", false,
-               "");
-}
-
 TEST_P(FrameFetchContextHintsTest, MonitorDeviceMemoryHints) {
   // Test with new, 2026 limits - see https://crbug.com/454354290
-  // TODO Remove next two lines when ready to retire feature flag.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(
-      features::kUpdatedDeviceMemoryLimitsFor2026);
   ExpectHeader("https://www.example.com/1.gif", "Device-Memory", false, "");
   ClientHintsPreferences preferences;
   preferences.SetShouldSend(
@@ -1805,12 +1796,21 @@ TEST_P(FrameFetchContextSubresourceFilterTest,
 
     ResourceLoaderOptions options(nullptr /* world */);
 
-    EXPECT_EQ(test.expected_to_be_tagged_ad,
-              GetFetchContext()->CalculateIfAdSubresource(
-                  resource_request, alias_url, ResourceType::kScript,
-                  options.initiator_info,
-                  /*scan_stack_for_ads=*/false,
-                  /*out_rule=*/nullptr));
+    std::optional<AdProvenance> ad_provenance =
+        GetFetchContext()->CalculateIfAdSubresource(
+            resource_request, alias_url, ResourceType::kScript,
+            options.initiator_info,
+            /*scan_stack_for_ads=*/false);
+
+    if (test.expected_to_be_tagged_ad) {
+      EXPECT_TRUE(std::holds_alternative<subresource_filter::ScopedRule>(
+          *ad_provenance));
+      // Note: Since the mock subresource filter does not populate specific
+      // rules, we only verify the provenance type rather than checking the
+      // rule's exact contents.
+    } else {
+      EXPECT_FALSE(ad_provenance.has_value());
+    }
   }
 }
 
@@ -2063,7 +2063,7 @@ class FrameFetchContextNetworkGuardrailsTest
     custom_response.SetExpectedContentLength(image_size);
 
     url_test_helpers::RegisterMockedURLLoadWithCustomResponse(
-        kImageUrl, WebString::FromUTF8(temp_file_path.AsUTF8Unsafe()),
+        kImageUrl, WebString::FromUtf8(temp_file_path.AsUTF8Unsafe()),
         custom_response, chunk_size);
 
     ResourceFetcher* fetcher = document->Fetcher();
@@ -2189,7 +2189,7 @@ TEST_F(FrameFetchContextNetworkGuardrailsTest, ChunkedLoading) {
   response.SetMimeType("text/plain");
   response.SetExpectedContentLength(kTotalSize);
   url_test_helpers::RegisterMockedURLLoadWithCustomResponse(
-      test_url, WebString::FromUTF8(temp_file.AsUTF8Unsafe()), response,
+      test_url, WebString::FromUtf8(temp_file.AsUTF8Unsafe()), response,
       kChunkSize);
 
   auto* mock_client = MakeGarbageCollected<MockRawResourceClient>();

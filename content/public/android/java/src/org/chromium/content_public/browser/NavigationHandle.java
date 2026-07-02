@@ -14,6 +14,7 @@ import org.jni_zero.JNINamespace;
 import org.chromium.base.UserDataHost;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.content.browser.framehost.PageImpl;
 import org.chromium.net.NetError;
 import org.chromium.ui.base.PageTransition;
 import org.chromium.url.GURL;
@@ -56,6 +57,8 @@ public class NavigationHandle {
     private @Nullable String mMimeType;
     private @Nullable WebContents mWebContents;
     private @Nullable Page mCommittedPage;
+    private boolean mIsSameOrigin;
+    private int mIgnoredDuplicateNavigationCount;
 
     private boolean mStarted;
 
@@ -197,7 +200,9 @@ public class NavigationHandle {
             boolean isExternalProtocol,
             boolean isPdf,
             String mimeType,
-            Page currentPage) {
+            Page currentPage,
+            boolean isSameOrigin,
+            int ignoredDuplicateNavigationCount) {
         mUrl = url;
         mIsErrorPage = isErrorPage;
         mHasCommitted = hasCommitted;
@@ -214,6 +219,32 @@ public class NavigationHandle {
         if (mHasCommitted && mIsInPrimaryMainFrame) {
             mCommittedPage = currentPage;
         }
+        mIsSameOrigin = isSameOrigin;
+        mIgnoredDuplicateNavigationCount = ignoredDuplicateNavigationCount;
+    }
+
+    public void callDidFinishForTesting(GURL url) {
+        callDidFinishForTesting(url, true);
+    }
+
+    public void callDidFinishForTesting(GURL url, boolean hasCommitted) {
+        didFinish(
+                url,
+                /* isErrorPage= */ false,
+                hasCommitted,
+                /* isPrimaryMainFrameFragmentNavigation= */ false,
+                /* isDownload= */ false,
+                /* isValidSearchFormUrl= */ false,
+                /* transition= */ PageTransition.LINK,
+                /* errorCode= */ NetError.OK,
+                /* errorDescription= */ "",
+                /* httpStatuscode= */ 200,
+                /* isExternalProtocol= */ false,
+                /* isPdf= */ false,
+                /* mimeType= */ "",
+                new PageImpl(/* nativePage= */ 0, /* isPrerendering= */ false),
+                /* isSameOrigin= */ true,
+                /* ignoredDuplicateNavigationCount= */ 0);
     }
 
     /** Release the C++ pointer. */
@@ -269,6 +300,15 @@ public class NavigationHandle {
      */
     public boolean isRendererInitiated() {
         return mIsRendererInitiated;
+    }
+
+    /**
+     * Whether the previous document in this frame was same-origin with the new one created by this
+     * navigation.
+     */
+    public boolean isSameOrigin() {
+        assert mHasCommitted;
+        return mIsSameOrigin;
     }
 
     /**
@@ -460,5 +500,10 @@ public class NavigationHandle {
      */
     public @Nullable Page getCommittedPage() {
         return mCommittedPage;
+    }
+
+    /** Returns the number of duplicate navigations ignored during this navigation. */
+    public int getIgnoredDuplicateNavigationCount() {
+        return mIgnoredDuplicateNavigationCount;
     }
 }

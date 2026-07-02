@@ -377,58 +377,14 @@ void HttpResponseHeaders::Persist(base::Pickle* pickle,
                                   PersistOptions options) {
   if (options == PERSIST_RAW) {
     pickle->WriteString(raw_headers_);
-    return;  // Done.
+    return;
   }
+  std::vector<uint8_t> serialized = Serialize(options);
+  pickle->WriteData(serialized);
+}
 
-  HeaderSet filter_headers;
-
-  // Construct set of headers to filter out based on options.
-  if ((options & PERSIST_SANS_NON_CACHEABLE) == PERSIST_SANS_NON_CACHEABLE)
-    AddNonCacheableHeaders(&filter_headers);
-
-  if ((options & PERSIST_SANS_COOKIES) == PERSIST_SANS_COOKIES)
-    AddCookieHeaders(&filter_headers);
-
-  if ((options & PERSIST_SANS_CHALLENGES) == PERSIST_SANS_CHALLENGES)
-    AddChallengeHeaders(&filter_headers);
-
-  if ((options & PERSIST_SANS_HOP_BY_HOP) == PERSIST_SANS_HOP_BY_HOP)
-    AddHopByHopHeaders(&filter_headers);
-
-  if ((options & PERSIST_SANS_RANGES) == PERSIST_SANS_RANGES)
-    AddHopContentRangeHeaders(&filter_headers);
-
-  if ((options & PERSIST_SANS_SECURITY_STATE) == PERSIST_SANS_SECURITY_STATE)
-    AddSecurityStateHeaders(&filter_headers);
-
-  std::string blob;
-  blob.reserve(raw_headers_.size());
-
-  // This copies the status line w/ terminator null.
-  // Note raw_headers_ has embedded nulls instead of \n,
-  // so this just copies the first header line.
-  blob.assign(raw_headers_.c_str(), strlen(raw_headers_.c_str()) + 1);
-
-  for (size_t i = 0; i < parsed_.size(); ++i) {
-    DCHECK(!parsed_[i].is_continuation());
-
-    // Locate the start of the next header.
-    size_t k = i;
-    while (++k < parsed_.size() && parsed_[k].is_continuation()) {}
-    --k;
-
-    std::string header = base::ToLowerASCII(header_name(parsed_[i]));
-    if (filter_headers.find(header) == filter_headers.end()) {
-      // Make sure there is a null after the value.
-      blob.append(subrange(parsed_[i].name_begin, parsed_[k].value_end));
-      blob.push_back('\0');
-    }
-
-    i = k;
-  }
-  blob.push_back('\0');
-
-  pickle->WriteString(blob);
+std::vector<uint8_t> HttpResponseHeaders::SerializeForMojoIpc() const {
+  return Serialize(PERSIST_SANS_COOKIES);
 }
 
 void HttpResponseHeaders::Update(const HttpResponseHeaders& new_headers) {
@@ -512,7 +468,7 @@ void HttpResponseHeaders::RemoveHeader(std::string_view name) {
 }
 
 void HttpResponseHeaders::RemoveHeaders(
-    const std::unordered_set<std::string>& header_names) {
+    const std::vector<std::string>& header_names) {
   // Copy up to the null byte.  This just copies the status line.
   std::string new_raw_headers(raw_headers_.c_str());
   new_raw_headers.push_back('\0');
@@ -918,6 +874,68 @@ std::string_view HttpResponseHeaders::subrange(size_t begin, size_t end) const {
   return std::string_view(raw_headers_).substr(begin, end - begin);
 }
 
+std::vector<uint8_t> HttpResponseHeaders::Serialize(
+    PersistOptions options) const {
+  CHECK(options != PERSIST_RAW);
+
+  HeaderSet filter_headers;
+
+  // Construct set of headers to filter out based on options.
+  if ((options & PERSIST_SANS_NON_CACHEABLE) == PERSIST_SANS_NON_CACHEABLE) {
+    AddNonCacheableHeaders(&filter_headers);
+  }
+
+  if ((options & PERSIST_SANS_COOKIES) == PERSIST_SANS_COOKIES) {
+    AddCookieHeaders(&filter_headers);
+  }
+
+  if ((options & PERSIST_SANS_CHALLENGES) == PERSIST_SANS_CHALLENGES) {
+    AddChallengeHeaders(&filter_headers);
+  }
+
+  if ((options & PERSIST_SANS_HOP_BY_HOP) == PERSIST_SANS_HOP_BY_HOP) {
+    AddHopByHopHeaders(&filter_headers);
+  }
+
+  if ((options & PERSIST_SANS_RANGES) == PERSIST_SANS_RANGES) {
+    AddHopContentRangeHeaders(&filter_headers);
+  }
+
+  if ((options & PERSIST_SANS_SECURITY_STATE) == PERSIST_SANS_SECURITY_STATE) {
+    AddSecurityStateHeaders(&filter_headers);
+  }
+
+  std::string blob;
+  blob.reserve(raw_headers_.size());
+
+  // This copies the status line w/ terminator null.
+  // Note raw_headers_ has embedded nulls instead of \n,
+  // so this just copies the first header line.
+  blob.assign(raw_headers_.c_str(), strlen(raw_headers_.c_str()) + 1);
+
+  for (size_t i = 0; i < parsed_.size(); ++i) {
+    DCHECK(!parsed_[i].is_continuation());
+
+    // Locate the start of the next header.
+    size_t k = i;
+    while (++k < parsed_.size() && parsed_[k].is_continuation()) {
+    }
+    --k;
+
+    std::string header = base::ToLowerASCII(header_name(parsed_[i]));
+    if (filter_headers.find(header) == filter_headers.end()) {
+      // Make sure there is a null after the value.
+      blob.append(subrange(parsed_[i].name_begin, parsed_[k].value_end));
+      blob.push_back('\0');
+    }
+
+    i = k;
+  }
+  blob.push_back('\0');
+
+  return std::vector<uint8_t>(blob.begin(), blob.end());
+}
+
 std::string_view HttpResponseHeaders::header_name(
     const ParsedHeader& parsed) const {
   return subrange(parsed.name_begin, parsed.name_end);
@@ -1050,11 +1068,17 @@ void HttpResponseHeaders::GetMimeTypeAndCharset(std::string* mime_type,
   mime_type->clear();
   charset->clear();
 
-  std::optional<std::string_view> value;
+  std::optional<std::string> combined_value =
+      GetNormalizedHeader("content-type");
+  if (!combined_value) {
+    return;
+  }
+
   bool had_charset = false;
-  size_t iter = 0;
-  while ((value = EnumerateHeader(&iter, "content-type"))) {
-    HttpUtil::ParseContentType(*value, mime_type, charset, &had_charset,
+  HttpUtil::ValuesIterator it(*combined_value, ',',
+                              /*ignore_empty_values=*/true);
+  while (it.GetNext()) {
+    HttpUtil::ParseContentType(it.value(), mime_type, charset, &had_charset,
                                /*boundary=*/nullptr);
   }
 }

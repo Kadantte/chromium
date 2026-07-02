@@ -2,19 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "partition_alloc/thread_cache.h"
-
 #include <sys/types.h>
 
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 
 #include "partition_alloc/build_config.h"
 #include "partition_alloc/buildflags.h"
+#include "partition_alloc/internal/partition_root_internal.h"
+#include "partition_alloc/internal/thread_cache_internal.h"
 #include "partition_alloc/internal_allocator.h"
 #include "partition_alloc/partition_alloc-inl.h"
 #include "partition_alloc/partition_alloc_base/compiler_specific.h"
 #include "partition_alloc/partition_alloc_base/component_export.h"
+#include "partition_alloc/partition_alloc_base/containers/span.h"
 #include "partition_alloc/partition_alloc_base/cxx_wrapper/algorithm.h"
 #include "partition_alloc/partition_alloc_base/immediate_crash.h"
 #include "partition_alloc/partition_alloc_base/time/time.h"
@@ -22,18 +24,19 @@
 #include "partition_alloc/partition_alloc_config.h"
 #include "partition_alloc/partition_alloc_constants.h"
 #include "partition_alloc/partition_freelist_entry.h"
-#include "partition_alloc/partition_root.h"
 #include "partition_alloc/slot_start.h"
 
 namespace partition_alloc {
 
+namespace internal {
 namespace {
 ThreadCacheRegistry g_instance;
 }  // namespace
+}  // namespace internal
 
 namespace tools {
 uintptr_t kThreadCacheNeedleArray[kThreadCacheNeedleArraySize] = {
-    kNeedle1, reinterpret_cast<uintptr_t>(&g_instance),
+    kNeedle1, reinterpret_cast<uintptr_t>(&internal::g_instance),
 #if PA_BUILDFLAG(RECORD_ALLOC_INFO)
     reinterpret_cast<uintptr_t>(&internal::g_allocs),
 #else
@@ -78,6 +81,8 @@ void OnDllProcessDetach() {
 
 static bool g_thread_cache_key_created = false;
 }  // namespace
+
+namespace internal {
 
 uint8_t ThreadCache::global_limits_[ThreadCache::kBucketCount];
 
@@ -409,11 +414,15 @@ void ThreadCache::Init(PartitionRoot* root) {
   internal::PartitionTlsSetOnDllProcessDetach(OnDllProcessDetach);
 #endif
 
-  SetGlobalLimits(root, kDefaultMultiplier);
+  SetGlobalLimits(root, partition_alloc::ThreadCache::kDefaultMultiplier);
 }
 
 bool ThreadCache::IsInitialized() {
-  return g_thread_cache_roots->load(std::memory_order_acquire) != nullptr;
+  PartitionRoot* root =
+      PA_UNSAFE_TODO(
+          g_thread_cache_roots[internal::kDefaultRootThreadCacheIndex])
+          .load(std::memory_order_acquire);
+  return root && root->settings_.with_thread_cache;
 }
 
 // static
@@ -492,8 +501,21 @@ ThreadCache* ThreadCache::Create(PartitionRoot* root, size_t index) {
   if (!IsValidPtr(tcaches)) {
     constexpr size_t array_size =
         sizeof(ThreadCache) * internal::kMaxThreadCacheIndex;
-    tcaches = reinterpret_cast<ThreadCache*>(operator new(array_size));
-    PA_UNSAFE_TODO(memset(tcaches, 0, array_size));
+    // The memory is allocated from the internal allocator to avoid reentrancy
+    // issues.
+    //
+    // To avoid -Wnontrivial-memcall, the memory initialization must happen over
+    // a uint8_t[] instead of a ThreadCache[]. Indeed, ThreadCache has a
+    // non-trivial constructor. This is safe because we will use placement new
+    // to construct tcaches[index] right after. The other ThreadCaches in the
+    // array are not used until they are initialized, and they are just reserved
+    // as raw memory until then.
+    void* tcaches_memory = operator new(array_size);
+    // SAFETY: The span size matches the allocation.
+    auto storage_span = PA_UNSAFE_BUFFERS(
+        base::span<uint8_t>(static_cast<uint8_t*>(tcaches_memory), array_size));
+    std::ranges::fill(storage_span, 0);
+    tcaches = static_cast<ThreadCache*>(tcaches_memory);
     // This may allocate.
     internal::PartitionTlsSet(internal::g_thread_cache_key, tcaches);
   }
@@ -856,16 +878,6 @@ void ThreadCache::Purge() {
   PurgeInternal();
 }
 
-// static
-void ThreadCache::PurgeCurrentThread() {
-  for (size_t i = 0; i < internal::kMaxThreadCacheIndex; i++) {
-    auto* tcache = Get(i);
-    if (IsValid(tcache)) {
-      tcache->Purge();
-    }
-  }
-}
-
 void ThreadCache::ResetPerThreadAllocationStatsForTesting() {
   thread_alloc_stats_ = {};
 }
@@ -925,6 +937,39 @@ bool ThreadCache::IsInFreelist(internal::UntaggedSlotStart address,
   }
   position = 0;
   return false;
+}
+
+}  // namespace internal
+
+int64_t ThreadCache::GetPeriodicPurgeNextIntervalInMicroseconds() {
+  return internal::ThreadCacheRegistry::Instance()
+      .GetPeriodicPurgeNextIntervalInMicroseconds();
+}
+
+void ThreadCache::RunPeriodicPurge() {
+  internal::ThreadCacheRegistry::Instance().RunPeriodicPurge();
+}
+
+void ThreadCache::SetThreadCacheMultiplier(float multiplier) {
+  internal::ThreadCacheRegistry::Instance().SetThreadCacheMultiplier(
+      multiplier);
+}
+
+void ThreadCache::SetLargestCachedSize(size_t size) {
+  internal::ThreadCache::SetLargestCachedSize(size);
+}
+
+void ThreadCache::PurgeCurrentThread() {
+  for (size_t i = 0; i < internal::kMaxThreadCacheIndex; i++) {
+    auto* tcache = internal::ThreadCache::Get(i);
+    if (internal::ThreadCache::IsValid(tcache)) {
+      tcache->Purge();
+    }
+  }
+}
+
+void ThreadCache::PurgeAllThread() {
+  internal::ThreadCacheRegistry::Instance().PurgeAll();
 }
 
 }  // namespace partition_alloc

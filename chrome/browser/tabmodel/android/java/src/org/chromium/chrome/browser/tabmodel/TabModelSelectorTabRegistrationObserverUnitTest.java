@@ -52,7 +52,11 @@ public class TabModelSelectorTabRegistrationObserverUnitTest {
     public void setUp() {
         TabModelJniBridgeJni.setInstanceForTesting(mTabModelJniBridge);
         when(mTabModelJniBridge.init(
-                        any(TabModelJniBridge.class), any(Profile.class), anyInt(), anyInt()))
+                        any(TabModelJniBridge.class),
+                        any(Profile.class),
+                        anyInt(),
+                        any(),
+                        anyInt()))
                 .thenReturn(FAKE_NATIVE_ADDRESS);
 
         when(mIncognitoProfile.isOffTheRecord()).thenReturn(true);
@@ -112,9 +116,7 @@ public class TabModelSelectorTabRegistrationObserverUnitTest {
         MockTabModel incognitoTabModel = new MockTabModel(mIncognitoProfile, null);
         incognitoTabModel.setTabRemoverForTesting(createTabRemover(incognitoTabModel));
 
-        selector.initialize(
-                TabModelHolderFactory.createTabModelHolderForTesting(normalTabModel),
-                TabModelHolderFactory.createIncognitoTabModelHolderForTesting(incognitoTabModel));
+        selector.initialize(normalTabModel, incognitoTabModel);
 
         return selector;
     }
@@ -385,6 +387,11 @@ public class TabModelSelectorTabRegistrationObserverUnitTest {
         @Override
         public boolean isTabModelRestored() {
             return true;
+        }
+
+        @Override
+        public @Nullable Profile getProfile(boolean offTheRecord) {
+            return null;
         }
     }
 }

@@ -14,6 +14,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -40,12 +41,11 @@ import org.mockito.stubbing.Answer;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.ContextUtils;
-import org.chromium.base.task.TaskTraits;
-import org.chromium.base.task.test.ShadowPostTask;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.PackageManagerWrapper;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
+import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
 import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.back_press.MinimizeAppAndCloseTabBackPressHandler;
 import org.chromium.chrome.browser.back_press.MinimizeAppAndCloseTabBackPressHandler.MinimizeAppAndCloseTabType;
@@ -53,9 +53,9 @@ import org.chromium.chrome.browser.customtabs.content.CustomTabActivityNavigatio
 import org.chromium.chrome.browser.customtabs.content.CustomTabActivityNavigationController.FinishReason;
 import org.chromium.chrome.browser.externalnav.ExternalNavigationDelegateImpl;
 import org.chromium.chrome.browser.flags.ActivityType;
-import org.chromium.chrome.browser.multiwindow.MultiInstanceManagerImpl;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 import org.chromium.url.GURL;
 
 /**
@@ -65,9 +65,7 @@ import org.chromium.url.GURL;
  * classes in {@link CustomTabActivityUrlLoadingTest}.
  */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ShadowPostTask.class})
+@Config(manifest = Config.NONE)
 public class CustomTabActivityNavigationControllerTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -98,7 +96,6 @@ public class CustomTabActivityNavigationControllerTest {
 
     @Before
     public void setUp() {
-        ShadowPostTask.setTestImpl((@TaskTraits int taskTraits, Runnable task, long delay) -> {});
         mTestContext = new TestContext(ContextUtils.getApplicationContext());
         ContextUtils.initApplicationContextForTests(mTestContext);
 
@@ -118,7 +115,7 @@ public class CustomTabActivityNavigationControllerTest {
 
     // Predictive back is enabled by default on SDK 36+. Pin to older SDKs to
     // test the legacy back navigation path.
-    @Config(sdk = {29, 35})
+    @Config(sdk = {BaseRobolectricTestRunner.MIN_SDK, 35})
     @Test
     public void finishes_IfBackNavigationClosesTheOnlyTabWithNoUnloadEvents() {
         HistogramWatcher histogramWatcher =
@@ -164,7 +161,7 @@ public class CustomTabActivityNavigationControllerTest {
 
     // Predictive back is enabled by default on SDK 36+. Pin to older SDKs to
     // test the legacy back navigation path.
-    @Config(sdk = {29, 35})
+    @Config(sdk = {BaseRobolectricTestRunner.MIN_SDK, 35})
     @Test
     public void finishes_IfBackNavigationClosesTheOnlyTabWithUnloadHandler_CctBeforeUnload() {
         HistogramWatcher histogramWatcher =
@@ -210,7 +207,7 @@ public class CustomTabActivityNavigationControllerTest {
 
     // Predictive back is enabled by default on SDK 36+. Pin to older SDKs to
     // test the legacy back navigation path.
-    @Config(sdk = {29, 35})
+    @Config(sdk = {BaseRobolectricTestRunner.MIN_SDK, 35})
     @Test
     public void doesntFinish_IfBackNavigationReplacesTabWithPreviousOne() {
         HistogramWatcher histogramWatcher =
@@ -276,9 +273,11 @@ public class CustomTabActivityNavigationControllerTest {
     @Test
     public void finishes_whenDoneReparentingToAdjacentActivity() {
         ExternalNavigationDelegateImpl.setWillChromeHandleIntentHookForTesting(intent -> true);
-        MultiInstanceManagerImpl.setAdjacentWindowActivitySupplierForTesting(
-                () -> mAdjacentActivity);
         MultiWindowUtils.setActivitySupplierForTesting(() -> mAdjacentActivity);
+        TabWindowManager tabWindowManager = mock(TabWindowManager.class);
+        TabWindowManagerSingleton.setTabWindowManagerForTesting(tabWindowManager);
+        when(tabWindowManager.getIdForWindow(mAdjacentActivity)).thenReturn(1);
+        MultiWindowUtils.setActivityByWindowIdForTesting(1, mAdjacentActivity);
 
         mNavigationController.openCurrentUrlInBrowser();
 
@@ -387,7 +386,7 @@ public class CustomTabActivityNavigationControllerTest {
 
     // Predictive back is enabled by default on SDK 36+. Pin to older SDKs to
     // test the legacy back navigation path.
-    @Config(sdk = {29, 35})
+    @Config(sdk = {BaseRobolectricTestRunner.MIN_SDK, 35})
     @Test
     public void getVersionForTesting_ReturnsSetVersion() {
         assertFalse(CustomTabActivityNavigationController.supportsPredictiveBackGesture());

@@ -32,11 +32,11 @@ import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
-import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
@@ -58,7 +58,7 @@ import java.util.HashSet;
 import java.util.List;
 
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE, sdk = 29)
+@Config(manifest = Config.NONE, sdk = BaseRobolectricTestRunner.MIN_SDK)
 @DisableFeatures(ChromeFeatureList.NAV_BAR_COLOR_ANIMATION)
 public class TabbedNavigationBarColorControllerUnitTest {
     public @Rule MockitoRule mockitoRule = MockitoJUnit.rule();
@@ -286,7 +286,6 @@ public class TabbedNavigationBarColorControllerUnitTest {
         ChromeFeatureList.NAV_BAR_COLOR_ANIMATION,
         ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE
     })
-    @DisableFeatures({ChromeFeatureList.EDGE_TO_EDGE_BOTTOM_CHIN})
     @Config(sdk = 30) // Min version needed for e2e everywhere
     public void testNavBarColorAnimationsEdgeToEdgeEverywhere() {
         when(mTab.getBackgroundColor()).thenReturn(Color.BLUE);
@@ -312,7 +311,6 @@ public class TabbedNavigationBarColorControllerUnitTest {
     @Test
     @EnableFeatures({
         ChromeFeatureList.NAV_BAR_COLOR_ANIMATION,
-        ChromeFeatureList.EDGE_TO_EDGE_BOTTOM_CHIN
     })
     @DisableFeatures({ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE})
     public void testNavBarColorAnimationsEdgeToEdgeBottomChin() {
@@ -339,7 +337,6 @@ public class TabbedNavigationBarColorControllerUnitTest {
 
     // Disable the dedicated feature flag.
     @Test
-    @EnableFeatures({ChromeFeatureList.EDGE_TO_EDGE_BOTTOM_CHIN})
     @DisableFeatures({ChromeFeatureList.NAV_BAR_COLOR_ANIMATION})
     @Config(sdk = 30) // Min version needed for e2e everywhere
     public void testNavBarColorAnimationsDisabled() {
@@ -393,7 +390,6 @@ public class TabbedNavigationBarColorControllerUnitTest {
     @Test
     @EnableFeatures({
         ChromeFeatureList.NAV_BAR_COLOR_ANIMATION,
-        ChromeFeatureList.EDGE_TO_EDGE_BOTTOM_CHIN
     })
     @DisableFeatures({ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE})
     public void testHideNavBarDuringOmniboxSwipe() {
@@ -444,9 +440,52 @@ public class TabbedNavigationBarColorControllerUnitTest {
         verify(mEdgeToEdgeSystemBarColorHelper).setNavigationBarColor(eq(Color.LTGRAY));
     }
 
+    @Test
+    public void testLayoutStateObserver_onStartedShowing_swappedOrder() {
+        when(mTab.getBackgroundColor()).thenReturn(Color.LTGRAY);
+        when(mLayoutManager.getActiveLayoutType()).thenReturn(LayoutType.BROWSING);
+        mNavColorController.updateActiveTabForTesting();
+        runColorUpdateAnimation();
+
+        mOverviewColorSupplier.set(Color.BLUE);
+
+        ArgumentCaptor<LayoutStateObserver> captor =
+                ArgumentCaptor.forClass(LayoutStateObserver.class);
+        verify(mLayoutManager).addObserver(captor.capture());
+        LayoutStateObserver observer = captor.getValue();
+
+        Mockito.clearInvocations(mEdgeToEdgeSystemBarColorHelper);
+
+        observer.onStartedShowing(LayoutType.HUB);
+
+        verify(mEdgeToEdgeSystemBarColorHelper).setNavigationBarColor(eq(Color.BLUE));
+    }
+
+    @Test
+    public void testLayoutStateObserver_onStartedHiding_swappedOrder() {
+        when(mTab.getBackgroundColor()).thenReturn(Color.LTGRAY);
+        when(mLayoutManager.getActiveLayoutType()).thenReturn(LayoutType.BROWSING);
+        mNavColorController.updateActiveTabForTesting();
+
+        mNavColorController.enableOverviewMode();
+        mOverviewColorSupplier.set(Color.BLUE);
+        runColorUpdateAnimation();
+
+        ArgumentCaptor<LayoutStateObserver> captor =
+                ArgumentCaptor.forClass(LayoutStateObserver.class);
+        verify(mLayoutManager).addObserver(captor.capture());
+        LayoutStateObserver observer = captor.getValue();
+
+        Mockito.clearInvocations(mEdgeToEdgeSystemBarColorHelper);
+
+        observer.onStartedHiding(LayoutType.HUB);
+
+        verify(mEdgeToEdgeSystemBarColorHelper).setNavigationBarColor(eq(Color.LTGRAY));
+    }
+
     private void runColorUpdateAnimation() {
         // Run the color  transition animation so color is applied to the window.
-        ShadowLooper.idleMainLooper();
+        RobolectricUtil.runAllBackgroundAndUi();
     }
 
     private void verifyColorAnimationSteps(List<Integer> capturedColors) {

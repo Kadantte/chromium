@@ -4,6 +4,7 @@
 
 #include "components/translate/content/renderer/translate_agent.h"
 
+#include <memory>
 #include <tuple>
 #include <utility>
 
@@ -12,7 +13,6 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
-#include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/time/time.h"
@@ -29,6 +29,8 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
+#include "third_party/blink/public/platform/web_url_response.h"
+#include "third_party/blink/public/web/web_document_loader.h"
 #include "third_party/blink/public/web/web_local_frame.h"
 
 using testing::_;
@@ -179,7 +181,7 @@ class TestTranslateAgent : public translate::TranslateAgent {
 
 class TranslateAgentBrowserTest : public ChromeRenderViewTest {
  public:
-  TranslateAgentBrowserTest() : translate_agent_(nullptr) {}
+  TranslateAgentBrowserTest() = default;
 
   TranslateAgentBrowserTest(const TranslateAgentBrowserTest&) = delete;
   TranslateAgentBrowserTest& operator=(const TranslateAgentBrowserTest&) =
@@ -188,7 +190,8 @@ class TranslateAgentBrowserTest : public ChromeRenderViewTest {
  protected:
   void SetUp() override {
     ChromeRenderViewTest::SetUp();
-    translate_agent_ = new TestTranslateAgent(GetMainRenderFrame());
+    translate_agent_ =
+        std::make_unique<TestTranslateAgent>(GetMainRenderFrame());
 
     GetMainRenderFrame()->GetBrowserInterfaceBroker().SetBinderForTesting(
         translate::mojom::ContentTranslateDriver::Name_,
@@ -203,11 +206,11 @@ class TranslateAgentBrowserTest : public ChromeRenderViewTest {
     GetMainRenderFrame()->GetBrowserInterfaceBroker().SetBinderForTesting(
         translate::mojom::ContentTranslateDriver::Name_, {});
 
-    delete translate_agent_;
+    translate_agent_.reset();
     ChromeRenderViewTest::TearDown();
   }
 
-  raw_ptr<TestTranslateAgent, DanglingUntriaged> translate_agent_;
+  std::unique_ptr<TestTranslateAgent> translate_agent_;
   FakeContentTranslateDriver fake_translate_driver_;
 };
 
@@ -570,22 +573,74 @@ TEST_F(TranslateAgentBrowserTest, UnsupportedTranslateSchemes) {
       UpdateGURLScheme(url, content::kChromeUIScheme).c_str());
 
   base::RunLoop().RunUntilIdle();
-  ASSERT_FALSE(fake_translate_driver_.called_new_page_);
+  ASSERT_TRUE(fake_translate_driver_.called_new_page_);
   EXPECT_FALSE(fake_translate_driver_.page_level_translation_criteria_met_);
+  EXPECT_TRUE(fake_translate_driver_.details_->adopted_language.empty());
+  fake_translate_driver_.ResetNewPageValues();
 
   LoadHTMLWithUrlOverride(
       "<html><body>A random page with random content.</body></html>",
       url::kAboutBlankURL);
 
   base::RunLoop().RunUntilIdle();
-  ASSERT_FALSE(fake_translate_driver_.called_new_page_);
+  ASSERT_TRUE(fake_translate_driver_.called_new_page_);
   EXPECT_FALSE(fake_translate_driver_.page_level_translation_criteria_met_);
+  EXPECT_TRUE(fake_translate_driver_.details_->adopted_language.empty());
+  fake_translate_driver_.ResetNewPageValues();
 
   LoadHTMLWithUrlOverride(
       "<html><body>A random page with random content.</body></html>",
       UpdateGURLScheme(url, content::kChromeDevToolsScheme).c_str());
 
   base::RunLoop().RunUntilIdle();
-  ASSERT_FALSE(fake_translate_driver_.called_new_page_);
+  ASSERT_TRUE(fake_translate_driver_.called_new_page_);
   EXPECT_FALSE(fake_translate_driver_.page_level_translation_criteria_met_);
+  EXPECT_TRUE(fake_translate_driver_.details_->adopted_language.empty());
 }
+
+#if BUILDFLAG(ENABLE_PDF)
+TEST_F(TranslateAgentBrowserTest, PdfPageCaptured) {
+  GURL url("https://example.com");
+  translate_agent_->PdfPageCaptured(u"A random page with random content.", "fr",
+                                    url);
+  base::RunLoop().RunUntilIdle();
+
+  ASSERT_TRUE(fake_translate_driver_.called_new_page_);
+  EXPECT_TRUE(fake_translate_driver_.page_level_translation_criteria_met_);
+  EXPECT_EQ("fr", fake_translate_driver_.details_->content_language);
+  EXPECT_EQ("fr", fake_translate_driver_.details_->html_root_language);
+  EXPECT_FALSE(fake_translate_driver_.details_->has_notranslate);
+}
+
+TEST_F(TranslateAgentBrowserTest, PdfUnsupportedTranslateSchemes) {
+  GURL url("chrome://foo.com");
+  translate_agent_->PdfPageCaptured(u"pdf content", "en", url);
+  base::RunLoop().RunUntilIdle();
+
+  ASSERT_FALSE(fake_translate_driver_.called_new_page_);
+}
+
+TEST_F(TranslateAgentBrowserTest, PageCapturedPdfIgnored) {
+  LoadHTML("<html><body>A random page with random content.</body></html>");
+  base::RunLoop().RunUntilIdle();
+
+  fake_translate_driver_.ResetNewPageValues();
+
+  // Manually override the MIME type to application/pdf.
+  auto* main_frame = GetMainFrame();
+  auto* doc_loader = main_frame->GetDocumentLoader();
+  ASSERT_TRUE(doc_loader);
+  const_cast<blink::WebURLResponse&>(doc_loader->GetWebResponse())
+      .SetMimeType(blink::WebString::FromUtf8("application/pdf"));
+
+  // Call PageCaptured directly.
+  scoped_refptr<const base::RefCountedString16> contents =
+      base::MakeRefCounted<const base::RefCountedString16>(
+          u"A random page with random content.");
+  translate_agent_->PageCaptured(contents);
+  base::RunLoop().RunUntilIdle();
+
+  // PageCaptured should return early and not register page.
+  EXPECT_FALSE(fake_translate_driver_.called_new_page_);
+}
+#endif

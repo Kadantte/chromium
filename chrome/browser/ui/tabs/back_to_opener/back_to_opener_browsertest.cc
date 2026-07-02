@@ -56,11 +56,16 @@ IN_PROC_BROWSER_TEST_F(BackToOpenerBrowserTest, BasicBackToOpener) {
   // Wait for opener page to load
   EXPECT_TRUE(content::WaitForLoadStop(opener_contents));
 
+  // Create HistogramTester before the link click so it captures the Eligible
+  // histogram emitted during opener relationship establishment.
+  base::HistogramTester histogram_tester;
+
   // Wait for new tab to open
   ui_test_utils::TabAddedWaiter tab_waiter(browser());
 
   // Click the link to open in new tab
-  content::SimulateMouseClickOrTapElementWithId(opener_contents, "link");
+  ASSERT_TRUE(content::ExecJs(opener_contents,
+                              "document.getElementById('link').click();"));
 
   content::WebContents* dest_contents = tab_waiter.Wait();
   ASSERT_NE(dest_contents, nullptr);
@@ -78,17 +83,18 @@ IN_PROC_BROWSER_TEST_F(BackToOpenerBrowserTest, BasicBackToOpener) {
   EXPECT_TRUE(controller->HasValidOpener());
   EXPECT_TRUE(controller->CanGoBackToOpener());
 
+  // Verify the Eligible histogram was recorded.
+  histogram_tester.ExpectUniqueSample("Navigation.BackToOpener.Eligible", true,
+                                      1);
+
   // Verify back button is enabled in UI
   EXPECT_TRUE(browser()->command_controller()->IsCommandEnabled(IDC_BACK));
-
-  // Verify the histogram for destination tab close duration
-  base::HistogramTester histogram_tester;
 
   content::WebContentsDestroyedWatcher close_watcher(dest_contents);
   chrome::ExecuteCommand(browser(), IDC_BACK);
   close_watcher.Wait();
 
-  // Verify the histograms were recorded
+  // Verify all histograms were recorded
   histogram_tester.ExpectTotalCount("Navigation.BackToOpener.Clicked", 1);
   histogram_tester.ExpectTotalCount(
       "Navigation.BackToOpener.DestinationTabCloseDuration", 1);
@@ -114,7 +120,8 @@ IN_PROC_BROWSER_TEST_F(BackToOpenerBrowserTest,
   // Wait for new tab to open
   ui_test_utils::TabAddedWaiter tab_waiter(browser());
 
-  content::SimulateMouseClickOrTapElementWithId(opener_contents, "link");
+  ASSERT_TRUE(content::ExecJs(opener_contents,
+                              "document.getElementById('link').click();"));
 
   content::WebContents* dest_contents = tab_waiter.Wait();
   ASSERT_NE(dest_contents, opener_contents);
@@ -154,7 +161,8 @@ IN_PROC_BROWSER_TEST_F(BackToOpenerBrowserTest,
   // Wait for new tab to open
   ui_test_utils::TabAddedWaiter tab_waiter(browser());
 
-  content::SimulateMouseClickOrTapElementWithId(opener_contents, "link");
+  ASSERT_TRUE(content::ExecJs(opener_contents,
+                              "document.getElementById('link').click();"));
 
   content::WebContents* dest_contents = tab_waiter.Wait();
   ASSERT_NE(dest_contents, opener_contents);
@@ -203,7 +211,8 @@ IN_PROC_BROWSER_TEST_F(BackToOpenerBrowserTest,
   // Wait for new tab to open
   ui_test_utils::TabAddedWaiter tab_waiter(browser());
 
-  content::SimulateMouseClickOrTapElementWithId(opener_contents, "link");
+  ASSERT_TRUE(content::ExecJs(opener_contents,
+                              "document.getElementById('link').click();"));
 
   content::WebContents* dest_contents = tab_waiter.Wait();
   ASSERT_NE(dest_contents, opener_contents);
@@ -243,7 +252,8 @@ IN_PROC_BROWSER_TEST_F(BackToOpenerBrowserTest, PinnedTabDisablesBackButton) {
   // Wait for new tab to open
   ui_test_utils::TabAddedWaiter tab_waiter(browser());
 
-  content::SimulateMouseClickOrTapElementWithId(opener_contents, "link");
+  ASSERT_TRUE(content::ExecJs(opener_contents,
+                              "document.getElementById('link').click();"));
 
   content::WebContents* dest_contents = tab_waiter.Wait();
   ASSERT_NE(dest_contents, opener_contents);
@@ -290,7 +300,8 @@ IN_PROC_BROWSER_TEST_F(BackToOpenerBrowserTest, OpenerMovedToAnotherWindow) {
   // Wait for new tab to open
   ui_test_utils::TabAddedWaiter tab_waiter(browser());
 
-  content::SimulateMouseClickOrTapElementWithId(opener_contents, "link");
+  ASSERT_TRUE(content::ExecJs(opener_contents,
+                              "document.getElementById('link').click();"));
 
   content::WebContents* dest_contents = tab_waiter.Wait();
   ASSERT_NE(dest_contents, opener_contents);
@@ -332,7 +343,7 @@ IN_PROC_BROWSER_TEST_F(BackToOpenerBrowserTest, OpenerMovedToAnotherWindow) {
 IN_PROC_BROWSER_TEST_F(BackToOpenerBrowserTest,
                        TabOpenedWithoutOpenerNoRelationship) {
   // Open a new tab directly (not from a link click)
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   content::WebContents* new_tab_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
 
@@ -366,7 +377,8 @@ IN_PROC_BROWSER_TEST_F(BackToOpenerBrowserTest, BackToOpenerMenuAppears) {
   ui_test_utils::TabAddedWaiter tab_waiter(browser());
 
   // Click the link to open in new tab
-  content::SimulateMouseClickOrTapElementWithId(opener_contents, "link");
+  ASSERT_TRUE(content::ExecJs(opener_contents,
+                              "document.getElementById('link').click();"));
   content::WebContents* dest_contents = tab_waiter.Wait();
   ASSERT_NE(dest_contents, opener_contents);
   EXPECT_TRUE(content::WaitForLoadStop(dest_contents));
@@ -443,7 +455,8 @@ IN_PROC_BROWSER_TEST_F(BackToOpenerBrowserTest,
   ui_test_utils::TabAddedWaiter tab_waiter(browser());
 
   // Click the link to open in new tab
-  content::SimulateMouseClickOrTapElementWithId(opener_contents, "link");
+  ASSERT_TRUE(content::ExecJs(opener_contents,
+                              "document.getElementById('link').click();"));
 
   content::WebContents* dest_contents = tab_waiter.Wait();
   ASSERT_NE(dest_contents, nullptr);
@@ -546,7 +559,8 @@ IN_PROC_BROWSER_TEST_F(BackToOpenerBrowserTest,
   ui_test_utils::TabAddedWaiter tab_waiter(browser());
 
   // Click the link to open in new tab
-  content::SimulateMouseClickOrTapElementWithId(opener_contents, "link");
+  ASSERT_TRUE(content::ExecJs(opener_contents,
+                              "document.getElementById('link').click();"));
   content::WebContents* dest_contents = tab_waiter.Wait();
   ASSERT_NE(dest_contents, nullptr);
   ASSERT_NE(dest_contents, opener_contents);

@@ -12,7 +12,6 @@
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/grit/generated_resources.h"
@@ -150,7 +149,7 @@ void TailoredSecurityDesktopDialogManager::ShowEnabledDialogForBrowser(
 
   // `window` should always be non-null unless this is called before
   // CreateBrowserWindow().
-  DCHECK(browser->window());
+  DCHECK(browser->GetWindow());
 
   if (close_dialog_callback_) {
     std::move(close_dialog_callback_).Run();
@@ -159,7 +158,7 @@ void TailoredSecurityDesktopDialogManager::ShowEnabledDialogForBrowser(
   base::RecordAction(base::UserMetricsAction(
       safe_browsing::kTailoredSecurityEnabledDialogShown));
   constrained_window::ShowBrowserModal(std::move(dialog_model),
-                                       browser->window()->GetNativeWindow());
+                                       browser->GetWindow()->GetNativeWindow());
 }
 
 void TailoredSecurityDesktopDialogManager::ShowDisabledDialogForBrowser(
@@ -196,7 +195,7 @@ void TailoredSecurityDesktopDialogManager::ShowDisabledDialogForBrowser(
 
   // `window` should always be non-null unless this is called before
   // CreateBrowserWindow().
-  DCHECK(browser->window());
+  DCHECK(browser->GetWindow());
 
   if (close_dialog_callback_) {
     std::move(close_dialog_callback_).Run();
@@ -205,7 +204,7 @@ void TailoredSecurityDesktopDialogManager::ShowDisabledDialogForBrowser(
   base::RecordAction(base::UserMetricsAction(
       safe_browsing::kTailoredSecurityDisabledDialogShown));
   constrained_window::ShowBrowserModal(std::move(dialog_model),
-                                       browser->window()->GetNativeWindow());
+                                       browser->GetWindow()->GetNativeWindow());
 }
 
 }  // namespace safe_browsing

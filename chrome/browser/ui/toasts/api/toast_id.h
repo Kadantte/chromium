@@ -46,11 +46,27 @@ enum class ToastId {
   kEnhancedBundledSecuritySettings = 23,
   kSkillSaved = 24,
   kSkillDeleted = 25,
-  kSavedAutofillAiEntityToWallet = 26,
+  kAutofillAiFetchFromWalletErrorMessage = 26,
   kTranslate = 27,
-  kAutofillAiWalletErrorMessage = 28,
+  kAutofillAiSaveToWalletErrorMessage = 28,
   kRecordReplay = 29,
-  kMaxValue = kRecordReplay,
+  kAutoSignIn = 30,
+  kMultistepFilterSuggestion = 31,        // Deprecated: Feature removed.
+  kMultistepFilterSuggestionRecent = 32,  // Deprecated: Feature removed.
+  kSkillSavedWithoutInvokeButton = 33,
+  kSendTabToSelfTabOpened = 34,
+  kSendTabToSelfTabsOpenedInBackground = 35,
+  kSendTabToSelfSuccess = 36,
+  kReportUnsafeSiteConfirmation = 37,
+  kSendTabToSelfFailure = 38,
+  kSendTabToSelfSuccessThrottled = 39,
+  kDefaultBrowserUpdateSuccess = 40,
+  kSendTabToSelfNoInternetConnection = 41,
+  kIndigoInvokeError = 42,
+  kTabStripSwitchDelayedHorizontal = 43,
+  kTabStripSwitchDelayedVertical = 44,
+  kAutofillAiPreFetchErrorMessage = 45,
+  kMaxValue = kAutofillAiPreFetchErrorMessage,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/toasts/enums.xml:ToastId)
 

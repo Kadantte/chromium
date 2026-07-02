@@ -66,6 +66,7 @@ bool IsSupportedAccessPoint(signin_metrics::AccessPoint access_point) {
     case signin_metrics::AccessPoint::kRecentTabs:
     case signin_metrics::AccessPoint::kNtpFeedTopPromo:
     case signin_metrics::AccessPoint::kReadingList:
+    case signin_metrics::AccessPoint::kSettingsAutofillAndPasswords:
       return true;
     case signin_metrics::AccessPoint::kSettings:
     case signin_metrics::AccessPoint::kSettingsYourSavedInfo:
@@ -80,7 +81,6 @@ bool IsSupportedAccessPoint(signin_metrics::AccessPoint access_point) {
     case signin_metrics::AccessPoint::kAvatarBubbleSignIn:
     case signin_metrics::AccessPoint::kUserManager:
     case signin_metrics::AccessPoint::kFullscreenSigninPromo:
-    case signin_metrics::AccessPoint::kUnknown:
     case signin_metrics::AccessPoint::kPasswordBubble:
     case signin_metrics::AccessPoint::kAutofillDropdown:
     case signin_metrics::AccessPoint::kResigninInfobar:
@@ -103,7 +103,6 @@ bool IsSupportedAccessPoint(signin_metrics::AccessPoint access_point) {
     case signin_metrics::AccessPoint::kSaveToPhotosIos:
     case signin_metrics::AccessPoint::kChromeSigninInterceptBubble:
     case signin_metrics::AccessPoint::kRestorePrimaryAccountOnProfileLoad:
-    case signin_metrics::AccessPoint::kTabOrganization:
     case signin_metrics::AccessPoint::kTipsNotification:
     case signin_metrics::AccessPoint::kNotificationsOptInScreenContentToggle:
     case signin_metrics::AccessPoint::kSigninChoiceRemembered:
@@ -140,6 +139,18 @@ bool IsSupportedAccessPoint(signin_metrics::AccessPoint access_point) {
     case signin_metrics::AccessPoint::kCredentialExchangeImport:
     case signin_metrics::AccessPoint::kSetSyncConsentFromSyncInternals:
     case signin_metrics::AccessPoint::kIosChromeWebView:
+    case signin_metrics::AccessPoint::kAshUserSessionManager:
+    case signin_metrics::AccessPoint::kAshChromeSessionManager:
+    case signin_metrics::AccessPoint::kAvatarPillExpandPromo:
+    case signin_metrics::AccessPoint::kSearchAIModeBubble:
+    case signin_metrics::AccessPoint::kIosPageActionMenu:
+    case signin_metrics::AccessPoint::kIosAppBar:
+    case signin_metrics::AccessPoint::kIosGeminiButtonToolbar:
+    case signin_metrics::AccessPoint::kIndigo:
+    case signin_metrics::AccessPoint::kDeepLinkDefault:
+    case signin_metrics::AccessPoint::kAgeMismatchSignout:
+    case signin_metrics::AccessPoint::kOverflowMenu:
+    case signin_metrics::AccessPoint::kLevelUp:
       return false;
   }
 }
@@ -165,6 +176,12 @@ void RecordImpressionsTilSigninButtonsHistogramForAccessPoint(
           "MobileSignInPromo.ReadingList.ImpressionsTilSigninButtons",
           displayed_count);
       break;
+    case signin_metrics::AccessPoint::kSettingsAutofillAndPasswords:
+      base::UmaHistogramCounts100(
+          "MobileSignInPromo.SettingsAutofillAndPasswords."
+          "ImpressionsTilSigninButtons",
+          displayed_count);
+      break;
     case signin_metrics::AccessPoint::kSettings:
     case signin_metrics::AccessPoint::kSettingsYourSavedInfo:
     case signin_metrics::AccessPoint::kRecentTabs:
@@ -176,7 +193,6 @@ void RecordImpressionsTilSigninButtonsHistogramForAccessPoint(
     case signin_metrics::AccessPoint::kAvatarBubbleSignIn:
     case signin_metrics::AccessPoint::kUserManager:
     case signin_metrics::AccessPoint::kFullscreenSigninPromo:
-    case signin_metrics::AccessPoint::kUnknown:
     case signin_metrics::AccessPoint::kPasswordBubble:
     case signin_metrics::AccessPoint::kAutofillDropdown:
     case signin_metrics::AccessPoint::kResigninInfobar:
@@ -202,7 +218,6 @@ void RecordImpressionsTilSigninButtonsHistogramForAccessPoint(
     case signin_metrics::AccessPoint::kSaveToPhotosIos:
     case signin_metrics::AccessPoint::kChromeSigninInterceptBubble:
     case signin_metrics::AccessPoint::kRestorePrimaryAccountOnProfileLoad:
-    case signin_metrics::AccessPoint::kTabOrganization:
     case signin_metrics::AccessPoint::kTipsNotification:
     case signin_metrics::AccessPoint::kNotificationsOptInScreenContentToggle:
     case signin_metrics::AccessPoint::kSigninChoiceRemembered:
@@ -239,6 +254,18 @@ void RecordImpressionsTilSigninButtonsHistogramForAccessPoint(
     case signin_metrics::AccessPoint::kCredentialExchangeImport:
     case signin_metrics::AccessPoint::kSetSyncConsentFromSyncInternals:
     case signin_metrics::AccessPoint::kIosChromeWebView:
+    case signin_metrics::AccessPoint::kAshChromeSessionManager:
+    case signin_metrics::AccessPoint::kAshUserSessionManager:
+    case signin_metrics::AccessPoint::kAvatarPillExpandPromo:
+    case signin_metrics::AccessPoint::kSearchAIModeBubble:
+    case signin_metrics::AccessPoint::kIosPageActionMenu:
+    case signin_metrics::AccessPoint::kIosAppBar:
+    case signin_metrics::AccessPoint::kIosGeminiButtonToolbar:
+    case signin_metrics::AccessPoint::kIndigo:
+    case signin_metrics::AccessPoint::kDeepLinkDefault:
+    case signin_metrics::AccessPoint::kAgeMismatchSignout:
+    case signin_metrics::AccessPoint::kOverflowMenu:
+    case signin_metrics::AccessPoint::kLevelUp:
       NOTREACHED() << "Unexpected value for access point "
                    << static_cast<int>(access_point);
   }
@@ -265,6 +292,12 @@ void RecordImpressionsTilXButtonHistogramForAccessPoint(
           "MobileSignInPromo.ReadingList.ImpressionsTilXButton",
           displayed_count);
       break;
+    case signin_metrics::AccessPoint::kSettingsAutofillAndPasswords:
+      base::UmaHistogramCounts100(
+          "MobileSignInPromo.SettingsAutofillAndPasswords."
+          "ImpressionsTilXButton",
+          displayed_count);
+      break;
     case signin_metrics::AccessPoint::kSettings:
     case signin_metrics::AccessPoint::kSettingsYourSavedInfo:
     case signin_metrics::AccessPoint::kRecentTabs:
@@ -276,7 +309,6 @@ void RecordImpressionsTilXButtonHistogramForAccessPoint(
     case signin_metrics::AccessPoint::kAvatarBubbleSignIn:
     case signin_metrics::AccessPoint::kUserManager:
     case signin_metrics::AccessPoint::kFullscreenSigninPromo:
-    case signin_metrics::AccessPoint::kUnknown:
     case signin_metrics::AccessPoint::kPasswordBubble:
     case signin_metrics::AccessPoint::kAutofillDropdown:
     case signin_metrics::AccessPoint::kResigninInfobar:
@@ -302,7 +334,6 @@ void RecordImpressionsTilXButtonHistogramForAccessPoint(
     case signin_metrics::AccessPoint::kSaveToPhotosIos:
     case signin_metrics::AccessPoint::kChromeSigninInterceptBubble:
     case signin_metrics::AccessPoint::kRestorePrimaryAccountOnProfileLoad:
-    case signin_metrics::AccessPoint::kTabOrganization:
     case signin_metrics::AccessPoint::kTipsNotification:
     case signin_metrics::AccessPoint::kNotificationsOptInScreenContentToggle:
     case signin_metrics::AccessPoint::kSigninChoiceRemembered:
@@ -339,6 +370,18 @@ void RecordImpressionsTilXButtonHistogramForAccessPoint(
     case signin_metrics::AccessPoint::kCredentialExchangeImport:
     case signin_metrics::AccessPoint::kSetSyncConsentFromSyncInternals:
     case signin_metrics::AccessPoint::kIosChromeWebView:
+    case signin_metrics::AccessPoint::kAshChromeSessionManager:
+    case signin_metrics::AccessPoint::kAshUserSessionManager:
+    case signin_metrics::AccessPoint::kAvatarPillExpandPromo:
+    case signin_metrics::AccessPoint::kSearchAIModeBubble:
+    case signin_metrics::AccessPoint::kIosPageActionMenu:
+    case signin_metrics::AccessPoint::kIosAppBar:
+    case signin_metrics::AccessPoint::kIosGeminiButtonToolbar:
+    case signin_metrics::AccessPoint::kIndigo:
+    case signin_metrics::AccessPoint::kDeepLinkDefault:
+    case signin_metrics::AccessPoint::kAgeMismatchSignout:
+    case signin_metrics::AccessPoint::kOverflowMenu:
+    case signin_metrics::AccessPoint::kLevelUp:
       NOTREACHED() << "Unexpected value for access point "
                    << static_cast<int>(access_point);
   }
@@ -354,6 +397,8 @@ const char* DisplayedCountPreferenceKey(
       return prefs::kIosNtpFeedTopSigninPromoDisplayedCount;
     case signin_metrics::AccessPoint::kReadingList:
       return prefs::kIosReadingListSigninPromoDisplayedCount;
+    case signin_metrics::AccessPoint::kSettingsAutofillAndPasswords:
+      return prefs::kIosSettingsAutofillAndPasswordsSigninPromoDisplayedCount;
     case signin_metrics::AccessPoint::kSettings:
     case signin_metrics::AccessPoint::kSettingsYourSavedInfo:
     case signin_metrics::AccessPoint::kRecentTabs:
@@ -365,7 +410,6 @@ const char* DisplayedCountPreferenceKey(
     case signin_metrics::AccessPoint::kAvatarBubbleSignIn:
     case signin_metrics::AccessPoint::kUserManager:
     case signin_metrics::AccessPoint::kFullscreenSigninPromo:
-    case signin_metrics::AccessPoint::kUnknown:
     case signin_metrics::AccessPoint::kPasswordBubble:
     case signin_metrics::AccessPoint::kAutofillDropdown:
     case signin_metrics::AccessPoint::kResigninInfobar:
@@ -391,7 +435,6 @@ const char* DisplayedCountPreferenceKey(
     case signin_metrics::AccessPoint::kSaveToPhotosIos:
     case signin_metrics::AccessPoint::kChromeSigninInterceptBubble:
     case signin_metrics::AccessPoint::kRestorePrimaryAccountOnProfileLoad:
-    case signin_metrics::AccessPoint::kTabOrganization:
     case signin_metrics::AccessPoint::kTipsNotification:
     case signin_metrics::AccessPoint::kNotificationsOptInScreenContentToggle:
     case signin_metrics::AccessPoint::kSigninChoiceRemembered:
@@ -428,6 +471,18 @@ const char* DisplayedCountPreferenceKey(
     case signin_metrics::AccessPoint::kCredentialExchangeImport:
     case signin_metrics::AccessPoint::kSetSyncConsentFromSyncInternals:
     case signin_metrics::AccessPoint::kIosChromeWebView:
+    case signin_metrics::AccessPoint::kAshChromeSessionManager:
+    case signin_metrics::AccessPoint::kAshUserSessionManager:
+    case signin_metrics::AccessPoint::kAvatarPillExpandPromo:
+    case signin_metrics::AccessPoint::kSearchAIModeBubble:
+    case signin_metrics::AccessPoint::kIosPageActionMenu:
+    case signin_metrics::AccessPoint::kIosAppBar:
+    case signin_metrics::AccessPoint::kIosGeminiButtonToolbar:
+    case signin_metrics::AccessPoint::kIndigo:
+    case signin_metrics::AccessPoint::kDeepLinkDefault:
+    case signin_metrics::AccessPoint::kAgeMismatchSignout:
+    case signin_metrics::AccessPoint::kOverflowMenu:
+    case signin_metrics::AccessPoint::kLevelUp:
       return nullptr;
   }
 }
@@ -442,6 +497,8 @@ const char* AlreadySeenSigninViewPreferenceKey(
       return prefs::kIosNtpFeedTopPromoAlreadySeen;
     case signin_metrics::AccessPoint::kReadingList:
       return prefs::kIosReadingListPromoAlreadySeen;
+    case signin_metrics::AccessPoint::kSettingsAutofillAndPasswords:
+      return prefs::kIosSettingsAutofillAndPasswordsPromoAlreadySeen;
     case signin_metrics::AccessPoint::kSettings:
     case signin_metrics::AccessPoint::kSettingsYourSavedInfo:
     case signin_metrics::AccessPoint::kRecentTabs:
@@ -453,7 +510,6 @@ const char* AlreadySeenSigninViewPreferenceKey(
     case signin_metrics::AccessPoint::kAvatarBubbleSignIn:
     case signin_metrics::AccessPoint::kUserManager:
     case signin_metrics::AccessPoint::kFullscreenSigninPromo:
-    case signin_metrics::AccessPoint::kUnknown:
     case signin_metrics::AccessPoint::kPasswordBubble:
     case signin_metrics::AccessPoint::kAutofillDropdown:
     case signin_metrics::AccessPoint::kResigninInfobar:
@@ -479,7 +535,6 @@ const char* AlreadySeenSigninViewPreferenceKey(
     case signin_metrics::AccessPoint::kSaveToPhotosIos:
     case signin_metrics::AccessPoint::kChromeSigninInterceptBubble:
     case signin_metrics::AccessPoint::kRestorePrimaryAccountOnProfileLoad:
-    case signin_metrics::AccessPoint::kTabOrganization:
     case signin_metrics::AccessPoint::kTipsNotification:
     case signin_metrics::AccessPoint::kNotificationsOptInScreenContentToggle:
     case signin_metrics::AccessPoint::kSigninChoiceRemembered:
@@ -516,6 +571,18 @@ const char* AlreadySeenSigninViewPreferenceKey(
     case signin_metrics::AccessPoint::kCredentialExchangeImport:
     case signin_metrics::AccessPoint::kSetSyncConsentFromSyncInternals:
     case signin_metrics::AccessPoint::kIosChromeWebView:
+    case signin_metrics::AccessPoint::kAshChromeSessionManager:
+    case signin_metrics::AccessPoint::kAshUserSessionManager:
+    case signin_metrics::AccessPoint::kAvatarPillExpandPromo:
+    case signin_metrics::AccessPoint::kSearchAIModeBubble:
+    case signin_metrics::AccessPoint::kIosPageActionMenu:
+    case signin_metrics::AccessPoint::kIosAppBar:
+    case signin_metrics::AccessPoint::kIosGeminiButtonToolbar:
+    case signin_metrics::AccessPoint::kIndigo:
+    case signin_metrics::AccessPoint::kDeepLinkDefault:
+    case signin_metrics::AccessPoint::kAgeMismatchSignout:
+    case signin_metrics::AccessPoint::kOverflowMenu:
+    case signin_metrics::AccessPoint::kLevelUp:
       return nullptr;
   }
 }
@@ -553,8 +620,8 @@ id<SystemIdentity> GetDisplayedIdentity(
   CHECK(identityManager);
   CHECK(accountManagerService);
 
-  if (authService->HasPrimaryIdentity(signin::ConsentLevel::kSignin)) {
-    return authService->GetPrimaryIdentity(signin::ConsentLevel::kSignin);
+  if (authService->HasPrimaryIdentity()) {
+    return authService->GetPrimaryIdentity();
   }
 
   return signin::GetDefaultIdentityOnDevice(identityManager,
@@ -602,9 +669,9 @@ id<SystemIdentity> GetDisplayedIdentity(
 @implementation SigninPromoViewMediator {
   // Authentication Service for the user's signed-in state.
   raw_ptr<AuthenticationService> _authService;
-  // AccountManager Service used to retrive identities.
+  // AccountManager Service used to retrieve identities.
   raw_ptr<ChromeAccountManagerService> _accountManagerService;
-  // IdentityManager used to retrive identities.
+  // IdentityManager used to retrieve identities.
   raw_ptr<signin::IdentityManager> _identityManager;
   std::unique_ptr<signin::IdentityManagerObserverBridge>
       _identityManagerObserver;
@@ -634,6 +701,11 @@ id<SystemIdentity> GetDisplayedIdentity(
                                 false);
   registry->RegisterIntegerPref(prefs::kIosReadingListSigninPromoDisplayedCount,
                                 0);
+  // Autofill and Passwords
+  registry->RegisterBooleanPref(
+      prefs::kIosSettingsAutofillAndPasswordsPromoAlreadySeen, false);
+  registry->RegisterIntegerPref(
+      prefs::kIosSettingsAutofillAndPasswordsSigninPromoDisplayedCount, 0);
 }
 
 + (BOOL)shouldDisplaySigninPromoViewWithAccessPoint:
@@ -709,7 +781,7 @@ id<SystemIdentity> GetDisplayedIdentity(
     CHECK(changeProfileContinuationProvider);
     CHECK(identityManager);
     CHECK(accountManagerService);
-    DCHECK(IsSupportedAccessPoint(accessPoint));
+    CHECK(IsSupportedAccessPoint(accessPoint), base::NotFatalUntil::M155);
     _identityManager = identityManager;
     _accountManagerService = accountManagerService;
     _changeProfileContinuationProvider = changeProfileContinuationProvider;
@@ -717,7 +789,7 @@ id<SystemIdentity> GetDisplayedIdentity(
     _prefService = prefService;
     _syncService = syncService;
     _accessPoint = accessPoint;
-    _signinPromoViewState = SigninPromoViewState::kNeverVisible;
+    _signinPromoViewState = SigninPromoViewState::kNotYetDisplayed;
     _signinPromoAction = SigninPromoAction::kInstantSignin;
     _dataTypeToWaitForInitialSync = syncer::DataType::UNSPECIFIED;
     _delegate = delegate;
@@ -742,7 +814,8 @@ id<SystemIdentity> GetDisplayedIdentity(
 }
 
 - (void)dealloc {
-  DCHECK_EQ(SigninPromoViewState::kInvalid, _signinPromoViewState)
+  CHECK_EQ(SigninPromoViewState::kDisconnected, _signinPromoViewState,
+           base::NotFatalUntil::M151)
       << base::SysNSStringToUTF8([self description]);
 }
 
@@ -750,7 +823,7 @@ id<SystemIdentity> GetDisplayedIdentity(
   BOOL hasCloseButton =
       AlreadySeenSigninViewPreferenceKey(self.accessPoint,
                                          self.signinPromoAction) != nullptr;
-  if (_authService->HasPrimaryIdentity(signin::ConsentLevel::kSignin)) {
+  if (_authService->HasPrimaryIdentity()) {
     if (!self.displayedIdentity) {
       // TODO(crbug.com/40777223): The default identity should already be known
       // by the mediator. We should not have no identity. This can be reproduced
@@ -758,7 +831,7 @@ id<SystemIdentity> GetDisplayedIdentity(
       // received yet. Let's update the promo identity.
       [self onAccountsOnDeviceChanged];
     }
-    DCHECK(self.displayedIdentity)
+    CHECK(self.displayedIdentity, base::NotFatalUntil::M151)
         << base::SysNSStringToUTF8([self description]);
     SigninPromoViewConfigurator* configurator =
         [[SigninPromoViewConfigurator alloc]
@@ -812,12 +885,13 @@ id<SystemIdentity> GetDisplayedIdentity(
 }
 
 - (void)signinPromoViewIsVisible {
-  DCHECK(!self.invalidOrClosed) << base::SysNSStringToUTF8([self description]);
+  CHECK(![self isClosedOrDisconnected], base::NotFatalUntil::M151)
+      << base::SysNSStringToUTF8([self description]);
   if (self.signinPromoViewVisible) {
     return;
   }
-  if (self.signinPromoViewState == SigninPromoViewState::kNeverVisible) {
-    self.signinPromoViewState = SigninPromoViewState::kUnused;
+  if (self.signinPromoViewState == SigninPromoViewState::kNotYetDisplayed) {
+    self.signinPromoViewState = SigninPromoViewState::kHadNoInteraction;
   }
   signin_metrics::LogSignInOffered(
       self.accessPoint,
@@ -878,7 +952,8 @@ id<SystemIdentity> GetDisplayedIdentity(
 }
 
 - (void)signinPromoViewIsHidden {
-  DCHECK(!self.invalidOrClosed) << base::SysNSStringToUTF8([self description]);
+  CHECK(![self isClosedOrDisconnected], base::NotFatalUntil::M151)
+      << base::SysNSStringToUTF8([self description]);
   self.signinPromoViewVisible = NO;
 }
 
@@ -897,7 +972,7 @@ id<SystemIdentity> GetDisplayedIdentity(
 
 // Finishes the sign-in process.
 - (void)signinDidCompleteWithResult:(SigninCoordinatorResult)result {
-  if (self.signinPromoViewState == SigninPromoViewState::kInvalid) {
+  if (self.signinPromoViewState == SigninPromoViewState::kDisconnected) {
     // The mediator owner can remove the view before the sign-in is done.
     return;
   }
@@ -906,7 +981,7 @@ id<SystemIdentity> GetDisplayedIdentity(
   // a post task issue.
   self.initialSyncInProgress = (result == SigninCoordinatorResultSuccess) &&
                                [self shouldWaitForInitialSync];
-  CHECK_EQ(SigninPromoViewState::kUsedAtLeastOnce, self.signinPromoViewState,
+  CHECK_EQ(SigninPromoViewState::kUserInteracted, self.signinPromoViewState,
            base::NotFatalUntil::M144)
       << base::SysNSStringToUTF8([self description]);
   CHECK_NE(self.signinInProgress, signin::Tribool::kFalse,
@@ -917,11 +992,6 @@ id<SystemIdentity> GetDisplayedIdentity(
 
 #pragma mark - Public properties
 
-- (BOOL)isInvalidClosedOrNeverVisible {
-  return self.invalidOrClosed ||
-         self.signinPromoViewState == SigninPromoViewState::kNeverVisible;
-}
-
 - (BOOL)showSpinner {
   // In the unknown case, the sign-in is very probably in progress.
   // It’s quite rare that the sign-in’s view disappear silently. So it seems
@@ -930,11 +1000,30 @@ id<SystemIdentity> GetDisplayedIdentity(
          self.initialSyncInProgress;
 }
 
+- (BOOL)isUsable {
+  switch (self.signinPromoViewState) {
+    case SigninPromoViewState::kClosed:
+    case SigninPromoViewState::kDisconnected:
+    case SigninPromoViewState::kNotYetDisplayed:
+      return NO;
+    case SigninPromoViewState::kHadNoInteraction:
+    case SigninPromoViewState::kUserInteracted:
+      return YES;
+  }
+}
+
 #pragma mark - Private properties
 
-- (BOOL)isInvalidOrClosed {
-  return self.signinPromoViewState == SigninPromoViewState::kClosed ||
-         self.signinPromoViewState == SigninPromoViewState::kInvalid;
+- (BOOL)isClosedOrDisconnected {
+  switch (self.signinPromoViewState) {
+    case SigninPromoViewState::kClosed:
+    case SigninPromoViewState::kDisconnected:
+      return YES;
+    case SigninPromoViewState::kNotYetDisplayed:
+    case SigninPromoViewState::kHadNoInteraction:
+    case SigninPromoViewState::kUserInteracted:
+      return NO;
+  }
 }
 
 // Sets the Chrome identity to display in the sign-in promo.
@@ -991,8 +1080,8 @@ id<SystemIdentity> GetDisplayedIdentity(
 
 #pragma mark - Private
 
-// Sends the update notification to the consummer if the signin-in is not in
-// progress. This is to avoid to update the sign-in promo view in the
+// Sends the update notification to the consumer if the sign-in is not in
+// progress. This is to avoid updating the sign-in promo view in the
 // background.
 - (void)sendConsumerNotificationWithIdentityChanged:(BOOL)identityChanged {
   if (self.showSpinner) {
@@ -1007,7 +1096,7 @@ id<SystemIdentity> GetDisplayedIdentity(
 // before the sign-in button is pressed, if the current access point supports
 // it.
 - (void)sendImpressionsTillSigninButtonsHistogram {
-  DCHECK(!self.invalidClosedOrNeverVisible)
+  CHECK([self isUsable], base::NotFatalUntil::M151)
       << base::SysNSStringToUTF8([self description]);
   const char* displayedCountPreferenceKey =
       DisplayedCountPreferenceKey(self.accessPoint);
@@ -1024,7 +1113,7 @@ id<SystemIdentity> GetDisplayedIdentity(
 - (void)showSigninWithIdentity:(id<SystemIdentity>)identity
                      operation:(AuthenticationOperation)operation
                    promoAction:(signin_metrics::PromoAction)promoAction {
-  self.signinPromoViewState = SigninPromoViewState::kUsedAtLeastOnce;
+  self.signinPromoViewState = SigninPromoViewState::kUserInteracted;
   ShowSigninCommand* command = [[ShowSigninCommand alloc]
                       initWithOperation:operation
                                identity:identity
@@ -1051,17 +1140,19 @@ id<SystemIdentity> GetDisplayedIdentity(
 }
 
 // Shows account settings.
+// The user must be signed-in and sign-in must be enabled.
 - (void)showAccountSettings {
-  DCHECK(self.accountSettingsPresenter);
-  self.signinPromoViewState = SigninPromoViewState::kUsedAtLeastOnce;
+  CHECK(self.accountSettingsPresenter, base::NotFatalUntil::M151);
+  self.signinPromoViewState = SigninPromoViewState::kUserInteracted;
   [self.accountSettingsPresenter showAccountSettings];
 }
 
 // Changes the promo view state, and records the metrics.
 - (void)signinPromoViewIsRemoved {
-  DCHECK_NE(SigninPromoViewState::kInvalid, self.signinPromoViewState)
+  CHECK_NE(SigninPromoViewState::kDisconnected, self.signinPromoViewState,
+           base::NotFatalUntil::M151)
       << base::SysNSStringToUTF8([self description]);
-  self.signinPromoViewState = SigninPromoViewState::kInvalid;
+  self.signinPromoViewState = SigninPromoViewState::kDisconnected;
   self.signinPromoViewVisible = NO;
 }
 
@@ -1093,14 +1184,15 @@ id<SystemIdentity> GetDisplayedIdentity(
 
 - (void)signinPromoViewDidTapSigninWithNewAccount:
     (SigninPromoView*)signinPromoView {
-  DCHECK(!self.displayedIdentity)
+  CHECK(!self.displayedIdentity, base::NotFatalUntil::M151)
       << base::SysNSStringToUTF8([self description]);
   // The promo on top of the feed is only logged as visible when most of it can
   // be seen, so it can be used without `self.signinPromoViewVisible`.
-  DCHECK(self.signinPromoViewVisible ||
-         self.accessPoint == signin_metrics::AccessPoint::kNtpFeedTopPromo)
+  CHECK(self.signinPromoViewVisible ||
+            self.accessPoint == signin_metrics::AccessPoint::kNtpFeedTopPromo,
+        base::NotFatalUntil::M151)
       << base::SysNSStringToUTF8([self description]);
-  DCHECK(!self.invalidClosedOrNeverVisible)
+  CHECK([self isUsable], base::NotFatalUntil::M151)
       << base::SysNSStringToUTF8([self description]);
   [self sendImpressionsTillSigninButtonsHistogram];
   // On iOS, the promo does not have a button to add and account when there is
@@ -1128,10 +1220,11 @@ id<SystemIdentity> GetDisplayedIdentity(
 
 - (void)signinPromoViewDidTapPrimaryButtonWithDefaultAccount:
     (SigninPromoView*)signinPromoView {
-  DCHECK(self.displayedIdentity) << base::SysNSStringToUTF8([self description]);
-  DCHECK(self.signinPromoViewVisible)
+  CHECK(self.displayedIdentity, base::NotFatalUntil::M151)
       << base::SysNSStringToUTF8([self description]);
-  DCHECK(!self.invalidClosedOrNeverVisible)
+  CHECK(self.signinPromoViewVisible, base::NotFatalUntil::M151)
+      << base::SysNSStringToUTF8([self description]);
+  CHECK([self isUsable], base::NotFatalUntil::M151)
       << base::SysNSStringToUTF8([self description]);
   switch (self.signinPromoAction) {
     case SigninPromoAction::kInstantSignin:
@@ -1165,10 +1258,11 @@ id<SystemIdentity> GetDisplayedIdentity(
 
 - (void)signinPromoViewDidTapSigninWithOtherAccount:
     (SigninPromoView*)signinPromoView {
-  DCHECK(self.displayedIdentity) << base::SysNSStringToUTF8([self description]);
-  DCHECK(self.signinPromoViewVisible)
+  CHECK(self.displayedIdentity, base::NotFatalUntil::M151)
       << base::SysNSStringToUTF8([self description]);
-  DCHECK(!self.invalidClosedOrNeverVisible)
+  CHECK(self.signinPromoViewVisible, base::NotFatalUntil::M151)
+      << base::SysNSStringToUTF8([self description]);
+  CHECK([self isUsable], base::NotFatalUntil::M151)
       << base::SysNSStringToUTF8([self description]);
   [self sendImpressionsTillSigninButtonsHistogram];
   signin_metrics::RecordSigninUserActionForAccessPoint(self.accessPoint);
@@ -1195,19 +1289,20 @@ id<SystemIdentity> GetDisplayedIdentity(
 }
 
 - (void)signinPromoViewCloseButtonWasTapped:(SigninPromoView*)view {
-  DCHECK(!self.invalidClosedOrNeverVisible)
+  CHECK([self isUsable], base::NotFatalUntil::M151)
       << base::SysNSStringToUTF8([self description]);
   // The promo on top of the feed is only logged as visible when most of it can
   // be seen, so it can be dismissed without `self.signinPromoViewVisible`.
-  DCHECK(self.signinPromoViewVisible ||
-         self.accessPoint == signin_metrics::AccessPoint::kNtpFeedTopPromo)
+  CHECK(self.signinPromoViewVisible ||
+            self.accessPoint == signin_metrics::AccessPoint::kNtpFeedTopPromo,
+        base::NotFatalUntil::M151)
       << base::SysNSStringToUTF8([self description]);
   base::RecordAction(base::UserMetricsAction("Signin_Promo_Close"));
   self.signinPromoViewState = SigninPromoViewState::kClosed;
   const char* alreadySeenSigninViewPreferenceKey =
       AlreadySeenSigninViewPreferenceKey(self.accessPoint,
                                          self.signinPromoAction);
-  DCHECK(alreadySeenSigninViewPreferenceKey)
+  CHECK(alreadySeenSigninViewPreferenceKey, base::NotFatalUntil::M151)
       << base::SysNSStringToUTF8([self description]);
   self.prefService->SetBoolean(alreadySeenSigninViewPreferenceKey, true);
 
@@ -1252,11 +1347,11 @@ id<SystemIdentity> GetDisplayedIdentity(
       stringWithFormat:
           @"<%@: %p, identity: %p, signinPromoViewState: %d, "
           @"signinInProgress: %d, initialSyncInProgress %d, accessPoint: %d, "
-          @"signinPromoViewVisible: %d, invalidOrClosed %d>",
+          @"signinPromoViewVisible: %d>",
           self.class.description, self, self.displayedIdentity,
           static_cast<int>(self.signinPromoViewState), self.signinInProgress,
           self.initialSyncInProgress, static_cast<int>(self.accessPoint),
-          self.signinPromoViewVisible, self.invalidOrClosed];
+          self.signinPromoViewVisible];
 }
 
 @end

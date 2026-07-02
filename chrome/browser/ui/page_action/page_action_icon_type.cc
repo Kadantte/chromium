@@ -12,44 +12,14 @@ namespace {
 const base::FeatureParam<bool>* GetPageActionsMigrationParam(
     PageActionIconType page_action) {
   switch (page_action) {
-    case PageActionIconType::kLensOverlay:
-      return &features::kPageActionsMigrationLensOverlay;
-    case PageActionIconType::kMemorySaver:
-      return &features::kPageActionsMigrationMemorySaver;
-    case PageActionIconType::kTranslate:
-      return &features::kPageActionsMigrationTranslate;
     case PageActionIconType::kIntentPicker:
       return &features::kPageActionsMigrationIntentPicker;
     case PageActionIconType::kZoom:
       return &features::kPageActionsMigrationZoom;
-    case PageActionIconType::kPaymentsOfferNotification:
-      return &features::kPageActionsMigrationOfferNotification;
-    case PageActionIconType::kFileSystemAccess:
-      return &features::kPageActionsMigrationFileSystemAccess;
-    case PageActionIconType::kPwaInstall:
-      return &features::kPageActionsMigrationPwaInstall;
-    case PageActionIconType::kPriceInsights:
-      return &features::kPageActionsMigrationPriceInsights;
-    case PageActionIconType::kDiscounts:
-      return &features::kPageActionsMigrationDiscounts;
-    case PageActionIconType::kManagePasswords:
-      return &features::kPageActionsMigrationManagePasswords;
     case PageActionIconType::kCookieControls:
       return &features::kPageActionsMigrationCookieControls;
-    case PageActionIconType::kAutofillAddress:
-      return &features::kPageActionsMigrationAutofillAddress;
-    case PageActionIconType::kFind:
-      return &features::kPageActionsMigrationFind;
-    case PageActionIconType::kCollaborationMessaging:
-      return &features::kPageActionsMigrationCollaborationMessaging;
-    case PageActionIconType::kPriceTracking:
-      return &features::kPageActionsMigrationPriceTracking;
     case PageActionIconType::kMandatoryReauth:
       return &features::kPageActionsMigrationAutofillMandatoryReauth;
-    case PageActionIconType::kClickToCall:
-      return &features::kPageActionsMigrationClickToCall;
-    case PageActionIconType::kSharingHub:
-      return &features::kPageActionsMigrationSharingHub;
     case PageActionIconType::kAiMode:
       return &features::kPageActionsMigrationAiMode;
     case PageActionIconType::kVirtualCardEnroll:
@@ -77,12 +47,36 @@ bool IsPageActionMigrated(PageActionIconType page_action) {
     return false;
   }
 
-  // Page actions on the new framework that don't have an implementation on the legacy path
-  // and don't have a feature param.
-  if (page_action == PageActionIconType::kContextualSidePanel ||
-      page_action == PageActionIconType::kJsOptimizations ||
-      page_action == PageActionIconType::kRecordReplay) {
-    return true;
+  // Page actions on the new framework that don't have an implementation on the
+  // legacy path and don't have a feature param.
+  switch (page_action) {
+    case PageActionIconType::kAnchoredContextualCue:
+    case PageActionIconType::kCollaborationMessaging:
+    case PageActionIconType::kGlic:
+    case PageActionIconType::kLensOverlay:
+    case PageActionIconType::kMemorySaver:
+    case PageActionIconType::kTranslate:
+    case PageActionIconType::kFind:
+    case PageActionIconType::kPwaInstall:
+    case PageActionIconType::kAutofillAddress:
+    case PageActionIconType::kPaymentsOfferNotification:
+    case PageActionIconType::kContextualSidePanel:
+    case PageActionIconType::kJsOptimizations:
+    case PageActionIconType::kIndigo:
+    case PageActionIconType::kMultistepFilter:
+    case PageActionIconType::kRecordReplay:
+    case PageActionIconType::kPriceInsights:
+    case PageActionIconType::kDiscounts:
+    case PageActionIconType::kFederation:
+    case PageActionIconType::kManagePasswords:
+    case PageActionIconType::kWebAuthnAmbientSignin:
+    case PageActionIconType::kFileSystemAccess:
+    case PageActionIconType::kAutofillPayment:
+    case PageActionIconType::kPaymentsChurnedUsers:
+    case PageActionIconType::kFakePageActionForDebug:
+      return true;
+    default:
+      break;
   }
 
   const auto* feature_param = GetPageActionsMigrationParam(page_action);

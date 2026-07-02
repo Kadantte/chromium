@@ -48,6 +48,8 @@
 
 namespace blink {
 
+namespace {
+
 struct EntityDescription {
   UChar entity;
   const std::string& reference;
@@ -55,7 +57,7 @@ struct EntityDescription {
 };
 
 template <typename CharType>
-static inline void AppendCharactersReplacingEntitiesInternal(
+inline void AppendCharactersReplacingEntitiesInternal(
     StringBuilder& result,
     const StringView& source,
     base::span<const CharType> text,
@@ -90,6 +92,41 @@ static inline void AppendCharactersReplacingEntitiesInternal(
   result.Append(text.subspan(position_after_last_entity));
 }
 
+// https://html.spec.whatwg.org/C/#attribute's-serialised-name
+const AtomicString& ResolveAttributePrefixForHtml(
+    const QualifiedName& attr_name) {
+  if (attr_name.NamespaceURI() == xmlns_names::kNamespaceURI) {
+    if (!attr_name.Prefix() && attr_name.LocalName() != g_xmlns_atom) {
+      return g_xmlns_atom;
+    }
+  } else if (attr_name.NamespaceURI() == xml_names::kNamespaceURI) {
+    return g_xml_atom;
+  } else if (attr_name.NamespaceURI() == xlink_names::kNamespaceURI) {
+    return g_xlink_atom;
+  }
+  return attr_name.Prefix();
+}
+
+const AtomicString& ResolveAttributePrefixForXml(
+    const QualifiedName& attr_name) {
+  if (attr_name.Prefix()) {
+    return attr_name.Prefix();
+  }
+  const AtomicString& attribute_namespace = attr_name.NamespaceURI();
+  if (attribute_namespace == xmlns_names::kNamespaceURI) {
+    if (attr_name.LocalName() != g_xmlns_atom) {
+      return g_xmlns_atom;
+    }
+  } else if (attribute_namespace == xml_names::kNamespaceURI) {
+    return g_xml_atom;
+  } else if (attribute_namespace == xlink_names::kNamespaceURI) {
+    return g_xlink_atom;
+  }
+  return g_null_atom;
+}
+
+}  // namespace
+
 void MarkupFormatter::AppendCharactersReplacingEntities(
     StringBuilder& result,
     const StringView& source,
@@ -120,27 +157,27 @@ void MarkupFormatter::AppendCharactersReplacingEntities(
   });
 }
 
-MarkupFormatter::MarkupFormatter(AbsoluteURLs resolve_urls_method,
+MarkupFormatter::MarkupFormatter(ResolveUrls resolve_urls_method,
                                  SerializationType serialization_type)
     : resolve_urls_method_(resolve_urls_method),
       serialization_type_(serialization_type) {}
 
-String MarkupFormatter::ResolveURLIfNeeded(const Element& element,
+String MarkupFormatter::ResolveUrlIfNeeded(const Element& element,
                                            const Attribute& attribute) const {
   String value = attribute.Value();
   switch (resolve_urls_method_) {
-    case kResolveAllURLs:
+    case ResolveUrls::kAll:
       if (element.IsURLAttribute(attribute))
         return element.GetDocument().CompleteURL(value).GetString();
       break;
 
-    case kResolveNonLocalURLs:
+    case ResolveUrls::kNonLocal:
       if (element.IsURLAttribute(attribute) &&
           !element.GetDocument().Url().IsLocalFile())
         return element.GetDocument().CompleteURL(value).GetString();
       break;
 
-    case kDoNotResolveURLs:
+    case ResolveUrls::kNone:
       break;
   }
   return value;
@@ -155,7 +192,7 @@ void MarkupFormatter::AppendStartMarkup(StringBuilder& result,
       AppendComment(result, To<Comment>(node).data());
       break;
     case Node::kDocumentNode:
-      AppendXMLDeclaration(result, To<Document>(node));
+      AppendXmlDeclaration(result, To<Document>(node));
       break;
     case Node::kDocumentFragmentNode:
       break;
@@ -171,10 +208,10 @@ void MarkupFormatter::AppendStartMarkup(StringBuilder& result,
       NOTREACHED();
     case Node::kCdataSectionNode: {
       auto& cdata = To<CDATASection>(node);
-      if (SerializeAsHTML()) {
+      if (SerializeAsHtml()) {
         AppendText(result, cdata);
       } else {
-        AppendCDATASection(result, cdata.data());
+        AppendCdataSection(result, cdata.data());
       }
       break;
     }
@@ -208,7 +245,7 @@ void MarkupFormatter::AppendEndMarkup(StringBuilder& result,
 void MarkupFormatter::AppendAttributeValue(StringBuilder& result,
                                            const String& attribute,
                                            bool document_is_html) {
-  EntityMask entity_mask = document_is_html ? kEntityMaskInHTMLAttributeValue
+  EntityMask entity_mask = document_is_html ? kEntityMaskInHtmlAttributeValue
                                             : kEntityMaskInAttributeValue;
   AppendCharactersReplacingEntities(result, attribute, entity_mask);
 }
@@ -243,7 +280,7 @@ void MarkupFormatter::AppendComment(StringBuilder& result,
   result.Append("-->");
 }
 
-void MarkupFormatter::AppendXMLDeclaration(StringBuilder& result,
+void MarkupFormatter::AppendXmlDeclaration(StringBuilder& result,
                                            const Document& document) {
   if (!document.HasXMLDeclaration())
     return;
@@ -328,44 +365,24 @@ void MarkupFormatter::AppendStartTagClose(StringBuilder& result,
   result.Append('>');
 }
 
-void MarkupFormatter::AppendAttributeAsHTML(StringBuilder& result,
+void MarkupFormatter::AppendAttributeAsHtml(StringBuilder& result,
                                             const Attribute& attribute,
                                             const String& value) {
-  // https://html.spec.whatwg.org/C/#attribute's-serialised-name
-  QualifiedName prefixed_name = attribute.GetName();
-  if (attribute.NamespaceURI() == xmlns_names::kNamespaceURI) {
-    if (!attribute.Prefix() && attribute.LocalName() != g_xmlns_atom)
-      prefixed_name.SetPrefix(g_xmlns_atom);
-  } else if (attribute.NamespaceURI() == xml_names::kNamespaceURI) {
-    prefixed_name.SetPrefix(g_xml_atom);
-  } else if (attribute.NamespaceURI() == xlink_names::kNamespaceURI) {
-    prefixed_name.SetPrefix(g_xlink_atom);
-  }
-  AppendAttribute(result, prefixed_name.Prefix(), prefixed_name.LocalName(),
-                  value, true);
+  const AtomicString& resolved_prefix =
+      ResolveAttributePrefixForHtml(attribute.GetName());
+  AppendAttribute(result, resolved_prefix, attribute.LocalName(), value, true);
 }
 
-void MarkupFormatter::AppendAttributeAsXMLWithoutNamespace(
+void MarkupFormatter::AppendAttributeAsXmlWithoutNamespace(
     StringBuilder& result,
     const Attribute& attribute,
     const String& value) {
-  const AtomicString& attribute_namespace = attribute.NamespaceURI();
-  AtomicString candidate_prefix = attribute.Prefix();
-  if (attribute_namespace == xmlns_names::kNamespaceURI) {
-    if (!attribute.Prefix() && attribute.LocalName() != g_xmlns_atom)
-      candidate_prefix = g_xmlns_atom;
-  } else if (attribute_namespace == xml_names::kNamespaceURI) {
-    if (!candidate_prefix)
-      candidate_prefix = g_xml_atom;
-  } else if (attribute_namespace == xlink_names::kNamespaceURI) {
-    if (!candidate_prefix)
-      candidate_prefix = g_xlink_atom;
-  }
-  AppendAttribute(result, candidate_prefix, attribute.LocalName(), value,
-                  false);
+  const AtomicString& resolved_prefix =
+      ResolveAttributePrefixForXml(attribute.GetName());
+  AppendAttribute(result, resolved_prefix, attribute.LocalName(), value, false);
 }
 
-void MarkupFormatter::AppendCDATASection(StringBuilder& result,
+void MarkupFormatter::AppendCdataSection(StringBuilder& result,
                                          const String& section) {
   // FIXME: CDATA content is not escaped, but XMLSerializer (and possibly other
   // callers) should raise an exception if it includes "]]>".
@@ -375,8 +392,9 @@ void MarkupFormatter::AppendCDATASection(StringBuilder& result,
 }
 
 EntityMask MarkupFormatter::EntityMaskForText(const Text& text) const {
-  if (!SerializeAsHTML())
-    return kEntityMaskInPCDATA;
+  if (!SerializeAsHtml()) {
+    return kEntityMaskInPcdata;
+  }
 
   // TODO(hajimehoshi): We need to switch EditingStrategy.
   const QualifiedName* parent_name = nullptr;
@@ -402,10 +420,10 @@ EntityMask MarkupFormatter::EntityMaskForText(const Text& text) const {
         *parent_name == html_names::kNoembedTag ||
         *parent_name == html_names::kNoframesTag ||
         is_noscript_tag_with_script_enabled) {
-      return kEntityMaskInCDATA;
+      return kEntityMaskInCdata;
     }
   }
-  return kEntityMaskInHTMLPCDATA;
+  return kEntityMaskInHtmlPcdata;
 }
 
 // Rules of self-closure
@@ -415,8 +433,9 @@ EntityMask MarkupFormatter::EntityMaskForText(const Text& text) const {
 // separate end tag.
 // 4. Other elements self-close.
 bool MarkupFormatter::ShouldSelfClose(const Element& element) const {
-  if (SerializeAsHTML())
+  if (SerializeAsHtml()) {
     return false;
+  }
   if (element.HasChildren())
     return false;
   if (element.IsHTMLElement() && !ElementCannotHaveEndTag(element))
@@ -424,8 +443,8 @@ bool MarkupFormatter::ShouldSelfClose(const Element& element) const {
   return true;
 }
 
-bool MarkupFormatter::SerializeAsHTML() const {
-  return serialization_type_ == SerializationType::kHTML;
+bool MarkupFormatter::SerializeAsHtml() const {
+  return serialization_type_ == SerializationType::kHtml;
 }
 
 }  // namespace blink

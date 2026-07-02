@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_pref_names.h"
 #include "ash/constants/web_app_id_constants.h"
 #include "ash/public/cpp/app_list/app_list_notifier.h"
 #include "ash/public/cpp/test/app_list_test_api.h"
@@ -11,6 +12,7 @@
 #include "ash/webui/help_app_ui/help_app_manager_factory.h"
 #include "ash/webui/help_app_ui/search/search.mojom.h"
 #include "ash/webui/help_app_ui/search/search_handler.h"
+#include "ash/webui/help_app_ui/url_constants.h"
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
@@ -23,10 +25,10 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/webapps/common/web_app_id.h"
@@ -128,7 +130,7 @@ IN_PROC_BROWSER_TEST_F(HelpAppSearchBrowserTest,
   ash::SystemWebAppManager::GetForTest(GetProfile())
       ->InstallSystemAppsForTesting();
   GetProfile()->GetPrefs()->SetInteger(
-      prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 3);
+      ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 3);
 
   ShowAppListAndWaitForHelpAppZeroStateResults();
 
@@ -146,7 +148,7 @@ IN_PROC_BROWSER_TEST_F(HelpAppSearchBrowserTest, ReleaseNoteChipRankedFirst) {
   ash::SystemWebAppManager::GetForTest(GetProfile())
       ->InstallSystemAppsForTesting();
   GetProfile()->GetPrefs()->SetInteger(
-      prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 3);
+      ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 3);
 
   local_continue_section_provider_->set_count(5);
   drive_continue_section_provider_->set_count(5);
@@ -166,7 +168,7 @@ IN_PROC_BROWSER_TEST_F(HelpAppSearchBrowserTest,
   ash::SystemWebAppManager::GetForTest(GetProfile())
       ->InstallSystemAppsForTesting();
   GetProfile()->GetPrefs()->SetInteger(
-      prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 3);
+      ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 3);
   ash::AppListTestApi app_list_test_api;
   app_list_test_api.SetContinueSectionPrivacyNoticeAccepted();
 
@@ -179,20 +181,20 @@ IN_PROC_BROWSER_TEST_F(HelpAppSearchBrowserTest,
       ash::AppListNotifier::Location::kContinue);
 
   const int times_left_to_show = GetProfile()->GetPrefs()->GetInteger(
-      prefs::kReleaseNotesSuggestionChipTimesLeftToShow);
+      ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow);
   EXPECT_EQ(times_left_to_show, 2);
 }
 
 // Test that the number of times the suggestion chip should show decreases when
 // the chip is shown in tablet mode.
-// https://crbug.com/1489431: test is flaky on bots.
+// https://crbug.com/40935045: test is flaky on bots.
 IN_PROC_BROWSER_TEST_F(
     HelpAppSearchBrowserTest,
     DISABLED_ReleaseNotesDecreasesTimesShownOnAppListOpenInTabletMode) {
   ash::SystemWebAppManager::GetForTest(GetProfile())
       ->InstallSystemAppsForTesting();
   GetProfile()->GetPrefs()->SetInteger(
-      prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 3);
+      ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 3);
   ash::AppListTestApi app_list_test_api;
   app_list_test_api.SetContinueSectionPrivacyNoticeAccepted();
 
@@ -204,7 +206,7 @@ IN_PROC_BROWSER_TEST_F(
       {ash::AppListSearchResultType::kZeroStateHelpApp});
   ash::ShellTestApi().SetTabletModeEnabledForTest(true);
   // Minimize the browser window to show home screen.
-  browser()->window()->Minimize();
+  browser()->GetWindow()->Minimize();
   ash::AppListTestApi().WaitForAppListShowAnimation(/*is_bubble_window=*/false);
   results_waiter.Wait();
 
@@ -212,7 +214,7 @@ IN_PROC_BROWSER_TEST_F(
       ash::AppListNotifier::Location::kContinue);
 
   const int times_left_to_show = GetProfile()->GetPrefs()->GetInteger(
-      prefs::kReleaseNotesSuggestionChipTimesLeftToShow);
+      ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow);
   EXPECT_EQ(times_left_to_show, 2);
 }
 
@@ -223,14 +225,14 @@ IN_PROC_BROWSER_TEST_F(HelpAppSearchBrowserTest,
   ash::SystemWebAppManager::GetForTest(GetProfile())
       ->InstallSystemAppsForTesting();
   GetProfile()->GetPrefs()->SetInteger(
-      prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 3);
+      ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 3);
 
   ShowAppListAndWaitForHelpAppZeroStateResults();
 
   ChromeSearchResult* result = FindResult("help-app://updates");
 
   // Open the search result. This should open the help app at the expected url.
-  size_t num_browsers = chrome::GetTotalBrowserCount();
+  size_t num_browsers = GlobalBrowserCollection::GetInstance()->GetSize();
   const GURL expected_url("chrome://help-app/updates");
   content::TestNavigationObserver navigation_observer(expected_url);
   navigation_observer.StartWatchingNewWebContents();
@@ -243,15 +245,17 @@ IN_PROC_BROWSER_TEST_F(HelpAppSearchBrowserTest,
 
   navigation_observer.Wait();
 
-  EXPECT_EQ(num_browsers + 1, chrome::GetTotalBrowserCount());
-  EXPECT_EQ(expected_url, chrome::FindLastActive()
-                              ->tab_strip_model()
+  EXPECT_EQ(num_browsers + 1,
+            GlobalBrowserCollection::GetInstance()->GetSize());
+  EXPECT_EQ(expected_url, GlobalBrowserCollection::GetInstance()
+                              ->GetLastActiveBrowser()
+                              ->GetTabStripModel()
                               ->GetActiveWebContents()
                               ->GetVisibleURL());
 
   // Clicking on the chip should stop showing it in the future.
   const int times_left_to_show = GetProfile()->GetPrefs()->GetInteger(
-      prefs::kReleaseNotesSuggestionChipTimesLeftToShow);
+      ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow);
   EXPECT_EQ(times_left_to_show, 0);
 }
 
@@ -305,7 +309,7 @@ IN_PROC_BROWSER_TEST_F(HelpAppSearchBrowserTest,
 
   // Open the search result. This should open the help app at the expected url
   // and log a metric indicating what content was launched.
-  const size_t num_browsers = chrome::GetTotalBrowserCount();
+  const size_t num_browsers = GlobalBrowserCollection::GetInstance()->GetSize();
   const GURL expected_url("chrome://help-app/help/id/test");
   content::TestNavigationObserver navigation_observer(expected_url);
   navigation_observer.StartWatchingNewWebContents();
@@ -318,9 +322,11 @@ IN_PROC_BROWSER_TEST_F(HelpAppSearchBrowserTest,
       /*launch_as_default=*/false);
   navigation_observer.Wait();
 
-  EXPECT_EQ(num_browsers + 1, chrome::GetTotalBrowserCount());
-  EXPECT_EQ(expected_url, chrome::FindLastActive()
-                              ->tab_strip_model()
+  EXPECT_EQ(num_browsers + 1,
+            GlobalBrowserCollection::GetInstance()->GetSize());
+  EXPECT_EQ(expected_url, GlobalBrowserCollection::GetInstance()
+                              ->GetLastActiveBrowser()
+                              ->GetTabStripModel()
                               ->GetActiveWebContents()
                               ->GetVisibleURL());
   // -20424143 is the hash of the content id. This hash value can be found in
@@ -336,7 +342,7 @@ IN_PROC_BROWSER_TEST_F(HelpAppSwaSearchBrowserTest, AppListSearchHasApp) {
   ash::SystemWebAppManager::GetForTest(GetProfile())
       ->InstallSystemAppsForTesting();
   GetProfile()->GetPrefs()->SetInteger(
-      prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 3);
+      ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 3);
 
   ShowAppListAndWaitForZeroStateResults(
       {ash::AppListSearchResultType::kZeroStateHelpApp,
@@ -359,10 +365,19 @@ IN_PROC_BROWSER_TEST_F(HelpAppSwaSearchBrowserTest, Launch) {
 
   auto* result = FindResult(ash::kHelpAppId);
   ASSERT_TRUE(result);
-  result->Open(ui::EF_NONE);
 
-  // TODO(crbug.com/41435725): Remove or document why this is needed.
-  base::RunLoop().RunUntilIdle();
+  const GURL expected_url(ash::kChromeUIHelpAppURL);
+  content::TestNavigationObserver navigation_observer(expected_url);
+  navigation_observer.StartWatchingNewWebContents();
+  result->Open(ui::EF_NONE);
+  navigation_observer.Wait();
+
+  Browser* help_app_browser =
+      ash::FindSystemWebAppBrowser(profile, ash::SystemWebAppType::HELP);
+  ASSERT_TRUE(help_app_browser);
+  EXPECT_EQ(expected_url, help_app_browser->tab_strip_model()
+                              ->GetActiveWebContents()
+                              ->GetVisibleURL());
 }
 
 }  // namespace app_list::test

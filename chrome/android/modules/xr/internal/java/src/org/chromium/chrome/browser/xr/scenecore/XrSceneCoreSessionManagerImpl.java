@@ -7,14 +7,17 @@ package org.chromium.chrome.browser.xr.scenecore;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.os.Build;
+import android.view.View;
 
 import androidx.annotation.MainThread;
 import androidx.annotation.RequiresApi;
+import androidx.annotation.VisibleForTesting;
 import androidx.xr.runtime.Session;
 import androidx.xr.runtime.SessionCreateResult;
 import androidx.xr.runtime.SessionCreateSuccess;
 import androidx.xr.runtime.math.FloatSize3d;
 import androidx.xr.scenecore.ActivitySpace;
+import androidx.xr.scenecore.BaseEntity;
 import androidx.xr.scenecore.Scene;
 import androidx.xr.scenecore.SessionExt;
 
@@ -27,7 +30,11 @@ import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.ui.xr.scenecore.XrEntityHolder;
+import org.chromium.ui.xr.scenecore.XrPanelEntityHolder;
 import org.chromium.ui.xr.scenecore.XrSceneCoreSessionManager;
+import org.chromium.ui.xr.scenecore.XrSurfaceEntityHolder;
+import org.chromium.ui.xr.scenecore.XrSurfaceEntityShape;
 
 import java.util.function.Consumer;
 
@@ -41,6 +48,10 @@ import java.util.function.Consumer;
 public class XrSceneCoreSessionManagerImpl implements XrSceneCoreSessionManager {
     private static final String TAG = "XrSceneCore";
     private static final String MODULE_NAME = "xr";
+    // List of native libraries to load for the XR module.
+    private static final String[] NATIVE_LIBS = {
+        "impress_api_jni", "arcore_sdk_c", "arcore_sdk_jni", "androidx.xr.runtime.openxr", "androidx.xr.arcore.openxr",
+    };
     private static final Object sLock = new Object();
     private static boolean sLibrariesLoaded;
     private Session mXrSession;
@@ -54,21 +65,27 @@ public class XrSceneCoreSessionManagerImpl implements XrSceneCoreSessionManager 
     private final Consumer<FloatSize3d> mBoundsChangedListener = this::boundsChangeCallback;
 
     public XrSceneCoreSessionManagerImpl(Activity activity) {
-        assert DeviceInfo.isXr();
-        ensureNativeLibrariesLoaded();
+        this(activity, createSession(activity));
+    }
+
+    @VisibleForTesting
+    public XrSceneCoreSessionManagerImpl(Activity activity, Session session) {
         mActivity = activity;
-
-        SessionCreateResult result = Session.create(mActivity);
-        assert result instanceof SessionCreateSuccess : "Session creation failed.";
-        mXrSession = ((SessionCreateSuccess) result).getSession();
-
-        Scene scene = SessionExt.getScene(mXrSession);
-        mActivitySpace = scene.getActivitySpace();
+        mXrSession = session;
+        mActivitySpace = getScene().getActivitySpace();
         mActivitySpace.addOnBoundsChangedListener(mBoundsChangedListener);
 
         boolean isXrFullSpaceMode =
                 mActivitySpace.getBounds().getWidth() == Float.POSITIVE_INFINITY;
         mIsFullSpaceModeNowSupplier = ObservableSuppliers.createNonNull(isXrFullSpaceMode);
+    }
+
+    private static Session createSession(Activity activity) {
+        assert DeviceInfo.isXr();
+        ensureNativeLibrariesLoaded();
+        SessionCreateResult result = Session.create(activity);
+        assert result instanceof SessionCreateSuccess : "Session creation failed.";
+        return ((SessionCreateSuccess) result).getSession();
     }
 
     @SuppressLint("UnsafeDynamicallyLoadedCode")
@@ -78,12 +95,9 @@ public class XrSceneCoreSessionManagerImpl implements XrSceneCoreSessionManager 
                 return;
             }
             try {
-                System.load(BundleUtils.getNativeLibraryPath("impress_api_jni", MODULE_NAME));
-                System.load(BundleUtils.getNativeLibraryPath("arcore_sdk_c", MODULE_NAME));
-                System.load(BundleUtils.getNativeLibraryPath("arcore_sdk_jni", MODULE_NAME));
-                System.load(
-                        BundleUtils.getNativeLibraryPath(
-                                "androidx.xr.runtime.openxr", MODULE_NAME));
+                for (String lib : NATIVE_LIBS) {
+                    System.load(BundleUtils.getNativeLibraryPath(lib, MODULE_NAME));
+                }
                 sLibrariesLoaded = true;
             } catch (UnsatisfiedLinkError e) {
                 Log.e(TAG, "Error loading native libraries", e);
@@ -128,7 +142,7 @@ public class XrSceneCoreSessionManagerImpl implements XrSceneCoreSessionManager 
         mIsFullSpaceModeRequested = requestFullSpaceMode;
         mXrModeSwitchCallback = completedCallback;
 
-        Scene scene = SessionExt.getScene(mXrSession);
+        Scene scene = getScene();
         if (requestFullSpaceMode) {
             scene.requestFullSpaceMode();
         } else {
@@ -151,7 +165,32 @@ public class XrSceneCoreSessionManagerImpl implements XrSceneCoreSessionManager 
     @MainThread
     @Override
     public void setMainPanelVisibility(boolean visible) {
-        SessionExt.getScene(mXrSession).getMainPanelEntity().setEnabled(visible);
+        getScene().getMainPanelEntity().setEnabled(visible);
+    }
+
+    @Override
+    public XrSurfaceEntityHolder createSurfaceEntity(@XrSurfaceEntityShape int shape) {
+        return XrEntityHolderFactory.createSurfaceEntityHolder(mXrSession, shape);
+    }
+
+    @Override
+    public XrPanelEntityHolder createPanelEntity(View view, String name) {
+        return XrEntityHolderFactory.createPanelEntityHolder(mXrSession, view, name);
+    }
+
+    @Override
+    public XrPanelEntityHolder getMainPanelEntity() {
+        return XrPanelEntityHolderImpl.create(mXrSession, getScene().getMainPanelEntity());
+    }
+
+    @Override
+    public void setKeyEntity(@Nullable XrEntityHolder entityHolder) {
+        Scene scene = getScene();
+        if (entityHolder != null && entityHolder.getEntity() instanceof BaseEntity entity) {
+            scene.setKeyEntity(entity);
+        } else {
+            scene.setKeyEntity(null);
+        }
     }
 
     @SuppressWarnings("NullAway")
@@ -163,6 +202,10 @@ public class XrSceneCoreSessionManagerImpl implements XrSceneCoreSessionManager 
         }
         mXrSession = null;
         mActivity = null;
+    }
+
+    private Scene getScene() {
+        return SessionExt.getScene(mXrSession);
     }
 
     private void boundsChangeCallback(FloatSize3d dimensions) {

@@ -51,15 +51,26 @@ OnHostResolutionCallbackResult OnHostResolution(
     const SpdySessionKey& spdy_session_key,
     bool is_for_websockets,
     const HostPortPair& host_port_pair,
-    const std::vector<HostResolverEndpointResult>& endpoint_results,
+    const HostResolverEndpointsOrServiceEndpoints& endpoint_results,
     const std::set<std::string>& aliases) {
   DCHECK(host_port_pair == spdy_session_key.host_port_pair());
+
+  auto host_resolver_endpoints =
+      std::get_if<base::span<const HostResolverEndpointResult>>(
+          &endpoint_results);
 
   // It is OK to dereference spdy_session_pool, because the
   // ClientSocketPoolManager will be destroyed in the same callback that
   // destroys the SpdySessionPool.
-  return spdy_session_pool->OnHostResolutionComplete(
-      spdy_session_key, is_for_websockets, endpoint_results, aliases);
+  if (host_resolver_endpoints) {
+    return spdy_session_pool->OnHostResolutionComplete(
+        spdy_session_key, is_for_websockets, *host_resolver_endpoints, aliases);
+  } else {
+    base::span<const ServiceEndpoint> service_endpoints =
+        std::get<base::span<const ServiceEndpoint>>(endpoint_results);
+    return spdy_session_pool->OnHostResolutionComplete(
+        spdy_session_key, is_for_websockets, service_endpoints, aliases);
+  }
 }
 
 }  // namespace
@@ -112,7 +123,8 @@ ClientSocketPool::GroupId::GroupId(
     PrivacyMode privacy_mode,
     NetworkAnonymizationKey network_anonymization_key,
     SecureDnsPolicy secure_dns_policy,
-    bool disable_cert_network_fetches)
+    bool disable_cert_network_fetches,
+    handles::NetworkHandle target_network)
     : destination_(std::move(destination)),
       privacy_mode_(privacy_mode),
       network_anonymization_key_(
@@ -120,7 +132,8 @@ ClientSocketPool::GroupId::GroupId(
               ? std::move(network_anonymization_key)
               : NetworkAnonymizationKey()),
       secure_dns_policy_(secure_dns_policy),
-      disable_cert_network_fetches_(disable_cert_network_fetches) {
+      disable_cert_network_fetches_(disable_cert_network_fetches),
+      target_network_(target_network) {
   DCHECK(destination_.IsValid());
 
   // ClientSocketPool only expected to be used for HTTP/HTTPS/WS/WSS cases, and
@@ -143,7 +156,12 @@ std::string ClientSocketPool::GroupId::ToString() const {
   return base::StrCat(
       {disable_cert_network_fetches_ ? "disable_cert_network_fetches/" : "",
        GetSecureDnsPolicyGroupIdPrefix(secure_dns_policy_),
-       GetPrivacyModeGroupIdPrefix(privacy_mode_), destination_.Serialize(),
+       GetPrivacyModeGroupIdPrefix(privacy_mode_),
+       target_network_ != handles::kInvalidNetworkHandle
+           ? base::StrCat(
+                 {"target_network=", base::ToString(target_network_), "/"})
+           : "",
+       destination_.Serialize(),
        NetworkAnonymizationKey::IsPartitioningEnabled()
            ? base::StrCat(
                  {" <", network_anonymization_key_.ToDebugString(), ">"})
@@ -206,12 +224,12 @@ std::unique_ptr<ConnectJob> ClientSocketPool::CreateConnectJob(
     resolution_callback = base::BindRepeating(
         &OnHostResolution, common_connect_job_params_->spdy_session_pool,
         // TODO(crbug.com/40181080): Pass along as SchemeHostPort.
-        SpdySessionKey(HostPortPair::FromSchemeHostPort(group_id.destination()),
-                       group_id.privacy_mode(), GetProxyChain(),
-                       SessionUsage::kDestination, socket_tag,
-                       group_id.network_anonymization_key(),
-                       group_id.secure_dns_policy(),
-                       group_id.disable_cert_network_fetches()),
+        SpdySessionKey(
+            HostPortPair::FromSchemeHostPort(group_id.destination()),
+            group_id.privacy_mode(), GetProxyChain(),
+            SessionUsage::kDestination, socket_tag,
+            group_id.network_anonymization_key(), group_id.secure_dns_policy(),
+            group_id.disable_cert_network_fetches(), group_id.target_network()),
         is_for_websockets_);
   }
 
@@ -238,7 +256,7 @@ std::unique_ptr<ConnectJob> ClientSocketPool::CreateConnectJob(
       group_id.privacy_mode(), resolution_callback, request_priority,
       socket_tag, group_id.network_anonymization_key(),
       group_id.secure_dns_policy(), group_id.disable_cert_network_fetches(),
-      common_connect_job_params_, delegate);
+      common_connect_job_params_, group_id.target_network(), delegate);
 }
 
 void ClientSocketPool::UpdateStateBeforeAllocation() {

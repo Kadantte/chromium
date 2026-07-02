@@ -31,7 +31,6 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
@@ -53,12 +52,10 @@ bool ValidateMulticastOptions(ExecutionContext* execution_context,
     return true;
   }
 
-  if (!RuntimeEnabledFeatures::MulticastInDirectSocketsEnabled()) {
+  if (!execution_context->IsIsolatedContext()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kNotAllowedError,
-        "Cannot use Multicast options if feature "
-        "MulticastInDirectSocketsEnabled is not enabled. Go to chrome://flags "
-        "to enable it.");
+        "Multicast options can only be used in Isolated Web Apps.");
     return false;
   }
 
@@ -84,7 +81,7 @@ bool ValidateMulticastOptions(ExecutionContext* execution_context,
 }
 
 bool IsMulticastAllowed(ExecutionContext* execution_context) {
-  if (!RuntimeEnabledFeatures::MulticastInDirectSocketsEnabled()) {
+  if (!execution_context->IsIsolatedContext()) {
     return false;
   }
 

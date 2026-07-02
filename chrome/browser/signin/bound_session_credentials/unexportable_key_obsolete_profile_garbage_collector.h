@@ -30,10 +30,11 @@ class UnexportableKeyObsoleteProfileGarbageCollector
 
   // ProfileManagerObserver:
   void OnProfileMarkedForPermanentDeletion(Profile* profile) override;
+  void OnProfileManagerDestroying() override;
 
  private:
   void StartGarbageCollection();
-  void OnGetAllSigningKeysForGarbageCollection(
+  void OnGetAllKeysForGarbageCollection(
       ServiceErrorOr<std::vector<UnexportableKeyId>> keys_or_error);
 
   ProfileManager* profile_manager() {

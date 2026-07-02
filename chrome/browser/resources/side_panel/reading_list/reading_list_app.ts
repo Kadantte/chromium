@@ -5,6 +5,7 @@
 import 'chrome://read-later.top-chrome/shared/sp_empty_state.js';
 import 'chrome://read-later.top-chrome/shared/sp_footer.js';
 import 'chrome://read-later.top-chrome/shared/sp_heading.js';
+import 'chrome://read-later.top-chrome/shared/sp_icons.html.js';
 import 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
 import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
@@ -37,7 +38,7 @@ const ReadingListAppElementBase = HelpBubbleMixinLit(CrLitElement);
 export interface ReadingListAppElement {
   $: {
     footer: HTMLElement,
-    readingListList: CrLazyListElement,
+    readingListList: CrLazyListElement<ReadLaterEntry>,
   };
 }
 
@@ -89,7 +90,7 @@ export class ReadingListAppElement extends ReadingListAppElementBase {
   protected accessor loadingContent_: boolean = true;
   protected accessor itemSize_: number = 48;
   protected accessor minViewportHeight_: number = 0;
-  protected accessor scrollTarget_: HTMLElement|null = null;
+  protected accessor scrollTarget_: HTMLElement = document.documentElement;
   private accessor unreadHeader_: string =
       loadTimeData.getString('unreadHeader');
   private accessor readHeader_: string = loadTimeData.getString('readHeader');
@@ -218,7 +219,11 @@ export class ReadingListAppElement extends ReadingListAppElementBase {
     this.unreadExpanded_ = true;
   }
 
-  protected updateFocusedItem_() {
+  protected onViewportFilled_() {
+    this.updateFocusedItem_();
+  }
+
+  private updateFocusedItem_() {
     this.focusedItem_ = this.focusedIndex_ === -1 ?
         null :
         this.querySelector<HTMLElement>(
@@ -348,7 +353,7 @@ export class ReadingListAppElement extends ReadingListAppElementBase {
    * @return The appropriate cr icon for the current page action button
    */
   protected getCurrentPageActionButtonIcon_(): string {
-    return this.getCurrentPageActionButtonMarkAsRead_() ? 'cr:check' : 'cr:add';
+    return this.getCurrentPageActionButtonMarkAsRead_() ? 'cr:check' : 'sp:add-circle';
   }
 
   /**
@@ -392,7 +397,7 @@ export class ReadingListAppElement extends ReadingListAppElementBase {
     );
   }
 
-  protected async onItemKeyDown_(e: KeyboardEvent) {
+  protected async onItemKeydown_(e: KeyboardEvent) {
     if (e.shiftKey || !navigationKeys.has(e.key)) {
       return;
     }

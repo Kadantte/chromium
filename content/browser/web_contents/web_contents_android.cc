@@ -243,9 +243,8 @@ WebContentsAndroid::WebContentsAndroid(WebContentsImpl* web_contents)
       navigation_controller_(&(web_contents->GetController())) {
   GetAllocatedWebContentsAndroids().insert(this);
   JNIEnv* env = AttachCurrentThread();
-  obj_ = JavaObjectWeakGlobalRef(
-      env, Java_WebContentsImpl_create(env, reinterpret_cast<intptr_t>(this),
-                                       navigation_controller_.GetJavaObject()));
+  Java_WebContentsImpl_create(env, reinterpret_cast<intptr_t>(this),
+                              navigation_controller_.GetJavaObject());
 }
 
 WebContentsAndroid::~WebContentsAndroid() {
@@ -257,7 +256,7 @@ WebContentsAndroid::~WebContentsAndroid() {
     observer.WebContentsAndroidDestroyed(this);
 
   JNIEnv* env = AttachCurrentThread();
-  ScopedJavaLocalRef<jobject> java_obj = obj_.get(env);
+  ScopedJavaLocalRef<jobject> java_obj = GetJavaObject();
   CHECK(!java_obj.is_null());
   Java_WebContentsImpl_clearNativePtr(env, java_obj);
 }
@@ -265,9 +264,8 @@ WebContentsAndroid::~WebContentsAndroid() {
 base::android::ScopedJavaLocalRef<jobject>
 WebContentsAndroid::GetJavaObject() {
   JNIEnv* env = AttachCurrentThread();
-  ScopedJavaLocalRef<jobject> obj = obj_.get(env);
-  CHECK(!obj.is_null());
-  return obj;
+  return Java_WebContentsImpl_getJavaObject(env,
+                                            reinterpret_cast<intptr_t>(this));
 }
 
 void WebContentsAndroid::CaptureContentAsBitmapForTesting(
@@ -776,8 +774,10 @@ void WebContentsAndroid::SetOverscrollRefreshHandler(
   WebContentsViewAndroid* view =
       static_cast<WebContentsViewAndroid*>(web_contents_->GetView());
   view->SetOverscrollRefreshHandler(
-      std::make_unique<ui::OverscrollRefreshHandler>(
-          overscroll_refresh_handler));
+      overscroll_refresh_handler.is_null()
+          ? nullptr
+          : std::make_unique<ui::OverscrollRefreshHandler>(
+                overscroll_refresh_handler));
 }
 
 void WebContentsAndroid::SetSpatialNavigationDisabled(JNIEnv* env,
@@ -836,6 +836,10 @@ int WebContentsAndroid::GetWidth(JNIEnv* env) {
   return web_contents_->GetNativeView()->GetSizeDIPs().width();
 }
 
+bool WebContentsAndroid::IsBeingCaptured(JNIEnv* env) {
+  return web_contents_->IsBeingCaptured();
+}
+
 int WebContentsAndroid::GetHeight(JNIEnv* env) {
   return web_contents_->GetNativeView()->GetSizeDIPs().height();
 }
@@ -892,6 +896,7 @@ void WebContentsAndroid::SendOrientationChangeEvent(JNIEnv* env,
 void WebContentsAndroid::OnScaleFactorChanged(JNIEnv* env) {
   RenderWidgetHostViewAndroid* rwhva = GetRenderWidgetHostViewAndroid();
   if (rwhva) {
+    rwhva->UpdateScreenInfo();
     // |SendScreenRects()| indirectly calls GetViewSize() that asks Java layer.
     web_contents_->SendScreenRects();
     rwhva->SynchronizeVisualProperties(cc::DeadlinePolicy::UseDefaultDeadline(),

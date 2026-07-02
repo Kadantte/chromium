@@ -386,6 +386,13 @@ class MockHostResolverBase::RequestImpl
   void ChangeRequestPriority(RequestPriority priority) override {
     priority_ = priority;
   }
+
+  std::optional<ResolutionDetails> GetResolutionDetails() const override {
+    if (resolver_) {
+      return resolver_->default_resolution_details_;
+    }
+    return std::nullopt;
+  }
 };
 
 class MockHostResolverBase::ServiceEndpointRequestImpl
@@ -450,10 +457,17 @@ class MockHostResolverBase::ServiceEndpointRequestImpl
     return nullptr;
   }
 
-  bool IsStaleWhileRefresing() const override { return false; }
+  bool IsStaleWhileRefreshing() const override { return false; }
 
   void ChangeRequestPriority(RequestPriority priority) override {
     priority_ = priority;
+  }
+
+  std::optional<ResolutionDetails> GetResolutionDetails() const override {
+    if (resolver_) {
+      return resolver_->default_resolution_details_;
+    }
+    return std::nullopt;
   }
 
  private:
@@ -834,6 +848,7 @@ std::unique_ptr<HostResolver::ResolveHostRequest>
 MockHostResolverBase::CreateRequest(
     url::SchemeHostPort host,
     NetworkAnonymizationKey network_anonymization_key,
+    handles::NetworkHandle target_network,
     NetLogWithSource net_log,
     std::optional<ResolveHostParameters> optional_parameters) {
   last_observed_host_ = Host(host);
@@ -846,6 +861,7 @@ std::unique_ptr<HostResolver::ResolveHostRequest>
 MockHostResolverBase::CreateRequest(
     const HostPortPair& host,
     const NetworkAnonymizationKey& network_anonymization_key,
+    handles::NetworkHandle target_network,
     const NetLogWithSource& source_net_log,
     const std::optional<ResolveHostParameters>& optional_parameters) {
   last_observed_host_ = Host(host);
@@ -858,6 +874,7 @@ std::unique_ptr<HostResolver::ServiceEndpointRequest>
 MockHostResolverBase::CreateServiceEndpointRequest(
     Host host,
     NetworkAnonymizationKey network_anonymization_key,
+    handles::NetworkHandle target_network,
     NetLogWithSource net_log,
     ResolveHostParameters parameters) {
   last_observed_host_ = host;
@@ -1162,7 +1179,8 @@ int MockHostResolverBase::ResolveFromIPLiteralOrCache(
         source == HostResolverSource::LOCAL_ONLY ? HostResolverSource::ANY
                                                  : source;
     HostCache::Key key(GetCacheHost(endpoint), dns_query_type, flags,
-                       effective_source, network_anonymization_key);
+                       effective_source, network_anonymization_key,
+                       handles::kInvalidNetworkHandle);
     const std::pair<const HostCache::Key, HostCache::Entry>* cache_result;
     HostCache::EntryStaleness stale_info = HostCache::kNotStale;
     if (cache_usage ==
@@ -1231,7 +1249,8 @@ int MockHostResolverBase::DoSynchronousResolution(RequestBase& request) {
     HostCache::Key key(
         GetCacheHost(request.request_endpoint()),
         request.parameters().dns_query_type, request.host_resolver_flags(),
-        request.parameters().source, request.network_anonymization_key());
+        request.parameters().source, request.network_anonymization_key(),
+        handles::kInvalidNetworkHandle);
     // Storing a failure with TTL 0 so that it overwrites previous value.
     base::TimeDelta ttl;
     if (error == OK) {
@@ -1609,6 +1628,10 @@ class HangingHostResolver::RequestImpl
 
   void ChangeRequestPriority(RequestPriority priority) override {}
 
+  std::optional<ResolutionDetails> GetResolutionDetails() const override {
+    return std::nullopt;
+  }
+
  private:
   // Use a WeakPtr as the resolver may be destroyed while there are still
   // outstanding request objects.
@@ -1632,17 +1655,20 @@ std::unique_ptr<HostResolver::ResolveHostRequest>
 HangingHostResolver::CreateRequest(
     url::SchemeHostPort host,
     NetworkAnonymizationKey network_anonymization_key,
+    handles::NetworkHandle target_network,
     NetLogWithSource net_log,
     std::optional<ResolveHostParameters> optional_parameters) {
   // TODO(crbug.com/40181080): Propagate scheme and make affect behavior.
   return CreateRequest(HostPortPair::FromSchemeHostPort(host),
-                       network_anonymization_key, net_log, optional_parameters);
+                       network_anonymization_key, target_network, net_log,
+                       optional_parameters);
 }
 
 std::unique_ptr<HostResolver::ResolveHostRequest>
 HangingHostResolver::CreateRequest(
     const HostPortPair& host,
     const NetworkAnonymizationKey& network_anonymization_key,
+    handles::NetworkHandle target_network,
     const NetLogWithSource& source_net_log,
     const std::optional<ResolveHostParameters>& optional_parameters) {
   last_host_ = host;
@@ -1663,6 +1689,7 @@ std::unique_ptr<HostResolver::ServiceEndpointRequest>
 HangingHostResolver::CreateServiceEndpointRequest(
     Host host,
     NetworkAnonymizationKey network_anonymization_key,
+    handles::NetworkHandle target_network,
     NetLogWithSource net_log,
     ResolveHostParameters parameters) {
   NOTIMPLEMENTED();
